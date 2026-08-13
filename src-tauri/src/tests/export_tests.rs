@@ -28,7 +28,7 @@ fn export_command_types_keep_stable_serde_contract() {
 
 #[test]
 fn mcp_audit_export_is_atomic_exact_and_checksummed() {
-    let root = std::env::temp_dir().join(format!("portmate-mcp-audit-export-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-mcp-audit-export");
     fs::create_dir_all(&root).unwrap();
     let audit = vec![
         AuditRecord {
@@ -136,7 +136,7 @@ fn mcp_audit_export_is_atomic_exact_and_checksummed() {
 
 #[test]
 fn terminal_text_export_is_atomic_bounded_and_checksummed() {
-    let root = std::env::temp_dir().join(format!("portmate-terminal-export-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-terminal-export");
     fs::create_dir_all(&root).unwrap();
     let request = ExportTerminalTextRequest {
         session_id: "../shell export".to_string(),
@@ -193,8 +193,8 @@ fn terminal_text_export_is_atomic_bounded_and_checksummed() {
 #[cfg(unix)]
 #[test]
 fn terminal_text_export_rejects_a_symlinked_exports_directory() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
+    let outside = canonical_test_tempdir();
     let exports = root.path().join("exports");
     std::os::unix::fs::symlink(outside.path(), &exports).unwrap();
 
@@ -268,7 +268,7 @@ fn terminal_text_export_request_keeps_legacy_destination_defaults() {
 
 #[test]
 fn terminal_text_export_uses_a_configured_existing_directory() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let destination = root.path().join("terminal-exports");
     fs::create_dir(&destination).unwrap();
     let request = ExportTerminalTextRequest {
@@ -291,7 +291,7 @@ fn terminal_text_export_uses_a_configured_existing_directory() {
 
 #[test]
 fn terminal_text_export_writes_and_overwrites_an_explicit_file() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let destination = root.path().join("chosen.txt");
     let mut request = ExportTerminalTextRequest {
         session_id: "shell-a".to_string(),
@@ -332,7 +332,7 @@ fn terminal_text_export_writes_and_overwrites_an_explicit_file() {
 
 #[test]
 fn terminal_text_export_rejects_ambiguous_or_relative_destinations() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let mut request = ExportTerminalTextRequest {
         session_id: "shell-a".to_string(),
         view_id: "view-a".to_string(),
@@ -399,8 +399,8 @@ fn terminal_text_export_rejects_ambiguous_or_relative_destinations() {
 #[cfg(unix)]
 #[test]
 fn terminal_text_export_rejects_symlinked_custom_destinations() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
+    let outside = canonical_test_tempdir();
     let linked_directory = root.path().join("linked-exports");
     std::os::unix::fs::symlink(outside.path(), &linked_directory).unwrap();
     let request = ExportTerminalTextRequest {

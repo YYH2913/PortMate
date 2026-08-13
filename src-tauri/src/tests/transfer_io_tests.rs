@@ -45,7 +45,7 @@ fn transfer_throttle_wait_is_async_and_cancellable() {
 
 #[test]
 fn local_resume_part_helpers_keep_stable_offsets() {
-    let root = std::env::temp_dir().join(format!("portmate-resume-test-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-resume-test");
     fs::create_dir_all(&root).unwrap();
     let target = root.join("image.bin");
     let part = local_resume_part_path(&target);
@@ -73,7 +73,7 @@ fn local_resume_part_helpers_keep_stable_offsets() {
 
 #[test]
 fn local_resume_requires_a_matching_source_prefix() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let profile = test_shell_profile();
     let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
     state
@@ -131,7 +131,7 @@ fn sftp_prefix_read_errors_distinguish_short_file_and_io_failure() {
 
 #[test]
 fn local_transfer_creates_empty_files_and_rejects_source_shrink() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let profile = test_shell_profile();
     let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
     state
@@ -209,7 +209,7 @@ fn local_transfer_creates_empty_files_and_rejects_source_shrink() {
 #[cfg(unix)]
 #[test]
 fn local_transfer_writes_reject_symlink_targets() {
-    let root = std::env::temp_dir().join(format!("portmate-transfer-links-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-transfer-links");
     fs::create_dir_all(&root).unwrap();
     let protected = root.join("protected.bin");
     fs::write(&protected, b"protected").unwrap();
@@ -284,7 +284,7 @@ fn local_transfer_writes_reject_symlink_targets() {
 
 #[test]
 fn streamed_modem_output_preserves_internal_eof_and_discards_final_padding() {
-    let root = std::env::temp_dir().join(format!("portmate-modem-output-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-modem-output");
     fs::create_dir_all(&root).unwrap();
     let target = root.join("received.bin");
     let mut output =
@@ -316,7 +316,7 @@ fn streamed_modem_output_preserves_internal_eof_and_discards_final_padding() {
 
 #[test]
 fn streamed_modem_output_respects_ymodem_declared_length() {
-    let root = std::env::temp_dir().join(format!("portmate-ymodem-output-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-ymodem-output");
     fs::create_dir_all(&root).unwrap();
     let target = root.join("received.bin");
     let mut output =
@@ -334,7 +334,7 @@ fn streamed_modem_output_respects_ymodem_declared_length() {
 
 #[test]
 fn streamed_modem_output_removes_temp_file_when_not_finalized() {
-    let root = std::env::temp_dir().join(format!("portmate-modem-temp-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-modem-temp");
     fs::create_dir_all(&root).unwrap();
     let target = root.join("received.bin");
     let mut output =
@@ -351,7 +351,7 @@ fn streamed_modem_output_removes_temp_file_when_not_finalized() {
 #[cfg(unix)]
 #[test]
 fn local_transfer_sources_reject_symlinks() {
-    let root = std::env::temp_dir().join(format!("portmate-transfer-sources-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-transfer-sources");
     fs::create_dir_all(&root).unwrap();
     let protected = root.join("protected.bin");
     fs::write(&protected, b"protected").unwrap();

@@ -458,15 +458,26 @@ fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed
     let _runtime_guard = shared_runtime_test_guard();
     tauri::async_runtime::block_on(async {
         use native_tls::{Identity, TlsAcceptor};
+        use openssl::{pkcs12::Pkcs12, pkey::PKey, x509::X509};
         use rcgen::generate_simple_self_signed;
         use tokio_native_tls::TlsAcceptor as TokioTlsAcceptor;
 
         let certificate = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let identity = Identity::from_pkcs8(
-            certificate.cert.pem().as_bytes(),
+        let key = PKey::private_key_from_pem(
             certificate.signing_key.serialize_pem().as_bytes(),
         )
         .unwrap();
+        let cert = X509::from_der(certificate.cert.der()).unwrap();
+        let identity_password = "portmate-test";
+        let pkcs12 = Pkcs12::builder()
+            .name("PortMate test server")
+            .pkey(&key)
+            .cert(&cert)
+            .build2(identity_password)
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let identity = Identity::from_pkcs12(&pkcs12, identity_password).unwrap();
         let acceptor = TokioTlsAcceptor::from(TlsAcceptor::builder(identity).build().unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -487,8 +498,7 @@ fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed
             panic!("TLS client did not complete the allowed handshake");
         });
 
-        let root =
-            std::env::temp_dir().join(format!("portmate-telnet-tls-test-{}", Uuid::new_v4()));
+        let root = canonical_test_temp_path("portmate-telnet-tls-test");
         let mut rejected = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
             host: "127.0.0.1".to_string(),
             port: address.port(),
@@ -540,4 +550,3 @@ fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed
         let _ = fs::remove_dir_all(root);
     });
 }
-

@@ -1,6 +1,6 @@
 #[test]
 fn local_file_listing_rejects_oversized_directories_without_partial_results() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     for name in ["alpha", "beta", "gamma"] {
         fs::write(root.path().join(name), name).unwrap();
     }
@@ -20,7 +20,7 @@ fn local_file_listing_rejects_oversized_directories_without_partial_results() {
 fn local_file_listing_does_not_publish_lossy_non_utf8_paths() {
     use std::os::unix::ffi::OsStringExt;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let invalid_name =
         std::ffi::OsString::from_vec(vec![b'i', b'n', b'v', b'a', b'l', b'i', b'd', 0xff]);
     fs::write(root.path().join(invalid_name), b"payload").unwrap();
@@ -32,7 +32,7 @@ fn local_file_listing_does_not_publish_lossy_non_utf8_paths() {
 #[cfg(unix)]
 #[test]
 fn local_file_manager_never_trims_an_enumerated_path() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let plain = root.path().join("report.txt");
     let spaced = root.path().join("report.txt ");
     let renamed = root.path().join("renamed.txt ");
@@ -85,7 +85,7 @@ fn local_file_manager_never_trims_an_enumerated_path() {
 
 #[test]
 fn file_manager_local_file_creation_is_exclusive() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let file = root.path().join("new-file.txt");
     let state = test_app_state(
         test_ssh_profile(),
@@ -126,7 +126,7 @@ fn file_manager_local_file_creation_is_exclusive() {
 
 #[test]
 fn file_manager_local_batch_delete_removes_files_and_directories() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let file = root.path().join("remove.txt");
     let directory = root.path().join("remove-tree");
     fs::create_dir_all(directory.join("nested")).unwrap();
@@ -153,7 +153,7 @@ fn file_manager_local_batch_delete_removes_files_and_directories() {
 
 #[test]
 fn file_manager_local_batch_delete_preflights_directory_children() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let directory = root.path().join("remove-tree");
     let child = directory.join("value.txt");
     fs::create_dir(&directory).unwrap();
@@ -181,7 +181,7 @@ fn file_manager_local_batch_delete_preflights_directory_children() {
 #[cfg(unix)]
 #[test]
 fn file_manager_local_batch_delete_removes_a_final_symlink_only() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let target = root.path().join("protected.txt");
     let link = root.path().join("remove-link");
     fs::write(&target, b"protected").unwrap();
@@ -207,7 +207,7 @@ fn file_manager_local_batch_delete_removes_a_final_symlink_only() {
 
 #[test]
 fn file_manager_local_move_moves_multiple_selected_paths() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let source = root.path().join("source");
     let destination = root.path().join("destination");
     fs::create_dir_all(source.join("nested")).unwrap();
@@ -243,7 +243,7 @@ fn file_manager_local_move_moves_multiple_selected_paths() {
 
 #[test]
 fn file_manager_local_move_rejects_collisions_before_any_mutation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let source = root.path().join("source");
     let destination = root.path().join("destination");
     fs::create_dir(&source).unwrap();
@@ -281,7 +281,7 @@ fn file_manager_local_move_rejects_collisions_before_any_mutation() {
 
 #[test]
 fn file_manager_local_move_rejects_a_directory_destination_inside_the_source() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let source = root.path().join("source");
     let directory = source.join("tree");
     let nested_destination = directory.join("nested");
@@ -309,7 +309,7 @@ fn file_manager_local_move_rejects_a_directory_destination_inside_the_source() {
 
 #[test]
 fn file_manager_local_move_rejects_a_selected_directory_and_its_child() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let source = root.path().join("source");
     let destination = root.path().join("destination");
     let directory = source.join("tree");
@@ -342,7 +342,7 @@ fn file_manager_local_move_rejects_a_selected_directory_and_its_child() {
 
 #[test]
 fn file_manager_local_rename_refuses_to_replace_an_existing_target() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let source = root.path().join("source.txt");
     let target = root.path().join("target.txt");
     fs::write(&source, b"source contents").unwrap();
@@ -371,7 +371,7 @@ fn file_manager_local_rename_refuses_to_replace_an_existing_target() {
 #[cfg(unix)]
 #[test]
 fn local_directory_creation_rejects_symlink_components() {
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let target = root.path().join("target");
     let link = root.path().join("link");
     let renamed_link = root.path().join("renamed-link");
@@ -438,7 +438,7 @@ fn local_directory_creation_rejects_symlink_components() {
 #[cfg(unix)]
 #[test]
 fn local_file_listing_and_chmod_do_not_follow_symbolic_links() {
-    let root = std::env::temp_dir().join(format!("portmate-file-links-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-file-links");
     fs::create_dir_all(&root).unwrap();
     let protected = root.join("protected.txt");
     fs::write(&protected, b"protected").unwrap();

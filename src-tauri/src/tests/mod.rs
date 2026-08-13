@@ -3,6 +3,52 @@ use std::process::Command;
 
 const TEST_RUNTIME_TRANSITION_TIMEOUT: Duration = Duration::from_secs(15);
 
+struct CanonicalTestTempDir {
+    _inner: tempfile::TempDir,
+    path: PathBuf,
+}
+
+impl CanonicalTestTempDir {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+fn canonical_test_tempdir() -> CanonicalTestTempDir {
+    let inner = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    let path = inner.path().canonicalize().unwrap();
+    #[cfg(not(unix))]
+    let path = inner.path().to_path_buf();
+    CanonicalTestTempDir {
+        _inner: inner,
+        path,
+    }
+}
+
+fn canonical_test_temp_path(prefix: &str) -> PathBuf {
+    #[cfg(unix)]
+    let temp_root = std::env::temp_dir().canonicalize().unwrap();
+    #[cfg(not(unix))]
+    let temp_root = std::env::temp_dir();
+    temp_root.join(format!("{prefix}-{}", Uuid::new_v4()))
+}
+
+#[cfg(unix)]
+fn short_unix_socket_tempdir() -> tempfile::TempDir {
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = tempfile::Builder::new()
+        .prefix("pma")
+        .tempdir_in("/tmp")
+        .unwrap();
+    assert!(
+        root.path().join("a").as_os_str().as_bytes().len() < 90,
+        "test Unix socket path is too long"
+    );
+    root
+}
+
 #[path = "app_migration_tests.rs"]
 mod app_migration_tests;
 #[path = "archive_tests.rs"]

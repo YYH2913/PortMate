@@ -225,7 +225,7 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
         return;
     }
 
-    let root = std::env::temp_dir().join(format!("portmate-agent-test-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-agent-test");
     fs::create_dir_all(&root).unwrap();
     let host_key = root.join("ssh_host_ed25519_key");
     let accepted_key = root.join("accepted_agent_ed25519_key");
@@ -249,7 +249,8 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
         port,
     );
     let mut sshd = spawn_openssh_test_server(sshd_path, &config_path);
-    let agent_socket = root.join("agent.sock");
+    let agent_root = short_unix_socket_tempdir();
+    let agent_socket = agent_root.path().join("a");
     let mut agent = spawn_openssh_test_agent(&agent_socket);
 
     tauri::async_runtime::block_on(async {

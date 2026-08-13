@@ -24,7 +24,7 @@ fn openssh_sftp_scp_and_tunnels_end_to_end() {
         .into_iter()
         .all(|command| Command::new(command).arg("--version").output().is_ok());
 
-    let root = std::env::temp_dir().join(format!("portmate-sshd-test-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-sshd-test");
     fs::create_dir_all(&root).unwrap();
     let host_key = root.join("ssh_host_ed25519_key");
     let replacement_host_key = root.join("ssh_host_ed25519_key_replacement");

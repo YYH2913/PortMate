@@ -49,7 +49,7 @@ fn libssh_backend_exec_normalizes_output_and_exit_status() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
 
@@ -102,7 +102,7 @@ fn libssh_backend_supports_scp_and_remote_copy_channels() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
     let upload_source = root.path().join("upload.bin");

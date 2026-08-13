@@ -6,7 +6,7 @@ fn sftp_in_flight_request_observes_transfer_cancellation() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
 
@@ -101,7 +101,7 @@ fn scp_upload_closes_success_and_rejects_status_after_eof() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
     let source = root.path().join("empty.bin");
@@ -185,7 +185,7 @@ fn scp_download_validates_completion_and_protocol_streams() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
 
@@ -307,7 +307,7 @@ fn scp_download_silent_peer_observes_cancellation_and_idle_timeout() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
 
@@ -405,7 +405,7 @@ fn remote_copy_silent_peer_observes_cancellation_and_idle_timeout() {
         return;
     }
 
-    let root = tempfile::tempdir().unwrap();
+    let root = canonical_test_tempdir();
     let host_key = root.path().join("ssh_host_ed25519_key");
     generate_ed25519_test_key(&host_key);
 

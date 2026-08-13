@@ -167,7 +167,7 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         return;
     }
 
-    let root = std::env::temp_dir().join(format!("portmate-libssh-public-key-{}", Uuid::new_v4()));
+    let root = canonical_test_temp_path("portmate-libssh-public-key");
     fs::create_dir_all(&root).unwrap();
     let host_key = root.join("ssh_host_ed25519_key");
     let rejected_key = root.join("id_rejected");
@@ -297,7 +297,7 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         let downloaded = root.join("libssh-sftp-downloaded.bin");
         let payload = b"PortMate libssh native SFTP payload";
         fs::write(&source, payload).unwrap();
-        let remote_root = format!("/tmp/portmate-libssh-sftp-{}", Uuid::new_v4());
+        let remote_root = root.join("libssh-sftp").display().to_string();
         let uploaded = remote_join_path(&remote_root, "uploaded.bin");
         let copied = remote_join_path(&remote_root, "copied.bin");
         let renamed = remote_join_path(&remote_root, "renamed.bin");
