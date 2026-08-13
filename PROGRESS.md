@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-08-10
+审查日期：2026-08-14
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -37,6 +37,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 续验同日再次通过 `npm test`（93 文件/511 项）、`npm run build`、`cargo fmt --all -- --check`、locked Rust workspace 测试（424 passed、1 ignored）和 all-targets Clippy；`npm run test:terminal-compat`、`npm run test:workspace-ui`、MCP SDK freshness 也均通过。实际执行 `npm run desktop:clean` 已确认 sidecar 编译、Vite 启动和 Tauri 启动顺序收敛，停止后未留下 PortMate/Vite 进程；该记录不替代 Windows/macOS、Microsoft AD、物理串口或签名发布门禁。
 
 2026-08-10 密码边界完成收紧：用户 SSH/代理密码、私钥口令、OneKey Secret 与 Profile Vault 私钥的新建、默认写入和显式写入都只允许已解锁 Stronghold，通用 Secret API 拒绝新建或覆盖 `keychain:` 用户引用；连接弹窗、Jump Host、代理、OneKey、私钥导入和轮换全部显式提交 `portable`。旧 `keychain:` 引用仍可读取、删除并通过带 durable journal 的单向 `Native -> Stronghold` 流程迁移，旧版反向迁移 journal 的内部恢复分支继续保留，但新预检/执行请求会在命令边界拒绝 Native 目标。运行时凭据使用绑定调用窗口、会话 ID 和当前 SSH 配置 SHA-256 的 30 秒一次性句柄，锁定 Vault、关闭或删除会话时清理；MCP 明确拒绝 password、passphrase 和 credential handle。后端边界专项 2 项、前端 95 文件/516 项、生产构建及完整 Workspace Playwright 均通过，浏览器测试桩会拒绝任何未显式指向 Stronghold 的新用户凭据，并确认取消/失败路径不遗留 Secret。
+
+2026-08-14 对当前 HEAD 重新执行 Native CI 失败路径与本机可复现门禁：前端 101 文件/563 项、生产构建、Rustfmt 和 workspace all-targets Clippy `-D warnings` 通过；locked Rust workspace 中主应用 451 项通过、1 项按 CI 设计忽略，其余 workspace crate、integration 与 doc-test 全部通过。Workspace Playwright 通过完整桌面/移动布局、MCP 授权与 Client ID、会话设置、串口分析器、传输和凭据生命周期矩阵。WebGL Insert/Normal 光标兼容测试使用 1.6 秒闪烁周期采样后完整通过，又并行复跑三次，竖线光标稳定为 1 像素宽，方块光标稳定为 7x17 像素；CI `ci-command-log.mjs` 包装路径也单独通过。npm 依赖审计无漏洞，Rust 依赖审计仅保留 1 个已缓解例外和 22 个已审查警告。这些结果证明当前 Linux/浏览器实现边界，不代替 Windows/macOS 原生 runner、真实 Microsoft AD、物理串口或签名发布证据。
 
 ## 当前实现快照
 
@@ -482,7 +484,7 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 
 1. 一套真实 Microsoft Active Directory 域与已加入该域的 OpenSSH 服务端，用于记录 PortMate `gssapi-with-mic`、票据/PAC、fallback、Host Key 和健康故障证据。
 2. 可由测试账号创建并取消 SSH remote-forward 的真实 FreeBSD 和 macOS 主机，用于执行 BSD 命令、SFTP/SCP、隧道健康和全屏程序矩阵；另需启用 OpenSSH 与 PowerShell/CIM 的 Windows 远端主机完成常驻 Sysmon 采样和故障恢复。
-3. 真实 Windows 2022 与 macOS 14 runner，用于完成 native keyring CRUD/locked/denied、Stronghold 文件系统故障、MSI/NSIS 安装卸载、app/DMG 挂载及包内主程序/sidecar 生命周期；成功日志和产物必须按 `RELEASE.md` 保留。
+3. 真实 Windows 2022 与 macOS 15 runner，用于完成 native keyring CRUD/locked/denied、Stronghold 文件系统故障、MSI/NSIS 安装卸载、app/DMG 挂载及包内主程序/sidecar 生命周期；成功日志和产物必须按 `RELEASE.md` 保留。
 4. 可断电、拔插和改变线路状态的物理串口/USB 串口与 Modem 设备，用于验证 DTR/RTS/Break、二进制收发、自动重连及 X/Y/ZModem 故障恢复。
 5. Windows Authenticode 证书、Apple Developer ID、notarization 凭据和发布 secret store，用于签名、notarize 及独立校验最终安装包。
 6. 发布版本确定后，在三平台干净机器上按 `RELEASE.md` 重新执行完整 gate、升级/回滚和已上传产物安装检查；开发期通过记录不能直接替代该次发布证据。

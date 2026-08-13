@@ -29,7 +29,7 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 ## Packaging
 
 - [ ] `npm run desktop:build` succeeds on clean Linux, Windows, and macOS runners.
-- [ ] The `Native CI` workflow succeeds for `ubuntu-24.04`, `windows-2022`, `macos-14`, and the Linux compatibility job; retain its bundle artifacts with the release evidence.
+- [ ] The `Native CI` workflow succeeds for `ubuntu-24.04`, `windows-2022`, `macos-15`, and the Linux compatibility job; retain its bundle artifacts with the release evidence.
 - [ ] Linux produces DEB, RPM, and AppImage; Windows produces signed MSI/NSIS; macOS produces signed and notarized app/DMG.
 - [ ] Every package contains the main executable, target-specific `portmate-mcp` sidecar, standard icons, the Apache-2.0 application license, and the JetBrains Mono SIL OFL 1.1 license in the platform resource directory.
 - [ ] On Linux, `npm run test:linux-package` passes on X11/Xvfb against the freshly built DEB, RPM, and AppImage from a space-containing extraction/runtime root, including full file/symlink permission checks, canonical AppImage root links and source-identical 256x256 icons, three successful restart/legacy-migration launches, and one fail-closed two-Store conflict start from every extracted package.
