@@ -44,6 +44,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 同日再次使用 Native CI 的完整包装命令 `node scripts/ci-command-log.mjs target/native-ci/terminal-compat-local.log npm run test:terminal-compat` 复验 WebGL 光标路径，竖线光标实际采样为 1x17 像素，方块光标为 7x17 像素；检查已覆盖 1.6 秒闪烁周期，不再把光标恰好隐藏的一帧误判为未绘制。随后从当前源码完成未签名 Windows GNU x86_64 便携包交叉构建，桌面端 `portmate.exe`、MCP `portmate-mcp.exe` 与 `WebView2Loader.dll` 均通过 PE32+ x86_64、subsystem、内嵌前端资源、字体许可和 ZIP 完整性门禁。生成的 `PortMate-0.1.1-windows-x86_64-portable.zip` 为 23,542,792 字节，SHA-256 为 `962ab33857056637ed82b07f26a39a2376bee74899cd7894b5f02eb9edb068c4`；该交叉构建证明包结构与静态边界，不替代真实 Windows runner 上的启动、凭据服务和 WebView2 运行验证。
 
+当前 HEAD 的 Linux release 也已重新构建并完成包级复验：DEB、RPM 和 AppImage 分别为 16,184,416、16,185,769 和 92,264,952 字节，SHA-256 分别为 `d8dee28b72cd268df36854d9cceb8d9f84592d209b9ea7b649b1422c020c3984`、`9ffa549b0032997007bc7cb9915e7bfb53e2b87fef483ffd1aa9a23fefa9c168` 和 `c0e3c6f5fed31cb057e2ded9fd9baf3fc62f4c2acb90f9f634d4c739e1ec0456`。`npm run test:linux-package` 从含空格路径逐包核对主程序、MCP sidecar、desktop entry、图标、双许可证、CSP、三类窗口 capability、权限与便携链接，并对每个包内 sidecar 完成 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全版本 stdio/HTTP 矩阵、HTTP readiness 和父进程异常退出清理；每个包还通过两次稳定 Store 重启、一次旧 app-data 原子迁移及一次双 Store 冲突 fail-closed。最终 AppImage 在 VMware/X11 上额外完成三次 1440x920 真实窗口启动，每次首帧均采样到 669 种颜色，IPC 地址与凭据持续轮换且正常退出后 endpoint 被删除；这些结果仍不代替干净 Ubuntu runner、发行仓库安装或签名发布证据。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
