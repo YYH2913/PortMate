@@ -6,6 +6,10 @@ const PREVIOUS_JOURNAL: &str =
     include_str!("../../../tests/fixtures/release-upgrade/0.1.0/profile-secret-migration.json");
 const PREVIOUS_LOG: &[u8] =
     include_bytes!("../../../tests/fixtures/release-upgrade/0.1.0/logs/release-ssh-1.jsonl");
+const PREVIOUS_BROWSER_STATE: &[u8] =
+    include_bytes!("../../../tests/fixtures/release-upgrade/0.1.0/browser-state.json");
+const PREVIOUS_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/release-upgrade/0.1.0/schema.sql");
 
 fn required_string<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
     value[key]
@@ -20,7 +24,7 @@ fn optional_string(value: &serde_json::Value, key: &str) -> Option<String> {
 fn write_previous_release_store(path: &Path) {
     let store: serde_json::Value = serde_json::from_str(PREVIOUS_STORE).unwrap();
     let connection = SqliteConnection::open(path).unwrap();
-    ensure_store_schema(&connection).unwrap();
+    connection.execute_batch(PREVIOUS_SCHEMA).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE;").unwrap();
     connection
         .execute(
@@ -227,9 +231,12 @@ fn previous_release_app_data_survives_directory_store_mirror_and_journal_upgrade
     let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
     let current = root.path().join("dev.portmate.desktop");
     fs::create_dir_all(legacy.join("logs")).unwrap();
+    let webview_state_path = Path::new("WebKit/WebsiteData/LocalStorage/release-fixture.json");
+    fs::create_dir_all(legacy.join(webview_state_path.parent().unwrap())).unwrap();
     let legacy_store = legacy.join(STORE_FILE_NAME);
     write_previous_release_store(&legacy_store);
     fs::write(legacy.join("logs/release-ssh-1.jsonl"), PREVIOUS_LOG).unwrap();
+    fs::write(legacy.join(webview_state_path), PREVIOUS_BROWSER_STATE).unwrap();
 
     let before = SqliteConnection::open(&legacy_store).unwrap();
     let old_connection_json: String = before
@@ -257,6 +264,10 @@ fn previous_release_app_data_survives_directory_store_mirror_and_journal_upgrade
     assert_eq!(
         fs::read(current.join("logs/release-ssh-1.jsonl")).unwrap(),
         PREVIOUS_LOG
+    );
+    assert_eq!(
+        fs::read(current.join(webview_state_path)).unwrap(),
+        PREVIOUS_BROWSER_STATE
     );
     let loaded = load_store(&store_path).unwrap();
     assert_release_data(&loaded);
