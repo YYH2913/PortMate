@@ -62,6 +62,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同一 HEAD 重新生成未签名 Windows GNU x86_64 便携包：`PortMate-0.1.1-windows-x86_64-portable.zip` 为 23,543,638 字节，SHA-256 为 `f64ca8609c585bec3237fc8a1da72daad0878f4a66403cf6114a15fa221a34cd`。ZIP 完整性、主程序 GUI PE32+ x86_64、MCP sidecar console PE32+ x86_64、WebView2 loader、两份许可证及嵌入生产前端资源均通过脚本验证。该交叉构建仍不替代真实 Windows 的启动、WebView2、Credential Manager 和安装包 smoke。
 
+同日对光标修复后的当前源码再次执行 `npm run test:terminal-compat`，WebGL Insert/Normal/Insert 光标依次采样为 1x12、7x17 和 1x17 像素，完整终端兼容门禁通过。随后重新执行 `npm run test:linux-package`，哈希未变化的既有 DEB、RPM 和 AppImage 均再次通过包结构、Store 重启/迁移/双 Store 冲突拒绝、凭据轮换、父进程异常退出清理，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全版本 stdio/HTTP 矩阵。由于这三个包构建早于本轮光标修复，本次结果只复验其既有包内容，不能作为光标修复已进入 Linux 安装包的证据；本机仍缺少 `xvfb-run`，也未据此补报隔离 Xvfb 原生窗口 smoke。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
