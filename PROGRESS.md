@@ -40,6 +40,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 2026-08-14 对当前 HEAD 重新执行 Native CI 失败路径与本机可复现门禁：前端 101 文件/563 项、生产构建、Rustfmt 和 workspace all-targets Clippy `-D warnings` 通过；locked Rust workspace 中主应用 451 项通过、1 项按 CI 设计忽略，其余 workspace crate、integration 与 doc-test 全部通过。Workspace Playwright 通过完整桌面/移动布局、MCP 授权与 Client ID、会话设置、串口分析器、传输和凭据生命周期矩阵。WebGL Insert/Normal 光标兼容测试使用 1.6 秒闪烁周期采样后完整通过，又并行复跑三次，竖线光标稳定为 1 像素宽，方块光标稳定为 7x17 像素；CI `ci-command-log.mjs` 包装路径也单独通过。npm 依赖审计无漏洞，Rust 依赖审计仅保留 1 个已缓解例外和 22 个已审查警告。这些结果证明当前 Linux/浏览器实现边界，不代替 Windows/macOS 原生 runner、真实 Microsoft AD、物理串口或签名发布证据。
 
+2026-08-14 继续分析 Native CI run `31732159457`：旧远端 SHA `45130be` 的 Linux compatibility job 已完整通过九语言 MCP SDK、SSH/TCP/Telnet 服务端、Tmux 多版本、vttest、WebGL terminal、Tmux workflow 和 Workspace UI；此前报告的 WebGL bar cursor 空像素未再出现。Ubuntu/macOS workspace 测试暴露 SSH 自动重连先于 Local/Dynamic tunnel listener 释放端口的竞态，运行时现通过显式 shutdown/completion 通知等待 listener 退出后再恢复 tunnel；真实 OpenSSH SFTP/SCP/Local/Dynamic/Remote tunnel 用例连续三轮通过。Jump Host 清理把已关闭 handle 的重复 disconnect 视为幂等 teardown，macOS 则不再执行其文件系统无法制造的非法 UTF-8 文件名夹具。修复后的本地 locked workspace 主应用为 452 passed、1 ignored、1 filtered，完整前端 101 文件/563 项、生产构建、Workspace UI、Terminal/Tmux、Clippy、Rustfmt 和 Windows GNU/macOS ARM64/FreeBSD portable checks 均通过。Windows job 的旧失败发生在移除无效 `Get-Command nmake.exe`/`MAKE=nmake.exe` 之前；新工作流仍需连同本轮 tunnel 与 fixture 提交一起推送后，由真实 Windows/macOS/Ubuntu Native runner 复验，不能据本机结果勾选发布门禁。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
