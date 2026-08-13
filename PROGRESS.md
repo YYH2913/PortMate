@@ -64,6 +64,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同日对光标修复后的当前源码再次执行 `npm run test:terminal-compat`，WebGL Insert/Normal/Insert 光标依次采样为 1x12、7x17 和 1x17 像素，完整终端兼容门禁通过。随后重新执行 `npm run test:linux-package`，哈希未变化的既有 DEB、RPM 和 AppImage 均再次通过包结构、Store 重启/迁移/双 Store 冲突拒绝、凭据轮换、父进程异常退出清理，以及 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全版本 stdio/HTTP 矩阵。由于这三个包构建早于本轮光标修复，本次结果只复验其既有包内容，不能作为光标修复已进入 Linux 安装包的证据；本机仍缺少 `xvfb-run`，也未据此补报隔离 Xvfb 原生窗口 smoke。
 
+随后从包含光标修复的当前源码重新执行 `npm run desktop:build`，新 DEB、RPM 和 AppImage 分别为 16,190,872、16,192,180 和 92,289,528 字节，SHA-256 分别为 `f4c23572ffd65d9c387b12f40265e67177211f5e28ff28dbc9f915a04961b8d8`、`5f41ce255f04c024e4e6641c4498f8a23e8d6d3eaebae8ef11fb44bb8cb4b33a` 和 `c34eae007227147b93eef5bd352f3a76a90760506ac1ecd8773b784346e16ce0`。首次包门禁在宿主根分区 `/tmp` 仅余约 700 MiB 时因 .NET MSBuild 临时目录创建失败而中止；三平台包检查、Linux AppImage 首帧检查、应用生命周期和 sidecar watchdog 现统一使用 `target/native-package-check/` 下权限受限、路径含空格且自动清理的 workspace，并把 `TMPDIR`/`TMP`/`TEMP` 与 JVM `java.io.tmpdir` 定向到同一私有目录，保留已有 `JAVA_TOOL_OPTIONS`。修复后的 `npm run test:linux-package` 在不清理已满系统 `/tmp` 的条件下完整通过三个新包的结构、Store/IPC 生命周期、异常父进程清理及九语言全部 stdio/HTTP 矩阵，结束后自动清理约 372 MiB workspace；共享 helper、生命周期、sidecar、布局和 AppImage runtime 专项为 32 passed，完整前端为 104 文件/570 项且生产构建通过。新 AppImage 又在 VMware/X11 上连续三次生成 1440x920 窗口，每次采样 331,200 像素、669 种颜色，Store SHA-256 跨重启/迁移不变，IPC 地址和凭据轮换，双 Store 冲突在发布 endpoint 前拒绝；本机仍缺少隔离 `xvfb-run`，因此该记录是当前显示服务器上的真实窗口证据，不冒充 Native CI 的隔离 Xvfb 结果。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
