@@ -104,6 +104,10 @@ jobs:
         with:
           dotnet-version: "10.0.302"
 
+      - name: Install NASM on Windows
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
       - uses: swift-actions/setup-swift@v3
         if: runner.os == 'Linux'
         with:

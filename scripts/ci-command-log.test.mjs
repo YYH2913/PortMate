@@ -63,5 +63,7 @@ describe("CI command logging", () => {
     expect(workflow).toContain("if: runner.os == 'Linux'");
     expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
+    expect(workflow).toContain("ilammy/setup-nasm@v1");
+    expect(workflow).toContain("if: runner.os == 'Windows'");
   });
 });
