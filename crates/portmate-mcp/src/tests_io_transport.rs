@@ -22,6 +22,38 @@ fn stdio_reader_bounds_messages_and_recovers_at_the_next_line() {
 }
 
 #[test]
+fn stdio_reader_accepts_a_maximum_inline_content_envelope() {
+    let request = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": "large-stdio-content",
+        "method": "tools/call",
+        "params": {
+            "name": "start_content_transfer",
+            "arguments": {
+                "sessionId": "refresh-session",
+                "protocol": "xmodem",
+                "fileName": "firmware.bin",
+                "contentBase64": BASE64_STANDARD.encode(vec![
+                    0xa5;
+                    MAX_MCP_CONTENT_TRANSFER_BYTES
+                ]),
+                "destination": "load:loadx"
+            }
+        }
+    }))
+    .unwrap();
+    assert!(request.len() > 1024 * 1024);
+    assert!(request.len() <= MAX_MCP_BRIDGE_REQUEST_BYTES);
+    let mut input = request.clone();
+    input.push(b'\n');
+    let mut reader = io::Cursor::new(input);
+    assert_eq!(
+        read_stdio_message(&mut reader, MAX_MCP_BRIDGE_REQUEST_BYTES).unwrap(),
+        StdioMessage::Message(request)
+    );
+}
+
+#[test]
 fn json_rpc_response_serialization_is_bounded_and_preserves_id_on_overflow() {
     let compact = json!({ "ok": true });
     let compact_bytes = serde_json::to_vec(&compact).unwrap();
@@ -325,13 +357,21 @@ fn http_parser_decodes_chunked_body_and_bounded_trailers() {
     for request in [
         b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\nX\r\n{}\r\n0\r\n\r\n".as_slice(),
         b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}X\n0\r\n\r\n".as_slice(),
-        b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n".as_slice(),
         b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\nextra".as_slice(),
         b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nContent-Length: 2\r\n\r\n".as_slice(),
         b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nDigest: bad\0value\r\n\r\n".as_slice(),
     ] {
         assert!(parse_http_request_bytes(request).is_err());
     }
+
+    let oversized = format!(
+        "POST /mcp HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n{:X}\r\n",
+        MAX_MCP_BRIDGE_REQUEST_BYTES + 1,
+    );
+    assert!(parse_http_request_bytes(oversized.as_bytes())
+        .unwrap_err()
+        .to_string()
+        .contains("HTTP body is too large"));
 }
 
 #[test]
@@ -348,6 +388,38 @@ fn http_parser_combines_repeatable_headers_and_reads_exact_body() {
         Some("application/json, text/event-stream")
     );
     assert_eq!(request.body, b"{}");
+}
+
+#[test]
+fn http_parser_accepts_a_maximum_inline_content_envelope() {
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": "large-http-content",
+        "method": "tools/call",
+        "params": {
+            "name": "start_content_transfer",
+            "arguments": {
+                "sessionId": "refresh-session",
+                "protocol": "xmodem",
+                "fileName": "firmware.bin",
+                "contentBase64": BASE64_STANDARD.encode(vec![
+                    0xa5;
+                    MAX_MCP_CONTENT_TRANSFER_BYTES
+                ]),
+                "destination": "load:loadx"
+            }
+        }
+    }))
+    .unwrap();
+    assert!(body.len() > 1024 * 1024);
+    assert!(body.len() <= MAX_MCP_BRIDGE_REQUEST_BYTES);
+    let mut request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(&body);
+    assert_eq!(parse_http_request_bytes(&request).unwrap().body, body);
 }
 
 #[test]
@@ -544,4 +616,3 @@ fn http_accept_respects_zero_quality_values() {
     assert!(!accepts_json_http_response(&request));
     assert!(accepts_sse_http_response(&request));
 }
-

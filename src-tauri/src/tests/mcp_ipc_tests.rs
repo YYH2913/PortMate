@@ -120,6 +120,31 @@ fn ipc_rejects_invalid_tokens_and_oversized_payloads_without_audit() {
         assert_eq!(invalid_token.error.as_deref(), Some("invalid IPC token"));
         assert!(state.store.lock().unwrap().audit.is_empty());
 
+        let bridge_sized_request = serde_json::to_vec(&IpcRequest {
+            token: "wrong-token".to_string(),
+            client_id: "unauthenticated-client".to_string(),
+            trusted_write: true,
+            command: "start_content_transfer".to_string(),
+            args: serde_json::json!({
+                "sessionId": session_id,
+                "protocol": "xmodem",
+                "fileName": "firmware.bin",
+                "contentBase64": BASE64_STANDARD.encode(vec![
+                    0xa5;
+                    portmate_core::MAX_MCP_CONTENT_TRANSFER_BYTES
+                ]),
+                "destination": "load:loadx"
+            }),
+        })
+        .unwrap();
+        assert!(bridge_sized_request.len() > 1024 * 1024);
+        assert!(bridge_sized_request.len() <= MAX_IPC_REQUEST_BYTES);
+        let bridge_sized =
+            exchange_test_ipc(state.clone(), "expected-token", bridge_sized_request).await;
+        assert!(!bridge_sized.ok);
+        assert_eq!(bridge_sized.error.as_deref(), Some("invalid IPC token"));
+        assert!(state.store.lock().unwrap().audit.is_empty());
+
         let oversized = exchange_test_ipc(
             state.clone(),
             "expected-token",
@@ -130,7 +155,7 @@ fn ipc_rejects_invalid_tokens_and_oversized_payloads_without_audit() {
         assert!(oversized
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("1048576-byte limit")));
+            .is_some_and(|error| error.contains(&format!("{MAX_IPC_REQUEST_BYTES}-byte limit"))));
         assert!(state.store.lock().unwrap().audit.is_empty());
         assert!(!state.store_path.exists());
 

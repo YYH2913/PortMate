@@ -237,6 +237,29 @@ fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() 
         .unwrap_err()
         .contains("valid standard Base64"));
 
+    let maximum_payload = vec![0xa5; portmate_core::MAX_MCP_CONTENT_TRANSFER_BYTES];
+    let mut maximum = valid.clone();
+    maximum.file_name = "maximum.bin".to_string();
+    maximum.content_base64 = BASE64_STANDARD.encode(&maximum_payload);
+    validate_mcp_content_transfer_request(&maximum).unwrap();
+    let (_, maximum_path) = stage_mcp_content_transfer(&state, &maximum).unwrap();
+    assert_eq!(
+        fs::metadata(&maximum_path).unwrap().len(),
+        maximum_payload.len() as u64
+    );
+    cleanup_staged_mcp_content_path(&maximum_path);
+    assert!(!maximum_path.exists());
+
+    let mut oversized = maximum;
+    oversized.content_base64 = BASE64_STANDARD.encode(vec![
+        0xa5;
+        portmate_core::MAX_MCP_CONTENT_TRANSFER_BYTES
+            + 1
+    ]);
+    assert!(validate_mcp_content_transfer_request(&oversized)
+        .unwrap_err()
+        .contains("decoded limit"));
+
     let (source, staging_path) = stage_mcp_content_transfer(&state, &valid).unwrap();
     assert!(source.contains(".mcp-transfer-staging"));
     assert_eq!(fs::read(&staging_path).unwrap(), b"secret firmware bytes");

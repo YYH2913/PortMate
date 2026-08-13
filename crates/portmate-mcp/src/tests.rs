@@ -11,8 +11,9 @@ use super::store_loader::{
 use super::*;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use portmate_core::{
-    MAX_MCP_CONTENT_TRANSFER_BYTES, MAX_MCP_CONTENT_UPLOAD_BYTES, MCP_CONTENT_UPLOADS_DIRECTORY,
-    MCP_CONTENT_UPLOAD_PAYLOAD_FILE, MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
+    MAX_MCP_BRIDGE_REQUEST_BYTES, MAX_MCP_CONTENT_TRANSFER_BYTES, MAX_MCP_CONTENT_UPLOAD_BYTES,
+    MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_PAYLOAD_FILE,
+    MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use sha2::{Digest, Sha256};
@@ -151,6 +152,35 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
         .unwrap();
     assert!(!upload_dir.exists());
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn desktop_ipc_request_budget_accepts_a_maximum_inline_content_envelope() {
+    let request = IpcRequest {
+        token: "bridge-token".to_string(),
+        client_id: "content-client".to_string(),
+        trusted_write: false,
+        command: "start_content_transfer".to_string(),
+        args: json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "contentBase64": BASE64_STANDARD.encode(vec![
+                0xa5;
+                MAX_MCP_CONTENT_TRANSFER_BYTES
+            ]),
+            "destination": "load:loadx"
+        }),
+    };
+    let encoded = encode_ipc_request(&request, MAX_MCP_BRIDGE_REQUEST_BYTES).unwrap();
+    assert!(encoded.len() > 1024 * 1024);
+    assert!(encoded.len() <= MAX_MCP_BRIDGE_REQUEST_BYTES);
+    assert!(
+        encode_ipc_request(&request, encoded.len().saturating_sub(1))
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit")
+    );
 }
 
 #[test]

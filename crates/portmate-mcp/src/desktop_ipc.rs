@@ -1,6 +1,7 @@
 use crate::keyring_store::read_secret_from_keyring;
 use crate::socket_io::read_stream_chunk_before;
 use anyhow::{anyhow, Result};
+use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_IPC_REQUEST_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 const MAX_IPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_TOKEN_BYTES: usize = 4096;

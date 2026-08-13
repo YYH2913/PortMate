@@ -2,10 +2,11 @@ use super::json_rpc::error;
 use super::response_encoding::{encode_json_rpc_response, MAX_JSON_RPC_RESPONSE_BYTES};
 use super::{handle_json_rpc_value, PortMateMcp};
 use anyhow::Result;
+use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use serde_json::Value;
 use std::io::{self, BufRead, Read, Write};
 
-const MAX_STDIO_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_STDIO_MESSAGE_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 
 pub(super) fn run_stdio_server() -> Result<()> {
     let stdin = io::stdin();

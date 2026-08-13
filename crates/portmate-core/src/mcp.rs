@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Maximum serialized MCP request accepted by the stdio, HTTP, and desktop IPC bridge.
+pub const MAX_MCP_BRIDGE_REQUEST_BYTES: usize = 6 * 1024 * 1024;
 /// Maximum decoded payload accepted by the MCP inline-content transfer tool.
-/// The encoded form remains below the desktop IPC request limit.
-pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 700 * 1024;
+/// Its standard Base64 form leaves room for the surrounding JSON-RPC and IPC envelopes.
+pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH: usize =
     MAX_MCP_CONTENT_TRANSFER_BYTES.div_ceil(3) * 4;
+const _: () = assert!(MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
 /// Maximum file size accepted by the resumable MCP content-upload workflow.
 pub const MAX_MCP_CONTENT_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_UPLOAD_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -200,7 +203,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_content_transfer",
             "Start Content Transfer",
-            "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 700 KiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
+            "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 4 MiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","fileName","contentBase64","destination"],
@@ -595,9 +598,7 @@ mod tests {
             content_transfer.input_schema["properties"]["contentBase64"]["maxLength"],
             MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
         );
-        assert!(content_transfer
-            .description
-            .contains("inline Base64 content"));
+        assert!(content_transfer.description.contains("limited to 4 MiB"));
         assert_eq!(
             definition("begin_content_upload").input_schema["properties"]["sizeBytes"]["maximum"],
             MAX_MCP_CONTENT_UPLOAD_BYTES

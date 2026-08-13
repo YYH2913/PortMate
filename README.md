@@ -229,7 +229,7 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
-For content produced on another MCP client, `start_content_transfer` is the small-file shortcut. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 700 KiB:
+For content produced on another MCP client, `start_content_transfer` is the small-file shortcut. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 
 ```json
 {

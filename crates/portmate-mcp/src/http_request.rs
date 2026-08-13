@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Result};
+use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use crate::socket_io::read_stream_chunk_before;
 
-const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_CHUNK_FRAMING_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;

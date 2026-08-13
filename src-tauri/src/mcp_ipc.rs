@@ -1,7 +1,8 @@
 use super::*;
+use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 
 pub(super) const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
-pub(super) const MAX_IPC_REQUEST_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_IPC_REQUEST_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 pub(super) const MAX_IPC_CONNECTIONS: usize = 64;
 pub(super) const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const IPC_REJECTION_TIMEOUT: Duration = Duration::from_millis(100);
