@@ -2,6 +2,7 @@
 
 mod mcp_authorization;
 mod mcp_commands;
+mod mcp_content_staging;
 mod mcp_control;
 mod mcp_execution;
 mod mcp_http_runtime;
@@ -21,6 +22,7 @@ mod trigger_runtime;
 use mcp_authorization::*;
 #[cfg(test)]
 use mcp_commands::export_mcp_audit_inner;
+use mcp_content_staging::*;
 use mcp_control::*;
 use mcp_execution::*;
 use mcp_http_runtime::*;
