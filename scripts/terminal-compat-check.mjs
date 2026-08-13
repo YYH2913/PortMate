@@ -575,12 +575,11 @@ try {
       return { renderer, style: expectedStyle, renderedClass: `xterm-cursor-${expectedStyle}` };
     }
 
-    const screenshot = await host.screenshot();
     const cursorColor = await host.evaluate((element) => {
       const value = getComputedStyle(element).getPropertyValue("--xterm-cursor-color").trim();
       return value || element.dataset.terminalCursorColor || "#5eead4";
     });
-    const components = await page.evaluate(async ({ base64, color }) => {
+    const inspectScreenshot = async (screenshot) => page.evaluate(async ({ base64, color }) => {
       const expected = [
         Number.parseInt(color.slice(1, 3), 16),
         Number.parseInt(color.slice(3, 5), 16),
@@ -647,12 +646,19 @@ try {
       }
       return found.sort((left, right) => right.bottom - left.bottom || right.area - left.area).slice(0, 8);
     }, { base64: screenshot.toString("base64"), color: cursorColor });
-    const cursor = components[0];
-    const rendered = expectedStyle === "block"
-      ? cursor?.width >= 5 && cursor.height >= 8 && cursor.area >= cursor.width * cursor.height * 0.6
-      : cursor?.width <= 3 && cursor.height >= 8;
-    assert(rendered, `WebGL renderer did not draw the ${expectedStyle} cursor: ${JSON.stringify(components)}`);
-    return { renderer, style: expectedStyle, pixels: cursor };
+    const samples = [];
+    const deadline = Date.now() + 1_600;
+    do {
+      const components = await inspectScreenshot(await host.screenshot());
+      samples.push(components);
+      const cursor = components[0];
+      const rendered = expectedStyle === "block"
+        ? cursor?.width >= 5 && cursor.height >= 8 && cursor.area >= cursor.width * cursor.height * 0.6
+        : cursor?.width <= 3 && cursor.height >= 8;
+      if (rendered) return { renderer, style: expectedStyle, pixels: cursor };
+      await page.waitForTimeout(80);
+    } while (Date.now() < deadline);
+    assert(false, `WebGL renderer did not draw the ${expectedStyle} cursor across a blink cycle: ${JSON.stringify(samples)}`);
   };
   await page.waitForFunction(() => (
     document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticHighlighting === "alternate"
