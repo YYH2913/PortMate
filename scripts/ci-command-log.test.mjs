@@ -65,6 +65,10 @@ describe("CI command logging", () => {
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
+    expect(workflow).toContain("OPENSSL_SRC_PERL=$perl");
+    expect(workflow).toContain("$perlOs -ne 'MSWin32'");
+    expect(workflow).not.toContain("Get-Command nmake.exe");
+    expect(workflow).not.toContain('"MAKE=nmake.exe"');
   });
 
   it("keeps native Rolldown bindings installable on every native runner", () => {
