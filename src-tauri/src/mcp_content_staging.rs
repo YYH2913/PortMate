@@ -86,17 +86,6 @@ pub(super) fn load_mcp_content_upload_metadata(
     Ok(metadata)
 }
 
-pub(super) fn validate_mcp_uploaded_content_route(
-    metadata: &McpContentUploadMetadata,
-) -> Result<(), String> {
-    validate_mcp_transfer_route(&StartTransferRequest {
-        session_id: metadata.session_id.clone(),
-        protocol: metadata.protocol.clone(),
-        source: metadata.file_name.clone(),
-        destination: metadata.destination.clone(),
-    })
-}
-
 pub(super) fn stage_mcp_content_upload(
     state: &AppState,
     metadata: &McpContentUploadMetadata,

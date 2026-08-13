@@ -1,0 +1,173 @@
+use super::*;
+
+pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
+    match command {
+        "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),
+        "open_session" | "close_session" => Some(McpScope::ManageSessions),
+        "start_transfer"
+        | "start_content_transfer"
+        | "start_content_upload_transfer"
+        | "cancel_transfer"
+        | "retry_transfer" => Some(McpScope::Transfer),
+        "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
+        _ => None,
+    }
+}
+
+pub(super) fn ipc_read_scope(command: &str) -> Option<McpScope> {
+    match command {
+        "list_sessions" => Some(McpScope::ReadSessions),
+        "read_screen"
+        | "tail_log"
+        | "search_logs"
+        | "list_tmux_state"
+        | "export_session_bundle" => Some(McpScope::ReadLogs),
+        "list_transfers" | "get_transfer" => Some(McpScope::ReadTransfers),
+        "list_tunnels" => Some(McpScope::ReadTunnels),
+        _ => None,
+    }
+}
+
+pub(super) fn validate_mcp_session_id(session_id: &str) -> Result<(), String> {
+    if session_id.is_empty()
+        || session_id.len() > MAX_MCP_GRANT_SESSION_ID_BYTES
+        || session_id.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "MCP session ID must be non-empty, printable, and at most {MAX_MCP_GRANT_SESSION_ID_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_ipc_write_args(
+    state: &AppState,
+    request: &IpcRequest,
+) -> Result<(), String> {
+    match request.command.as_str() {
+        "send_text" => {
+            ipc_string_arg(&request.args, "text")?;
+        }
+        "send_key" => {
+            ipc_string_arg(&request.args, "key")?;
+        }
+        "run_command" => {
+            ipc_string_arg(&request.args, "command")?;
+        }
+        "start_transfer" => {
+            let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
+                .map_err(|error| format!("invalid transfer request: {error}"))?;
+            validate_mcp_transfer_route(&transfer)?;
+        }
+        "start_content_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid content transfer request: {error}"))?;
+            validate_mcp_content_transfer_request(&transfer)?;
+        }
+        "start_content_upload_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            let metadata = load_mcp_content_upload_metadata(
+                state,
+                &request.client_id,
+                &transfer.upload_id,
+            )?;
+            validate_mcp_uploaded_content_route(&metadata)?;
+        }
+        "cancel_transfer" => {
+            validate_mcp_operation_id(ipc_string_arg(&request.args, "transferId")?, "transfer")?;
+        }
+        "retry_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?;
+            validate_mcp_operation_id(transfer_id, "transfer")?;
+            let transfer = state
+                .store
+                .lock()
+                .map_err(|error| error.to_string())?
+                .transfer_by_id(transfer_id)
+                .ok_or_else(|| "unknown or unavailable transfer".to_string())?;
+            validate_mcp_transfer_route(&StartTransferRequest {
+                session_id: transfer.session_id,
+                protocol: transfer.protocol,
+                source: transfer.source,
+                destination: transfer.destination,
+            })?;
+        }
+        "create_tunnel" => {
+            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+                .map_err(|error| format!("invalid tunnel request: {error}"))?;
+            normalize_tunnel_request(tunnel)?;
+        }
+        "stop_tunnel" => {
+            validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;
+        }
+        "attach_tmux" => {
+            ipc_string_arg(&request.args, "target")?;
+        }
+        "open_session" | "close_session" => {}
+        _ => {
+            return Err(format!(
+                "unsupported IPC write command: {}",
+                request.command
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_operation_id(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err(format!(
+            "MCP {label} ID must be non-empty, printable, and at most 128 bytes"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn ipc_write_session_id(
+    state: &AppState,
+    request: &IpcRequest,
+) -> Result<String, String> {
+    match request.command.as_str() {
+        "start_content_upload_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            Ok(load_mcp_content_upload_metadata(
+                state,
+                &request.client_id,
+                &transfer.upload_id,
+            )?
+            .session_id)
+        }
+        "cancel_transfer" | "retry_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?;
+            validate_mcp_operation_id(transfer_id, "transfer")?;
+            state
+                .store
+                .lock()
+                .map_err(|error| error.to_string())?
+                .transfer_by_id(transfer_id)
+                .map(|transfer| transfer.session_id)
+                .ok_or_else(|| "unknown or unavailable transfer".to_string())
+        }
+        "stop_tunnel" => {
+            let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?;
+            validate_mcp_operation_id(tunnel_id, "tunnel")?;
+            state
+                .tunnels
+                .lock()
+                .map_err(|error| error.to_string())?
+                .get(tunnel_id)
+                .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+                .map(|runtime| runtime.session_id.clone())
+                .ok_or_else(|| "unknown or unavailable tunnel".to_string())
+        }
+        _ => Ok(ipc_string_arg(&request.args, "sessionId")?.to_string()),
+    }
+}
