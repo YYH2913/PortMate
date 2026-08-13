@@ -319,7 +319,10 @@ try {
     headless: true,
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    reducedMotion: "reduce",
+  });
   await context.route("https://www.google.com/**", (route) => route.fulfill({
     contentType: "text/html",
     body: "<!doctype html><title>PortMate online search test</title>",

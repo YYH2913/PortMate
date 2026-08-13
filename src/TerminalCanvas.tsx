@@ -802,7 +802,7 @@ export default function TerminalCanvas({
       allowTransparency: true,
       cols: cachedState?.cols ?? terminalSettings.cols,
       rows: cachedState?.rows ?? terminalSettings.rows,
-      cursorBlink: true,
+      cursorBlink: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
       cursorStyle: terminalKeyModeCursorStyle(keyModeRef.current),
       convertEol: false,
       drawBoldTextInBrightColors: true,
