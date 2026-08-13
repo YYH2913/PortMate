@@ -65,6 +65,9 @@ describe("CI command logging", () => {
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
+    expect(workflow).toContain("shogo82148/actions-setup-perl@v1");
+    expect(workflow).toContain("distribution: strawberry");
+    expect(workflow).toContain("shell: pwsh");
     expect(workflow).toContain("OPENSSL_SRC_PERL=$perl");
     expect(workflow).toContain("$perlOs -ne 'MSWin32'");
     expect(workflow).not.toContain("Get-Command nmake.exe");
