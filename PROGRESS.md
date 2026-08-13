@@ -54,6 +54,8 @@ PortMate 当前已经从“规划原型”推进到“可运行的 alpha 桌面�
 
 MCP 执行边界继续按职责收敛：inline Base64 与分块上传内容的解码、暂存、归属校验、route 校验、长度/SHA-256 校验和清理已从 654 行的 `mcp_execution.rs` 迁入独立 309 行的 `mcp_content_staging.rs`，执行编排文件降至 351 行。迁移保留私有目录/文件权限、符号链接/reparse point/hardlink 拒绝、owner/client metadata 绑定、精确长度与摘要校验以及失败清理语义，原调用路径和错误契约不变。专项回归中 MCP 执行 20 项通过、1 项按设计忽略的 child-process fixture，MCP read 3 项通过；完整 PortMate 为 455 passed、1 个同一 intentional ignored fixture、0 filtered，all-targets Clippy `-D warnings`、Rustfmt 和 diff whitespace gate 均通过。
 
+2026-08-14 MCP 内联内容上限从解码后 700 KiB 提升到 4 MiB；stdio、HTTP、sidecar IPC 和桌面 IPC 统一采用 6 MiB 序列化 bridge 请求上限，使标准 Base64 与 JSON-RPC 外层仍有余量。大文件继续使用原有 512 MiB 单文件、1 GiB 共享配额的可续传分块上传，64 路连接、5 秒请求总时限、响应上限，以及私有 staging、ownership、SHA-256、symlink/reparse/hardlink 防护均未放宽。4 MiB staging、四入口最大 envelope 和 +1 byte 拒绝已覆盖；core 61 项、sidecar 49 项加 watchdog、桌面 MCP 39 项加 1 项按设计忽略、release-source 与 all-targets Clippy 均通过。该记录仅表示本机验证，未声称真实跨平台 runner 已完成。
+
 MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` 从 642 行降至 402 行，只保留 grant 判定、审批、审计事务和授权后 TOCTOU 二次校验；`mcp_request_validation.rs` 负责 IPC command/scope、请求形状和动态 Session target 解析；`mcp_transfer_validation.rs` 集中 inline Base64、普通/上传内容 route 与 `load:` 端点规则；`mcp_content_staging.rs` 保持 298 行，专责私有文件暂存、metadata ownership 与文件系统安全。暂存和请求解析都只依赖无状态传输规则，不再相互反向依赖。最终形态下 MCP execution 专项为 20 passed、1 个 intentional ignored child fixture，all-targets Clippy `-D warnings`、Rustfmt、diff whitespace gate 和完整 PortMate 为 455 passed、1 ignored、0 filtered 均通过。
 
 ## 当前实现快照
