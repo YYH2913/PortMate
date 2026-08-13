@@ -8,6 +8,14 @@ import { parseLoggedCommandArguments } from "./ci-command-log.mjs";
 const helper = resolve(import.meta.dirname, "ci-command-log.mjs");
 const temporaryRoots = [];
 
+function workflowStep(workflow, name) {
+  const marker = `      - name: ${name}`;
+  const start = workflow.indexOf(marker);
+  if (start < 0) throw new Error(`missing workflow step: ${name}`);
+  const next = workflow.indexOf("\n      - ", start + marker.length);
+  return workflow.slice(start, next < 0 ? undefined : next);
+}
+
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -65,13 +73,15 @@ describe("CI command logging", () => {
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
-    expect(workflow).toContain("shogo82148/actions-setup-perl@v1");
-    expect(workflow).toContain("distribution: strawberry");
-    expect(workflow).toContain("shell: pwsh");
-    expect(workflow).toContain("OPENSSL_SRC_PERL=$perl");
-    expect(workflow).toContain("$perlOs -ne 'MSWin32'");
-    expect(workflow).not.toContain("Get-Command nmake.exe");
-    expect(workflow).not.toContain('"MAKE=nmake.exe"');
+    const nativePerl = workflowStep(workflow, "Install native Perl on Windows");
+    expect(nativePerl).toContain("shogo82148/actions-setup-perl@v1");
+    expect(nativePerl).toContain("distribution: strawberry");
+    const opensslSetup = workflowStep(workflow, "Pin native Perl for vendored OpenSSL on Windows");
+    expect(opensslSetup).toContain("shell: pwsh");
+    expect(opensslSetup).toContain("OPENSSL_SRC_PERL=$perl");
+    expect(opensslSetup).toContain("$perlOs -ne 'MSWin32'");
+    expect(opensslSetup).not.toContain("Get-Command nmake.exe");
+    expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKE(?:FLAGS)?=/m);
   });
 
   it("keeps native Rolldown bindings installable on every native runner", () => {
