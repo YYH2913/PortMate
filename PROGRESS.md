@@ -58,6 +58,8 @@ MCP 执行边界继续按职责收敛：inline Base64 与分块上传内容的�
 
 MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` 从 642 行降至 402 行，只保留 grant 判定、审批、审计事务和授权后 TOCTOU 二次校验；`mcp_request_validation.rs` 负责 IPC command/scope、请求形状和动态 Session target 解析；`mcp_transfer_validation.rs` 集中 inline Base64、普通/上传内容 route 与 `load:` 端点规则；`mcp_content_staging.rs` 保持 298 行，专责私有文件暂存、metadata ownership 与文件系统安全。暂存和请求解析都只依赖无状态传输规则，不再相互反向依赖。最终形态下 MCP execution 专项为 20 passed、1 个 intentional ignored child fixture，all-targets Clippy `-D warnings`、Rustfmt、diff whitespace gate 和完整 PortMate 为 455 passed、1 ignored、0 filtered 均通过。
 
+2026-08-14 对 `5913d10` 再次执行当前 Linux 可复现的 Native CI 门禁：`npm test`（103 文件/567 项）、生产构建、Workspace Playwright、terminal/vttest/Tmux workflow、Tmux 3.1c/3.3a/3.5a/3.7b、Rustfmt、workspace all-targets Clippy 和 locked workspace 测试全部通过；主应用为 455 passed、1 个按设计忽略，其他 workspace crate、integration 和 doc-test 也通过。Portable vault 跨进程矩阵、原生 keyring unavailable/locked 路径、0.1.0 数据升级、npm/Rust 依赖审计和 release-source 均再次通过。九种 MCP SDK 的 stdio/HTTP 矩阵全部通过；SSH 服务端矩阵复验 21 个实现、11 组 SFTP/SCP 活动断线、11 组 X/Y/ZModem 活动断线、15 类 health fault 和 38 类 transfer fault，TCP/Telnet 18 个服务端亦通过。隔离 sysroot 的 libssh GSSAPI 构建门禁与 OpenSSH/Apache MINA/Samba AD-compatible 五组服务端、每组十一场景均通过，Samba PAC/UPN/SID/AES 证据仍不等同于 Microsoft AD 实证。本机缺少 `xvfb-run`，因此这次未重跑 Linux 原生 WebKit 窗口/AppImage smoke；该限制不影响已通过的浏览器、Docker 或 Rust 门禁，也不替代 Windows/macOS 原生 runner、真实远端 OS、物理串口或签名发布证据。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
