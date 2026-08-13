@@ -161,6 +161,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: npm test
       - run: npm run build
+      - name: Verify previous release app-data upgrade
+        run: node scripts/ci-command-log.mjs target/native-ci/release-upgrade.log npm run test:release-upgrade
       - name: Verify portable vault fault matrix
         run: node scripts/ci-command-log.mjs target/native-ci/portable-vault.log npm run test:portable-vault
       - name: Verify workspace Rust tests

@@ -1,0 +1,194 @@
+{
+  "profiles": [
+    {
+      "id": "release-ssh-1",
+      "name": "0.1.0 Lab Router",
+      "kind": "ssh",
+      "group": "Release upgrade",
+      "tags": ["fixture", "router"],
+      "connection": {
+        "kind": "ssh",
+        "endpoint": {
+          "host": "192.0.2.40",
+          "port": 22
+        },
+        "username": "operator",
+        "reconnect": true,
+        "reconnectDelayMs": 1000,
+        "keepaliveEnabled": true,
+        "keepaliveIntervalSeconds": 30,
+        "keepaliveMaxMissed": 3,
+        "tcpKeepaliveEnabled": null,
+        "proxy": {
+          "enabled": false,
+          "kind": "socks5",
+          "host": "127.0.0.1",
+          "port": 1080,
+          "username": "",
+          "passwordSecretRef": null
+        },
+        "passwordSecretRef": "keychain:release-password",
+        "passphraseSecretRef": "keychain:release-passphrase",
+        "hostKeyPolicy": {
+          "mode": "strict",
+          "alias": "release-router",
+          "trustScope": "profile",
+          "allowRotation": false,
+          "checkIp": false
+        },
+        "trustedHostKeys": [
+          {
+            "id": "release-host-key-1",
+            "profileId": "release-ssh-1",
+            "alias": "release-router",
+            "host": "192.0.2.40",
+            "port": 22,
+            "algorithm": "ssh-ed25519",
+            "fingerprintSha256": "SHA256:QAR4o5Gap+Vw8rWPbgvUOkKSxMPdxboynr5fMgF5KnE",
+            "publicKeyBase64": "AAAAC3NzaC1lZDI1NTE5AAAAIPd+3glGb/SqE8mJRQxX0+T738WhuzzkpBGxR5jl2I9+",
+            "scope": "profile",
+            "label": "0.1.0 release fixture",
+            "firstSeen": "2026-08-10T10:00:00Z",
+            "lastSeen": "2026-08-11T11:00:00Z"
+          }
+        ],
+        "identityPolicy": {
+          "identitiesOnly": false,
+          "authOrder": ["public-key", "keyboard-interactive", "password"],
+          "recordSuccess": true,
+          "lastSuccessful": "password"
+        },
+        "identityRefs": [],
+        "agentPolicy": {
+          "enabled": true,
+          "forwarding": false,
+          "offerMode": "after-profile-keys"
+        },
+        "jumps": [],
+        "tunnels": [
+          {
+            "id": "release-local-tunnel",
+            "label": "Router HTTPS",
+            "mode": "local",
+            "bindHost": "127.0.0.1",
+            "bindPort": 18443,
+            "targetHost": "127.0.0.1",
+            "targetPort": 443,
+            "enabled": true
+          }
+        ]
+      },
+      "terminal": {
+        "term": "xterm-256color",
+        "rows": 32,
+        "cols": 120,
+        "scrollback": 200000,
+        "fontFamily": "\"JetBrains Mono\", \"Noto Sans Mono CJK SC\", \"Sarasa Mono SC\", \"Microsoft YaHei UI\", monospace",
+        "fontSize": 13,
+        "theme": "portmate-dark",
+        "backgroundOpacity": 100
+      },
+      "logging": {
+        "enabled": true,
+        "raw": false,
+        "text": true,
+        "jsonl": true,
+        "redactSecrets": true,
+        "pathTemplate": "{profile}/{date}/{session}.jsonl",
+        "retentionDays": 30
+      },
+      "triggers": [],
+      "transfer": {
+        "sftp": true,
+        "scp": true,
+        "xmodem": true,
+        "ymodem": true,
+        "zmodem": true,
+        "defaultLocalDir": null
+      }
+    }
+  ],
+  "runtimes": [
+    {
+      "sessionId": "release-ssh-1",
+      "paneId": "release-ssh-1:main",
+      "status": "disconnected",
+      "title": "0.1.0 Lab Router",
+      "cwd": "/root",
+      "connectedSince": null,
+      "lastActivity": "2026-08-11T11:05:00Z",
+      "lastDisconnect": "2026-08-11T11:05:00Z",
+      "lastDisconnectReason": "operator closed the session",
+      "activeTransport": "ssh"
+    }
+  ],
+  "events": [
+    {
+      "id": "release-event-1",
+      "sessionId": "release-ssh-1",
+      "paneId": "release-ssh-1:main",
+      "ts": "2026-08-11T11:04:59Z",
+      "direction": "inbound",
+      "stream": "stdout",
+      "bytesRef": null,
+      "text": "router# show version\r\nPortMate OS 0.1.0 fixture\r\n",
+      "annotations": {
+        "fixture": "previous-release"
+      }
+    }
+  ],
+  "transfers": [],
+  "commandHistory": [
+    {
+      "command": "show version",
+      "recordedAt": 1786388700000
+    },
+    {
+      "command": "show interfaces",
+      "recordedAt": 1786388600000
+    }
+  ],
+  "commandHistoryMigrated": true,
+  "commandHistoryRevision": 2,
+  "oneKeys": [],
+  "hostKeys": {
+    "keys": [
+      {
+        "id": "release-host-key-1",
+        "profileId": "release-ssh-1",
+        "alias": "release-router",
+        "host": "192.0.2.40",
+        "port": 22,
+        "algorithm": "ssh-ed25519",
+        "fingerprintSha256": "SHA256:QAR4o5Gap+Vw8rWPbgvUOkKSxMPdxboynr5fMgF5KnE",
+        "publicKeyBase64": "AAAAC3NzaC1lZDI1NTE5AAAAIPd+3glGb/SqE8mJRQxX0+T738WhuzzkpBGxR5jl2I9+",
+        "scope": "profile",
+        "label": "0.1.0 release fixture",
+        "firstSeen": "2026-08-10T10:00:00Z",
+        "lastSeen": "2026-08-11T11:00:00Z"
+      }
+    ]
+  },
+  "grants": [
+    {
+      "clientId": "release-upgrade-client",
+      "name": "0.1.0 read and transfer grant",
+      "scopes": ["read-sessions", "read-logs", "transfer"],
+      "allowedSessions": ["release-ssh-1"],
+      "confirmWrites": true,
+      "expiresAt": "2027-08-11T00:00:00Z",
+      "revokedAt": null
+    }
+  ],
+  "mcpHttpSettings": {
+    "listenHost": "127.0.0.1",
+    "port": 8787,
+    "allowedOrigins": ["http://127.0.0.1:8787", "http://localhost:8787"],
+    "clientId": "release-upgrade-client",
+    "trusted": false,
+    "allowRemote": false
+  },
+  "audit": [],
+  "timeline": [],
+  "sysmon": []
+}

@@ -1,0 +1,91 @@
+{
+  "release": "0.1.0",
+  "localStorage": {
+    "portmate.workspace.v1": {
+      "version": 4,
+      "root": {
+        "kind": "split",
+        "id": "release-split",
+        "direction": "horizontal",
+        "ratio": 0.62,
+        "first": {
+          "kind": "pane",
+          "id": "release-pane-primary",
+          "activeViewId": "release-view-router",
+          "views": [
+            {
+              "id": "release-view-router",
+              "sessionId": "release-ssh-1",
+              "title": "Router",
+              "color": "#22c55e",
+              "keyMode": "remote"
+            }
+          ],
+          "sessionId": "release-ssh-1",
+          "sessionIds": ["release-ssh-1"]
+        },
+        "second": {
+          "kind": "pane",
+          "id": "release-pane-log",
+          "activeViewId": "release-view-log",
+          "views": [
+            {
+              "id": "release-view-log",
+              "sessionId": "release-ssh-1",
+              "title": "Router log",
+              "color": "#0ea5e9",
+              "keyMode": "command"
+            }
+          ],
+          "sessionId": "release-ssh-1",
+          "sessionIds": ["release-ssh-1"]
+        }
+      },
+      "activePaneId": "release-pane-log",
+      "activeId": "release-ssh-1",
+      "tabColors": {
+        "release-view-router": "#22c55e",
+        "release-view-log": "#0ea5e9"
+      }
+    },
+    "portmate.workspacePanels.v2": {
+      "version": 7,
+      "panels": {
+        "explorer": true,
+        "fileManager": true,
+        "history": true,
+        "sysmon": true,
+        "sender": false,
+        "statusBar": true
+      },
+      "docks": {
+        "left": ["explorer", "fileManager"],
+        "right": ["sysmon", "history"],
+        "bottom": ["sender"],
+        "active": {
+          "left": "fileManager",
+          "right": "history",
+          "bottom": "sender"
+        }
+      },
+      "sizes": {
+        "left": 360,
+        "right": 320,
+        "bottom": 240
+      }
+    },
+    "portmate.commandHistory": {
+      "version": 2,
+      "entries": [
+        {
+          "command": "show version",
+          "recordedAt": 1786388700000
+        },
+        {
+          "command": "show interfaces",
+          "recordedAt": 1786388600000
+        }
+      ]
+    }
+  }
+}

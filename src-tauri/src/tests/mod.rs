@@ -127,6 +127,8 @@ mod openssh_tunnel_integration;
 mod portable_vault_tests;
 #[path = "proxy_runtime_tests.rs"]
 mod proxy_runtime_tests;
+#[path = "release_upgrade_tests.rs"]
+mod release_upgrade_tests;
 #[path = "runtime_capacity_tests.rs"]
 mod runtime_capacity_tests;
 #[path = "scp_protocol_tests.rs"]

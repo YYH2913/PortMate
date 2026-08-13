@@ -1,0 +1,1 @@
+{"id":"release-event-1","sessionId":"release-ssh-1","paneId":"release-ssh-1:main","ts":"2026-08-11T11:04:59Z","direction":"inbound","stream":"stdout","text":"router# show version\\r\\nPortMate OS 0.1.0 fixture\\r\\n","annotations":{"fixture":"previous-release"}}
