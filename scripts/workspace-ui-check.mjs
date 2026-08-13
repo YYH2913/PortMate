@@ -3739,6 +3739,18 @@ Host staging
       cause: error.message,
     })}`);
   });
+  await serialAnalyzerPage.evaluate(() => {
+    const serial = window.__sessions.find((item) => item.profile.id === "bench-uart");
+    serial.runtime.status = "disconnected";
+    serial.runtime.connectedSince = null;
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-connection", { hasText: "已断开" }).waitFor();
+  await serialAnalyzerPage.evaluate(() => {
+    const serial = window.__sessions.find((item) => item.profile.id === "bench-uart");
+    serial.runtime.status = "connected";
+    serial.runtime.connectedSince = new Date().toISOString();
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-connection", { hasText: "已连接" }).waitFor();
   const serialAnalyzerHealth = await serialAnalyzerPage.evaluate(() => {
     const status = document.querySelector(".serial-analyzer-connection");
     const disconnect = document.querySelector(".serial-analyzer-last-disconnect");
@@ -3752,7 +3764,7 @@ Host staging
     };
   });
   assert(serialAnalyzerHealth.status === "已连接",
-    `serial analyzer exposed an internal runtime status: ${JSON.stringify(serialAnalyzerHealth)}`);
+    `serial analyzer did not refresh a connected backend session after a disconnect: ${JSON.stringify(serialAnalyzerHealth)}`);
   assert(serialAnalyzerHealth.title === serialAnalyzerHealth.description
     && serialAnalyzerHealth.title.startsWith("已连接 · 原因: serial cable ")
     && !serialAnalyzerHealth.title.includes("Invalid Date")
