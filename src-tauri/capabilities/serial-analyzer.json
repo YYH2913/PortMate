@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "serial-analyzer",
+  "description": "Restricted permissions for serial analyzer windows",
+  "windows": ["serial-analyzer-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close"
+  ]
+}

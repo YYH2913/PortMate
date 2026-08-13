@@ -30,10 +30,12 @@ const tauriConfig = readJson(join(projectRoot, "src-tauri", "tauri.conf.json"));
 const jetBrainsMonoLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const defaultCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "default.json"));
 const detachedCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "detached-pane.json"));
+const serialAnalyzerCapability = readJson(join(projectRoot, "src-tauri", "capabilities", "serial-analyzer.json"));
 const productionCsp = verifyTauriSecurityConfiguration(
   tauriConfig,
   defaultCapability,
   detachedCapability,
+  serialAnalyzerCapability,
 );
 const architecture = process.arch === "x64" ? "amd64" : process.arch;
 const rpmArchitecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
@@ -141,7 +143,7 @@ try {
       "icons",
       "application and JetBrains Mono licenses",
       "production CSP",
-      "main/detached capabilities",
+      "main/detached/serial-analyzer capabilities",
       "portable symlinks and permissions",
       "extraction, execution, runtime data, and sidecar paths containing spaces",
       "packaged main-process IPC, stable restart and legacy-migration Store, fail-closed two-store conflict, credential rotation, clean exit, and endpoint cleanup",
@@ -278,7 +280,7 @@ function assertPortableTree(root) {
   }
 }
 
-function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability) {
+function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability, analyzerCapability) {
   if (config.identifier !== "dev.portmate.desktop") {
     throw new Error(`Unexpected Tauri identifier: ${config.identifier}`);
   }
@@ -313,9 +315,16 @@ function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-show",
+    "dialog:allow-open",
+    "dialog:allow-save",
   ]);
   assertExactArray("detached capability windows", paneCapability.windows, ["pane-*"]);
   assertExactArray("detached capability permissions", paneCapability.permissions, [
+    "core:default",
+    "core:window:allow-close",
+  ]);
+  assertExactArray("serial analyzer capability windows", analyzerCapability.windows, ["serial-analyzer-*"]);
+  assertExactArray("serial analyzer capability permissions", analyzerCapability.permissions, [
     "core:default",
     "core:window:allow-close",
   ]);
