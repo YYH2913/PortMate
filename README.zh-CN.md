@@ -336,6 +336,7 @@ npm run desktop:build:windows-gnu
 npm test
 npm run build
 npm run test:release-source
+npm run test:release-upgrade
 cargo fmt --all -- --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
