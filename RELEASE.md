@@ -50,9 +50,9 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 
 ## Migration And Rollback
 
-- [ ] Test upgrade from the previous release using a copied app-data directory with profiles, host keys, grants, logs, and workspace state.
-- [ ] Verify `dev.portmate.app` data migrates atomically to `dev.portmate.desktop`; two non-empty directories must fail closed.
-- [ ] Exercise SQLite, workspace, panel, command-history, and credential-journal migrations on disposable copies.
+- [x] `npm run test:release-upgrade` upgrades the versioned 0.1.0 app-data fixture with profiles, host keys, grants, logs, and workspace state, then saves and reloads it with the current code.
+- [x] `npm run test:release-upgrade` verifies `dev.portmate.app` data migrates atomically to `dev.portmate.desktop`; the existing app-data tests verify two non-empty directories fail closed.
+- [x] `npm run test:release-upgrade` exercises the fixed 0.1.0 SQLite v4 schema, typed mirrors, workspace, panel, command-history, and credential-journal formats on disposable copies.
 - [ ] Keep the previous signed installers and checksums available until the rollout is accepted.
 - [ ] Before rollback, preserve the upgraded app-data directory. Validate the previous binary on a copy; never downgrade the only live Store.
 
