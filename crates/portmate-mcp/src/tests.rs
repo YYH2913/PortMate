@@ -9,10 +9,16 @@ use super::store_loader::{
     ensure_store_schema, load_store_from_path, prepare_loaded_store, STORE_KEY,
 };
 use super::*;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use portmate_core::{
+    MAX_MCP_CONTENT_TRANSFER_BYTES, MAX_MCP_CONTENT_UPLOAD_BYTES, MCP_CONTENT_UPLOADS_DIRECTORY,
+    MCP_CONTENT_UPLOAD_PAYLOAD_FILE, MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
+};
 use rusqlite::{params, Connection as SqliteConnection};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -48,6 +54,212 @@ fn transport_mode_rejects_unknown_repeated_and_conflicting_arguments() {
             .to_string()
             .contains("selected only once"));
     }
+}
+
+fn content_upload_server(root: &std::path::Path, client_id: &str) -> PortMateMcp {
+    PortMateMcp {
+        store: test_snapshot_store("content upload"),
+        store_path: Some(root.join("portmate-store.sqlite3")),
+        ipc: None,
+        client_id: client_id.to_string(),
+        allow_write: true,
+    }
+}
+
+#[test]
+fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
+    let root = std::env::temp_dir().join(format!("portmate-content-upload-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let payload = vec![0x5a; MAX_MCP_CONTENT_TRANSFER_BYTES + 17];
+    let sha256 = format!("{:x}", Sha256::digest(&payload));
+    let server = content_upload_server(&root, "upload-owner");
+    let begin = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "sizeBytes": payload.len(),
+            "sha256": sha256,
+            "destination": "load:loadx"
+        }))
+        .unwrap();
+    let upload_id = begin["uploadId"].as_str().unwrap();
+    assert_eq!(
+        begin["maxChunkBytes"],
+        MAX_MCP_CONTENT_TRANSFER_BYTES as u64
+    );
+
+    let first = &payload[..MAX_MCP_CONTENT_TRANSFER_BYTES];
+    let appended = server
+        .append_content_upload(&json!({
+            "uploadId": upload_id,
+            "offset": 0,
+            "contentBase64": BASE64_STANDARD.encode(first)
+        }))
+        .unwrap();
+    assert_eq!(
+        appended["nextOffset"],
+        MAX_MCP_CONTENT_TRANSFER_BYTES as u64
+    );
+    assert!(!appended["complete"].as_bool().unwrap());
+    assert!(server
+        .append_content_upload(&json!({
+            "uploadId": upload_id,
+            "offset": 0,
+            "contentBase64": BASE64_STANDARD.encode(&payload[MAX_MCP_CONTENT_TRANSFER_BYTES..])
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("offset mismatch"));
+
+    let other = content_upload_server(&root, "another-client");
+    assert!(other
+        .cancel_content_upload(&json!({ "uploadId": upload_id }))
+        .unwrap_err()
+        .to_string()
+        .contains("unknown content upload"));
+
+    server
+        .append_content_upload(&json!({
+            "uploadId": upload_id,
+            "offset": MAX_MCP_CONTENT_TRANSFER_BYTES,
+            "contentBase64": BASE64_STANDARD.encode(&payload[MAX_MCP_CONTENT_TRANSFER_BYTES..])
+        }))
+        .unwrap();
+    let unavailable = server
+        .start_content_upload_transfer(&json!({ "uploadId": upload_id }))
+        .unwrap_err()
+        .to_string();
+    assert!(unavailable.contains("desktop IPC is not available"));
+
+    let upload_dir = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+        .join(upload_id);
+    fs::write(
+        upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE),
+        vec![0x31; payload.len()],
+    )
+    .unwrap();
+    assert!(server
+        .start_content_upload_transfer(&json!({ "uploadId": upload_id }))
+        .unwrap_err()
+        .to_string()
+        .contains("SHA-256 mismatch"));
+    server
+        .cancel_content_upload(&json!({ "uploadId": upload_id }))
+        .unwrap();
+    assert!(!upload_dir.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn content_upload_rejects_oversized_chunks_and_declared_size_quota() {
+    let root = std::env::temp_dir().join(format!("portmate-content-quota-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let server = content_upload_server(&root, "quota-owner");
+    let begin = |size_bytes: u64, file_name: &str| {
+        server.begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "sftp",
+            "fileName": file_name,
+            "sizeBytes": size_bytes,
+            "sha256": "0".repeat(64),
+            "destination": "remote:/tmp/firmware.bin"
+        }))
+    };
+    begin(MAX_MCP_CONTENT_UPLOAD_BYTES, "first.bin").unwrap();
+    begin(MAX_MCP_CONTENT_UPLOAD_BYTES, "second.bin").unwrap();
+    assert!(begin(1, "over-quota.bin")
+        .unwrap_err()
+        .to_string()
+        .contains("quota exceeded"));
+
+    let upload_id = fs::read_dir(
+        root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+            .join(MCP_CONTENT_UPLOADS_DIRECTORY),
+    )
+    .unwrap()
+    .next()
+    .unwrap()
+    .unwrap()
+    .file_name()
+    .to_string_lossy()
+    .to_string();
+    let oversized = BASE64_STANDARD.encode(vec![0u8; MAX_MCP_CONTENT_TRANSFER_BYTES + 1]);
+    assert!(server
+        .append_content_upload(&json!({
+            "uploadId": upload_id,
+            "offset": 0,
+            "contentBase64": oversized
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("decoded chunk"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn concurrent_content_upload_appends_serialize_the_expected_offset() {
+    let root = std::env::temp_dir().join(format!("portmate-content-race-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let server = content_upload_server(&root, "race-owner");
+    let payload = b"one-of-two-concurrent-chunks";
+    let begin = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "sftp",
+            "fileName": "race.bin",
+            "sizeBytes": payload.len() * 2,
+            "sha256": "0".repeat(64),
+            "destination": "remote:/tmp/race.bin"
+        }))
+        .unwrap();
+    let upload_id = begin["uploadId"].as_str().unwrap().to_string();
+    let barrier = Arc::new(Barrier::new(3));
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let upload_id = upload_id.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(scope.spawn(move || {
+                let server = content_upload_server(&root, "race-owner");
+                barrier.wait();
+                server.append_content_upload(&json!({
+                    "uploadId": upload_id,
+                    "offset": 0,
+                    "contentBase64": BASE64_STANDARD.encode(payload)
+                }))
+            }));
+        }
+        barrier.wait();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("offset mismatch")))
+            .count(),
+        1
+    );
+    let upload_dir = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+        .join(upload_id);
+    assert_eq!(
+        fs::metadata(upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE))
+            .unwrap()
+            .len(),
+        payload.len() as u64
+    );
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

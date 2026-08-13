@@ -229,7 +229,7 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
-For content produced on another MCP client, use `start_content_transfer` instead of first creating a file on the desktop host. The client sends standard Base64 content; PortMate validates the safe single-component file name, stages the decoded bytes in a private application-data directory, and removes the staging file when the task finishes. The content is never included in MCP audit records or returned task paths. The decoded payload is limited to 700 KiB and inline-content tasks must be started again instead of retried:
+For content produced on another MCP client, `start_content_transfer` is the small-file shortcut. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 700 KiB:
 
 ```json
 {
@@ -241,7 +241,32 @@ For content produced on another MCP client, use `start_content_transfer` instead
 }
 ```
 
-The same tool can upload inline content through SFTP/SCP by using a `remote:` or `ssh:` destination, for example `remote:/tmp/firmware.bin`. It still requires the `transfer` grant and follows the normal MCP write approval policy.
+For files up to 512 MiB, compute the whole-file SHA-256 and use the resumable upload workflow. `begin_content_upload` returns an upload ID and the maximum decoded chunk size:
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "xmodem",
+  "fileName": "firmware.bin",
+  "sizeBytes": 8388608,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "destination": "load:loadx?address=0x80000000"
+}
+```
+
+Append standard-Base64 chunks in order. `offset` is the decoded byte offset and must equal the previous response's `nextOffset`:
+
+```json
+{
+  "uploadId": "the-begin-response-upload-id",
+  "offset": 0,
+  "contentBase64": "AAECAwQF..."
+}
+```
+
+After the response reports `complete: true`, call `start_content_upload_transfer` with `{"uploadId":"..."}`. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
+
+Both workflows stage content in the desktop application's private data directory, validate safe file names and transfer routes, and remove staged content after use. The bytes are not included in MCP audit records or returned as client-supplied paths. SFTP/SCP destinations use `remote:` or `ssh:`, for example `remote:/tmp/firmware.bin`; Modem destinations use constrained `load:` endpoints. Only the final transfer start follows the normal MCP write approval policy, so individual chunks do not create approval prompts. Staged-content tasks cannot be retried after the staging file is removed; start a new upload instead.
 
 ### Route-Specific Forwarding And Proxy
 

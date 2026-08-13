@@ -6,6 +6,31 @@ use serde_json::{json, Value};
 pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 700 * 1024;
 pub const MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH: usize =
     MAX_MCP_CONTENT_TRANSFER_BYTES.div_ceil(3) * 4;
+/// Maximum file size accepted by the resumable MCP content-upload workflow.
+pub const MAX_MCP_CONTENT_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_MCP_CONTENT_UPLOAD_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_MCP_CONTENT_UPLOADS: usize = 16;
+pub const MCP_CONTENT_UPLOAD_EXPIRY_SECONDS: u64 = 24 * 60 * 60;
+pub const MCP_CONTENT_UPLOAD_STAGING_DIRECTORY: &str = ".mcp-transfer-staging";
+pub const MCP_CONTENT_UPLOADS_DIRECTORY: &str = "uploads";
+pub const MCP_CONTENT_UPLOAD_METADATA_VERSION: u32 = 1;
+pub const MCP_CONTENT_UPLOAD_METADATA_FILE: &str = "upload.json";
+pub const MCP_CONTENT_UPLOAD_PAYLOAD_FILE: &str = "payload.bin";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpContentUploadMetadata {
+    pub version: u32,
+    pub upload_id: String,
+    pub client_id: String,
+    pub session_id: String,
+    pub protocol: crate::TransferProtocol,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub destination: String,
+    pub created_at_unix_seconds: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,7 +200,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_content_transfer",
             "Start Content Transfer",
-            "Start a transfer from inline Base64 content supplied by the MCP client. The content is staged inside the PortMate desktop application and is never written to MCP audit records or returned as a path. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
+            "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 700 KiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","fileName","contentBase64","destination"],
@@ -187,6 +212,65 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                     "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
                     "destination":{"type":"string","minLength":1,"maxLength":32768}
                 }
+            }),
+            false,
+        ),
+        tool(
+            "begin_content_upload",
+            "Begin Content Upload",
+            "Create a resumable private staging upload for content held by the MCP client. Files may be up to 512 MiB and active uploads share a 1 GiB declared-size quota. Append the file in ordered Base64 chunks, then call start_content_upload_transfer.",
+            json!({
+                "type":"object",
+                "required":["sessionId","protocol","fileName","sizeBytes","sha256","destination"],
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
+                    "fileName":{"type":"string","minLength":1,"maxLength":255},
+                    "sizeBytes":{"type":"integer","minimum":1,"maximum":MAX_MCP_CONTENT_UPLOAD_BYTES},
+                    "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "destination":{"type":"string","minLength":1,"maxLength":32768}
+                }
+            }),
+            false,
+        ),
+        tool(
+            "append_content_upload",
+            "Append Content Upload",
+            "Append one ordered standard-Base64 chunk to a resumable content upload. offset must equal the nextOffset returned by the previous call.",
+            json!({
+                "type":"object",
+                "required":["uploadId","offset","contentBase64"],
+                "additionalProperties":false,
+                "properties":{
+                    "uploadId":{"type":"string","format":"uuid"},
+                    "offset":{"type":"integer","minimum":0,"maximum":MAX_MCP_CONTENT_UPLOAD_BYTES},
+                    "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH}
+                }
+            }),
+            false,
+        ),
+        tool(
+            "start_content_upload_transfer",
+            "Start Uploaded Content Transfer",
+            "Verify the completed upload's declared byte length and SHA-256 digest, then transfer it through SFTP, SCP, XModem, YModem, or ZModem. The desktop prompts for write approval only at this final step.",
+            json!({
+                "type":"object",
+                "required":["uploadId"],
+                "additionalProperties":false,
+                "properties":{"uploadId":{"type":"string","format":"uuid"}}
+            }),
+            false,
+        ),
+        tool(
+            "cancel_content_upload",
+            "Cancel Content Upload",
+            "Delete an incomplete resumable content upload owned by this MCP client.",
+            json!({
+                "type":"object",
+                "required":["uploadId"],
+                "additionalProperties":false,
+                "properties":{"uploadId":{"type":"string","format":"uuid"}}
             }),
             false,
         ),
@@ -486,6 +570,10 @@ mod tests {
         for name in [
             "start_transfer",
             "start_content_transfer",
+            "begin_content_upload",
+            "append_content_upload",
+            "start_content_upload_transfer",
+            "cancel_content_upload",
             "cancel_transfer",
             "retry_transfer",
             "create_tunnel",
@@ -510,6 +598,15 @@ mod tests {
         assert!(content_transfer
             .description
             .contains("inline Base64 content"));
+        assert_eq!(
+            definition("begin_content_upload").input_schema["properties"]["sizeBytes"]["maximum"],
+            MAX_MCP_CONTENT_UPLOAD_BYTES
+        );
+        assert_eq!(
+            definition("append_content_upload").input_schema["properties"]["contentBase64"]
+                ["maxLength"],
+            MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
+        );
         let list = definition("list_transfers");
         assert_eq!(list.input_schema["properties"]["limit"]["maximum"], 1_000);
         assert_eq!(

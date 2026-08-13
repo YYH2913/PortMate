@@ -7,6 +7,8 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
+fs2.workspace = true
 httparse = "1.10.1"
 keyring-core = "1.0.0"
 libc = "0.2"
@@ -17,4 +19,5 @@ portmate-process-watchdog = { path = "../portmate-process-watchdog" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true

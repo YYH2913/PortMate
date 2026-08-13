@@ -229,7 +229,7 @@ SFTP 上传示例：
 
 PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
 
-如果内容来自另一台电脑上的 MCP 客户端，可以使用 `start_content_transfer`，无需先把文件放到运行桌面端的电脑上。客户端提交标准 Base64 内容；PortMate 会校验不含路径分隔符的安全文件名，将解码后的内容暂存在应用数据目录的私有目录中，并在任务结束后删除。内容不会写入 MCP 审计记录，也不会通过任务路径返回。解码后内容上限为 700 KiB；内联内容任务需要重新调用该工具，不能直接重试：
+如果内容来自另一台电脑上的 MCP 客户端，`start_content_transfer` 是小文件快捷方式。它直接发送一段标准 Base64，不要求源文件已经位于桌面端电脑；解码后内容上限为 700 KiB：
 
 ```json
 {
@@ -241,7 +241,32 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 }
 ```
 
-该工具也可以通过 SFTP/SCP 上传内联内容，只需把目标写成 `remote:` 或 `ssh:` 端点，例如 `remote:/tmp/firmware.bin`。它仍然需要 `transfer` 授权，并遵循 MCP 写操作审批策略。
+文件最大为 512 MiB 时，先计算整个文件的 SHA-256，再使用可续传的分块上传流程。`begin_content_upload` 会返回 upload ID 和单块解码后的最大字节数：
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "xmodem",
+  "fileName": "firmware.bin",
+  "sizeBytes": 8388608,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "destination": "load:loadx?address=0x80000000"
+}
+```
+
+按顺序调用 `append_content_upload` 追加标准 Base64 分块。`offset` 是解码后的字节偏移，必须等于上一次响应中的 `nextOffset`：
+
+```json
+{
+  "uploadId": "begin调用返回的upload-id",
+  "offset": 0,
+  "contentBase64": "AAECAwQF..."
+}
+```
+
+响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_content_upload_transfer`。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
+
+两种流程都会在桌面应用的私有数据目录中暂存内容，校验安全文件名与传输路由，并在使用后删除暂存内容。文件字节不会进入 MCP 审计记录，也不会作为客户端提供的路径返回。SFTP/SCP 目标使用 `remote:` 或 `ssh:`，例如 `remote:/tmp/firmware.bin`；Modem 目标使用受约束的 `load:` 端点。只有最终启动传输时才遵循 MCP 写操作审批策略，追加分块不会反复弹出审批。暂存文件被删除后不能直接重试任务，需要重新开始上传。
 
 ### 指定路由转发与代理
 

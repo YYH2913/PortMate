@@ -180,6 +180,24 @@ impl PortMateMcp {
                     )
                 }
             }
+            "begin_content_upload" => {
+                let value = self.begin_content_upload(&arguments)?;
+                serde_json::to_string_pretty(&value)?
+            }
+            "append_content_upload" => {
+                let value = self.append_content_upload(&arguments)?;
+                serde_json::to_string_pretty(&value)?
+            }
+            "start_content_upload_transfer" => {
+                let value = self.start_content_upload_transfer(&arguments)?;
+                let transfer = serde_json::from_value::<TransferTask>(value)
+                    .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
+                serde_json::to_string_pretty(&redact_transfer_task(transfer))?
+            }
+            "cancel_content_upload" => {
+                let value = self.cancel_content_upload(&arguments)?;
+                serde_json::to_string_pretty(&value)?
+            }
             "cancel_transfer" | "retry_transfer" => {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     let transfer = serde_json::from_value::<TransferTask>(value)

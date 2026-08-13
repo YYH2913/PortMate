@@ -23,6 +23,12 @@ pub struct StartMcpContentTransferRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartMcpContentUploadTransferRequest {
+    pub upload_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExternalDropRequest {
     pub session_id: String,

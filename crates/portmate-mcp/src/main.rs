@@ -13,10 +13,9 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
 use std::{thread, time::Duration};
 
+mod content_upload;
 mod desktop_ipc;
 mod http_protocol;
 mod http_request;

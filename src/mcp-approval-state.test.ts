@@ -18,6 +18,7 @@ describe("MCP approval state", () => {
     expect(normalizeMcpApproval({ ...base, action: "create_tunnel", scope: "write-input" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "cancel_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer" })).not.toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "start_content_upload_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, clientId: "bad\nclient" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, expiresAt: "2026-07-17T10:02:00.000Z" })).toBeNull();

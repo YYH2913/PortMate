@@ -12,6 +12,7 @@ const approvalActionScopes: Record<string, McpScope> = {
   close_session: "manage-sessions",
   start_transfer: "transfer",
   start_content_transfer: "transfer",
+  start_content_upload_transfer: "transfer",
   cancel_transfer: "transfer",
   retry_transfer: "transfer",
   create_tunnel: "tunnel",

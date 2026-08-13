@@ -42,9 +42,11 @@ fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
         "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
-        "start_transfer" | "start_content_transfer" | "cancel_transfer" | "retry_transfer" => {
-            Some(McpScope::Transfer)
-        }
+        "start_transfer"
+        | "start_content_transfer"
+        | "start_content_upload_transfer"
+        | "cancel_transfer"
+        | "retry_transfer" => Some(McpScope::Transfer),
         "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
         _ => None,
     }
@@ -142,6 +144,18 @@ fn validate_ipc_write_args(state: &AppState, request: &IpcRequest) -> Result<(),
             )
             .map_err(|error| format!("invalid content transfer request: {error}"))?;
             validate_mcp_content_transfer_request(&transfer)?;
+        }
+        "start_content_upload_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            let metadata = load_mcp_content_upload_metadata(
+                state,
+                &request.client_id,
+                &transfer.upload_id,
+            )?;
+            validate_mcp_uploaded_content_route(&metadata)?;
         }
         "cancel_transfer" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "transferId")?, "transfer")?;
@@ -269,6 +283,18 @@ fn validate_mcp_operation_id(value: &str, label: &str) -> Result<(), String> {
 
 fn ipc_write_session_id(state: &AppState, request: &IpcRequest) -> Result<String, String> {
     match request.command.as_str() {
+        "start_content_upload_transfer" => {
+            let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
+                request.args.clone(),
+            )
+            .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            Ok(load_mcp_content_upload_metadata(
+                state,
+                &request.client_id,
+                &transfer.upload_id,
+            )?
+            .session_id)
+        }
         "cancel_transfer" | "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?;
             validate_mcp_operation_id(transfer_id, "transfer")?;

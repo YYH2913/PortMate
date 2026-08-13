@@ -11,6 +11,7 @@ const actionLabels: Record<string, string> = {
   close_session: "断开会话",
   start_transfer: "启动文件传输",
   start_content_transfer: "启动内联内容传输",
+  start_content_upload_transfer: "启动分块内容传输",
   cancel_transfer: "取消文件传输",
   retry_transfer: "重试文件传输",
   create_tunnel: "创建指定转发或代理",

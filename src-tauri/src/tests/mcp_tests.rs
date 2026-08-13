@@ -255,6 +255,187 @@ fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() 
 }
 
 #[test]
+fn mcp_chunked_content_upload_is_owned_verified_and_copied_before_transfer() {
+    let root =
+        std::env::temp_dir().join(format!("portmate-mcp-chunked-content-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let upload_id = Uuid::new_v4().to_string();
+    let upload_dir = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+        .join(&upload_id);
+    fs::create_dir_all(&upload_dir).unwrap();
+    let payload = b"chunked content held by a remote MCP client";
+    let metadata = McpContentUploadMetadata {
+        version: MCP_CONTENT_UPLOAD_METADATA_VERSION,
+        upload_id: upload_id.clone(),
+        client_id: "chunk-owner".to_string(),
+        session_id: "session:1".to_string(),
+        protocol: TransferProtocol::Xmodem,
+        file_name: "firmware.bin".to_string(),
+        size_bytes: payload.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(payload)),
+        destination: "load:loadx".to_string(),
+        created_at_unix_seconds: 1,
+    };
+    fs::write(
+        upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE),
+        serde_json::to_vec(&metadata).unwrap(),
+    )
+    .unwrap();
+    fs::write(upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE), payload).unwrap();
+
+    assert!(
+        load_mcp_content_upload_metadata(&state, "wrong-client", &upload_id)
+            .unwrap_err()
+            .contains("unknown or unavailable")
+    );
+    let loaded = load_mcp_content_upload_metadata(&state, "chunk-owner", &upload_id).unwrap();
+    assert_eq!(loaded, metadata);
+    let (source, staging_path) = stage_mcp_content_upload(&state, &loaded).unwrap();
+    assert_eq!(source, staging_path.display().to_string());
+    assert_eq!(fs::read(&staging_path).unwrap(), payload);
+    assert_ne!(
+        staging_path,
+        upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE)
+    );
+    fs::remove_file(&staging_path).unwrap();
+    fs::remove_dir(staging_path.parent().unwrap()).unwrap();
+
+    fs::write(
+        upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE),
+        vec![b'x'; payload.len()],
+    )
+    .unwrap();
+    assert!(stage_mcp_content_upload(&state, &loaded)
+        .unwrap_err()
+        .contains("SHA-256 mismatch"));
+    let non_upload_entries = fs::read_dir(root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name() != MCP_CONTENT_UPLOADS_DIRECTORY)
+        .count();
+    assert_eq!(non_upload_entries, 0);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_chunked_content_upload_rejects_symlinked_payloads() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("portmate-mcp-upload-link-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let upload_id = Uuid::new_v4().to_string();
+    let upload_dir = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+        .join(&upload_id);
+    fs::create_dir_all(&upload_dir).unwrap();
+    let target = root.join("outside.bin");
+    fs::write(&target, b"outside").unwrap();
+    let metadata = McpContentUploadMetadata {
+        version: MCP_CONTENT_UPLOAD_METADATA_VERSION,
+        upload_id: upload_id.clone(),
+        client_id: "link-owner".to_string(),
+        session_id: "session:1".to_string(),
+        protocol: TransferProtocol::Xmodem,
+        file_name: "firmware.bin".to_string(),
+        size_bytes: 7,
+        sha256: format!("{:x}", Sha256::digest(b"outside")),
+        destination: "load:loadx".to_string(),
+        created_at_unix_seconds: 1,
+    };
+    fs::write(
+        upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE),
+        serde_json::to_vec(&metadata).unwrap(),
+    )
+    .unwrap();
+    symlink(&target, upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE)).unwrap();
+    assert!(stage_mcp_content_upload(&state, &metadata)
+        .unwrap_err()
+        .contains("invalid MCP content upload payload"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-upload-queue-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let upload_id = Uuid::new_v4().to_string();
+        let upload_dir = root
+            .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+            .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+            .join(&upload_id);
+        fs::create_dir_all(&upload_dir).unwrap();
+        let payload = b"queued MCP upload";
+        let metadata = McpContentUploadMetadata {
+            version: MCP_CONTENT_UPLOAD_METADATA_VERSION,
+            upload_id: upload_id.clone(),
+            client_id: "queue-client".to_string(),
+            session_id: "session:1".to_string(),
+            protocol: TransferProtocol::Xmodem,
+            file_name: "queued.bin".to_string(),
+            size_bytes: payload.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(payload)),
+            destination: "load:loadx".to_string(),
+            created_at_unix_seconds: 1,
+        };
+        fs::write(
+            upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        fs::write(upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE), payload).unwrap();
+
+        let value = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "queue-client".to_string(),
+                trusted_write: true,
+                command: "start_content_upload_transfer".to_string(),
+                args: serde_json::json!({ "uploadId": upload_id }),
+            },
+        )
+        .await
+        .unwrap();
+        let returned: TransferTask = serde_json::from_value(value).unwrap();
+        assert_eq!(returned.session_id, "session:1");
+        assert_eq!(returned.protocol, TransferProtocol::Xmodem);
+        assert_eq!(returned.destination, "<redacted-path>");
+        {
+            let store = state.store.lock().unwrap();
+            let queued = store.transfer_by_id(&returned.id).unwrap();
+            assert!(queued.source.contains(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY));
+            assert_eq!(queued.destination, "load:loadx");
+            let audit = store
+                .audit
+                .iter()
+                .find(|record| record.action == "start_content_upload_transfer")
+                .unwrap();
+            assert_eq!(audit.decision, "succeeded");
+            assert_eq!(
+                audit.details.get("scope").map(String::as_str),
+                Some("transfer")
+            );
+            assert!(!serde_json::to_string(audit).unwrap().contains("queued.bin"));
+        }
+        let terminal = wait_for_transfer_terminal_state(&state, &returned.id).await;
+        assert!(matches!(
+            terminal.status,
+            TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+        ));
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
     let root = std::env::temp_dir().join(format!("portmate-mcp-write-recheck-{}", Uuid::new_v4()));
     let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
