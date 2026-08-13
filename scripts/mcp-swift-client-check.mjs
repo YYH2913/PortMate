@@ -16,6 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { swiftVersionIsAtLeast } from "./swift-toolchain-version.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = join(projectRoot, "scripts", "mcp-swift-client-check");
@@ -151,6 +152,7 @@ function validateMatrix(value) {
   if (
     typeof value !== "object"
     || !versionPattern.test(value?.swift?.version)
+    || !versionPattern.test(value?.swift?.minimumSystemVersion)
     || typeof archives !== "object"
     || !Object.keys(archives).length
     || Object.values(archives).some((archive) => (
@@ -170,7 +172,7 @@ function validateMatrix(value) {
   }
 }
 
-async function ensureSwift({ version, archives }, environment) {
+async function ensureSwift({ version, minimumSystemVersion, archives }, environment) {
   const configuredSwift = process.env.PORTMATE_SWIFT?.trim();
   const command = configuredSwift || "swift";
   const probe = run(command, ["--version"], {
@@ -180,6 +182,14 @@ async function ensureSwift({ version, archives }, environment) {
     timeout: 10_000,
   });
   if (probe.status === 0 && matchesSwiftVersion(probe.stdout, version)) {
+    return command;
+  }
+  if (
+    !configuredSwift
+    && process.platform === "darwin"
+    && probe.status === 0
+    && swiftVersionIsAtLeast(probe.stdout, minimumSystemVersion)
+  ) {
     return command;
   }
   if (configuredSwift) {

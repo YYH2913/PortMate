@@ -55,7 +55,9 @@ describe("CI command logging", () => {
     expect(workflow).toContain(
       "target/native-ci/native-keyring.log npm run test:native-keyring",
     );
-    expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(2);
+    expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
+    expect(workflow).toContain("if: runner.os == 'Linux'");
+    expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
   });
 });
