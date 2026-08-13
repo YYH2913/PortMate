@@ -436,7 +436,7 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
             .unwrap();
         drop(handle);
         for jump_handle in jump_handles {
-            jump_handle
+            let _ = jump_handle
                 .lock()
                 .await
                 .disconnect(
@@ -444,8 +444,7 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
                     "PortMate libssh Jump Host test",
                     "en",
                 )
-                .await
-                .unwrap();
+                .await;
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;

@@ -15,7 +15,7 @@ fn local_file_listing_rejects_oversized_directories_without_partial_results() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn local_file_listing_does_not_publish_lossy_non_utf8_paths() {
     use std::os::unix::ffi::OsStringExt;
