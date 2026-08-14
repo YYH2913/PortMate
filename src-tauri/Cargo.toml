@@ -64,6 +64,3 @@ security-framework = "3.7"
 
 [dev-dependencies]
 rcgen = "0.14.8"
-
-[target.'cfg(unix)'.dev-dependencies]
-openssl = "0.10.79"

@@ -4595,7 +4595,6 @@ dependencies = [
  "libloading 0.8.9",
  "libssh-rs",
  "native-tls",
- "openssl",
  "portable-pty",
  "portmate-core",
  "portmate-kdf",
