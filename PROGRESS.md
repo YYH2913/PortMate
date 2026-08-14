@@ -72,6 +72,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 2026-08-14 对当前 HEAD 再次执行高风险兼容矩阵：Terminal WebGL、Workspace UI、vttest、Tmux workflow 与 tmux 3.1c/3.3a/3.5a/3.7b 均通过；TCP/Telnet 服务端矩阵和 21 个 SSH/SFTP/SCP 服务端矩阵通过，后者同时覆盖 11 组 SFTP/SCP 活动断线、11 组 X/Y/ZModem 活动断线、15 类 SSH health fault 和 38 类 transfer fault。隔离 sysroot 的 libssh GSSAPI 构建及 Ubuntu 24.04、Debian bookworm、Debian trixie OpenSSH、Apache MINA SSHD 2.19.0、Ubuntu OpenSSH + Samba 4.19.5 AD-compatible KDC 五组合十一场景也全部通过。MCP bridge 的 49 项单测、parent watchdog、4 MiB inline/512 MiB resumable content upload 生命周期和 release-source 门禁保持通过。本轮结果来自当前 Linux/Chrome/Docker 环境，仍不替代真实 Windows/macOS runner、Microsoft AD、物理串口或签名发布证据。
 
+同日新增持久化自定义终端脚本与 MCP 暴露边界：桌面管理器支持名称、说明、正文、全部/指定会话范围、独立 MCP 开关及已连接目标运行，Store 加载会规范换行、容量和引用，Profile 删除最后一个脚本目标时关闭 MCP 而不把空范围扩成全局。MCP 新增 `read-scripts`/`run-scripts` scope、`list_custom_scripts`/`run_custom_script` tools；bridge 只返回脚本摘要并只接受 `scriptId + sessionId`，正文不会进入 MCP 请求、响应或审计，执行继续经过 grant、脚本开关、会话范围、审批和 TOCTOU 二次校验，审计只附加脚本 ID。Core/sidecar/桌面专项共 9 项、前端脚本状态 6 项、生产构建和 Workspace Playwright 桌面/390x844 移动布局均通过；授权页增加至 10 个 scope 后同步修复桌面按钮可视高度。本轮未在 MCP 中引入桌面本机任意进程执行能力。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

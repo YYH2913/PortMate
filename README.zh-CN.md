@@ -35,7 +35,7 @@ PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允�
 | --- | --- |
 | 会话与协议 | SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux；TCP/Telnet 支持 TLS，SSH/Tmux/TCP/Telnet 支持 HTTP CONNECT 与 SOCKS5 代理 |
 | 终端工作区 | 多标签、递归分屏、跨分组拖放、独立窗口、布局恢复、Insert/Normal 模式、对应光标、搜索、行跳转、文本/Hex/二分视图 |
-| 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、OneKeys、自由输入、同步输入 |
+| 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、会话范围自定义脚本、OneKeys、自由输入、同步输入 |
 | SSH 安全 | Profile 级 Host Key、TOFU 与变更阻断、Host/Client Key Manager、多级 Jump Host、ssh-agent、密码/公钥/keyboard-interactive，以及 Linux libssh GSSAPI 认证 |
 | 文件与传输 | SFTP/SCP 文件管理、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
 | 运维与诊断 | SSH 健康检测、local/remote/dynamic tunnel、Sysmon 侧栏与历史趋势、结构化日志、触发器、会话诊断包 |
@@ -97,7 +97,7 @@ npm run dev
 2. 选择 Shell、SSH、Tmux、Telnet、TCP 或 Serial。
 3. 分别填写主机/IP、端口和用户名；无需使用 `username@host` 组合格式。
 4. SSH 首次连接时核对服务端 Host Key 指纹，并选择一次性信任或保存到 Profile/项目信任域。
-5. 在 `工具` 菜单中打开传输、隧道、Tmux、Sysmon、串口分析器、密钥管理器、日志或 MCP Bridge。
+5. 在 `工具` 菜单中打开传输、隧道、Tmux、Sysmon、自定义脚本、串口分析器、密钥管理器、日志或 MCP Bridge。
 
 连接状态会显示在会话标签前：绿色表示已连接，其余不可用状态显示为红色，并通过 tooltip 保留具体诊断。启动恢复会静默尝试已保存且可用的凭据，不会在每次打开应用时自动弹出重连窗口。
 
@@ -192,12 +192,22 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | `read-logs` | 读取和搜索已授权会话日志 |
 | `read-transfers` | 列出并查看已脱敏的传输状态 |
 | `read-tunnels` | 列出活动的 SSH 转发和 SOCKS5 代理 |
+| `read-scripts` | 列出已授权会话可见且开放给 MCP 的脚本摘要，不返回正文 |
 | `write-input` | 向终端发送文本、按键或命令 |
 | `transfer` | 启动、取消和重试文件传输，并隐含 `read-transfers` |
 | `tunnel` | 创建和停止 SSH 转发或 SOCKS5 代理，并隐含 `read-tunnels` |
 | `manage-sessions` | 打开或关闭会话 |
+| `run-scripts` | 在已授权会话运行已保存且开放给 MCP 的脚本，并隐含 `read-scripts` |
 
 授权可以设置到期时间、撤销状态、允许会话列表和写操作逐次确认。所有 MCP 写操作都会进入审计记录。
+
+### 自定义脚本工具
+
+通过 `工具 -> 自定义脚本` 新建和编辑终端脚本。每条脚本都可以限制为全部会话或明确的会话列表，并单独控制“开放给 MCP”。桌面端只能向范围内且当前已连接的会话运行脚本；执行复用现有会话输入通道，不会在桌面主机上启动任意本机进程。
+
+MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updatedAt` 四个摘要字段；使用 `run_custom_script` 并只提交 `sessionId + scriptId` 选择已保存脚本。MCP 不能提交、读取或覆盖脚本正文。执行必须同时满足 Client 授权中的 `run-scripts`、脚本自身 MCP 开关和脚本会话范围，并继续经过写操作确认、授权后二次校验和审计。`run-scripts` 不隐含普通 `write-input`。
+
+脚本正文保存在 PortMate 应用 Store 中，执行后也可能进入终端日志。不要在脚本中保存密码、Token、私钥或其他 Secret。
 
 ### 文件传输工具
 
@@ -401,7 +411,7 @@ Tauri 根 `lib.rs` 只保留模块注册与公开重导出。transport、securit
 
 ## 数据与隐私
 
-- Profile、运行状态、授权和索引数据保存在应用数据目录中的 `portmate-store.sqlite3`。
+- Profile、自定义脚本、运行状态、授权和索引数据保存在应用数据目录中的 `portmate-store.sqlite3`。
 - JSON compatibility snapshot、日志、导出和 IPC endpoint 均使用有界、原子或私有权限写入策略。
 - 原始终端日志可能包含敏感业务数据；只在确有需要时启用 Raw 日志，并在分享诊断包前检查脱敏范围。
 - MCP 读取结果会移除凭据引用和本地敏感路径；写操作仍需权限，并记录来源 Client ID、动作、会话和最终结果。

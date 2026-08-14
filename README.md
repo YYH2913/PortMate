@@ -35,7 +35,7 @@ PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets
 | --- | --- |
 | Sessions and protocols | SSH, local Shell PTY, Serial, Telnet, raw TCP, and Tmux; TLS for TCP/Telnet; HTTP CONNECT and SOCKS5 proxies for SSH/Tmux/TCP/Telnet |
 | Terminal workspace | Tabs, recursive splits, cross-group drag and drop, detached windows, layout restore, Insert/Normal modes with matching cursors, search, line navigation, and text/hex/split views |
-| Interactive workflow | WindTerm-style command completion and parameter hints, semantic command coloring, Quick Commands, OneKeys, free input, and synchronized input |
+| Interactive workflow | WindTerm-style command completion and parameter hints, semantic command coloring, Quick Commands, scoped custom scripts, OneKeys, free input, and synchronized input |
 | SSH security | Profile-scoped host keys, TOFU and key-change blocking, Host/Client Key Managers, multi-hop Jump Hosts, ssh-agent, password/public-key/keyboard-interactive, and Linux libssh GSSAPI authentication |
 | Files and transfer | SFTP/SCP file management, drag and drop, queues, throttling, cancellation, retry, resumable transfers, and X/Y/ZModem |
 | Operations and diagnostics | SSH health checks, local/remote/dynamic tunnels, persistent Sysmon sidebar and trends, structured logs, triggers, and diagnostic session bundles |
@@ -97,7 +97,7 @@ Open <http://127.0.0.1:1420/>. Browser mode is useful for layout and frontend in
 2. Select Shell, SSH, Tmux, Telnet, TCP, or Serial.
 3. Enter host/IP, port, and username in separate fields; a combined `username@host` value is not required.
 4. On the first SSH connection, verify the server host-key fingerprint and choose one-time or persistent Profile/project trust.
-5. Open transfers, tunnels, Tmux, Sysmon, the serial analyzer, key management, logs, or MCP Bridge from `工具 (Tools)`.
+5. Open transfers, tunnels, Tmux, Sysmon, custom scripts, the serial analyzer, key management, logs, or MCP Bridge from `工具 (Tools)`.
 
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
@@ -192,12 +192,22 @@ The JSON is empty until a Token is explicitly generated or rotated. Treat copied
 | `read-logs` | Read and search logs for authorized sessions |
 | `read-transfers` | List and inspect redacted transfer status |
 | `read-tunnels` | List active SSH forwards and SOCKS5 proxies |
+| `read-scripts` | List MCP-enabled script summaries for authorized sessions; script bodies are omitted |
 | `write-input` | Send text, keys, or commands to a terminal |
 | `transfer` | Start, cancel, and retry file-transfer tasks; also implies `read-transfers` |
 | `tunnel` | Create and stop SSH forwards or SOCKS5 proxies; also implies `read-tunnels` |
 | `manage-sessions` | Open or close sessions |
+| `run-scripts` | Run saved MCP-enabled scripts in authorized sessions; also implies `read-scripts` |
 
 Grants support expiration, revocation, allowed-session lists, and per-write confirmation. Every MCP write operation is audited.
+
+### Custom Script Tools
+
+Create and edit saved terminal scripts from `Tools -> Custom Scripts`. Each script has its own all-session or explicit-session boundary and an independent `Expose to MCP` switch. Desktop runs target an allowed session that is currently connected; scripts are sent through the existing session input lane and never start an arbitrary process on the desktop host.
+
+MCP uses `list_custom_scripts` to receive only `id`, `name`, `description`, and `updatedAt`. It runs a saved script with `run_custom_script` and exactly two selectors: `sessionId` and `scriptId`. MCP cannot submit, read, or replace the script body. Execution requires the Client grant's `run-scripts` scope, the script's MCP switch, and the script's session boundary; normal write confirmation, post-authorization revalidation, and audit recording still apply. `run-scripts` does not imply `write-input`.
+
+Script bodies are stored in the PortMate application Store and may also appear in terminal logging after execution. Do not save passwords, tokens, private keys, or other secrets in scripts.
 
 ### File Transfer Tools
 
@@ -401,7 +411,7 @@ The Tauri root `lib.rs` contains only module registration and public re-exports.
 
 ## Data and Privacy
 
-- Profiles, runtime state, grants, and index data are stored in `portmate-store.sqlite3` under the platform application-data directory.
+- Profiles, custom scripts, runtime state, grants, and index data are stored in `portmate-store.sqlite3` under the platform application-data directory.
 - The JSON compatibility snapshot, logs, exports, and IPC endpoint use bounded, atomic, or private-permission write paths as appropriate.
 - Raw terminal logs can contain sensitive operational data. Enable them only when needed and review redaction before sharing a diagnostic bundle.
 - MCP read responses remove credential references and sensitive local paths. Writes still require a grant and record the source Client ID, action, session, and final result.
