@@ -154,6 +154,32 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn content_upload_rejects_a_symlinked_private_root() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("portmate-content-link-{}", Uuid::new_v4()));
+    let outside = root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)).unwrap();
+    let server = content_upload_server(&root, "link-owner");
+    assert!(server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "sftp",
+            "fileName": "firmware.bin",
+            "sizeBytes": 1,
+            "sha256": "0".repeat(64),
+            "destination": "remote:/tmp/firmware.bin"
+        }))
+        .unwrap_err()
+        .to_string()
+        .contains("invalid private content upload directory"));
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn desktop_ipc_request_budget_accepts_a_maximum_inline_content_envelope() {
     let request = IpcRequest {

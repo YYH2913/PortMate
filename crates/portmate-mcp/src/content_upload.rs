@@ -262,7 +262,7 @@ impl PortMateMcp {
         let upload_dir = root.join(upload_id);
         let metadata = fs::symlink_metadata(&upload_dir)
             .with_context(|| format!("unknown content upload: {upload_id}"))?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir() || metadata_is_link(&metadata) {
             return Err(anyhow!("invalid content upload directory"));
         }
         Ok(upload_dir)
@@ -294,7 +294,7 @@ fn finish_upload_directory_cleanup(upload_dir: &Path, upload_id: &str) {
 
 fn require_regular_directory(path: &Path, label: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(path).with_context(|| format!("{label} is unavailable"))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() || metadata_is_link(&metadata) {
         return Err(anyhow!("invalid {label}"));
     }
     Ok(())
@@ -382,6 +382,10 @@ fn create_new_private_directory(path: &Path) -> Result<()> {
     fs::create_dir(path)?;
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata_is_link(&metadata) {
+        return Err(anyhow!("invalid private content upload directory"));
+    }
     Ok(())
 }
 
