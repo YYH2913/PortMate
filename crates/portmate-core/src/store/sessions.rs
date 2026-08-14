@@ -266,6 +266,22 @@ impl SessionStore {
             }
         }
 
+        for script in &mut self.custom_scripts {
+            if script.allow_all_sessions {
+                continue;
+            }
+            let previous_session_count = script.allowed_session_ids.len();
+            script
+                .allowed_session_ids
+                .retain(|allowed_session_id| allowed_session_id != session_id);
+            if previous_session_count != script.allowed_session_ids.len() {
+                script.updated_at = now;
+                if script.allowed_session_ids.is_empty() {
+                    script.mcp_enabled = false;
+                }
+            }
+        }
+
         for grant in &mut self.grants {
             if grant.allowed_sessions.is_empty() {
                 continue;

@@ -1,3 +1,4 @@
+pub mod custom_scripts;
 pub mod host_keys;
 pub mod mcp;
 pub mod models;
@@ -7,6 +8,12 @@ mod store_system_events;
 pub mod triggers;
 pub mod tunnels;
 
+pub use custom_scripts::{
+    normalize_custom_script_content, normalize_loaded_custom_scripts, validate_custom_script,
+    MAX_CUSTOM_SCRIPTS, MAX_CUSTOM_SCRIPT_CONTENT_BYTES, MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS,
+    MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS, MAX_CUSTOM_SCRIPT_NAME_CHARACTERS,
+    MAX_CUSTOM_SCRIPT_SESSIONS,
+};
 pub use host_keys::{
     compute_ssh_sha256_fingerprint, HostKeyEvaluation, HostKeyObservation, HostKeyStore,
     KnownHostsLine,
