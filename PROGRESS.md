@@ -70,6 +70,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 当前 HEAD 继续以本机 MinGW-w64 与静态 libsodium 执行 `cargo check --locked -p portmate --target x86_64-pc-windows-gnu`，完整桌面 crate 通过，覆盖 Tauri/Wry/WebView2、native TLS、Windows keyring、Stronghold、serial、russh/libssh、SQLite 与全部 Windows 条件编译路径；独立 portable gate 也再次通过 Windows GNU、macOS Apple Silicon 和 FreeBSD x86_64 的五个可移植 crate。Windows 0.1.1 portable ZIP 的 GUI/console PE、WebView2 loader、嵌入生产前端、许可证与 ZIP 完整性已有本地静态证据，但这些交叉构建仍不替代 Windows MSVC 的 vendored OpenSSL、真实 WebView2 启动、Credential Manager，或 MSI/NSIS 安装 smoke。
 
+2026-08-14 对当前 HEAD 再次执行高风险兼容矩阵：Terminal WebGL、Workspace UI、vttest、Tmux workflow 与 tmux 3.1c/3.3a/3.5a/3.7b 均通过；TCP/Telnet 服务端矩阵和 21 个 SSH/SFTP/SCP 服务端矩阵通过，后者同时覆盖 11 组 SFTP/SCP 活动断线、11 组 X/Y/ZModem 活动断线、15 类 SSH health fault 和 38 类 transfer fault。隔离 sysroot 的 libssh GSSAPI 构建及 Ubuntu 24.04、Debian bookworm、Debian trixie OpenSSH、Apache MINA SSHD 2.19.0、Ubuntu OpenSSH + Samba 4.19.5 AD-compatible KDC 五组合十一场景也全部通过。MCP bridge 的 49 项单测、parent watchdog、4 MiB inline/512 MiB resumable content upload 生命周期和 release-source 门禁保持通过。本轮结果来自当前 Linux/Chrome/Docker 环境，仍不替代真实 Windows/macOS runner、Microsoft AD、物理串口或签名发布证据。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
