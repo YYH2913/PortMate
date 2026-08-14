@@ -20,7 +20,7 @@ import {
 } from "./mcp-http-state";
 import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
-const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "write-input", "transfer", "tunnel", "manage-sessions"];
+const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts"];
 const mcpHttpListenOptions = [
   ["127.0.0.1", "本机 IPv4 · 127.0.0.1"],
   ["0.0.0.0", "所有 IPv4 · 0.0.0.0"],

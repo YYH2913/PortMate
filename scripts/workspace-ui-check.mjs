@@ -257,6 +257,20 @@ const mcpAudit = [
   },
 ];
 
+const customScripts = [
+  {
+    id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
+    name: "Inspect service",
+    description: "Read service state",
+    content: "systemctl status portmate",
+    allowAllSessions: false,
+    allowedSessionIds: ["edge-router"],
+    mcpEnabled: true,
+    createdAt: isoNow,
+    updatedAt: isoNow,
+  },
+];
+
 const mcpHttpConfig = {
   listenHost: "127.0.0.1",
   clientHost: "127.0.0.1",
@@ -310,7 +324,7 @@ try {
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, historyTimestamp }) => {
+  await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, initialCustomScripts, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
     const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
@@ -409,6 +423,8 @@ try {
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
+    window.__customScripts = structuredClone(initialCustomScripts);
+    window.__customScriptSequence = 0;
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
@@ -806,6 +822,55 @@ try {
           if (!window.__deferGrantLists) return result;
           return new Promise((resolve) => window.__pendingGrantLists.push({ result, resolve }));
         }
+        if (command === "list_custom_scripts") return structuredClone(window.__customScripts);
+        if (command === "save_custom_script") {
+          const request = structuredClone(args.request);
+          const existing = window.__customScripts.find((script) => script.id === request.id);
+          if (existing && existing.updatedAt !== request.expectedUpdatedAt) {
+            throw new Error("custom script changed in another window");
+          }
+          const now = new Date(Date.now() + ++window.__customScriptSequence).toISOString();
+          const saved = {
+            id: existing?.id ?? `00000000-0000-4000-8000-${String(window.__customScriptSequence).padStart(12, "0")}`,
+            name: request.name.trim(),
+            description: request.description.trim(),
+            content: request.content.replace(/\r\n?/g, "\n"),
+            allowAllSessions: request.allowAllSessions,
+            allowedSessionIds: request.allowAllSessions ? [] : [...new Set(request.allowedSessionIds)],
+            mcpEnabled: request.mcpEnabled,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          const index = window.__customScripts.findIndex((script) => script.id === saved.id);
+          if (index >= 0) window.__customScripts[index] = saved;
+          else window.__customScripts.push(saved);
+          return structuredClone(window.__customScripts);
+        }
+        if (command === "delete_custom_script") {
+          const existing = window.__customScripts.find((script) => script.id === args.request.id);
+          if (!existing || existing.updatedAt !== args.request.expectedUpdatedAt) {
+            throw new Error("custom script changed in another window");
+          }
+          window.__customScripts = window.__customScripts.filter((script) => script.id !== args.request.id);
+          return structuredClone(window.__customScripts);
+        }
+        if (command === "run_custom_script") {
+          const script = window.__customScripts.find((item) => item.id === args.request.scriptId);
+          if (!script) throw new Error("unknown custom script");
+          const event = {
+            id: `script-event-${window.__invokeCalls.length}`,
+            sessionId: args.request.sessionId,
+            paneId: `${args.request.sessionId}:main`,
+            ts: new Date().toISOString(),
+            direction: "outbound",
+            stream: "stdin",
+            bytesRef: null,
+            text: null,
+            annotations: { customScriptId: script.id },
+          };
+          window.__events.push(event);
+          return structuredClone(event);
+        }
         if (command === "list_one_keys") {
           if (window.__failOneKeyLists > 0) {
             window.__failOneKeyLists -= 1;
@@ -1106,6 +1171,16 @@ try {
               revokedAt: allowedSessions.length ? grant.revokedAt : grant.revokedAt ?? new Date().toISOString(),
             };
           });
+          window.__customScripts = window.__customScripts.map((script) => {
+            if (script.allowAllSessions || !script.allowedSessionIds.includes(deletedProfileId)) return script;
+            const allowedSessionIds = script.allowedSessionIds.filter((sessionId) => sessionId !== deletedProfileId);
+            return {
+              ...script,
+              allowedSessionIds,
+              mcpEnabled: allowedSessionIds.length ? script.mcpEnabled : false,
+              updatedAt: new Date().toISOString(),
+            };
+          });
           return {
             deletedProfileId,
             sessions: window.__sessions,
@@ -1134,6 +1209,7 @@ try {
     initialMcpGrants: mcpGrants,
     initialMcpAudit: mcpAudit,
     initialMcpHttpConfig: mcpHttpConfig,
+    initialCustomScripts: customScripts,
     historyTimestamp: recordedAt,
   });
 
@@ -3858,6 +3934,70 @@ Host staging
   await serialAnalyzerPage.close();
 
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.getByRole("button", { name: "自定义脚本", exact: true }).click();
+  const customScriptDialog = page.locator(".custom-script-dialog");
+  await customScriptDialog.waitFor();
+  const scriptBody = customScriptDialog.getByRole("textbox", { name: "脚本正文", exact: true });
+  assert(await scriptBody.inputValue() === "systemctl status portmate"
+    && await customScriptDialog.locator(".custom-script-list i", { hasText: "MCP" }).count() === 1,
+  "custom script manager did not load the persisted MCP-enabled script");
+  await scriptBody.fill("systemctl status portmate\nwhoami");
+  assert(await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
+    "custom script manager can run a stale saved body while the editor has unsaved changes");
+  await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length === 1);
+  assert(!await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
+    "saved custom script did not become runnable");
+
+  await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).fill("Collect diagnostics");
+  await customScriptDialog.getByRole("textbox", { name: "脚本说明", exact: true }).fill("Capture runtime state");
+  await customScriptDialog.getByRole("textbox", { name: "脚本正文", exact: true }).fill("uptime\ndf -h");
+  await customScriptDialog.getByRole("checkbox", { name: "开放给 MCP", exact: true }).check();
+  await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => window.__customScripts.length === 2);
+  await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).click();
+  const scriptNotice = page.locator(".notice-dialog", { hasText: "Collect diagnostics" });
+  await scriptNotice.waitFor();
+  const scriptInvocation = await page.evaluate(() => {
+    const call = window.__invokeCalls.filter((item) => item.command === "run_custom_script").at(-1);
+    const script = window.__customScripts.find((item) => item.id === call?.args.request.scriptId);
+    return {
+      call,
+      targetAllowed: Boolean(script && (script.allowAllSessions || script.allowedSessionIds.includes(call.args.request.sessionId))),
+    };
+  });
+  assert(scriptInvocation.targetAllowed
+    && typeof scriptInvocation.call?.args.request.scriptId === "string"
+    && !Object.hasOwn(scriptInvocation.call.args.request, "content"),
+  `custom script execution did not select a saved script safely: ${JSON.stringify(scriptInvocation)}`);
+  await scriptNotice.getByRole("button", { name: "确定", exact: true }).click();
+  const customScriptBounds = await customScriptDialog.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    const editor = dialog.querySelector(".custom-script-editor")?.getBoundingClientRect();
+    const actions = dialog.querySelector(".custom-script-actions")?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: dialog.scrollWidth,
+      width: rect.width,
+      actionsInsideEditor: Boolean(editor && actions && actions.top >= editor.top && actions.bottom <= editor.bottom),
+    };
+  });
+  assert(customScriptBounds.left >= 0 && customScriptBounds.right <= 1440
+    && customScriptBounds.top >= 0 && customScriptBounds.bottom <= 900
+    && customScriptBounds.scrollWidth <= customScriptBounds.width
+    && customScriptBounds.actionsInsideEditor,
+  `custom script desktop workspace overflows or clips actions: ${JSON.stringify(customScriptBounds)}`);
+  await page.screenshot({ path: `${screenshotPrefix}-custom-scripts.png`, fullPage: true });
+  await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => window.__customScripts.length === 1);
+  await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
+  await customScriptDialog.waitFor({ state: "detached" });
+
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.getByRole("button", { name: "日志管理", exact: true }).click();
   const logManager = page.locator(".log-manager-dialog");
   await logManager.waitFor();
@@ -3901,8 +4041,8 @@ Host staging
     "MCP write confirmation setting did not load for the selected grant");
   const visibleMcpScopes = await mcpDialog.locator(".mcp-check-grid label").allTextContents();
   assert(JSON.stringify(visibleMcpScopes.map((scope) => scope.trim())) === JSON.stringify([
-    "read-sessions", "read-logs", "read-transfers", "read-tunnels",
-    "write-input", "transfer", "tunnel", "manage-sessions",
+    "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts",
+    "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts",
   ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
   await mcpDialog.locator(".mcp-new").click();
   const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
@@ -3948,8 +4088,9 @@ Host staging
   await newGrantClientId.fill("empty-store-client");
   await mcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Empty Store Client");
   assert(await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-transfers" }).locator("input").isChecked()
-    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-tunnels" }).locator("input").isChecked(),
-  "new MCP grants do not default to read-only transfer and route visibility");
+    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-tunnels" }).locator("input").isChecked()
+    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-scripts" }).locator("input").isChecked(),
+  "new MCP grants do not default to complete read-only visibility");
   const grantExpiry = mcpDialog.getByLabel("MCP 授权到期时间", { exact: true });
   await grantExpiry.click();
   const grantExpiryEditor = mcpDialog.locator(".mcp-expiry-editor");
@@ -4380,6 +4521,40 @@ Host staging
   assert(mobile.center?.left === 0 && mobile.center?.right === mobile.viewportWidth,
     `terminal does not fill the mobile viewport: ${JSON.stringify(mobile.center)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mobile.png`, fullPage: true });
+
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.getByRole("button", { name: "自定义脚本", exact: true }).click();
+  const mobileCustomScripts = page.locator(".custom-script-dialog");
+  await mobileCustomScripts.waitFor();
+  const mobileCustomScriptBounds = await mobileCustomScripts.evaluate((dialog) => {
+    const rect = dialog.getBoundingClientRect();
+    const content = dialog.querySelector(".custom-script-content");
+    const actions = dialog.querySelector(".custom-script-actions")?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: dialog.scrollWidth,
+      width: rect.width,
+      contentScrollWidth: content?.scrollWidth ?? 0,
+      contentWidth: content?.clientWidth ?? 0,
+      actionsReachable: Boolean(actions && actions.top >= rect.top && actions.bottom <= rect.bottom),
+    };
+  });
+  assert(mobileCustomScriptBounds.left >= 0 && mobileCustomScriptBounds.right <= mobile.viewportWidth
+    && mobileCustomScriptBounds.top >= 0 && mobileCustomScriptBounds.bottom <= mobile.viewportHeight
+    && mobileCustomScriptBounds.scrollWidth <= mobileCustomScriptBounds.width
+    && mobileCustomScriptBounds.contentScrollWidth <= mobileCustomScriptBounds.contentWidth
+    && mobileCustomScriptBounds.actionsReachable,
+  `mobile custom script workspace exceeds the viewport: ${JSON.stringify(mobileCustomScriptBounds)}`);
+  assert(await mobileCustomScripts.getByRole("textbox", { name: "脚本正文", exact: true }).isVisible()
+    && await mobileCustomScripts.getByRole("button", { name: "运行自定义脚本", exact: true }).isVisible()
+    && await mobileCustomScripts.getByRole("button", { name: "保存自定义脚本", exact: true }).isVisible(),
+  "mobile custom script editor has unreachable controls");
+  await page.screenshot({ path: `${screenshotPrefix}-custom-scripts-mobile.png`, fullPage: true });
+  await mobileCustomScripts.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
+  await mobileCustomScripts.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
@@ -6024,6 +6199,11 @@ Host staging
       approvalMobile: mobileApprovalBounds,
       mobile: mobileMcpBounds,
     },
+    customScripts: {
+      desktop: customScriptBounds,
+      mobile: mobileCustomScriptBounds,
+      persisted: await page.evaluate(() => window.__customScripts.length),
+    },
     dockResize: {
       resized: resizedDockLayout,
       restored: restoredLayout,
@@ -6092,6 +6272,8 @@ Host staging
       `${screenshotPrefix}-detached-theme.png`,
       `${screenshotPrefix}-detached-health.png`,
       `${screenshotPrefix}-serial-analyzer.png`,
+      `${screenshotPrefix}-custom-scripts.png`,
+      `${screenshotPrefix}-custom-scripts-mobile.png`,
       `${screenshotPrefix}-mcp-grants.png`,
       `${screenshotPrefix}-mcp-grant-expiry.png`,
       `${screenshotPrefix}-mcp-grant-expiry-mobile.png`,

@@ -106,6 +106,7 @@ import type { SessionContextAction, TerminalContextAction } from "./ContextMenus
 
 const LazyTerminalCanvas = lazy(() => import("./TerminalCanvas"));
 const LazyQuickCommandDialog = lazy(() => import("./QuickCommandDialog"));
+const LazyCustomScriptDialog = lazy(() => import("./CustomScriptDialog"));
 const LazyOneKeyDialog = lazy(() => import("./OneKeyDialog"));
 const LazySearchDialog = lazy(() => import("./SearchDialog"));
 const LazyTmuxDialog = lazy(() => import("./TmuxDialog"));
@@ -183,7 +184,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 
 type SettingsDialog = "terminal" | "session" | null;
 type SessionSettingsMode = "create" | "edit";
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "session-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
 type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string; link?: string } | null;
@@ -1543,6 +1544,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "快速命令") {
       setUtilityDialog("quick-commands");
+      return;
+    }
+    if (item === "自定义脚本") {
+      setUtilityDialog("custom-scripts");
       return;
     }
     if (item === "OneKeys") {
@@ -3999,6 +4004,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               setUtilityDialog(null);
               if (items.length) setQuickBarVisible(true);
             }}
+            onClose={() => setUtilityDialog(null)}
+          />
+        </Suspense>
+      )}
+      {utilityDialog === "custom-scripts" && (
+        <Suspense fallback={null}>
+          <LazyCustomScriptDialog
+            sessions={sessions}
+            activeId={activeId}
+            onNotice={(message) => setNotice({ title: "自定义脚本", message })}
             onClose={() => setUtilityDialog(null)}
           />
         </Suspense>

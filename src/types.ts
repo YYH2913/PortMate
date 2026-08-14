@@ -510,7 +510,30 @@ export interface ExportMcpAuditResult {
   records: number;
 }
 
-export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "write-input" | "transfer" | "tunnel" | "manage-sessions";
+export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "read-scripts" | "write-input" | "transfer" | "tunnel" | "manage-sessions" | "run-scripts";
+
+export interface CustomScript {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  allowAllSessions: boolean;
+  allowedSessionIds: string[];
+  mcpEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveCustomScriptRequest {
+  id: string | null;
+  name: string;
+  description: string;
+  content: string;
+  allowAllSessions: boolean;
+  allowedSessionIds: string[];
+  mcpEnabled: boolean;
+  expectedUpdatedAt: string | null;
+}
 
 export interface McpGrant {
   clientId: string;
