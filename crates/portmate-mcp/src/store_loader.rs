@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use portmate_core::SessionStore;
 use rusqlite::{params, Connection as SqliteConnection, OpenFlags as SqliteOpenFlags};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -42,6 +43,15 @@ pub(crate) fn load_store_from_path(path: &Path) -> Result<SessionStore> {
 
 pub(crate) fn prepare_loaded_store(mut store: SessionStore) -> Result<SessionStore> {
     store.validate_profile_count().map_err(anyhow::Error::msg)?;
+    let known_session_ids = store
+        .profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect::<HashSet<_>>();
+    store.custom_scripts = portmate_core::normalize_loaded_custom_scripts(
+        std::mem::take(&mut store.custom_scripts),
+        &known_session_ids,
+    );
     store.normalize_bounded_histories();
     Ok(store)
 }

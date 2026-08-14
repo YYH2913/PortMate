@@ -949,3 +949,4 @@ fn parse_http_request_bytes(bytes: &[u8]) -> Result<HttpRequest> {
 
 include!("tests_io_transport.rs");
 include!("tests_protocol_surface.rs");
+include!("tests_custom_scripts.rs");

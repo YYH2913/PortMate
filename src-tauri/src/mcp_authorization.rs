@@ -44,10 +44,12 @@ pub(super) fn mcp_scope_label(scope: McpScope) -> &'static str {
         McpScope::ReadLogs => "read-logs",
         McpScope::ReadTransfers => "read-transfers",
         McpScope::ReadTunnels => "read-tunnels",
+        McpScope::ReadScripts => "read-scripts",
         McpScope::WriteInput => "write-input",
         McpScope::Transfer => "transfer",
         McpScope::Tunnel => "tunnel",
         McpScope::ManageSessions => "manage-sessions",
+        McpScope::RunScripts => "run-scripts",
     }
 }
 
@@ -64,12 +66,13 @@ pub(super) fn mcp_audit_actor(client_id: &str) -> String {
     }
 }
 
-fn mcp_audit_details(
+pub(super) fn mcp_audit_details(
+    request: &IpcRequest,
     scope: McpScope,
     trusted_bootstrap: bool,
     approval_required: bool,
 ) -> BTreeMap<String, String> {
-    BTreeMap::from([
+    let mut details = BTreeMap::from([
         ("scope".to_string(), mcp_scope_label(scope).to_string()),
         (
             "trustedBootstrap".to_string(),
@@ -79,7 +82,17 @@ fn mcp_audit_details(
             "approvalRequired".to_string(),
             approval_required.to_string(),
         ),
-    ])
+    ]);
+    if request.command == "run_custom_script" {
+        if let Some(script_id) = request
+            .args
+            .get("scriptId")
+            .and_then(serde_json::Value::as_str)
+        {
+            details.insert("scriptId".to_string(), script_id.to_string());
+        }
+    }
+    details
 }
 
 pub(super) fn revalidate_ipc_write_target(
@@ -134,7 +147,7 @@ fn record_invalid_mcp_write(
         action: request.command.clone(),
         session_id: session_id.map(str::to_string),
         decision: "invalid".to_string(),
-        details: mcp_audit_details(scope, trusted_bootstrap, false),
+        details: mcp_audit_details(request, scope, trusted_bootstrap, false),
     };
     append_and_save_mcp_audit(&state.store_path, &mut store, record)
 }
@@ -171,7 +184,7 @@ fn begin_mcp_write_audit(
             "denied"
         }
         .to_string(),
-        details: mcp_audit_details(scope, trusted_bootstrap, approval_required),
+        details: mcp_audit_details(request, scope, trusted_bootstrap, approval_required),
     };
     append_and_save_mcp_audit(&state.store_path, &mut store, record).map_err(|error| {
         format!("MCP write was not executed because its audit record could not be saved: {error}")

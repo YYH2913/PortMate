@@ -10,6 +10,7 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
         | "cancel_transfer"
         | "retry_transfer" => Some(McpScope::Transfer),
         "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
+        "run_custom_script" => Some(McpScope::RunScripts),
         _ => None,
     }
 }
@@ -24,6 +25,7 @@ pub(super) fn ipc_read_scope(command: &str) -> Option<McpScope> {
         | "export_session_bundle" => Some(McpScope::ReadLogs),
         "list_transfers" | "get_transfer" => Some(McpScope::ReadTransfers),
         "list_tunnels" => Some(McpScope::ReadTunnels),
+        "list_custom_scripts" => Some(McpScope::ReadScripts),
         _ => None,
     }
 }
@@ -53,6 +55,12 @@ pub(super) fn validate_ipc_write_args(
         }
         "run_command" => {
             ipc_string_arg(&request.args, "command")?;
+        }
+        "run_custom_script" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?;
+            let script_id = ipc_string_arg(&request.args, "scriptId")?;
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            custom_script_for_session(&store, script_id, session_id, true)?;
         }
         "start_transfer" => {
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())

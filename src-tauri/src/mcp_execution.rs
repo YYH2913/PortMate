@@ -119,6 +119,23 @@ pub(super) async fn execute_ipc_request(
             )?;
             serde_json::to_value(redact_transfer_task(transfer)).map_err(|error| error.to_string())
         }
+        "list_custom_scripts" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(
+                &store,
+                &request,
+                McpScope::ReadScripts,
+                Some(&session_id),
+            )?;
+            let scripts = store
+                .custom_scripts
+                .iter()
+                .filter(|script| script.mcp_enabled && script.allows_session(&session_id))
+                .map(CustomScript::summary)
+                .collect::<Vec<_>>();
+            serde_json::to_value(scripts).map_err(|error| error.to_string())
+        }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
@@ -152,6 +169,23 @@ pub(super) async fn execute_ipc_request(
             let event =
                 run_command_inner_with_context(state.session_io(), session_id, text, &actor, None)
                     .await?;
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
+        }
+        "run_custom_script" => {
+            let script_id = ipc_string_arg(&request.args, "scriptId")?.to_string();
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let actor = mcp_audit_actor(&request.client_id);
+            let event = run_custom_script_inner(
+                &state,
+                RunCustomScriptRequest {
+                    script_id,
+                    session_id,
+                },
+                &actor,
+                None,
+                true,
+            )
+            .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "open_session" => {

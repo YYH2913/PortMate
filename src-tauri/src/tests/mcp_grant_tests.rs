@@ -135,10 +135,12 @@ fn mcp_grant_validation_accepts_the_complete_scope_set() {
             McpScope::ReadLogs,
             McpScope::ReadTransfers,
             McpScope::ReadTunnels,
+            McpScope::ReadScripts,
             McpScope::WriteInput,
             McpScope::Transfer,
             McpScope::Tunnel,
             McpScope::ManageSessions,
+            McpScope::RunScripts,
         ],
         allowed_sessions: Vec::new(),
         confirm_writes: true,
@@ -146,9 +148,11 @@ fn mcp_grant_validation_accepts_the_complete_scope_set() {
         revoked_at: None,
     };
 
-    assert_eq!(normalize_mcp_grant(grant).unwrap().scopes.len(), 8);
+    assert_eq!(normalize_mcp_grant(grant).unwrap().scopes.len(), 10);
     assert_eq!(mcp_scope_label(McpScope::ReadTransfers), "read-transfers");
     assert_eq!(mcp_scope_label(McpScope::ReadTunnels), "read-tunnels");
+    assert_eq!(mcp_scope_label(McpScope::ReadScripts), "read-scripts");
+    assert_eq!(mcp_scope_label(McpScope::RunScripts), "run-scripts");
 }
 
 #[test]

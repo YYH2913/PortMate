@@ -124,6 +124,25 @@ pub(super) async fn run_command_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
+    run_command_inner_with_annotations(
+        io,
+        session_id,
+        text,
+        actor,
+        audit_action,
+        BTreeMap::new(),
+    )
+    .await
+}
+
+pub(super) async fn run_command_inner_with_annotations(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    actor: &str,
+    audit_action: Option<&str>,
+    mut additional_annotations: BTreeMap<String, String>,
+) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
     let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
@@ -143,6 +162,10 @@ pub(super) async fn run_command_inner_with_context(
         clear_active_command_if(&io, &session_id, &command_id);
         return Err(error);
     }
+    additional_annotations.extend([
+        ("commandId".to_string(), command_id),
+        ("commandState".to_string(), "started".to_string()),
+    ]);
     Ok(record_outbound_user_event_with_context(
         &io,
         &session_id,
@@ -150,10 +173,7 @@ pub(super) async fn run_command_inner_with_context(
         wire_text.as_bytes(),
         actor,
         audit_action,
-        BTreeMap::from([
-            ("commandId".to_string(), command_id),
-            ("commandState".to_string(), "started".to_string()),
-        ]),
+        additional_annotations,
     ))
 }
 

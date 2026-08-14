@@ -57,6 +57,8 @@ mod archive_tests;
 mod command_type_tests;
 #[path = "connection_config_tests.rs"]
 mod connection_config_tests;
+#[path = "custom_script_tests.rs"]
+mod custom_script_tests;
 #[path = "export_tests.rs"]
 mod export_tests;
 #[cfg(unix)]

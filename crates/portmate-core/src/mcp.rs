@@ -151,6 +151,28 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "list_custom_scripts",
+            "List Custom Scripts",
+            "List MCP-enabled custom scripts available to one session. Script bodies are never returned.",
+            session_schema(),
+            true,
+        ),
+        tool(
+            "run_custom_script",
+            "Run Custom Script",
+            "Run a saved MCP-enabled custom script in an authorized session. The request selects an existing script and cannot provide or replace its body.",
+            json!({
+                "type":"object",
+                "required":["sessionId","scriptId"],
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "scriptId":{"type":"string","format":"uuid"}
+                }
+            }),
+            false,
+        ),
+        tool(
             "open_session",
             "Open Session",
             "Open a saved session profile.",
@@ -653,5 +675,24 @@ mod tests {
             target_clause["else"]["properties"]["targetPort"]["minimum"],
             1
         );
+    }
+
+    #[test]
+    fn custom_script_tools_select_saved_scripts_without_accepting_script_bodies() {
+        let list = definition("list_custom_scripts");
+        assert!(list.read_only);
+        assert!(list.description.contains("never returned"));
+        assert_eq!(list.input_schema["required"], json!(["sessionId"]));
+        assert!(list.input_schema["properties"].get("content").is_none());
+
+        let run = definition("run_custom_script");
+        assert!(!run.read_only);
+        assert_eq!(run.input_schema["additionalProperties"], false);
+        assert_eq!(
+            run.input_schema["required"],
+            json!(["sessionId", "scriptId"])
+        );
+        assert_eq!(run.input_schema["properties"]["scriptId"]["format"], "uuid");
+        assert!(run.input_schema["properties"].get("content").is_none());
     }
 }

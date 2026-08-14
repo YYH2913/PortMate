@@ -296,6 +296,11 @@ pub(super) fn normalize_loaded_store_at(
                 remap_loaded_session_id(&identity.source_profile_id, &session_id_remap);
         }
     }
+    for script in &mut store.custom_scripts {
+        for session_id in &mut script.allowed_session_ids {
+            *session_id = remap_loaded_session_id(session_id, &session_id_remap);
+        }
+    }
 
     for profile in normalized_profiles {
         let _ = store.upsert_profile(profile);
@@ -307,6 +312,15 @@ pub(super) fn normalize_loaded_store_at(
         .map(|(settings, _)| settings)
         .unwrap_or_default();
     normalize_loaded_one_keys(&mut store);
+    let known_session_ids = store
+        .profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect::<HashSet<_>>();
+    store.custom_scripts = normalize_loaded_custom_scripts(
+        std::mem::take(&mut store.custom_scripts),
+        &known_session_ids,
+    );
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
             runtime.pane_id = saved.pane_id.clone();

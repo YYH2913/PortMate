@@ -14,10 +14,12 @@ pub enum McpScope {
     ReadLogs,
     ReadTransfers,
     ReadTunnels,
+    ReadScripts,
     WriteInput,
     Transfer,
     Tunnel,
     ManageSessions,
+    RunScripts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +43,7 @@ impl McpGrant {
         let implied = match scope {
             McpScope::ReadTransfers => self.scopes.contains(&McpScope::Transfer),
             McpScope::ReadTunnels => self.scopes.contains(&McpScope::Tunnel),
+            McpScope::ReadScripts => self.scopes.contains(&McpScope::RunScripts),
             _ => false,
         };
         if !self.scopes.contains(&scope) && !implied {

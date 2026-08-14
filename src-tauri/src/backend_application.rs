@@ -4,6 +4,7 @@ mod app_bootstrap;
 mod app_data_migration;
 mod command_history_commands;
 mod command_types;
+mod custom_script_commands;
 mod one_key_commands;
 mod one_key_prompt;
 mod one_key_runtime;
@@ -21,6 +22,7 @@ mod terminal_byte_events;
 mod webkit_runtime;
 
 use app_data_migration::*;
+use custom_script_commands::{custom_script_for_session, run_custom_script_inner};
 use one_key_prompt::*;
 use one_key_runtime::*;
 use outbound_events::*;

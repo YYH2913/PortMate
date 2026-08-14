@@ -2,7 +2,8 @@ use super::{desktop_ipc::ipc_value_to_text, PortMateMcp};
 use anyhow::{anyhow, Result};
 use portmate_core::{
     redact_secrets, redact_session_event, redact_session_events, redact_session_summary,
-    redact_transfer_task, McpScope, SessionEvent, SessionSummary, TransferTask,
+    redact_transfer_task, CustomScriptSummary, McpScope, SessionEvent, SessionSummary,
+    TransferTask,
 };
 use serde_json::{json, Value};
 
@@ -136,7 +137,27 @@ impl PortMateMcp {
                 };
                 serde_json::to_string_pretty(&redact_transfer_task(transfer))?
             }
-            "send_text" | "send_key" | "run_command" => {
+            "list_custom_scripts" => {
+                let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::ReadScripts, Some(session_id))?;
+                self.require_known_session(session_id)?;
+                let scripts = if let Some(value) =
+                    self.call_ipc_value("list_custom_scripts", arguments.clone())?
+                {
+                    serde_json::from_value::<Vec<CustomScriptSummary>>(value).map_err(|error| {
+                        anyhow!("invalid desktop custom-script response: {error}")
+                    })?
+                } else {
+                    self.store
+                        .custom_scripts
+                        .iter()
+                        .filter(|script| script.mcp_enabled && script.allows_session(session_id))
+                        .map(|script| script.summary())
+                        .collect()
+                };
+                serde_json::to_string_pretty(&scripts)?
+            }
+            "send_text" | "send_key" | "run_command" | "run_custom_script" => {
                 if let Some(output) = self.write_tool(name, &arguments)? {
                     output
                 } else {
