@@ -578,6 +578,23 @@ try {
       return { renderer, style: expectedStyle, renderedClass: `xterm-cursor-${expectedStyle}` };
     }
 
+    const webglContext = await host.evaluate((element) => {
+      for (const canvas of element.querySelectorAll("canvas")) {
+        const context = canvas.getContext("webgl2");
+        if (!context) continue;
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          preserveDrawingBuffer: context.getContextAttributes()?.preserveDrawingBuffer === true,
+        };
+      }
+      return null;
+    });
+    assert(webglContext?.width > 0 && webglContext.height > 0,
+      `WebGL renderer did not expose a drawable canvas: ${JSON.stringify(webglContext)}`);
+    assert(webglContext.preserveDrawingBuffer,
+      `WebGL automation canvas did not preserve rendered pixels: ${JSON.stringify(webglContext)}`);
+
     const cursorColor = await host.evaluate((element) => {
       const value = getComputedStyle(element).getPropertyValue("--xterm-cursor-color").trim();
       return value || element.dataset.terminalCursorColor || "#5eead4";
@@ -658,7 +675,7 @@ try {
       const rendered = expectedStyle === "block"
         ? cursor?.width >= 5 && cursor.height >= 8 && cursor.area >= cursor.width * cursor.height * 0.6
         : cursor?.width <= 3 && cursor.height >= 8;
-      if (rendered) return { renderer, style: expectedStyle, pixels: cursor };
+      if (rendered) return { renderer, style: expectedStyle, context: webglContext, pixels: cursor };
       await page.waitForTimeout(80);
     } while (Date.now() < deadline);
     assert(false, `WebGL renderer did not draw the ${expectedStyle} cursor across a blink cycle: ${JSON.stringify(samples)}`);

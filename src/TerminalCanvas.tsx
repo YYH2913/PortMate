@@ -1190,7 +1190,9 @@ export default function TerminalCanvas({
       if (webglAddon) return;
       void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
         if (terminalDisposed || generation !== webglGeneration || termRef.current !== term) return;
-        const nextAddon = new WebglAddon();
+        // Chromium automation can discard the WebGL back buffer before Playwright
+        // captures it, which makes rendered cursor checks observe an empty canvas.
+        const nextAddon = new WebglAddon(navigator.webdriver);
         term.loadAddon(nextAddon);
         webglAddon = nextAddon;
         host.dataset.terminalRenderer = "webgl";
