@@ -8,16 +8,7 @@ pub(super) fn stage_mcp_content_transfer(
     let content = BASE64_STANDARD
         .decode(&request.content_base64)
         .map_err(|_| "MCP contentBase64 is not valid standard Base64".to_string())?;
-    let parent = state
-        .store_path
-        .parent()
-        .ok_or_else(|| "MCP content staging directory is unavailable".to_string())?;
-    let staging_dir = parent.join(".mcp-transfer-staging");
-    fs::create_dir_all(&staging_dir)
-        .map_err(|error| format!("failed to create MCP content staging directory: {error}"))?;
-    #[cfg(unix)]
-    fs::set_permissions(&staging_dir, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("failed to secure MCP content staging directory: {error}"))?;
+    let staging_dir = ensure_mcp_content_staging_root(state)?;
     let task_dir = staging_dir.join(Uuid::new_v4().to_string());
     fs::create_dir(&task_dir)
         .map_err(|error| format!("failed to create MCP content staging task directory: {error}"))?;
@@ -212,6 +203,29 @@ fn mcp_content_staging_root(state: &AppState) -> Result<PathBuf, String> {
         .parent()
         .map(|parent| parent.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY))
         .ok_or_else(|| "MCP content staging directory is unavailable".to_string())
+}
+
+fn ensure_mcp_content_staging_root(state: &AppState) -> Result<PathBuf, String> {
+    let staging_root = mcp_content_staging_root(state)?;
+    let parent = staging_root
+        .parent()
+        .ok_or_else(|| "MCP content staging directory is unavailable".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create MCP content staging parent directory: {error}"))?;
+    match fs::create_dir(&staging_root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to create MCP content staging directory: {error}"
+            ));
+        }
+    }
+    require_regular_directory(&staging_root, "MCP content staging")?;
+    #[cfg(unix)]
+    fs::set_permissions(&staging_root, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("failed to secure MCP content staging directory: {error}"))?;
+    Ok(staging_root)
 }
 
 fn mcp_content_upload_root(state: &AppState) -> Result<PathBuf, String> {

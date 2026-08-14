@@ -277,6 +277,31 @@ fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() 
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn mcp_content_transfer_rejects_a_symlinked_staging_root() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("portmate-mcp-inline-link-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let outside = root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)).unwrap();
+    let request = StartMcpContentTransferRequest {
+        session_id: "session:1".to_string(),
+        protocol: TransferProtocol::Xmodem,
+        file_name: "firmware.bin".to_string(),
+        content_base64: BASE64_STANDARD.encode(b"must not leave the private root"),
+        destination: "load:loadx".to_string(),
+    };
+    assert!(stage_mcp_content_transfer(&state, &request)
+        .unwrap_err()
+        .contains("invalid MCP content staging directory"));
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn mcp_chunked_content_upload_is_owned_verified_and_copied_before_transfer() {
     let root =
