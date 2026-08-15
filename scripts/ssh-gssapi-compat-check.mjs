@@ -17,6 +17,8 @@ if (process.platform !== "linux") {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controlTimeoutMs = 180_000;
+const serverStartupTimeoutMs = 60_000;
+const serverStartupPollMs = 50;
 const cargoTargetDir = process.env.PORTMATE_GSSAPI_TARGET_DIR
   ? resolve(process.env.PORTMATE_GSSAPI_TARGET_DIR)
   : resolve(projectRoot, "target/gssapi-compat");
@@ -527,7 +529,8 @@ function inspectServerVersion(entry, container) {
 }
 
 async function waitForPublishedPorts(container, sshContainerPort) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + serverStartupTimeoutMs;
+  while (Date.now() < deadline) {
     const inspected = run("docker", ["inspect", container], {
       capture: true,
       allowFailure: true,
@@ -543,7 +546,7 @@ async function waitForPublishedPorts(container, sshContainerPort) {
         throw containerFailure(container, "GSSAPI container exited during startup");
       }
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await new Promise((resolveWait) => setTimeout(resolveWait, serverStartupPollMs));
   }
   throw containerFailure(container, "timed out waiting for published GSSAPI ports");
 }
@@ -555,7 +558,8 @@ function publishedPort(details, key) {
 }
 
 async function waitForTcp(port, container, label, expectSshBanner) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + serverStartupTimeoutMs;
+  while (Date.now() < deadline) {
     const running = run("docker", ["inspect", "--format", "{{.State.Running}}", container], {
       capture: true,
       allowFailure: true,
@@ -564,7 +568,7 @@ async function waitForTcp(port, container, label, expectSshBanner) {
       throw containerFailure(container, `${label} container stopped during startup`);
     }
     if (await tcpReady(port, expectSshBanner)) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await new Promise((resolveWait) => setTimeout(resolveWait, serverStartupPollMs));
   }
   throw containerFailure(container, `timed out waiting for ${label} on 127.0.0.1:${port}`);
 }
