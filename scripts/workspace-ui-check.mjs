@@ -2632,6 +2632,46 @@ Host staging
     await switchingTmuxDialog.waitFor({ state: "detached" });
 
     await restoreEdgeRouter();
+    await page.locator(".menu-trigger", { hasText: "工具" }).click();
+    await page.locator(".menu-popover button", { hasText: "日志管理" }).click();
+    const switchingLogManager = page.locator(".log-manager-dialog");
+    await switchingLogManager.waitFor();
+    const bundleSessionSelect = switchingLogManager.getByRole("combobox", { name: "导出会话", exact: true });
+    assert(await bundleSessionSelect.inputValue() === "edge-router",
+      "session bundle did not start from the active session");
+    await page.evaluate(() => {
+      window.__deferLogMutations = true;
+      window.__pendingLogMutations = [];
+    });
+    await switchingLogManager.getByRole("button", { name: "导出会话包", exact: true }).click();
+    await page.waitForFunction(() => window.__pendingLogMutations.length === 1);
+    await deleteEdgeRouterExternally();
+    await page.waitForFunction(() => (
+      document.querySelector('select[aria-label="导出会话"]')?.value === "backup-router"
+      && [...document.querySelectorAll(".log-bundle-controls button")]
+        .some((button) => button.textContent?.includes("导出会话包") && !button.disabled)
+    ));
+    await page.evaluate(() => {
+      window.__deferLogMutations = false;
+      window.__pendingLogMutations.shift().resolve();
+      window.__pendingLogMutations = [];
+    });
+    await page.waitForTimeout(100);
+    assert(await page.locator(".notice-dialog").count() === 0
+      && await switchingLogManager.locator(".log-bundle-result").count() === 0,
+    "a session bundle response survived deletion of its Profile");
+    await switchingLogManager.getByRole("button", { name: "导出会话包", exact: true }).click();
+    const replacementBundleNotice = page.locator(".notice-dialog", { hasText: "会话包已导出" });
+    await replacementBundleNotice.waitFor();
+    const replacementBundleRequest = await page.evaluate(() => window.__invokeCalls
+      .filter((call) => call.command === "export_session_bundle_archive").at(-1)?.args.request);
+    assert(replacementBundleRequest?.sessionId === "backup-router",
+      `session bundle retained a deleted Profile ID: ${JSON.stringify(replacementBundleRequest)}`);
+    await replacementBundleNotice.getByRole("button", { name: "确定", exact: true }).click();
+    await switchingLogManager.getByRole("button", { name: "关闭", exact: true }).last().click();
+    await switchingLogManager.waitFor({ state: "detached" });
+
+    await restoreEdgeRouter();
     await page.evaluate(() => {
       window.__sessions = window.__sessions.filter((session) => session.profile.id !== "backup-router");
       delete window.__tmuxStates["backup-router"];

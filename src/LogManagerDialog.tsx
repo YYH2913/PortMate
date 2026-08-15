@@ -89,6 +89,17 @@ export default function LogManagerDialog({
     if (!bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits) setBundleAttachments(false);
   }, [bundleAttachmentSelection.count, bundleAttachmentSelection.withinLimits]);
 
+  useEffect(() => {
+    if (bundleSessionId && sessions.some((session) => session.profile.id === bundleSessionId)) return;
+    if (bundleBusy) {
+      mutationGate.current.invalidate("write");
+      setBundleBusy(false);
+    }
+    const replacement = sessions.find((session) => session.profile.id === activeId) ?? sessions[0];
+    setBundleSessionId(replacement?.profile.id ?? "");
+    setBundleResult(null);
+  }, [activeId, bundleBusy, bundleSessionId, sessions]);
+
   async function openPreview(path: string) {
     requestGate.current.invalidate("preview");
     const token = requestGate.current.begin("preview");
