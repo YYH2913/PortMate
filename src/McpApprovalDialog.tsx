@@ -35,6 +35,7 @@ export default function McpApprovalDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
   const expiredRef = useRef(false);
+  const decisionRequestRef = useRef<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -46,6 +47,7 @@ export default function McpApprovalDialog({
 
   useEffect(() => {
     expiredRef.current = false;
+    decisionRequestRef.current = null;
     setBusy(false);
     setError("");
     setNow(Date.now());
@@ -55,18 +57,21 @@ export default function McpApprovalDialog({
   }, [request.id]);
 
   useEffect(() => {
-    if (remainingMs > 0 || expiredRef.current) return;
+    if (remainingMs > 0 || expiredRef.current || busy || decisionRequestRef.current === request.id) return;
     expiredRef.current = true;
     onExpired(request.id);
-  }, [onExpired, remainingMs, request.id]);
+  }, [busy, onExpired, remainingMs, request.id]);
 
   async function decide(approved: boolean) {
-    if (busy || remainingMs <= 0) return;
+    if (decisionRequestRef.current !== null || remainingMs <= 0) return;
+    decisionRequestRef.current = request.id;
     setBusy(true);
     setError("");
     try {
       await onDecision(request.id, approved);
     } catch (nextError) {
+      if (decisionRequestRef.current !== request.id) return;
+      decisionRequestRef.current = null;
       setBusy(false);
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     }

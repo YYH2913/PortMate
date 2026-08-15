@@ -79,6 +79,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   the latest selection. Generic Secret writes now reject NUL and payloads larger than 1 MiB.
 - Fixed Serial Analyzer and main monitor capture clearing freezing or restoring stale frames. Capture
   reads, clearing, and exports now serialize so delayed polling and duplicate clicks cannot race mutations.
+- Fixed MCP approval buttons submitting the same decision twice before the pending state rendered.
+  Approval responses are now single-flight by request ID and expiry waits for an in-flight decision.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

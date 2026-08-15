@@ -67,12 +67,17 @@ export function mergeMcpApprovals(
   incoming: unknown,
   now = Date.now(),
   resolvedIds: ReadonlySet<string> = new Set(),
+  retainedIds: ReadonlySet<string> = new Set(),
 ): McpApprovalRequest[] {
   const merged = new Map<string, McpApprovalRequest>();
   const candidates = Array.isArray(incoming) ? incoming : [];
   for (const value of [...current, ...candidates]) {
     const request = normalizeMcpApproval(value);
-    if (request && !resolvedIds.has(request.id) && Date.parse(request.expiresAt) > now) merged.set(request.id, request);
+    if (request
+      && !resolvedIds.has(request.id)
+      && (Date.parse(request.expiresAt) > now || retainedIds.has(request.id))) {
+      merged.set(request.id, request);
+    }
   }
   return [...merged.values()]
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id))

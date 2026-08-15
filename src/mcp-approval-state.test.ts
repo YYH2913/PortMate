@@ -47,6 +47,14 @@ describe("MCP approval state", () => {
       .toEqual([older]);
   });
 
+  it("retains an expired in-flight response until it resolves", () => {
+    const afterExpiry = Date.parse("2026-07-17T10:01:01.000Z");
+    expect(mergeMcpApprovals([], [base], afterExpiry, new Set(), new Set([base.id])))
+      .toEqual([base]);
+    expect(mergeMcpApprovals([], [base], afterExpiry, new Set([base.id]), new Set([base.id])))
+      .toEqual([]);
+  });
+
   it("rejects malformed IDs, missing fields and unknown actions", () => {
     expect(normalizeMcpApproval({ ...base, id: "not-a-uuid" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "delete_everything" })).toBeNull();

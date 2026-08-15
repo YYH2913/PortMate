@@ -504,6 +504,8 @@ try {
     window.__pendingGrantLists = [];
     window.__deferGrantMutations = false;
     window.__pendingGrantMutations = [];
+    window.__deferMcpApprovalResponses = false;
+    window.__pendingMcpApprovalResponses = [];
     window.__logShards = [
       { path: "logs/a.txt", format: "txt", size: 32, modifiedAt: new Date().toISOString() },
       { path: "logs/b.jsonl", format: "jsonl", size: 48, modifiedAt: new Date().toISOString() },
@@ -1365,7 +1367,14 @@ try {
           return structuredClone(window.__mcpHttpRuntime);
         }
         if (command === "list_mcp_approvals") return [];
-        if (command === "respond_mcp_approval") return null;
+        if (command === "respond_mcp_approval") {
+          if (!window.__deferMcpApprovalResponses) return null;
+          return new Promise((resolve, reject) => window.__pendingMcpApprovalResponses.push({
+            args: structuredClone(args),
+            reject,
+            resolve,
+          }));
+        }
         if (command === "save_mcp_grant") {
           const index = window.__mcpGrants.findIndex((grant) => grant.clientId === args.grant.clientId);
           if (index >= 0) window.__mcpGrants[index] = structuredClone(args.grant);
@@ -5513,10 +5522,27 @@ Host staging
     && desktopApprovalBounds.top >= 0 && desktopApprovalBounds.bottom <= 900,
   `desktop MCP approval exceeds the viewport: ${JSON.stringify(desktopApprovalBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mcp-approval.png`, fullPage: true });
-  await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).click();
+  await page.evaluate(() => {
+    window.__deferMcpApprovalResponses = true;
+    window.__pendingMcpApprovalResponses = [];
+  });
+  await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingMcpApprovalResponses.length === 1);
+  assert(await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).isDisabled()
+    && await approvalDialog.getByRole("button", { name: "拒绝", exact: true }).isDisabled(),
+  "MCP approval controls stayed enabled while a response was pending");
+  await page.evaluate(() => window.__pendingMcpApprovalResponses.shift().resolve());
   await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("断开会话"));
   await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => window.__pendingMcpApprovalResponses.length === 1);
+  await page.evaluate(() => {
+    window.__pendingMcpApprovalResponses.shift().resolve();
+    window.__deferMcpApprovalResponses = false;
+  });
   await approvalDialog.waitFor({ state: "detached" });
   const approvalCalls = await page.evaluate((expectedIds) => window.__invokeCalls
     .filter((call) => call.command === "respond_mcp_approval")
@@ -5526,6 +5552,40 @@ Host staging
     { approvalId: approvalIds[0], approved: true },
     { approvalId: approvalIds[1], approved: false },
   ]), `MCP approval responses are wrong: ${JSON.stringify(approvalCalls)}`);
+
+  const expiringApprovalId = await page.evaluate(() => {
+    const now = Date.now();
+    const id = "44444444-4444-4444-8444-444444444444";
+    window.__deferMcpApprovalResponses = true;
+    window.__pendingMcpApprovalResponses = [];
+    window.__emitTauriEvent("portmate-mcp-approval", {
+      id,
+      clientId: "expiring-client",
+      action: "run_command",
+      sessionId: "edge-router",
+      scope: "write-input",
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 2_000).toISOString(),
+    });
+    return id;
+  });
+  await approvalDialog.waitFor();
+  await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingMcpApprovalResponses.length === 1);
+  await page.waitForTimeout(2_200);
+  assert(await approvalDialog.count() === 1
+    && await approvalDialog.getByRole("button", { name: "本次允许", exact: true }).isDisabled(),
+  "an in-flight MCP approval expired before its backend decision completed");
+  await page.evaluate(() => {
+    window.__pendingMcpApprovalResponses.shift().reject(new Error("approval expired during response"));
+    window.__deferMcpApprovalResponses = false;
+  });
+  await approvalDialog.waitFor({ state: "detached" });
+  const expiringApprovalCalls = await page.evaluate((approvalId) => window.__invokeCalls
+    .filter((call) => call.command === "respond_mcp_approval" && call.args.approvalId === approvalId)
+    .length, expiringApprovalId);
+  assert(expiringApprovalCalls === 1,
+    `expiring MCP approval submitted ${expiringApprovalCalls} responses`);
 
   const senderTab = page.locator('.workspace-dock[data-dock="bottom"] .workspace-dock-tab[data-panel="sender"]');
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());

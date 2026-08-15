@@ -370,6 +370,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
   const serialCaptureActionTokensRef = useRef(new Map<string, number>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
+  const pendingMcpApprovalsRef = useRef(new Set<string>());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
   const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
   const profileDeleteHandlerRef = useRef<(sessionId: string) => void>(() => {});
@@ -1222,11 +1223,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     let disposed = false;
     let unlisten: (() => void) | null = null;
     const pruneTimer = window.setInterval(() => {
-      setMcpApprovals((current) => mergeMcpApprovals(current, [], Date.now(), resolvedMcpApprovalsRef.current));
+      setMcpApprovals((current) => mergeMcpApprovals(
+        current,
+        [],
+        Date.now(),
+        resolvedMcpApprovalsRef.current,
+        pendingMcpApprovalsRef.current,
+      ));
     }, 1000);
     void listen<unknown>(MCP_APPROVAL_EVENT, (event) => {
       if (disposed) return;
-      setMcpApprovals((current) => mergeMcpApprovals(current, [event.payload], Date.now(), resolvedMcpApprovalsRef.current));
+      setMcpApprovals((current) => mergeMcpApprovals(
+        current,
+        [event.payload],
+        Date.now(),
+        resolvedMcpApprovalsRef.current,
+        pendingMcpApprovalsRef.current,
+      ));
     }).then(async (nextUnlisten) => {
       if (disposed) {
         nextUnlisten();
@@ -1235,7 +1248,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       unlisten = nextUnlisten;
       try {
         const pending = await invokeBackend<unknown[]>("list_mcp_approvals", {});
-        if (!disposed) setMcpApprovals((current) => mergeMcpApprovals(current, pending, Date.now(), resolvedMcpApprovalsRef.current));
+        if (!disposed) setMcpApprovals((current) => mergeMcpApprovals(
+          current,
+          pending,
+          Date.now(),
+          resolvedMcpApprovalsRef.current,
+          pendingMcpApprovalsRef.current,
+        ));
       } catch {
         // A later approval event can still populate the queue.
       }
@@ -1307,14 +1326,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }, []);
 
   async function respondMcpApproval(approvalId: string, approved: boolean) {
-    await invokeBackend<void>("respond_mcp_approval", { approvalId, approved });
-    rememberResolvedMcpApproval(resolvedMcpApprovalsRef.current, approvalId);
-    setMcpApprovals((current) => mergeMcpApprovals(
-      current.filter((request) => request.id !== approvalId),
-      [],
-      Date.now(),
-      resolvedMcpApprovalsRef.current,
-    ));
+    if (resolvedMcpApprovalsRef.current.has(approvalId) || pendingMcpApprovalsRef.current.has(approvalId)) return;
+    pendingMcpApprovalsRef.current.add(approvalId);
+    try {
+      await invokeBackend<void>("respond_mcp_approval", { approvalId, approved });
+      rememberResolvedMcpApproval(resolvedMcpApprovalsRef.current, approvalId);
+      setMcpApprovals((current) => mergeMcpApprovals(
+        current.filter((request) => request.id !== approvalId),
+        [],
+        Date.now(),
+        resolvedMcpApprovalsRef.current,
+        pendingMcpApprovalsRef.current,
+      ));
+    } finally {
+      pendingMcpApprovalsRef.current.delete(approvalId);
+    }
   }
 
   function expireMcpApproval(approvalId: string) {
@@ -1324,6 +1350,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       [],
       Date.now(),
       resolvedMcpApprovalsRef.current,
+      pendingMcpApprovalsRef.current,
     ));
   }
 
