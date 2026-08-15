@@ -154,6 +154,8 @@ Profile 删除后的输入生命周期现由每会话 input epoch 收敛：主�
 
 2026-08-16 对当前 HEAD 再次完整执行本机高风险兼容门禁：21 个 SSH/SFTP/SCP 服务端、11 组 SFTP/SCP 活动断线、11 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；18 个 TCP/Telnet/TLS 服务端、Debian/Ubuntu/Alpine 的 vttest 与 Vim/less/top/dialog 全屏程序、Tmux 3.1c/3.3a/3.5a/3.7b 及完整 Tmux 控制工作流也全部通过。MCP 根 stdio/HTTP、TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全固定版本矩阵和九种官方 SDK freshness 审计均通过；Swift 0.11.0/0.12.1 从隔离 working copy 重新构建，确认串行 SwiftPM 恢复和旧版兼容编译修复消除了此前的 repository working-copy 故障。Docker DNS 的瞬时失败由既有三次完整镜像构建重试成功恢复，没有被误记为服务端兼容失败。项目与本机活动工具链保持 Rust/Cargo 1.97.1 和 Node 22.20.0；这些本机证据仍不替代 Windows/macOS Native runner、Microsoft AD、真实远端 OS、物理串口或签名发布证据。
 
+Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和串口分析器在 native window 已创建但几何恢复失败或整体初始化超过 8 秒时，会幂等强制销毁隐藏残留窗口；创建事件在超时后迟到时同样清理。创建本身因重复 label 等原因失败时不会对同名既有窗口调用 destroy，避免误关正常窗口。共享生命周期还会在成功或终止后注销 created/error listener。新增 5 项时序单测覆盖正常初始化、初始化失败、创建失败、迟到创建和初始化超时；完整前端现为 113 文件/616 项，生产构建、Workspace UI 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

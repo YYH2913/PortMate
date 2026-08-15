@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
+import { waitForChildWindowReady } from "./child-window-launch";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { addDismissedTransferId } from "./transfer-visibility";
@@ -6270,41 +6271,27 @@ async function openWorkspaceWindow(windowId: string): Promise<void> {
     popup.focus();
     return;
   }
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve();
-    };
-    const timeout = window.setTimeout(() => finish(new Error("创建工作区窗口超时")), 8_000);
-    const child = new WebviewWindow(windowId, {
-      url: path,
-      title: "PortMate",
-      center: true,
-      visible: false,
+  const child = new WebviewWindow(windowId, {
+    url: path,
+    title: "PortMate",
+    center: true,
+    visible: false,
+    width: WORKSPACE_WINDOW_WIDTH,
+    height: WORKSPACE_WINDOW_HEIGHT,
+    minWidth: WORKSPACE_WINDOW_MIN_WIDTH,
+    minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
+    preventOverflow: true,
+  });
+  await waitForChildWindowReady(child, async () => {
+    await placeAndTrackChildWindow(child, {
+      storageKey: null,
       width: WORKSPACE_WINDOW_WIDTH,
       height: WORKSPACE_WINDOW_HEIGHT,
       minWidth: WORKSPACE_WINDOW_MIN_WIDTH,
       minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
-      preventOverflow: true,
     });
-    void child.once("tauri://created", () => {
-      void placeAndTrackChildWindow(child, {
-        storageKey: null,
-        width: WORKSPACE_WINDOW_WIDTH,
-        height: WORKSPACE_WINDOW_HEIGHT,
-        minWidth: WORKSPACE_WINDOW_MIN_WIDTH,
-        minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
-      }).then(() => {
-        void child.setFocus().catch(() => {});
-        finish();
-      }, (error) => finish(new Error(formatError(error))));
-    });
-    void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));
-  });
+    void child.setFocus().catch(() => {});
+  }, "创建工作区窗口超时");
 }
 
 async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName: string): Promise<void> {
@@ -6314,38 +6301,24 @@ async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName:
     if (!popup) throw new Error("浏览器阻止了独立窗口，请允许 PortMate 打开弹出窗口。");
     return;
   }
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve();
-    };
-    const timeout = window.setTimeout(() => finish(new Error("创建独立窗口超时")), 8_000);
-    const child = new WebviewWindow(request.windowId, {
-      url: path,
-      title: `${sessionName} - PortMate`,
-      center: true,
-      visible: false,
-      width: 960,
-      height: 680,
-      minWidth: 640,
-      minHeight: 400,
-      preventOverflow: true,
-    });
-    void child.once("tauri://created", () => {
-      void placeAndTrackChildWindow(child, {
-        storageKey: detachedPaneWindowGeometryKey(request.viewId),
-        width: 960,
-        height: 680,
-        minWidth: 640,
-        minHeight: 400,
-      }).then(() => finish(), (error) => finish(new Error(formatError(error))));
-    });
-    void child.once<unknown>("tauri://error", (event) => finish(new Error(formatError(event.payload))));
+  const child = new WebviewWindow(request.windowId, {
+    url: path,
+    title: `${sessionName} - PortMate`,
+    center: true,
+    visible: false,
+    width: 960,
+    height: 680,
+    minWidth: 640,
+    minHeight: 400,
+    preventOverflow: true,
   });
+  await waitForChildWindowReady(child, () => placeAndTrackChildWindow(child, {
+    storageKey: detachedPaneWindowGeometryKey(request.viewId),
+    width: 960,
+    height: 680,
+    minWidth: 640,
+    minHeight: 400,
+  }), "创建独立窗口超时");
 }
 
 function loadWorkspaceSnapshot(storageKey: string | null = WORKSPACE_STORAGE_KEY): WorkspaceSnapshot {
