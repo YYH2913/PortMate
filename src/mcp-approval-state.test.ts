@@ -20,6 +20,20 @@ describe("MCP approval state", () => {
     expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "start_content_upload_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
+      action: "run_custom_script",
+      scope: "run-scripts",
+      target: {
+        kind: "custom-script",
+        id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
+        label: "Inspect service",
+      },
+    })).toMatchObject({
+      action: "run_custom_script",
+      scope: "run-scripts",
+      target: { label: "Inspect service" },
+    });
     expect(normalizeMcpApproval({ ...base, clientId: "bad\nclient" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, expiresAt: "2026-07-17T10:02:00.000Z" })).toBeNull();
   });
@@ -37,6 +51,21 @@ describe("MCP approval state", () => {
     expect(normalizeMcpApproval({ ...base, id: "not-a-uuid" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "delete_everything" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, sessionId: "" })).toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "run_custom_script", scope: "run-scripts" })).toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
+      action: "run_custom_script",
+      scope: "run-scripts",
+      target: { kind: "custom-script", id: "not-a-uuid", label: "Inspect service" },
+    })).toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
+      target: {
+        kind: "custom-script",
+        id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
+        label: "Unexpected target",
+      },
+    })).toBeNull();
   });
 
   it("treats malformed pending-list responses as empty", () => {

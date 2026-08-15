@@ -17,12 +17,22 @@ pub(super) type PendingMcpApprovalMap = Arc<Mutex<HashMap<String, PendingMcpAppr
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct McpApprovalTarget {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpApprovalRequest {
     pub id: String,
     pub client_id: String,
     pub action: String,
     pub session_id: String,
     pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<McpApprovalTarget>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -220,12 +230,14 @@ pub(super) async fn request_mcp_approval(
     action: &str,
     session_id: &str,
     scope: McpScope,
+    target: Option<McpApprovalTarget>,
 ) -> Result<McpApprovalOutcome, String> {
     let app_handle = state
         .app_handle
         .as_ref()
         .ok_or_else(|| "MCP approval UI is unavailable".to_string())?;
-    let request = build_mcp_approval_request(client_id, action, session_id, scope)?;
+    let request =
+        build_mcp_approval_request_with_target(client_id, action, session_id, scope, target)?;
     await_mcp_approval_with_emitter(state, request, MCP_APPROVAL_TIMEOUT, |request| {
         app_handle
             .emit("portmate-mcp-approval", request)
@@ -234,11 +246,22 @@ pub(super) async fn request_mcp_approval(
     .await
 }
 
+#[cfg(test)]
 pub(super) fn build_mcp_approval_request(
     client_id: &str,
     action: &str,
     session_id: &str,
     scope: McpScope,
+) -> Result<McpApprovalRequest, String> {
+    build_mcp_approval_request_with_target(client_id, action, session_id, scope, None)
+}
+
+pub(super) fn build_mcp_approval_request_with_target(
+    client_id: &str,
+    action: &str,
+    session_id: &str,
+    scope: McpScope,
+    target: Option<McpApprovalTarget>,
 ) -> Result<McpApprovalRequest, String> {
     validate_mcp_session_id(session_id)?;
     let created_at = Utc::now();
@@ -248,6 +271,7 @@ pub(super) fn build_mcp_approval_request(
         action: action.to_string(),
         session_id: session_id.to_string(),
         scope: mcp_scope_label(scope).to_string(),
+        target,
         created_at,
         expires_at: created_at
             + chrono::Duration::from_std(MCP_APPROVAL_TIMEOUT)

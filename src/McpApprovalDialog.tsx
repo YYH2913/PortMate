@@ -6,6 +6,7 @@ const actionLabels: Record<string, string> = {
   send_text: "发送终端文本",
   send_key: "发送终端按键",
   run_command: "执行终端命令",
+  run_custom_script: "运行自定义脚本",
   attach_tmux: "连接 Tmux",
   open_session: "打开会话",
   close_session: "断开会话",
@@ -114,6 +115,7 @@ export default function McpApprovalDialog({
           <div><dt>Client</dt><dd><code>{request.clientId}</code></dd></div>
           <div><dt>操作</dt><dd>{actionLabels[request.action] ?? request.action}</dd></div>
           <div><dt>会话</dt><dd><span>{sessionName}</span><code>{request.sessionId}</code></dd></div>
+          {request.target ? <div><dt>目标</dt><dd><span>{request.target.label}</span><code>{request.target.id}</code></dd></div> : null}
           <div><dt>Scope</dt><dd><code>{request.scope}</code></dd></div>
         </dl>
         <div className="mcp-approval-timer" id="mcp-approval-status" role="status">

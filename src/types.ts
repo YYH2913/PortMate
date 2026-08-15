@@ -551,8 +551,15 @@ export interface McpApprovalRequest {
   action: string;
   sessionId: string;
   scope: McpScope;
+  target?: McpApprovalTarget;
   createdAt: string;
   expiresAt: string;
+}
+
+export interface McpApprovalTarget {
+  kind: "custom-script";
+  id: string;
+  label: string;
 }
 
 export interface McpHttpConfigRequest {

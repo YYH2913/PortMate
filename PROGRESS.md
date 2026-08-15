@@ -86,6 +86,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同日对当前 HEAD 完成附件故障路径的最终本机复验：`npm run test:terminal-compat` 中 WebGL Insert/Normal/Insert 光标依次稳定采样为 1x17、7x17 和 1x17 像素；`npm run test:workspace-ui` 完整通过 MCP 随机 Client ID、授权、会话、传输、凭据生命周期及桌面/移动布局；`npm run test:portable-cross` 完整通过 Windows GNU x86_64、macOS Apple Silicon 和 FreeBSD x86_64 的五个可移植 crate。项目与本机活动工具链均固定为 Rust/Cargo 1.97.1。以上结果确认本机可复现的 WebGL 光标、Workspace UI 和跨目标编译故障已收敛，仍不替代 Windows/macOS 原生 runner 的最终执行记录。
 
+同日继续审查自定义脚本的 MCP 授权生命周期，发现前端审批事件白名单遗漏 `run_custom_script`/`run-scripts`，启用 `confirmWrites` 的脚本调用会被桌面丢弃并在 60 秒后 fail-closed；同时原审批只绑定脚本 ID，没有绑定等待期间可能变化的正文版本。审批事件现携带仅由桌面 Store 生成的脚本名称与 UUID 摘要，弹窗在桌面/移动端明确显示目标且仍不包含正文；授权链在提示前捕获脚本 `updatedAt`，批准后和克隆发送正文时各自精确复核，脚本被编辑、禁用、删除或改目标后会拒绝旧审批并要求重新确认。前端事件解析严格要求 action/scope/目标类型/UUID/有界名称一致，并拒绝其他 action 夹带目标。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source 和 release-upgrade 全部通过；移动端 390x844 截图确认新增目标行、倒计时和审批按钮均在视口内。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

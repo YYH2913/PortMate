@@ -7,6 +7,7 @@ const approvalActionScopes: Record<string, McpScope> = {
   send_text: "write-input",
   send_key: "write-input",
   run_command: "write-input",
+  run_custom_script: "run-scripts",
   attach_tmux: "write-input",
   open_session: "manage-sessions",
   close_session: "manage-sessions",
@@ -32,14 +33,32 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
   const createdAt = Date.parse(source.createdAt);
   const expiresAt = Date.parse(source.expiresAt);
   if (!Number.isFinite(createdAt) || !Number.isFinite(expiresAt) || expiresAt <= createdAt || expiresAt - createdAt > 65_000) return null;
+  const target = normalizeApprovalTarget(source.action, source.target);
+  if (target === null) return null;
   return {
     id: source.id.toLowerCase(),
     clientId: source.clientId,
     action: source.action,
     sessionId: source.sessionId,
     scope: source.scope as McpScope,
+    ...(target ? { target } : {}),
     createdAt: new Date(createdAt).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
+  };
+}
+
+function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
+  if (action !== "run_custom_script") return value === undefined ? undefined : null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.kind !== "custom-script"
+    || typeof source.id !== "string"
+    || !approvalIdPattern.test(source.id)
+    || !validText(source.label, 512)) return null;
+  return {
+    kind: "custom-script",
+    id: source.id.toLowerCase(),
+    label: source.label,
   };
 }
 

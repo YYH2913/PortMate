@@ -192,6 +192,48 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         Some(script.id.as_str())
     );
 
+    let execution_context = capture_mcp_write_execution_context(&state, &request).unwrap();
+    let approval = build_mcp_approval_request_with_target(
+        &request.client_id,
+        &request.command,
+        &session_id,
+        McpScope::RunScripts,
+        execution_context.approval_target(),
+    )
+    .unwrap();
+    let approval_json = serde_json::to_value(&approval).unwrap();
+    assert_eq!(approval_json["target"]["kind"], "custom-script");
+    assert_eq!(approval_json["target"]["id"], script.id);
+    assert_eq!(approval_json["target"]["label"], script.name);
+    assert!(!approval_json.to_string().contains(&script.content));
+
+    state.store.lock().unwrap().custom_scripts[0].updated_at =
+        script.updated_at + chrono::Duration::seconds(1);
+    assert!(revalidate_ipc_write_target_with_context(
+        &state,
+        &request,
+        McpScope::RunScripts,
+        &session_id,
+        false,
+        &execution_context,
+    )
+    .unwrap_err()
+    .contains("changed after authorization"));
+    assert!(tauri::async_runtime::block_on(run_custom_script_inner(
+        &state,
+        RunCustomScriptRequest {
+            script_id: script.id.clone(),
+            session_id: session_id.clone(),
+        },
+        Some(script.updated_at),
+        "script-runner",
+        None,
+        true,
+    ))
+    .unwrap_err()
+    .contains("changed after authorization"));
+    state.store.lock().unwrap().custom_scripts[0].updated_at = script.updated_at;
+
     state.store.lock().unwrap().custom_scripts[0].mcp_enabled = false;
     assert!(revalidate_ipc_write_target(
         &state,
@@ -271,6 +313,7 @@ fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
                 script_id: script.id.clone(),
                 session_id: profile.id.clone(),
             },
+            Some(script.updated_at),
             "desktop-user",
             Some("run_custom_script"),
             false,

@@ -13,6 +13,22 @@ pub(super) async fn execute_ipc_request(
     state: AppState,
     request: IpcRequest,
 ) -> Result<serde_json::Value, String> {
+    execute_ipc_request_inner(state, request, None).await
+}
+
+pub(super) async fn execute_ipc_request_with_context(
+    state: AppState,
+    request: IpcRequest,
+    execution_context: &McpWriteExecutionContext,
+) -> Result<serde_json::Value, String> {
+    execute_ipc_request_inner(state, request, Some(execution_context)).await
+}
+
+async fn execute_ipc_request_inner(
+    state: AppState,
+    request: IpcRequest,
+    execution_context: Option<&McpWriteExecutionContext>,
+) -> Result<serde_json::Value, String> {
     match request.command.as_str() {
         "list_sessions" => {
             let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -174,6 +190,12 @@ pub(super) async fn execute_ipc_request(
         "run_custom_script" => {
             let script_id = ipc_string_arg(&request.args, "scriptId")?.to_string();
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let expected_updated_at = execution_context
+                .ok_or_else(|| {
+                    "MCP custom script execution is missing its authorization context"
+                        .to_string()
+                })?
+                .custom_script_updated_at(&script_id)?;
             let actor = mcp_audit_actor(&request.client_id);
             let event = run_custom_script_inner(
                 &state,
@@ -181,6 +203,7 @@ pub(super) async fn execute_ipc_request(
                     script_id,
                     session_id,
                 },
+                Some(expected_updated_at),
                 &actor,
                 None,
                 true,

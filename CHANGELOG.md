@@ -42,6 +42,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   port bound and fail restoration with `Address already in use`.
 - Fixed serial analyzer close behavior and connected-state refresh, terminal input focus after MCP
   Client ID generation, modal interaction layering, and multiple path-preservation issues.
+- Fixed confirmed `run_custom_script` requests being dropped by the desktop approval event filter.
+  The approval dialog now identifies the exact saved script by its trusted name and UUID.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
@@ -58,6 +60,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Saved custom-script bodies are sent only to the selected terminal transport. Structured events,
   screen summaries, text/JSONL logs, desktop command results, MCP responses, and audit records retain
   only a placeholder, transmitted byte count, and authorized script identifier as applicable.
+- MCP custom-script approvals are bound to the script ID and `updatedAt` version captured before the
+  prompt. Editing, disabling, deleting, or retargeting the script while approval is pending fails
+  closed and requires a new review; approval events contain only the trusted script summary.
 - Dependency gates now reject moderate-or-higher npm advisories and unreviewed RustSec changes. The
   remaining RSA advisory and upstream warnings are documented with exact mitigations in
   [SECURITY.md](./SECURITY.md).

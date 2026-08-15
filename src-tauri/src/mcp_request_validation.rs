@@ -1,5 +1,98 @@
 use super::*;
 
+#[derive(Debug, Clone, Default)]
+pub(super) enum McpWriteExecutionContext {
+    #[default]
+    Generic,
+    CustomScript {
+        script_id: String,
+        updated_at: DateTime<Utc>,
+        approval_target: McpApprovalTarget,
+    },
+}
+
+impl McpWriteExecutionContext {
+    pub(super) fn approval_target(&self) -> Option<McpApprovalTarget> {
+        match self {
+            Self::Generic => None,
+            Self::CustomScript {
+                approval_target, ..
+            } => Some(approval_target.clone()),
+        }
+    }
+
+    pub(super) fn custom_script_updated_at(
+        &self,
+        script_id: &str,
+    ) -> Result<DateTime<Utc>, String> {
+        match self {
+            Self::CustomScript {
+                script_id: expected_id,
+                updated_at,
+                ..
+            } if expected_id == script_id => Ok(*updated_at),
+            _ => Err(
+                "MCP custom script execution is missing its authorized script version"
+                    .to_string(),
+            ),
+        }
+    }
+
+    pub(super) fn revalidate(
+        &self,
+        state: &AppState,
+        request: &IpcRequest,
+    ) -> Result<(), String> {
+        let Self::CustomScript {
+            script_id,
+            updated_at,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let session_id = ipc_string_arg(&request.args, "sessionId")?;
+        let current_script_id = ipc_string_arg(&request.args, "scriptId")?;
+        if current_script_id != script_id {
+            return Err(
+                "MCP custom script target changed after authorization; request was not executed"
+                    .to_string(),
+            );
+        }
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        let script = custom_script_for_session(&store, script_id, session_id, true)?;
+        if script.updated_at != *updated_at {
+            return Err(
+                "MCP custom script changed after authorization; review and approve it again"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn capture_mcp_write_execution_context(
+    state: &AppState,
+    request: &IpcRequest,
+) -> Result<McpWriteExecutionContext, String> {
+    if request.command != "run_custom_script" {
+        return Ok(McpWriteExecutionContext::Generic);
+    }
+    let session_id = ipc_string_arg(&request.args, "sessionId")?;
+    let script_id = ipc_string_arg(&request.args, "scriptId")?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    let script = custom_script_for_session(&store, script_id, session_id, true)?;
+    Ok(McpWriteExecutionContext::CustomScript {
+        script_id: script.id.clone(),
+        updated_at: script.updated_at,
+        approval_target: McpApprovalTarget {
+            kind: "custom-script".to_string(),
+            id: script.id,
+            label: script.name,
+        },
+    })
+}
+
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
         "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),

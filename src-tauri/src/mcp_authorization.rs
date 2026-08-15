@@ -121,6 +121,24 @@ pub(super) fn revalidate_ipc_write_target(
     validate_ipc_write_args(state, request)
 }
 
+pub(super) fn revalidate_ipc_write_target_with_context(
+    state: &AppState,
+    request: &IpcRequest,
+    scope: McpScope,
+    authorized_session_id: &str,
+    trusted_bootstrap: bool,
+    context: &McpWriteExecutionContext,
+) -> Result<(), String> {
+    revalidate_ipc_write_target(
+        state,
+        request,
+        scope,
+        authorized_session_id,
+        trusted_bootstrap,
+    )?;
+    context.revalidate(state, request)
+}
+
 fn append_and_save_mcp_audit(
     store_path: &Path,
     store: &mut SessionStore,
@@ -306,14 +324,19 @@ pub(super) async fn handle_ipc_request(
             return Err(error);
         }
     };
-    if let Err(error) = validate_ipc_write_args(&state, &request) {
-        record_invalid_mcp_write(&state, &request, scope, Some(&session_id)).map_err(
-            |audit_error| {
-                format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
-            },
-        )?;
-        return Err(error);
-    }
+    let execution_context = match validate_ipc_write_args(&state, &request)
+        .and_then(|()| capture_mcp_write_execution_context(&state, &request))
+    {
+        Ok(context) => context,
+        Err(error) => {
+            record_invalid_mcp_write(&state, &request, scope, Some(&session_id)).map_err(
+                |audit_error| {
+                    format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
+                },
+            )?;
+            return Err(error);
+        }
+    };
     let (audit_id, approval_required, trusted_bootstrap) =
         match begin_mcp_write_audit(&state, &request, scope, &session_id)? {
             McpWriteAuditStart::Authorized {
@@ -330,6 +353,7 @@ pub(super) async fn handle_ipc_request(
             &request.command,
             &session_id,
             scope,
+            execution_context.approval_target(),
         )
         .await
         {
@@ -375,14 +399,17 @@ pub(super) async fn handle_ipc_request(
     } else {
         None
     };
-    let result = match revalidate_ipc_write_target(
+    let result = match revalidate_ipc_write_target_with_context(
         &state,
         &request,
         scope,
         &session_id,
         trusted_bootstrap,
+        &execution_context,
     ) {
-        Ok(()) => execute_ipc_request(state.clone(), request).await,
+        Ok(()) => {
+            execute_ipc_request_with_context(state.clone(), request, &execution_context).await
+        }
         Err(error) => Err(error),
     };
     let decision = if result.is_ok() {

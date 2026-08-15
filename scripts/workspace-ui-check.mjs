@@ -4602,9 +4602,14 @@ Host staging
     window.__emitTauriEvent("portmate-mcp-approval", {
       id: "33333333-3333-4333-8333-333333333333",
       clientId: "mobile-ops",
-      action: "create_tunnel",
+      action: "run_custom_script",
       sessionId: "edge-router",
-      scope: "tunnel",
+      scope: "run-scripts",
+      target: {
+        kind: "custom-script",
+        id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
+        label: "Inspect service",
+      },
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + 60_000).toISOString(),
     });
@@ -4630,6 +4635,11 @@ Host staging
   assert(await mobileApproval.getByRole("button", { name: "拒绝", exact: true }).isVisible()
     && await mobileApproval.getByRole("button", { name: "本次允许", exact: true }).isVisible(),
   "mobile MCP approval actions are unreachable");
+  const mobileApprovalText = await mobileApproval.textContent();
+  assert(mobileApprovalText.includes("运行自定义脚本")
+    && mobileApprovalText.includes("Inspect service")
+    && mobileApprovalText.includes("69c06a07-dc48-4d4e-9498-6f42b6deab21"),
+  "MCP custom-script approval does not identify the exact saved script");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-approval-mobile.png`, fullPage: true });
   await mobileApproval.getByRole("button", { name: "拒绝", exact: true }).click();
   await mobileApproval.waitFor({ state: "detached" });

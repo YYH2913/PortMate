@@ -56,6 +56,7 @@ async fn delete_session_profile_persists_and_cleans_runtime_state() {
                 action: "close_session".to_string(),
                 session_id: "session:1".to_string(),
                 scope: "manage-sessions".to_string(),
+                target: None,
                 created_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::seconds(60),
             },
