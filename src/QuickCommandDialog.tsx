@@ -8,6 +8,7 @@ import {
   moveQuickCommand,
   normalizeQuickCommandLibrary,
   normalizeQuickCommandText,
+  quickCommandLibraryHasUnsavedChanges,
 } from "./quick-command-state";
 import type { QuickCommand } from "./quick-command-state";
 
@@ -25,6 +26,7 @@ export default function QuickCommandDialog({
   const [error, setError] = useState("");
   const selectedIndex = items.findIndex((item) => item.id === selectedId);
   const selected = selectedIndex >= 0 ? items[selectedIndex] : undefined;
+  const dirty = quickCommandLibraryHasUnsavedChanges(items, commands);
 
   function addCommand() {
     if (items.length >= MAX_QUICK_COMMANDS) {
@@ -74,8 +76,13 @@ export default function QuickCommandDialog({
     onSave(normalized.items);
   }
 
+  function closeDialog() {
+    if (dirty && !window.confirm("快速命令有未保存的更改，关闭窗口将放弃这些内容。是否继续？")) return;
+    onClose();
+  }
+
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
       <form
         className="wind-dialog utility-dialog quick-command-dialog"
         role="dialog"
@@ -86,7 +93,7 @@ export default function QuickCommandDialog({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong id="quick-command-dialog-title">快速命令</strong>
-          <button type="button" title="关闭" aria-label="关闭快速命令" onClick={onClose}><X size={20} /></button>
+          <button type="button" title="关闭" aria-label="关闭快速命令" onClick={closeDialog}><X size={20} /></button>
         </header>
         <section className="quick-command-content">
           <aside className="quick-command-list">
@@ -143,7 +150,7 @@ export default function QuickCommandDialog({
         </section>
         <footer className="utility-actions quick-command-dialog-actions">
           {error ? <span role="alert">{error}</span> : <span />}
-          <button type="button" onClick={onClose}>取消</button>
+          <button type="button" onClick={closeDialog}>取消</button>
           <button type="submit">保存</button>
         </footer>
       </form>

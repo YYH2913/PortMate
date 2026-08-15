@@ -8,6 +8,7 @@ import {
   moveQuickCommand,
   normalizeQuickCommandLibrary,
   quickCommandDispatch,
+  quickCommandLibraryHasUnsavedChanges,
   quickCommandPayload,
 } from "./quick-command-state";
 
@@ -71,5 +72,17 @@ describe("quick command state", () => {
     expect(moveQuickCommand(items, "b", -1).map((item) => item.id)).toEqual(["b", "a"]);
     expect(moveQuickCommand(items, "a", -1)).toBe(items);
     expect(items.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("detects edits, additions, deletion, and ordering changes", () => {
+    const saved = [
+      { id: "a", label: "A", command: "echo a", appendEnter: true },
+      { id: "b", label: "B", command: "echo b", appendEnter: false },
+    ];
+    expect(quickCommandLibraryHasUnsavedChanges(saved.map((item) => ({ ...item })), saved)).toBe(false);
+    expect(quickCommandLibraryHasUnsavedChanges([{ ...saved[0], label: "Changed" }, saved[1]], saved)).toBe(true);
+    expect(quickCommandLibraryHasUnsavedChanges(saved.slice(0, 1), saved)).toBe(true);
+    expect(quickCommandLibraryHasUnsavedChanges([...saved, { id: "c", label: "C", command: "c", appendEnter: true }], saved)).toBe(true);
+    expect(quickCommandLibraryHasUnsavedChanges([...saved].reverse(), saved)).toBe(true);
   });
 });

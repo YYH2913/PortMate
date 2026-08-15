@@ -91,6 +91,20 @@ export function moveQuickCommand(items: QuickCommand[], id: string, offset: -1 |
   return next;
 }
 
+export function quickCommandLibraryHasUnsavedChanges(
+  draft: readonly QuickCommand[],
+  saved: readonly QuickCommand[],
+): boolean {
+  return draft.length !== saved.length || draft.some((command, index) => {
+    const baseline = saved[index];
+    return !baseline
+      || command.id !== baseline.id
+      || command.label !== baseline.label
+      || command.command !== baseline.command
+      || command.appendEnter !== baseline.appendEnter;
+  });
+}
+
 export function createQuickCommandId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `quick:${crypto.randomUUID()}`;
   return `quick:${Date.now()}:${Math.random().toString(16).slice(2)}`;

@@ -56,6 +56,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   older saved credential while a different username or secret update is visible in the editor.
 - Fixed unsaved MCP grant and HTTP settings being discarded on destructive navigation, added exact
   grant-revocation confirmation, and locked mutable settings while save responses are pending.
+- Fixed the quick-command manager silently discarding unsaved additions, edits, deletions, and
+  ordering changes when closed from the title bar, backdrop, or Cancel action.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

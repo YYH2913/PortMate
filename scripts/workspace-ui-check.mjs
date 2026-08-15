@@ -5435,6 +5435,58 @@ Host staging
     `OneKey lifecycle browser exceptions: ${JSON.stringify(oneKeyLifecycleErrors)}`);
   await oneKeyLifecyclePage.close();
 
+  const quickCommandDraftPage = await context.newPage();
+  const quickCommandDraftErrors = [];
+  quickCommandDraftPage.on("pageerror", (error) => quickCommandDraftErrors.push(error.message));
+  await quickCommandDraftPage.goto(appUrl);
+  await quickCommandDraftPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await quickCommandDraftPage.getByRole("button", { name: "工具", exact: true }).click();
+  await quickCommandDraftPage.getByRole("button", { name: "快速命令", exact: true }).click();
+  const quickCommandDialog = quickCommandDraftPage.locator(".quick-command-dialog");
+  await quickCommandDialog.waitFor();
+  await quickCommandDialog.getByRole("button", { name: "添加快速命令", exact: true }).click();
+  await quickCommandDialog.getByRole("textbox", { name: "快速命令名称", exact: true }).fill("Unsaved private command");
+  await quickCommandDialog.getByRole("textbox", { name: "快速命令内容", exact: true }).fill("printf hidden-command-body");
+  await quickCommandDraftPage.evaluate(() => {
+    window.__quickCommandDiscardPrompts = [];
+    window.__originalQuickCommandConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__quickCommandDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
+  await quickCommandDialog.getByRole("button", { name: "关闭快速命令", exact: true }).click();
+  assert(await quickCommandDialog.isVisible()
+    && await quickCommandDialog.getByRole("textbox", { name: "快速命令名称", exact: true }).inputValue() === "Unsaved private command"
+    && await quickCommandDialog.getByRole("textbox", { name: "快速命令内容", exact: true }).inputValue() === "printf hidden-command-body",
+  "quick-command close discarded an unsaved draft after cancellation");
+  await quickCommandDraftPage.evaluate(() => {
+    window.confirm = (message) => {
+      window.__quickCommandDiscardPrompts.push(String(message));
+      return true;
+    };
+  });
+  await quickCommandDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await quickCommandDialog.waitFor({ state: "detached" });
+  const quickCommandDiscardPrompts = await quickCommandDraftPage.evaluate(() => {
+    window.confirm = window.__originalQuickCommandConfirm;
+    return window.__quickCommandDiscardPrompts;
+  });
+  assert(quickCommandDiscardPrompts.length === 2
+    && quickCommandDiscardPrompts.every((prompt) => prompt.includes("未保存的更改"))
+    && quickCommandDiscardPrompts.every((prompt) => !prompt.includes("Unsaved private command") && !prompt.includes("hidden-command-body")),
+  `quick-command discard confirmation was missing or exposed command text: ${JSON.stringify(quickCommandDiscardPrompts)}`);
+  await quickCommandDraftPage.getByRole("button", { name: "工具", exact: true }).click();
+  await quickCommandDraftPage.getByRole("button", { name: "快速命令", exact: true }).click();
+  const reopenedQuickCommandDialog = quickCommandDraftPage.locator(".quick-command-dialog");
+  await reopenedQuickCommandDialog.waitFor();
+  assert(await reopenedQuickCommandDialog.locator('[role="option"]', { hasText: "Unsaved private command" }).count() === 0,
+    "discarded quick-command draft was unexpectedly persisted");
+  await reopenedQuickCommandDialog.getByRole("button", { name: "关闭快速命令", exact: true }).click();
+  assert(quickCommandDraftErrors.length === 0,
+    `quick-command draft browser exceptions: ${JSON.stringify(quickCommandDraftErrors)}`);
+  await quickCommandDraftPage.close();
+
   const hostKeyLifecyclePage = await context.newPage();
   const hostKeyLifecycleErrors = [];
   hostKeyLifecyclePage.on("pageerror", (error) => hostKeyLifecycleErrors.push(error.message));
