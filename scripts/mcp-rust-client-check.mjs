@@ -55,9 +55,15 @@ tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-th
     writeFileSync(manifestPath, manifest, "utf8");
   }
 
-  if (manifestChanged || !existsSync(join(environmentRoot, "Cargo.lock"))) {
-    run("cargo", ["generate-lockfile", "--manifest-path", manifestPath], process.env);
+  const lockSource = join(project, "locks", sdkVersion, "Cargo.lock");
+  if (!existsSync(lockSource)) {
+    throw new Error(`MCP Rust SDK ${sdkVersion} lock file does not exist: ${lockSource}`);
   }
+  const locked = readFileSync(lockSource, "utf8");
+  if (!locked.includes(`name = "rmcp"\nversion = "${sdkVersion}"`)) {
+    throw new Error(`MCP Rust SDK ${sdkVersion} lock file pins a different SDK version`);
+  }
+  cpSync(lockSource, join(environmentRoot, "Cargo.lock"));
   run("cargo", [
     "run",
     "--quiet",
@@ -81,6 +87,7 @@ function run(command, args, env) {
     env,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: 600_000,
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);

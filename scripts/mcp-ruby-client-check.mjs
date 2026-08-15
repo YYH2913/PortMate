@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,12 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   || !/^\d{4}-\d{2}-\d{2}$/.test(entry.protocolVersion)
   || !versionPattern.test(entry.faradayVersion)
   || !versionPattern.test(entry.eventStreamParserVersion)
+  || !versionPattern.test(entry.jsonSchemerVersion)
+  || !versionPattern.test(entry.faradayNetHttpVersion)
+  || !versionPattern.test(entry.hanaVersion)
+  || !versionPattern.test(entry.regexpParserVersion)
+  || !versionPattern.test(entry.simpleidnVersion)
+  || !versionPattern.test(entry.netHttpVersion)
 ))) {
   throw new Error("scripts/mcp-ruby-client-versions.json must contain exact SDK, dependency, and protocol versions");
 }
@@ -34,17 +40,29 @@ run(ruby, ["-e", "require 'rubygems'; raise 'Ruby 3.2 or newer is required' if G
 
 for (const entry of matrix) {
   const environmentRoot = join(projectRoot, "target", `mcp-ruby-sdk-${entry.version}`);
+  const required = [
+    ["hana", entry.hanaVersion],
+    ["regexp_parser", entry.regexpParserVersion],
+    ["simpleidn", entry.simpleidnVersion],
+    ["net-http", entry.netHttpVersion],
+    ["faraday-net_http", entry.faradayNetHttpVersion],
+    ["json_schemer", entry.jsonSchemerVersion],
+    ["faraday", entry.faradayVersion],
+    ["event_stream_parser", entry.eventStreamParserVersion],
+    ["mcp", entry.version],
+  ];
+  const lockMarker = `${JSON.stringify(required)}\n`;
+  const lockMarkerPath = join(environmentRoot, ".portmate-dependency-lock.json");
+  if (!existsSync(lockMarkerPath) || readFileSync(lockMarkerPath, "utf8") !== lockMarker) {
+    rmSync(environmentRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+  mkdirSync(environmentRoot, { recursive: true });
   const environment = {
     ...process.env,
     GEM_HOME: environmentRoot,
     GEM_PATH: environmentRoot,
     GEM_SPEC_CACHE: join(environmentRoot, "spec-cache"),
   };
-  const required = [
-    ["mcp", entry.version],
-    ["faraday", entry.faradayVersion],
-    ["event_stream_parser", entry.eventStreamParserVersion],
-  ];
   for (const [name, version] of required) {
     const installed = run(ruby, [
       "-e",
@@ -65,6 +83,7 @@ for (const entry of matrix) {
       ], { env: environment, timeout: 120_000 });
     }
   }
+  writeFileSync(lockMarkerPath, lockMarker, { encoding: "utf8", mode: 0o600 });
 
   run(ruby, [join(projectRoot, "scripts", "mcp-ruby-client-check.rb")], {
     env: {

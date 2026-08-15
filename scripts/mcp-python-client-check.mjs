@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,21 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
 
 for (const { version: sdkVersion, protocolVersion } of matrix) {
   const environmentRoot = join(projectRoot, "target", `mcp-python-sdk-${sdkVersion}`);
+  const lockPath = join(
+    projectRoot,
+    "scripts",
+    "mcp-python-client-check",
+    "locks",
+    sdkVersion,
+    "requirements.txt",
+  );
+  if (!existsSync(lockPath)) {
+    throw new Error(`MCP Python SDK ${sdkVersion} lock file does not exist: ${lockPath}`);
+  }
+  const expectedSnapshot = normalizedSnapshot(readFileSync(lockPath, "utf8"));
+  if (!expectedSnapshot.split("\n").includes(`mcp==${sdkVersion}`)) {
+    throw new Error(`MCP Python SDK ${sdkVersion} lock file pins a different SDK version`);
+  }
   const environmentPython = process.platform === "win32"
     ? join(environmentRoot, "Scripts", "python.exe")
     : join(environmentRoot, "bin", "python");
@@ -23,19 +38,22 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
     run(bootstrap.command, [...bootstrap.args, "-m", "venv", environmentRoot]);
   }
 
-  const installedVersion = run(
-    environmentPython,
-    ["-c", "import importlib.metadata; print(importlib.metadata.version('mcp'))"],
-    { capture: true, allowFailure: true },
-  );
-  if (installedVersion.status !== 0 || installedVersion.stdout.trim() !== sdkVersion) {
+  let installedSnapshot = pythonPackageSnapshot(environmentPython);
+  if (installedSnapshot !== expectedSnapshot) {
+    rmSync(environmentRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    run(bootstrap.command, [...bootstrap.args, "-m", "venv", environmentRoot]);
     run(environmentPython, [
       "-m",
       "pip",
       "install",
       "--disable-pip-version-check",
-      `mcp==${sdkVersion}`,
-    ]);
+      "--requirement",
+      lockPath,
+    ], { timeout: 300_000 });
+    installedSnapshot = pythonPackageSnapshot(environmentPython);
+  }
+  if (installedSnapshot !== expectedSnapshot) {
+    throw new Error(`MCP Python SDK ${sdkVersion} environment does not match its dependency lock`);
   }
 
   run(environmentPython, [join(projectRoot, "scripts", "mcp-python-client-check.py")], {
@@ -59,6 +77,7 @@ function findPython() {
       cwd: projectRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
     });
     if (!probe.error && probe.status === 0) return candidate;
   }
@@ -71,6 +90,8 @@ function run(command, args, options = {}) {
     env: options.env ?? process.env,
     encoding: "utf8",
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeout ?? 300_000,
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && !options.allowFailure) {
@@ -78,4 +99,17 @@ function run(command, args, options = {}) {
     throw new Error(`${command} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);
   }
   return result;
+}
+
+function pythonPackageSnapshot(environmentPython) {
+  const result = run(
+    environmentPython,
+    ["-m", "pip", "freeze", "--exclude", "pip"],
+    { capture: true, allowFailure: true, timeout: 30_000 },
+  );
+  return result.status === 0 ? normalizedSnapshot(result.stdout) : "";
+}
+
+function normalizedSnapshot(value) {
+  return value.trim().replace(/\r\n?/g, "\n");
 }

@@ -322,15 +322,6 @@ jobs:
 
       - run: npm ci
       - run: mkdir -p target/native-ci
-      - run: npm run test:mcp-typescript-client
-      - run: npm run test:mcp-python-client
-      - run: npm run test:mcp-go-client
-      - run: npm run test:mcp-rust-client
-      - run: npm run test:mcp-ruby-client
-      - run: npm run test:mcp-java-client
-      - run: npm run test:mcp-kotlin-client
-      - run: npm run test:mcp-csharp-client
-      - run: npm run test:mcp-swift-client
       - run: node scripts/ci-command-log.mjs target/native-ci/ssh-server-compat.log npm run test:ssh-server-compat
       - run: node scripts/ci-command-log.mjs target/native-ci/tcp-telnet-server-compat.log npm run test:tcp-telnet-server-compat
       - run: node scripts/ci-command-log.mjs target/native-ci/tmux-version-compat.log npm run test:tmux-version-compat

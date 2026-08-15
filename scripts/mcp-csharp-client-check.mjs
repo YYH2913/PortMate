@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -42,7 +43,24 @@ const dotnet = await ensureDotnet(matrix.dotnet, environment);
 for (const entry of matrix.sdks) {
   const environmentRoot = join(projectRoot, "target", `mcp-csharp-sdk-${entry.version}`);
   const lockFile = join(environmentRoot, "packages.lock.json");
+  const lockSource = join(
+    projectRoot,
+    "scripts",
+    "mcp-csharp-client-check",
+    "locks",
+    entry.version,
+    "packages.lock.json",
+  );
   mkdirSync(environmentRoot, { recursive: true });
+  if (!existsSync(lockSource)) {
+    throw new Error(`MCP C# SDK ${entry.version} lock file does not exist: ${lockSource}`);
+  }
+  const locked = JSON.parse(readFileSync(lockSource, "utf8"));
+  const direct = locked.dependencies?.["net10.0"]?.["ModelContextProtocol.Core"];
+  if (direct?.resolved !== entry.version) {
+    throw new Error(`MCP C# SDK ${entry.version} lock file pins ${direct?.resolved ?? "no SDK version"}`);
+  }
+  cpSync(lockSource, lockFile);
   const properties = [
     `-p:McpSdkVersion=${entry.version}`,
     `-p:PortMateMcpProtocolVersion=${entry.protocolVersion}`,
@@ -53,7 +71,7 @@ for (const entry of matrix.sdks) {
   run(dotnet, [
     "restore",
     project,
-    existsSync(lockFile) ? "--locked-mode" : "--force-evaluate",
+    "--locked-mode",
     ...properties,
   ], { env: environment, timeout: 180_000 });
   run(dotnet, [

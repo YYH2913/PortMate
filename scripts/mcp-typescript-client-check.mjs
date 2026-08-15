@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -49,16 +49,22 @@ for (const {
   if (manifestChanged) writeFileSync(manifestPath, manifest, "utf8");
 
   const lockPath = join(environmentRoot, "package-lock.json");
-  if (manifestChanged || !existsSync(lockPath)) {
-    const npm = npmInvocation([
-      "install",
-      "--package-lock-only",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-    ]);
-    run(npm.command, npm.args, { cwd: environmentRoot, timeout: 120_000 });
+  const lockSource = join(
+    projectRoot,
+    "scripts",
+    "mcp-typescript-client-check",
+    "locks",
+    sdkVersion,
+    "package-lock.json",
+  );
+  if (!existsSync(lockSource)) {
+    throw new Error(`MCP TypeScript SDK ${sdkVersion} lock file does not exist: ${lockSource}`);
   }
+  const lock = JSON.parse(readFileSync(lockSource, "utf8"));
+  if (lock.packages?.[""]?.dependencies?.["@modelcontextprotocol/sdk"] !== sdkVersion) {
+    throw new Error(`MCP TypeScript SDK ${sdkVersion} lock file pins a different SDK version`);
+  }
+  cpSync(lockSource, lockPath);
   const npm = npmInvocation([
     "ci",
     "--ignore-scripts",
