@@ -411,6 +411,10 @@ try {
     window.__pendingHostKeyMutations = [];
     window.__deferProfileMutations = false;
     window.__pendingProfileMutations = [];
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves = [];
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation = [];
     window.__profileMutationFailureMode = null;
     window.__secretSequence = 0;
     window.__sessionCredentialSequence = 0;
@@ -622,32 +626,39 @@ try {
             window.__failNextProfileSave = false;
             throw new Error("simulated Profile save failure");
           }
-          const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
-          const saved = index >= 0
-            ? {
-              ...window.__sessions[index],
-              profile: structuredClone(args.profile),
-            }
-            : {
-              profile: structuredClone(args.profile),
-              runtime: {
-                sessionId: args.profile.id,
-                paneId: `${args.profile.id}:main`,
-                status: "disconnected",
-                title: args.profile.name,
-                cwd: null,
-                connectedSince: null,
-                lastActivity: null,
-                lastDisconnect: null,
-                lastDisconnectReason: null,
-                activeTransport: null,
-              },
-              logLines: 0,
-              lastLine: "",
-            };
-          if (index >= 0) window.__sessions[index] = saved;
-          else window.__sessions.push(saved);
-          return saved;
+          const complete = () => {
+            const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
+            const saved = index >= 0
+              ? {
+                ...window.__sessions[index],
+                profile: structuredClone(args.profile),
+              }
+              : {
+                profile: structuredClone(args.profile),
+                runtime: {
+                  sessionId: args.profile.id,
+                  paneId: `${args.profile.id}:main`,
+                  status: "disconnected",
+                  title: args.profile.name,
+                  cwd: null,
+                  connectedSince: null,
+                  lastActivity: null,
+                  lastDisconnect: null,
+                  lastDisconnectReason: null,
+                  activeTransport: null,
+                },
+                logLines: 0,
+                lastLine: "",
+              };
+            if (index >= 0) window.__sessions[index] = saved;
+            else window.__sessions.push(saved);
+            return structuredClone(saved);
+          };
+          if (!window.__deferSessionProfileSaves) return complete();
+          return new Promise((resolve) => window.__pendingSessionProfileSaves.push({
+            args: structuredClone(args),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "save_secret") {
           if (args.request?.storage !== "portable") {
@@ -929,7 +940,7 @@ try {
           });
         }
         if (command === "check_ssh_health") {
-          return {
+          const result = {
             sessionId: args.sessionId,
             runtimeId: "runtime-health-check",
             checkedAt: new Date().toISOString(),
@@ -946,6 +957,12 @@ try {
             sftpError: null,
             sftpProbed: Boolean(args.probeSftp),
           };
+          if (!window.__deferSessionValidation) return result;
+          return new Promise((resolve) => window.__pendingSessionValidation.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(structuredClone(result)),
+          }));
         }
         if (command === "list_mcp_grants") {
           const result = structuredClone(window.__mcpGrants);
@@ -1086,7 +1103,7 @@ try {
               && key.port === observation.port
               && key.algorithm === observation.algorithm
           ));
-          return {
+          const result = {
             label: "目标 SSH",
             observation,
             evaluation: mismatch
@@ -1110,36 +1127,50 @@ try {
                 reason: "simulated first observation",
               },
           };
+          if (!window.__deferSessionValidation) return result;
+          return new Promise((resolve) => window.__pendingSessionValidation.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(structuredClone(result)),
+          }));
         }
         if (command === "trust_scanned_host_key") {
-          const { profile, observation, decision } = args.request;
-          if (decision === "replace-for-profile") {
-            window.__hostKeys = window.__hostKeys.filter((key) => !(
-              key.profileId === profile.id
-                && key.alias === observation.alias
-                && key.port === observation.port
-                && key.algorithm === observation.algorithm
-            ));
-          }
-          const now = new Date().toISOString();
-          const key = {
-            id: `host-key-${++window.__hostKeySequence}`,
-            profileId: profile.id,
-            alias: observation.alias || profile.connection.hostKeyPolicy.alias || profile.id,
-            host: observation.host,
-            port: observation.port,
-            algorithm: observation.algorithm,
-            fingerprintSha256: observation.publicKeyBase64 === "U0NBTi1TRUNPTkQ="
-              ? "SHA256:scan-second"
-              : "SHA256:scan-first",
-            publicKeyBase64: observation.publicKeyBase64,
-            scope: decision === "append-to-project" ? "project" : "profile",
-            label: "scanned host key",
-            firstSeen: now,
-            lastSeen: now,
+          const complete = () => {
+            const { profile, observation, decision } = args.request;
+            if (decision === "replace-for-profile") {
+              window.__hostKeys = window.__hostKeys.filter((key) => !(
+                key.profileId === profile.id
+                  && key.alias === observation.alias
+                  && key.port === observation.port
+                  && key.algorithm === observation.algorithm
+              ));
+            }
+            const now = new Date().toISOString();
+            const key = {
+              id: `host-key-${++window.__hostKeySequence}`,
+              profileId: profile.id,
+              alias: observation.alias || profile.connection.hostKeyPolicy.alias || profile.id,
+              host: observation.host,
+              port: observation.port,
+              algorithm: observation.algorithm,
+              fingerprintSha256: observation.publicKeyBase64 === "U0NBTi1TRUNPTkQ="
+                ? "SHA256:scan-second"
+                : "SHA256:scan-first",
+              publicKeyBase64: observation.publicKeyBase64,
+              scope: decision === "append-to-project" ? "project" : "profile",
+              label: "scanned host key",
+              firstSeen: now,
+              lastSeen: now,
+            };
+            window.__hostKeys.push(key);
+            return structuredClone(key);
           };
-          window.__hostKeys.push(key);
-          return structuredClone(key);
+          if (!window.__deferSessionValidation) return complete();
+          return new Promise((resolve) => window.__pendingSessionValidation.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "list_ssh_agent_identities") return [];
         if (command === "portable_vault_status") return structuredClone(window.__portableVault);
@@ -6518,6 +6549,116 @@ Host staging
   assert(connectionLifecycleErrors.length === 0,
     `connection lifecycle browser exceptions: ${JSON.stringify(connectionLifecycleErrors)}`);
   await connectionLifecyclePage.close();
+
+  const sessionOperationPage = await context.newPage();
+  const sessionOperationErrors = [];
+  sessionOperationPage.on("pageerror", (error) => sessionOperationErrors.push(error.message));
+  await sessionOperationPage.goto(appUrl);
+  await sessionOperationPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await sessionOperationPage.getByRole("button", { name: "会话", exact: true }).click();
+  await sessionOperationPage.getByRole("button", { name: "会话设置", exact: true }).click();
+  let sessionOperationDialog = sessionOperationPage.locator(".session-settings-dialog");
+  await sessionOperationDialog.waitFor();
+  const sessionSaveBaseline = await sessionOperationPage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+    return window.__invokeCalls.filter((call) => call.command === "save_session_profile").length;
+  });
+  await sessionOperationDialog.evaluate((dialog) => {
+    const buttons = [...dialog.querySelectorAll("button")];
+    buttons.find((button) => button.textContent?.trim() === "保存")?.click();
+    buttons.find((button) => button.textContent?.trim() === "保存并连接")?.click();
+    buttons.find((button) => button.textContent?.trim() === "取消")?.click();
+  });
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  assert(await sessionOperationDialog.getByRole("button", { name: "保存", exact: true }).isDisabled()
+    && await sessionOperationDialog.getByRole("button", { name: "保存并连接", exact: true }).isDisabled()
+    && await sessionOperationDialog.getByRole("button", { name: "取消", exact: true }).isDisabled()
+    && await sessionOperationDialog.locator(".dialog-title button").isDisabled()
+    && await sessionOperationDialog.locator(".session-form").evaluate((form) => form.inert),
+  "a pending Session Settings save did not lock its draft and conflicting actions");
+  await sessionOperationPage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  await sessionOperationDialog.waitFor({ state: "detached" });
+  const sessionSaveCalls = await sessionOperationPage.evaluate((baseline) => (
+    window.__invokeCalls.filter((call) => call.command === "save_session_profile").length - baseline
+  ), sessionSaveBaseline);
+  assert(sessionSaveCalls === 1, `Session Settings submitted a duplicate save: ${sessionSaveCalls}`);
+
+  await sessionOperationPage.getByRole("button", { name: "会话", exact: true }).click();
+  await sessionOperationPage.getByRole("button", { name: "会话设置", exact: true }).click();
+  sessionOperationDialog = sessionOperationPage.locator(".session-settings-dialog");
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationPage.evaluate(() => {
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+  });
+  const deferredHealth = sessionOperationDialog.getByRole("button", { name: "检查 SSH 健康", exact: true });
+  await deferredHealth.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  assert(await deferredHealth.isDisabled(), "a pending SSH health check remained actionable");
+  await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  await sessionOperationDialog.getByText("健康 · russh · 公钥 · SSH 7 ms · Channel 11 ms · SFTP 13 ms", { exact: true }).waitFor();
+
+  const deferredHostKeyScan = sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true });
+  await deferredHostKeyScan.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  assert(await sessionOperationDialog.getByRole("button", { name: "扫描中", exact: true }).isDisabled(),
+    "a pending Host Key scan remained actionable");
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("new-router.local");
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  await sessionOperationPage.waitForTimeout(100);
+  assert(await sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true }).count() === 1
+    && !(await sessionOperationDialog.textContent()).includes("尚未信任此 Host Key"),
+  "a Host Key scan for the previous target updated the changed draft");
+
+  await sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true }).click();
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  const trustScannedHostKey = sessionOperationDialog.getByRole("button", { name: "加入 Profile", exact: true });
+  await trustScannedHostKey.waitFor();
+  await trustScannedHostKey.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  assert(await sessionOperationDialog.locator(".dialog-title button").isDisabled()
+    && await sessionOperationDialog.getByRole("button", { name: "保存", exact: true }).isDisabled()
+    && await sessionOperationDialog.locator(".session-form").evaluate((form) => form.inert),
+  "a pending Host Key trust write did not lock Session Settings");
+  await sessionOperationPage.evaluate(() => {
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation.shift().resolve();
+  });
+  await sessionOperationDialog.getByText(/已信任 SHA256:scan-first/).waitFor();
+  const sessionValidationState = await sessionOperationPage.evaluate(() => ({
+    healthCalls: window.__invokeCalls.filter((call) => call.command === "check_ssh_health").length,
+    scanHosts: window.__invokeCalls
+      .filter((call) => call.command === "scan_ssh_host_key")
+      .map((call) => call.args.request.profile.connection.endpoint.host),
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length,
+    trustedHosts: window.__hostKeys.map((key) => key.host),
+  }));
+  assert(sessionValidationState.healthCalls === 1
+    && JSON.stringify(sessionValidationState.scanHosts) === JSON.stringify(["10.0.0.1", "new-router.local"])
+    && sessionValidationState.trustCalls === 1
+    && JSON.stringify(sessionValidationState.trustedHosts) === JSON.stringify(["new-router.local"]),
+  `Session Settings validation operations were duplicated or used stale targets: ${JSON.stringify(sessionValidationState)}`);
+  await sessionOperationDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await sessionOperationDialog.waitFor({ state: "detached" });
+  assert(sessionOperationErrors.length === 0,
+    `Session Settings operation lifecycle browser exceptions: ${JSON.stringify(sessionOperationErrors)}`);
+  await sessionOperationPage.close();
 
   const cancelledDraftSecretPage = await context.newPage();
   const cancelledDraftSecretErrors = [];

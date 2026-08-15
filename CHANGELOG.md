@@ -69,6 +69,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   Control watcher cleanup is now bound to its runtime ID and cannot stop a newer replacement.
 - Fixed duplicate and conflicting log archive, session bundle export, and shard deletion actions.
   Closing the log manager now isolates late write results from a replacement dialog.
+- Fixed duplicate Session Settings saves, staged-secret writes, SSH health checks, and Host Key
+  scan/trust actions. Host Key results are now bound to the exact SSH draft that requested them.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

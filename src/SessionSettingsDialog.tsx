@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { invokeBackend } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import ShellArgumentsEditor from "./ShellArgumentsEditor";
 import {
@@ -110,9 +111,9 @@ export default function SessionSettingsDialog({
     mode === "create" && initialSection === "会话" ? "quick" : "advanced"
   ));
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
-  const [secretWriteCount, setSecretWriteCount] = useState(0);
-  const [submitBusy, setSubmitBusy] = useState(false);
+  const [writeBusy, setWriteBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
+  const writeGate = useRef(new KeyedRequestGate<"write">());
   const stagedSecretRefs = useRef(new Set<string>());
   const connectionDrafts = useRef(new Map<ProtocolTab, SessionProfile["connection"]>([
     [protocolFromKind(draft.kind), draft.connection],
@@ -121,7 +122,7 @@ export default function SessionSettingsDialog({
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
   const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft]);
-  const busy = submitBusy || secretWriteCount > 0;
+  const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
 
   useEffect(() => {
@@ -148,6 +149,18 @@ export default function SessionSettingsDialog({
     return () => cancelAnimationFrame(frame);
   }, [activeProtocol, quickSurface]);
 
+  useEffect(() => () => writeGate.current.invalidateAll(), []);
+
+  function beginWriteOperation() {
+    const token = writeGate.current.begin("write");
+    if (token !== null) setWriteBusy(true);
+    return token;
+  }
+
+  function finishWriteOperation(token: number) {
+    if (writeGate.current.finish("write", token)) setWriteBusy(false);
+  }
+
   function changeProtocol(tab: ProtocolTab) {
     if (busy) return;
     connectionDrafts.current.set(activeProtocol, draft.connection);
@@ -167,7 +180,7 @@ export default function SessionSettingsDialog({
     setSurface("advanced");
   }
 
-  async function cleanupStagedSecrets(retained = new Set<string>()) {
+  async function cleanupStagedSecrets(retained = new Set<string>(), token?: number) {
     for (const secretRef of retained) stagedSecretRefs.current.delete(secretRef);
     const failures: string[] = [];
     for (const secretRef of [...stagedSecretRefs.current]) {
@@ -178,34 +191,39 @@ export default function SessionSettingsDialog({
         failures.push(formatError(error));
       }
     }
-    setSecretCleanupError(failures.length ? `暂存凭据清理失败: ${failures.join("；")}` : "");
+    if (token === undefined || writeGate.current.isCurrent("write", token)) {
+      setSecretCleanupError(failures.length ? `暂存凭据清理失败: ${failures.join("；")}` : "");
+    }
     return failures.length === 0;
   }
 
   async function submit(connectAfterSave: boolean) {
-    if (busy) return;
-    setSubmitBusy(true);
+    const token = beginWriteOperation();
+    if (token === null) return;
     setSecretCleanupError("");
-    const saved = await onSave(proxyPasswordUpdate);
-    if (!saved) {
-      setSubmitBusy(false);
-      return;
+    try {
+      const saved = await onSave(proxyPasswordUpdate);
+      if (!saved) return;
+      const cleaned = await cleanupStagedSecrets(profileCredentialSecretRefs(saved.profile), token);
+      if (!cleaned || !writeGate.current.isCurrent("write", token)) return;
+      onClose();
+      if (connectAfterSave) onConnect(saved);
+    } finally {
+      finishWriteOperation(token);
     }
-    const cleaned = await cleanupStagedSecrets(profileCredentialSecretRefs(saved.profile));
-    if (!cleaned) {
-      setSubmitBusy(false);
-      return;
-    }
-    onClose();
-    if (connectAfterSave) onConnect(saved);
   }
 
   async function cancel() {
-    if (busy) return;
-    setSubmitBusy(true);
+    const token = beginWriteOperation();
+    if (token === null) return;
     setSecretCleanupError("");
-    if (await cleanupStagedSecrets()) onClose();
-    else setSubmitBusy(false);
+    try {
+      if (await cleanupStagedSecrets(new Set(), token)) {
+        if (writeGate.current.isCurrent("write", token)) onClose();
+      }
+    } finally {
+      finishWriteOperation(token);
+    }
   }
 
   return (
@@ -218,7 +236,7 @@ export default function SessionSettingsDialog({
       {quickSurface ? (
         <>
           <QuickProtocolTabs activeProtocol={activeProtocol} busy={busy} onChange={changeProtocol} />
-          <section className="session-quick-form" id="quick-session-fields" role="tabpanel" aria-label={`${protocolLabel(activeProtocol)} 快速设置`}>
+          <section className="session-quick-form" id="quick-session-fields" role="tabpanel" aria-label={`${protocolLabel(activeProtocol)} 快速设置`} inert={busy}>
             <QuickSessionFields
               activeProtocol={activeProtocol}
               draft={draft}
@@ -252,7 +270,7 @@ export default function SessionSettingsDialog({
               </select>
             </label>
           </div>
-          <section className="session-form">
+          <section className="session-form" inert={busy}>
             <SessionSettingsContent
               activeProtocol={activeProtocol}
               activeSection={activeSection}
@@ -262,10 +280,10 @@ export default function SessionSettingsDialog({
               onDraftChange={onDraftChange}
               proxyPasswordUpdate={proxyPasswordUpdate}
               onProxyPasswordUpdateChange={setProxyPasswordUpdate}
-              secretWriteBusy={secretWriteCount > 0}
-              onSecretWriteStart={() => setSecretWriteCount((current) => current + 1)}
+              writeBusy={writeBusy}
+              onWriteStart={beginWriteOperation}
               onSecretCreated={(secretRef) => stagedSecretRefs.current.add(secretRef)}
-              onSecretWriteFinish={() => setSecretWriteCount((current) => Math.max(0, current - 1))}
+              onWriteFinish={finishWriteOperation}
             />
           </section>
         </>
@@ -354,6 +372,17 @@ function protocolLabel(protocol: ProtocolTab) {
 
 function protocolSettingsSection(protocol: ProtocolTab) {
   return protocol === "Serial" ? "串口" : protocol;
+}
+
+function hostKeyProfileRequestKey(profile: SessionProfile) {
+  if (profile.connection.kind !== "ssh" && profile.connection.kind !== "tmux") {
+    return `${profile.id}:${profile.connection.kind}`;
+  }
+  return JSON.stringify({
+    id: profile.id,
+    kind: profile.kind,
+    connection: { ...profile.connection, trustedHostKeys: [] },
+  });
 }
 
 function QuickField({
@@ -747,10 +776,10 @@ function SessionSettingsContent({
   onDraftChange,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
-  secretWriteBusy,
-  onSecretWriteStart,
+  writeBusy,
+  onWriteStart,
   onSecretCreated,
-  onSecretWriteFinish,
+  onWriteFinish,
 }: {
   activeProtocol: ProtocolTab;
   activeSection: string;
@@ -760,10 +789,10 @@ function SessionSettingsContent({
   onDraftChange: (draft: SessionProfile) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
-  secretWriteBusy: boolean;
-  onSecretWriteStart: () => void;
+  writeBusy: boolean;
+  onWriteStart: () => number | null;
   onSecretCreated: (secretRef: string) => void;
-  onSecretWriteFinish: () => void;
+  onWriteFinish: (token: number) => void;
 }) {
   if (activeSection === "会话") {
     return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
@@ -868,11 +897,11 @@ function SessionSettingsContent({
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} secretWriteBusy={secretWriteBusy} onSecretWriteStart={onSecretWriteStart} onSecretCreated={onSecretCreated} onSecretWriteFinish={onSecretWriteFinish} />;
+    return <SshAdvancedFields section="连接" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} />;
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["代理", "验证", "代理人", "密码", "公钥"].includes(activeSection)) {
-    return <SshAdvancedFields section={activeSection} draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} secretWriteBusy={secretWriteBusy} onSecretWriteStart={onSecretWriteStart} onSecretCreated={onSecretCreated} onSecretWriteFinish={onSecretWriteFinish} />;
+    return <SshAdvancedFields section={activeSection} draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
@@ -1102,10 +1131,10 @@ function SshAdvancedFields({
   onDraftChange,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
-  secretWriteBusy,
-  onSecretWriteStart,
+  writeBusy,
+  onWriteStart,
   onSecretCreated,
-  onSecretWriteFinish,
+  onWriteFinish,
 }: {
   section: string;
   draft: SessionProfile;
@@ -1113,10 +1142,10 @@ function SshAdvancedFields({
   onDraftChange: (draft: SessionProfile) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
-  secretWriteBusy: boolean;
-  onSecretWriteStart: () => void;
+  writeBusy: boolean;
+  onWriteStart: () => number | null;
   onSecretCreated: (secretRef: string) => void;
-  onSecretWriteFinish: () => void;
+  onWriteFinish: (token: number) => void;
 }) {
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
   const kind = draft.connection.kind === "tmux" ? "tmux" : "ssh";
@@ -1126,11 +1155,27 @@ function SshAdvancedFields({
   const [secretStatus, setSecretStatus] = useState("");
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
   const [hostKeyStatus, setHostKeyStatus] = useState("");
+  const [hostKeyBusy, setHostKeyBusy] = useState(false);
   const [sshHealth, setSshHealth] = useState<SshHealthReport | null>(null);
   const [sshHealthBusy, setSshHealthBusy] = useState(false);
   const [sshHealthError, setSshHealthError] = useState("");
   const [jumpSecretDrafts, setJumpSecretDrafts] = useState<Record<string, string>>({});
   const [jumpStatus, setJumpStatus] = useState("");
+  const requestGate = useRef(new KeyedRequestGate<"health" | "host-key">());
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const hostKeyRequestKey = hostKeyProfileRequestKey(prepareProfile(draft));
+  const hostKeyRequestKeyRef = useRef(hostKeyRequestKey);
+  hostKeyRequestKeyRef.current = hostKeyRequestKey;
+
+  useEffect(() => {
+    requestGate.current.invalidate("host-key");
+    setHostKeyBusy(false);
+    setHostKeyScan(null);
+    setHostKeyStatus("");
+  }, [hostKeyRequestKey]);
+
+  useEffect(() => () => requestGate.current.invalidateAll(), []);
 
   if (section === "连接") {
     const updateSsh = (patch: Partial<typeof ssh>) => onDraftChange({
@@ -1160,12 +1205,13 @@ function SshAdvancedFields({
       setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: value }));
     };
     const saveJumpSecret = async (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
-      if (secretWriteBusy) return;
+      if (writeBusy) return;
       const jump = ssh.jumps[index];
       if (!jump) return;
       const secret = jumpSecretDrafts[jumpSecretKey(index, field)] ?? "";
       if (!secret.trim()) return;
-      onSecretWriteStart();
+      const writeToken = onWriteStart();
+      if (writeToken === null) return;
       setJumpStatus("");
       try {
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
@@ -1179,7 +1225,7 @@ function SshAdvancedFields({
       } catch (error) {
         setJumpStatus(formatError(error));
       } finally {
-        onSecretWriteFinish();
+        onWriteFinish(writeToken);
       }
     };
     const deleteJumpSecret = (index: number, field: "passwordSecretRef" | "passphraseSecretRef") => {
@@ -1226,12 +1272,12 @@ function SshAdvancedFields({
                   </div>
                   <div className="jump-hop-extra">
                     <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passwordSecretRef", event.target.value)} placeholder="password" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码" disabled={secretWriteBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? "").trim()}>
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码" disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
                     <input value={jump.passwordSecretRef ?? ""} onChange={(event) => updateJump(index, { passwordSecretRef: event.target.value || null })} placeholder="password secretRef" />
                     <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passphraseSecretRef", event.target.value)} placeholder="passphrase" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令" disabled={secretWriteBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? "").trim()}>
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令" disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
                     <input value={jump.passphraseSecretRef ?? ""} onChange={(event) => updateJump(index, { passphraseSecretRef: event.target.value || null })} placeholder="passphrase secretRef" />
@@ -1340,46 +1386,92 @@ function SshAdvancedFields({
 
   if (section === "验证") {
     const checkHealth = async () => {
-      if (sshHealthBusy) return;
+      const token = requestGate.current.begin("health");
+      if (token === null) return;
+      const sessionId = draft.id;
       setSshHealthBusy(true);
       setSshHealth(null);
       setSshHealthError("");
       try {
-        setSshHealth(await invokeBackend<SshHealthReport>("check_ssh_health", {
-          sessionId: draft.id,
+        const report = await invokeBackend<SshHealthReport>("check_ssh_health", {
+          sessionId,
           probeSftp: true,
-        }));
+        });
+        if (requestGate.current.isCurrent("health", token) && draftRef.current.id === sessionId) {
+          setSshHealth(report);
+        }
       } catch (error) {
-        setSshHealthError(formatError(error));
+        if (requestGate.current.isCurrent("health", token) && draftRef.current.id === sessionId) {
+          setSshHealthError(formatError(error));
+        }
       } finally {
-        setSshHealthBusy(false);
+        if (requestGate.current.finish("health", token)) setSshHealthBusy(false);
       }
     };
     const scanHostKey = async () => {
+      if (writeBusy) return;
+      const token = requestGate.current.begin("host-key");
+      if (token === null) return;
+      const requestKey = hostKeyRequestKeyRef.current;
+      const profile = prepareProfile(draftRef.current);
+      setHostKeyBusy(true);
       setHostKeyStatus("");
       setHostKeyScan(null);
       try {
         const result = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
-          request: { profile: prepareProfile(draft), credentialHandle: null },
+          request: { profile, credentialHandle: null },
         });
-        setHostKeyScan(result);
+        if (requestGate.current.isCurrent("host-key", token) && hostKeyRequestKeyRef.current === requestKey) {
+          setHostKeyScan(result);
+        }
       } catch (error) {
-        setHostKeyStatus(formatError(error));
+        if (requestGate.current.isCurrent("host-key", token) && hostKeyRequestKeyRef.current === requestKey) {
+          setHostKeyStatus(formatError(error));
+        }
+      } finally {
+        if (requestGate.current.finish("host-key", token)) setHostKeyBusy(false);
       }
     };
     const trustHostKey = async (decision: HostKeyDecisionValue) => {
-      if (!hostKeyScan) return;
+      if (!hostKeyScan || writeBusy) return;
+      const token = requestGate.current.begin("host-key");
+      if (token === null) return;
+      const writeToken = onWriteStart();
+      if (writeToken === null) {
+        requestGate.current.finish("host-key", token);
+        return;
+      }
+      const requestKey = hostKeyRequestKeyRef.current;
+      const scan = hostKeyScan;
+      const profile = prepareProfile(draftRef.current);
+      setHostKeyBusy(true);
       setHostKeyStatus("");
       try {
         const trusted = await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
-          request: { profile: prepareProfile(draft), observation: hostKeyScan.observation, decision },
+          request: { profile, observation: scan.observation, decision },
         });
+        if (!requestGate.current.isCurrent("host-key", token) || hostKeyRequestKeyRef.current !== requestKey) return;
         if (trusted) {
-          onDraftChange({ ...draft, kind, connection: { ...ssh, kind, trustedHostKeys: [trusted, ...ssh.trustedHostKeys.filter((key) => key.id !== trusted.id)] } });
+          const currentDraft = draftRef.current;
+          if (currentDraft.connection.kind !== "ssh" && currentDraft.connection.kind !== "tmux") return;
+          onDraftChange({
+            ...currentDraft,
+            kind: currentDraft.connection.kind,
+            connection: {
+              ...currentDraft.connection,
+              trustedHostKeys: [trusted, ...currentDraft.connection.trustedHostKeys.filter((key) => key.id !== trusted.id)],
+            },
+          });
         }
+        setHostKeyScan(null);
         setHostKeyStatus(decision === "trust-once" ? "已临时信任，下一次连接有效" : trusted ? `已信任 ${trusted.fingerprintSha256}` : "未写入配置");
       } catch (error) {
-        setHostKeyStatus(formatError(error));
+        if (requestGate.current.isCurrent("host-key", token) && hostKeyRequestKeyRef.current === requestKey) {
+          setHostKeyStatus(formatError(error));
+        }
+      } finally {
+        if (requestGate.current.finish("host-key", token)) setHostKeyBusy(false);
+        onWriteFinish(writeToken);
       }
     };
     return (
@@ -1410,13 +1502,13 @@ function SshAdvancedFields({
             <option value="user">user</option>
           </select>
         </DialogField>
-        <DialogField label="扫描:">
+        <DialogField label="扫描:" group>
           <div className="inline-actions">
-            <button type="button" onClick={() => void scanHostKey()}>扫描 Host Key</button>
+            <button type="button" onClick={() => void scanHostKey()} disabled={hostKeyBusy || writeBusy}>{hostKeyBusy ? "扫描中" : "扫描 Host Key"}</button>
             <span>{hostKeyScan ? describeHostKeyEvaluation(hostKeyScan) : hostKeyStatus}</span>
           </div>
         </DialogField>
-        <DialogField label="健康:">
+        <DialogField label="健康:" group>
           <div className="inline-actions ssh-health-check">
             <button type="button" aria-label="检查 SSH 健康" onClick={() => void checkHealth()} disabled={sshHealthBusy}>
               <Activity size={14} />{sshHealthBusy ? "检查中" : "检查 SSH 健康"}
@@ -1427,12 +1519,12 @@ function SshAdvancedFields({
           </div>
         </DialogField>
         {hostKeyScan ? (
-          <DialogField label="处理:">
+          <DialogField label="处理:" group>
             <div className="inline-actions">
-              <button type="button" onClick={() => void trustHostKey("trust-once")}>仅本次</button>
-              <button type="button" onClick={() => void trustHostKey("append-to-profile")}>加入 Profile</button>
-              <button type="button" onClick={() => void trustHostKey("append-to-project")}>加入 Project</button>
-              <button type="button" onClick={() => void trustHostKey("replace-for-profile")}>替换 Profile</button>
+              <button type="button" onClick={() => void trustHostKey("trust-once")} disabled={hostKeyBusy || writeBusy}>仅本次</button>
+              <button type="button" onClick={() => void trustHostKey("append-to-profile")} disabled={hostKeyBusy || writeBusy}>加入 Profile</button>
+              <button type="button" onClick={() => void trustHostKey("append-to-project")} disabled={hostKeyBusy || writeBusy}>加入 Project</button>
+              <button type="button" onClick={() => void trustHostKey("replace-for-profile")} disabled={hostKeyBusy || writeBusy}>替换 Profile</button>
             </div>
           </DialogField>
         ) : null}
@@ -1507,8 +1599,9 @@ function SshAdvancedFields({
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...ssh.identityRefs.slice(1)] } });
     };
     const saveVaultPrivateKey = async () => {
-      if (secretWriteBusy || !vaultPrivateKey.trim()) return;
-      onSecretWriteStart();
+      if (writeBusy || !vaultPrivateKey.trim()) return;
+      const writeToken = onWriteStart();
+      if (writeToken === null) return;
       setVaultBusy(true);
       setVaultStatus("");
       try {
@@ -1523,7 +1616,7 @@ function SshAdvancedFields({
         setVaultStatus(formatError(error));
       } finally {
         setVaultBusy(false);
-        onSecretWriteFinish();
+        onWriteFinish(writeToken);
       }
     };
     const deleteVaultPrivateKey = () => {
@@ -1593,7 +1686,7 @@ function SshAdvancedFields({
         {firstIdentity.source === "profile-vault" ? (
           <DialogField label="密钥库:">
             <div className="inline-actions">
-              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || secretWriteBusy || !vaultPrivateKey.trim()}>保存到 Stronghold</button>
+              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || writeBusy || !vaultPrivateKey.trim()}>保存到 Stronghold</button>
               <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !firstIdentity.secretRef}>删除</button>
               <span>{vaultStatus}</span>
             </div>
