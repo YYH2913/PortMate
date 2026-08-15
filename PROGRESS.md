@@ -162,6 +162,8 @@ Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和�
 
 独立终端的“返回工作区”不再把 Tauri/browser 事件成功发送误当作布局已恢复：主窗口完成原子提交后会向来源窗口返回带唯一 request ID 的有界确认，Profile 已删除、view ID 冲突、5 秒确认超时或发送失败都会保留独立窗口并允许重试，只有显式 `ok` 才关闭。窗口 ID 与 request ID 都使用严格 label 白名单，浏览器确认只接受同源 opener；每次重试使用新 request ID，迟到的旧确认不能关闭新请求。Workspace UI 覆盖拒绝时零 close、解锁重试、成功后单次 close、主窗口成功/冲突确认和标签保留，状态单测覆盖确认形状、错误边界、旧消息兼容与非法关联 ID；完整前端现为 114 文件/625 项，生产构建和 Workspace UI 均通过。
 
+主窗口的 Session、活动 Session、标签颜色、工作区 root 与活动 pane 现使用同步最新值提交：Profile 删除事件与独立终端返回同帧发生时，返回操作会看到已经删除的权威 Session 并明确拒绝，不会从旧 React 闭包复活标签；删除触发的慢 `list_sessions` 响应也会在完成时基于最新工作区树 reconciliation，期间用户新打开的标签不会被请求开始时的旧布局覆盖。连接、重连、断开及文本/字节输入的异步入口同样改为读取当前 Session 快照，浏览器 fallback 删除路径不再遗漏该边界。Workspace UI 新增慢 Profile 刷新期间开标签和同帧删除/返回的真实事件回归；完整前端 114 文件/625 项、生产构建、Workspace UI、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

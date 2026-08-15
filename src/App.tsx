@@ -254,7 +254,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [initialWorkspace] = useState(() => loadWorkspaceSnapshot(workspaceStorageKey));
   const [terminalPrefs, setTerminalPrefs] = useState(loadTerminalPrefs);
   const [screenLock, setScreenLock] = useState<ScreenLockState>(() => loadInitialScreenLockState(terminalPrefs.requireMasterPassword));
-  const [sessions, setSessions] = useState<SessionSummary[]>(emptySessions);
+  const [sessions, setSessionsState] = useState<SessionSummary[]>(emptySessions);
+  const sessionsRef = useRef<SessionSummary[]>(sessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
   const [dismissedTransferIds, setDismissedTransferIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -271,7 +272,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [terminalExportBusyViewIds, setTerminalExportBusyViewIds] = useState<Set<string>>(() => new Set());
   const [detachingWorkspaceViewIds, setDetachingWorkspaceViewIds] = useState<Set<string>>(() => new Set());
   const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
-  const [activeId, setActiveId] = useState(initialWorkspace.activeId);
+  const [activeId, setActiveIdState] = useState(initialWorkspace.activeId);
+  const activeIdRef = useRef(activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
   const [utilityDialog, setUtilityDialog] = useState<UtilityDialog>(null);
@@ -356,7 +358,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ));
   const [blockSelection, setBlockSelection] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [tabColors, setTabColors] = useState<Record<string, string>>(initialWorkspace.tabColors);
+  const [tabColors, setTabColorsState] = useState<Record<string, string>>(initialWorkspace.tabColors);
+  const tabColorsRef = useRef(tabColors);
   const credentialResolverRef = useRef<{
     sessionId: string;
     resolve: (credentials: ConnectionCredentials | null) => void;
@@ -440,6 +443,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   };
   syncInputRef.current = syncInput;
   screenLockRef.current = screenLock;
+  sessionsRef.current = sessions;
+  activeIdRef.current = activeId;
+  tabColorsRef.current = tabColors;
   workspaceRootRef.current = workspaceRoot;
   activePaneIdRef.current = activePaneId;
   detachedCommandHandlerRef.current = (command) => {
@@ -461,6 +467,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setWorkspaceRootState(next);
   }
 
+  function setSessions(update: SetStateAction<SessionSummary[]>) {
+    const next = typeof update === "function" ? update(sessionsRef.current) : update;
+    sessionsRef.current = next;
+    setSessionsState(next);
+  }
+
+  function setActiveId(update: SetStateAction<string>) {
+    const next = typeof update === "function" ? update(activeIdRef.current) : update;
+    activeIdRef.current = next;
+    setActiveIdState(next);
+  }
+
+  function setTabColors(update: SetStateAction<Record<string, string>>) {
+    const next = typeof update === "function" ? update(tabColorsRef.current) : update;
+    tabColorsRef.current = next;
+    setTabColorsState(next);
+  }
+
   function setActivePaneId(update: SetStateAction<string>) {
     const next = typeof update === "function" ? update(activePaneIdRef.current) : update;
     activePaneIdRef.current = next;
@@ -474,7 +498,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const sessionId = typeof payload === "string" ? payload : payload?.deletedProfileId;
     if (!sessionId) return;
     const response = typeof payload === "string"
-      ? deleteSessionProfileFromClientState(sessionId, { sessions, oneKeys, hostKeys, grants })
+      ? deleteSessionProfileFromClientState(sessionId, { sessions: sessionsRef.current, oneKeys, hostKeys, grants })
       : payload;
     const pending = pendingProfileDeletionRef.current.get(sessionId);
     if (pending) pendingProfileDeletionRef.current.delete(sessionId);
@@ -1575,10 +1599,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         setSessions(nextSessions);
         const restored = reconcileWorkspaceSnapshot({
           version: 4,
-          root: workspaceRoot,
-          activePaneId,
-          activeId,
-          tabColors,
+          root: workspaceRootRef.current,
+          activePaneId: activePaneIdRef.current,
+          activeId: activeIdRef.current,
+          tabColors: tabColorsRef.current,
         }, nextSessions.map((session) => session.profile.id), {
           fallbackToFirst: !workspaceWindowId,
         });
@@ -2320,10 +2344,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const remainingSessionIds = response.sessions.map((session) => session.profile.id);
     const reconciled = reconcileWorkspaceSnapshot({
       version: 4,
-      root: workspaceRoot,
-      activePaneId,
-      activeId,
-      tabColors,
+      root: workspaceRootRef.current,
+      activePaneId: activePaneIdRef.current,
+      activeId: activeIdRef.current,
+      tabColors: tabColorsRef.current,
     }, remainingSessionIds, { fallbackToFirst: !workspaceWindowId });
 
     invalidateDeletedSessionProfileOperations(profileId);
@@ -2379,7 +2403,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     try {
       const response = isBackendAvailable()
         ? await invokeBackend<DeleteSessionProfileResponse>("delete_session_profile", { sessionId: profileId })
-        : deleteSessionProfileFromClientState(profileId, { sessions, oneKeys, hostKeys, grants });
+        : deleteSessionProfileFromClientState(profileId, { sessions: sessionsRef.current, oneKeys, hostKeys, grants });
       if (!gate.isCurrent(profileId, token)) return;
       pendingProfileDeletionRef.current.delete(profileId);
       applyDeletedSessionProfile(response);
@@ -2543,10 +2567,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function activateSession(sessionId: string) {
-    const currentPane = findWorkspacePane(workspaceRoot, activePaneId);
+    const currentRoot = workspaceRootRef.current;
+    const currentActivePaneId = activePaneIdRef.current;
+    const currentPane = findWorkspacePane(currentRoot, currentActivePaneId);
     const existingPane = currentPane?.sessionIds.includes(sessionId)
       ? currentPane
-      : findWorkspacePaneBySession(workspaceRoot, sessionId);
+      : findWorkspacePaneBySession(currentRoot, sessionId);
     if (existingPane) {
       setWorkspaceRoot((current) => activateWorkspacePaneSession(current, existingPane.id, sessionId));
       setActivePaneId(existingPane.id);
@@ -2554,15 +2580,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setZoomedPaneId((current) => current ? existingPane.id : "");
       return;
     }
-    if (!workspaceRoot) {
+    if (!currentRoot) {
       const pane = createWorkspacePane(sessionId);
       setWorkspaceRoot(pane);
       setActivePaneId(pane.id);
     } else {
-      const targetPane = currentPane ?? workspacePaneLeaves(workspaceRoot)[0];
+      const targetPane = currentPane ?? workspacePaneLeaves(currentRoot)[0];
       if (targetPane) {
-        const nextRoot = addWorkspacePaneSession(workspaceRoot, targetPane.id, sessionId);
-        if (nextRoot === workspaceRoot && !targetPane.sessionIds.includes(sessionId)) {
+        const nextRoot = addWorkspacePaneSession(currentRoot, targetPane.id, sessionId);
+        if (nextRoot === currentRoot && !targetPane.sessionIds.includes(sessionId)) {
           setNotice({ title: "打开视图失败", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
           return;
         }
@@ -3191,7 +3217,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function reattachDetachedPane(command: DetachedPaneCommand): DetachedPaneResult {
-    const session = sessions.find((item) => item.profile.id === command.sessionId);
+    const session = sessionsRef.current.find((item) => item.profile.id === command.sessionId);
     if (!session) {
       const error = "原会话已不存在。";
       setNotice({ title: "返回主窗口失败", message: error });
@@ -3338,7 +3364,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     activateWorkspace = true,
     interaction: ConnectionInteraction = "interactive",
   ) {
-    const session = sessionOverride ?? sessions.find((item) => item.profile.id === sessionId);
+    const session = sessionOverride ?? sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session || session.runtime.status === "connecting" || session.runtime.status === "reconnecting") return;
     if (connectionCloseGateRef.current.isActive(session.profile.id)) return;
     const attemptToken = connectionAttemptGateRef.current.begin(session.profile.id);
@@ -3438,7 +3464,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function reconnectSession(sessionId: string, activateWorkspace = true) {
-    let session = sessions.find((item) => item.profile.id === sessionId);
+    let session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session) return;
     if (sessionConnectionAction(session.runtime.status) === "disconnect") {
       const disconnected = await disconnectSession(sessionId, false);
@@ -3529,7 +3555,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         setCredentialPrompt(null);
         credentialRequest.resolve(null);
       }
-      const session = sessions.find((item) => item.profile.id === sessionId);
+      const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
       if (!session) return null;
       if (isBackendAvailable() && session.runtime.status === "disconnected") return session;
 
@@ -3612,7 +3638,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin, inputEpoch: number) {
     if (!sessionId || !text || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
-    const session = sessions.find((item) => item.profile.id === sessionId);
+    const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
@@ -3673,7 +3699,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   async function sendTerminalBytes(sessionId: string, bytes: number[], inputEpoch: number) {
     if (!sessionId || !bytes.length || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
-    const session = sessions.find((item) => item.profile.id === sessionId);
+    const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {

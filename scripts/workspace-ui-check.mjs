@@ -6733,6 +6733,12 @@ Host staging
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await togglePanel("资源管理器");
+  const localShellWorkspaceTab = page.locator(".workspace-pane-tab", { hasText: "Local Shell" });
+  if (await localShellWorkspaceTab.count()) {
+    await localShellWorkspaceTab.click({ button: "right" });
+    await page.locator(".workspace-view-context-menu").getByRole("button", { name: "关闭视图", exact: true }).click();
+    await localShellWorkspaceTab.waitFor({ state: "detached" });
+  }
   const deleteTarget = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
   await page.evaluate(() => {
     window.__deferTailLogs = true;
@@ -6797,6 +6803,9 @@ Host staging
     && deleteEventOrderingState.pendingDeletes === 0,
     `profile deletion did not reach the backend exactly once: ${JSON.stringify(deleteCalls)}`);
   await deletionNotice.getByRole("button", { name: "确定", exact: true }).click();
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Local Shell" }).click();
+  const workspaceViewOpenedDuringDeleteRefresh = page.locator(".workspace-pane-tab", { hasText: "Local Shell" });
+  await workspaceViewOpenedDuringDeleteRefresh.waitFor();
 
   const staleDeletedLogMarker = "STALE-DELETED-PROFILE-LOG";
   await page.evaluate((marker) => {
@@ -6826,6 +6835,8 @@ Host staging
   await page.waitForTimeout(100);
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).count() === 0,
     "a list_sessions response that completed after Profile deletion restored the deleted Profile");
+  assert(await workspaceViewOpenedDuringDeleteRefresh.count() === 1,
+    "a list_sessions response that completed after Profile deletion discarded a newer workspace view");
   await page.getByRole("button", { name: "搜索会话", exact: true }).click();
   await page.getByRole("tab", { name: "日志", exact: true }).click();
   const deletedLogSearch = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
@@ -9255,8 +9266,40 @@ Host staging
   await profileSyncPage.evaluate(() => {
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      action: "reattach",
+      requestId: "deleted-profile-return-request",
+      windowId: "deleted-profile-window",
+      ownerWindowId: "workspace-profile-sync-regression",
+      paneId: "deleted-profile-return-pane",
+      viewId: "deleted-profile-return-view",
+      sessionId: "edge-router",
+      title: "Updated edge profile",
+      color: "",
+      keyMode: "remote",
+    });
   });
   await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor({ state: "detached" });
+  const deletedProfileReturnNotice = profileSyncPage.locator(".notice-dialog", { hasText: "原会话已不存在" });
+  await deletedProfileReturnNotice.waitFor();
+  await profileSyncPage.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "plugin:event|emit_to"
+      && call.args.event === "portmate-detached-pane-result"
+      && call.args.payload?.requestId === "deleted-profile-return-request"
+  )));
+  const deletedProfileReturnState = await profileSyncPage.evaluate(() => ({
+    tabs: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+    acknowledgement: window.__invokeCalls.findLast((call) => (
+      call.command === "plugin:event|emit_to"
+        && call.args.event === "portmate-detached-pane-result"
+        && call.args.payload?.requestId === "deleted-profile-return-request"
+    ))?.args.payload,
+  }));
+  assert(!deletedProfileReturnState.tabs.some((label) => label?.includes("Updated edge profile"))
+    && deletedProfileReturnState.acknowledgement?.ok === false
+    && deletedProfileReturnState.acknowledgement?.error?.includes("原会话已不存在"),
+    `same-frame Profile deletion accepted a detached return for the deleted session: ${JSON.stringify(deletedProfileReturnState)}`);
+  await deletedProfileReturnNotice.getByRole("button", { name: "确定", exact: true }).click();
   await profileSyncPage.evaluate(() => {
     window.__deferTerminalTextExports = false;
     window.__pendingTerminalTextExports.shift().resolve();
