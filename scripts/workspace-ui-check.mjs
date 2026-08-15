@@ -1487,7 +1487,12 @@ try {
         }
         if (command === "send_text" || command === "send_bytes") {
           if (!window.__deferTerminalSends) return null;
-          return new Promise((resolve) => window.__pendingTerminalSends.push({ command, args, resolve }));
+          return new Promise((resolve, reject) => window.__pendingTerminalSends.push({
+            command,
+            args,
+            reject,
+            resolve,
+          }));
         }
         if (command === "serial_set_lines") {
           const index = window.__sessions.findIndex((session) => session.profile.id === args.request.sessionId);
@@ -7349,6 +7354,93 @@ Host staging
   assert(deletedOneKeySendErrors.length === 0,
     `deleted OneKey send browser exceptions: ${JSON.stringify(deletedOneKeySendErrors)}`);
   await deletedOneKeySendPage.close();
+
+  const deletedTerminalInputPage = await context.newPage();
+  const deletedTerminalInputErrors = [];
+  deletedTerminalInputPage.on("pageerror", (error) => deletedTerminalInputErrors.push(error.message));
+  await deletedTerminalInputPage.goto(appUrl);
+  await deletedTerminalInputPage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  const deletedTerminalInput = deletedTerminalInputPage.locator(".terminal-pane.active .xterm-helper-textarea");
+  const deletedTerminalInputStart = await deletedTerminalInputPage.evaluate(() => {
+    window.__deferTerminalSends = true;
+    window.__pendingTerminalSends = [];
+    return window.__invokeCalls.filter((call) => call.command === "send_text").length;
+  });
+  await deletedTerminalInput.focus();
+  await deletedTerminalInputPage.keyboard.press("x");
+  await deletedTerminalInputPage.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  await deletedTerminalInputPage.keyboard.press("y");
+  await deletedTerminalInputPage.waitForTimeout(50);
+  const queuedDeletedInput = await deletedTerminalInputPage.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").slice(start), deletedTerminalInputStart);
+  assert(queuedDeletedInput.length === 1 && queuedDeletedInput[0].args.text === "x",
+    `terminal input was not queued before Profile deletion: ${JSON.stringify(queuedDeletedInput)}`);
+  const deletedTerminalInputMarker = "STALE-DELETED-TERMINAL-INPUT";
+  await deletedTerminalInputPage.evaluate((marker) => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    window.__deferTerminalSends = false;
+    window.__pendingTerminalSends.shift().reject(new Error(marker));
+  }, deletedTerminalInputMarker);
+  await deletedTerminalInputPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedTerminalInputPage.waitForTimeout(100);
+  const deletedTerminalInputState = await deletedTerminalInputPage.evaluate((start) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "send_text").slice(start),
+    notices: [...document.querySelectorAll(".notice-dialog")].map((item) => item.textContent),
+    pending: window.__pendingTerminalSends.length,
+  }), deletedTerminalInputStart);
+  assert(deletedTerminalInputState.calls.length === 1
+    && deletedTerminalInputState.calls[0].args.text === "x"
+    && deletedTerminalInputState.notices.every((notice) => !notice?.includes(deletedTerminalInputMarker))
+    && deletedTerminalInputState.pending === 0,
+  `queued terminal input survived Profile deletion: ${JSON.stringify(deletedTerminalInputState)}`);
+  assert(deletedTerminalInputErrors.length === 0,
+    `deleted terminal input browser exceptions: ${JSON.stringify(deletedTerminalInputErrors)}`);
+  await deletedTerminalInputPage.close();
+
+  const deletedDetachedTerminalUrl = new URL(detachedUrl);
+  deletedDetachedTerminalUrl.searchParams.set("windowId", "deleted-input-window");
+  deletedDetachedTerminalUrl.searchParams.set("paneId", "deleted-input-pane");
+  deletedDetachedTerminalUrl.searchParams.set("viewId", "deleted-input-view");
+  deletedDetachedTerminalUrl.searchParams.set("sessionId", "edge-router");
+  deletedDetachedTerminalUrl.searchParams.set("title", "Edge Router");
+  const deletedDetachedTerminalPage = await context.newPage();
+  const deletedDetachedTerminalErrors = [];
+  deletedDetachedTerminalPage.on("pageerror", (error) => deletedDetachedTerminalErrors.push(error.message));
+  await deletedDetachedTerminalPage.goto(deletedDetachedTerminalUrl.toString());
+  const deletedDetachedTerminalInput = deletedDetachedTerminalPage.locator(".detached-pane-terminal .xterm-helper-textarea");
+  await deletedDetachedTerminalInput.waitFor();
+  const deletedDetachedTerminalStart = await deletedDetachedTerminalPage.evaluate(() => {
+    window.__deferTerminalSends = true;
+    window.__pendingTerminalSends = [];
+    return window.__invokeCalls.filter((call) => call.command === "send_text").length;
+  });
+  await deletedDetachedTerminalInput.focus();
+  await deletedDetachedTerminalPage.keyboard.press("m");
+  await deletedDetachedTerminalPage.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  await deletedDetachedTerminalPage.keyboard.press("n");
+  await deletedDetachedTerminalPage.waitForTimeout(50);
+  await deletedDetachedTerminalPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    window.__deferTerminalSends = false;
+    window.__pendingTerminalSends.shift().reject(new Error("STALE-DELETED-DETACHED-INPUT"));
+  });
+  await deletedDetachedTerminalPage.locator(".detached-pane-status", { hasText: "会话 Profile 已删除" }).waitFor();
+  await deletedDetachedTerminalPage.waitForTimeout(100);
+  const deletedDetachedTerminalState = await deletedDetachedTerminalPage.evaluate((start) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "send_text").slice(start),
+    pending: window.__pendingTerminalSends.length,
+    status: document.querySelector(".detached-pane-status")?.textContent ?? "",
+  }), deletedDetachedTerminalStart);
+  assert(deletedDetachedTerminalState.calls.length === 1
+    && deletedDetachedTerminalState.calls[0].args.text === "m"
+    && deletedDetachedTerminalState.pending === 0
+    && deletedDetachedTerminalState.status.includes("会话 Profile 已删除"),
+  `detached terminal input survived Profile deletion: ${JSON.stringify(deletedDetachedTerminalState)}`);
+  assert(deletedDetachedTerminalErrors.length === 0,
+    `deleted detached terminal input browser exceptions: ${JSON.stringify(deletedDetachedTerminalErrors)}`);
+  await deletedDetachedTerminalPage.close();
 
   const deletedScriptRunPage = await context.newPage();
   const deletedScriptRunErrors = [];

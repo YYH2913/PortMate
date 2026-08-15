@@ -41,6 +41,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const sessionRefreshGenerationRef = useRef(0);
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
   const inputQueueRef = useRef(new AsyncOperationQueue());
+  const inputEpochRef = useRef(0);
+  const profileDeletedRef = useRef(false);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
@@ -95,6 +97,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           ? await invokeBackend<SessionSummary[]>("list_sessions", {})
           : loadLocalSessions();
         if (!disposed && generation === sessionRefreshGenerationRef.current) {
+          if (nextSessions.some((item) => item.profile.id === request.sessionId)) restoreTerminalInput();
           setSessions(nextSessions);
         }
       } catch {
@@ -138,6 +141,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         : event.payload?.deletedProfileId;
       if (disposed || deletedProfileId !== request.sessionId) return;
       sessionRefreshGenerationRef.current += 1;
+      invalidateTerminalInput();
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
       setError("会话 Profile 已删除");
       void getCurrentWebviewWindow().close().catch(() => {});
@@ -148,6 +152,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
       if (disposed || event.payload?.profile?.id !== request.sessionId) return;
       sessionRefreshGenerationRef.current += 1;
+      restoreTerminalInput();
       setSessions((current) => upsertDetachedSessionSummary(current, event.payload));
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
@@ -201,13 +206,36 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     return () => window.removeEventListener("keydown", handleScreenLockShortcut, true);
   }, []);
 
-  async function sendInput(sessionId: string, text: string) {
-    if (!text || !isBackendAvailable()) return;
+  function captureTerminalInputEpoch(): number | null {
+    return profileDeletedRef.current ? null : inputEpochRef.current;
+  }
+
+  function terminalInputIsCurrent(inputEpoch: number) {
+    return !profileDeletedRef.current && inputEpochRef.current === inputEpoch;
+  }
+
+  function invalidateTerminalInput() {
+    profileDeletedRef.current = true;
+    inputEpochRef.current += 1;
+  }
+
+  function restoreTerminalInput() {
+    profileDeletedRef.current = false;
+  }
+
+  function enqueueTerminalInput(sessionId: string, text: string) {
+    const inputEpoch = captureTerminalInputEpoch();
+    if (inputEpoch === null) return;
+    void inputQueueRef.current.enqueue(() => sendInput(sessionId, text, inputEpoch));
+  }
+
+  async function sendInput(sessionId: string, text: string, inputEpoch: number) {
+    if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
     try {
       await invokeBackend("send_text", { sessionId, text });
-      setError("");
+      if (terminalInputIsCurrent(inputEpoch)) setError("");
     } catch (inputError) {
-      setError(formatDetachedError(inputError));
+      if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));
     }
   }
 
@@ -218,15 +246,24 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     promptEventId: string,
   ) {
     if (!isBackendAvailable()) throw new Error("PortMate desktop backend is unavailable");
-    await inputQueueRef.current.enqueue(() => invokeBackend("send_one_key", {
-      request: {
-        id: oneKeyId,
-        sessionId,
-        field,
-        source: "prompt-completion",
-        promptEventId,
-      },
-    }));
+    const inputEpoch = captureTerminalInputEpoch();
+    if (inputEpoch === null) return;
+    await inputQueueRef.current.enqueue(async () => {
+      if (!terminalInputIsCurrent(inputEpoch)) return;
+      try {
+        await invokeBackend("send_one_key", {
+          request: {
+            id: oneKeyId,
+            sessionId,
+            field,
+            source: "prompt-completion",
+            promptEventId,
+          },
+        });
+      } catch (inputError) {
+        if (terminalInputIsCurrent(inputEpoch)) throw inputError;
+      }
+    });
   }
 
   async function sendOwnerCommand(action: DetachedPaneCommand["action"]) {
@@ -296,7 +333,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void inputQueueRef.current.enqueue(() => sendInput(sessionId, text))} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={enqueueTerminalInput} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={statusError ? "detached-pane-status error" : "detached-pane-status"}>
         <span title={statusText} aria-live="polite">{statusText}</span>

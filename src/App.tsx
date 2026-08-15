@@ -359,6 +359,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const syncInputRef = useRef(false);
+  const terminalInputEpochsRef = useRef(new Map<string, number>());
+  const deletedTerminalInputSessionsRef = useRef(new Set<string>());
   const logSignatureRef = useRef<Record<string, string>>({});
   const activeLogRefreshGateRef = useRef(new KeyedRequestGate<string>());
   const sessionsSignatureRef = useRef("");
@@ -471,6 +473,29 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     syncInputRef.current = enabled;
     setSyncInput(enabled);
+  }
+
+  function captureTerminalInputEpoch(sessionId: string): number | null {
+    if (deletedTerminalInputSessionsRef.current.has(sessionId)) return null;
+    return terminalInputEpochsRef.current.get(sessionId) ?? 0;
+  }
+
+  function terminalInputIsCurrent(sessionId: string, epoch: number) {
+    return !deletedTerminalInputSessionsRef.current.has(sessionId)
+      && (terminalInputEpochsRef.current.get(sessionId) ?? 0) === epoch;
+  }
+
+  function invalidateTerminalInputSession(sessionId: string) {
+    deletedTerminalInputSessionsRef.current.add(sessionId);
+    terminalInputEpochsRef.current.set(sessionId, (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1);
+  }
+
+  function restoreTerminalInputSession(sessionId: string) {
+    deletedTerminalInputSessionsRef.current.delete(sessionId);
+  }
+
+  function restoreTerminalInputSessions(nextSessions: readonly SessionSummary[]) {
+    for (const session of nextSessions) restoreTerminalInputSession(session.profile.id);
   }
 
   function updateTransfers(update: SetStateAction<TransferTask[]>) {
@@ -1514,6 +1539,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     try {
       const nextSessions = await callBackend("list_sessions", {}, emptySessions);
       if (gate.isCurrent("summaries", token)) {
+        restoreTerminalInputSessions(nextSessions);
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
         setSessions(nextSessions);
         const restored = reconcileWorkspaceSnapshot({
@@ -1710,6 +1736,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     try {
       const nextSessions = await invokeBackend<SessionSummary[]>("list_sessions", {});
       if (!gate.isCurrent("summaries", token)) return;
+      restoreTerminalInputSessions(nextSessions);
       const signature = sessionsSignature(nextSessions);
       if (sessionsSignatureRef.current === signature) return;
       sessionsSignatureRef.current = signature;
@@ -2192,6 +2219,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function invalidateDeletedSessionProfileOperations(profileId: string) {
+    invalidateTerminalInputSession(profileId);
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
@@ -3264,6 +3292,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function applySavedSessionState(saved: SessionSummary, activateWorkspace = true) {
+    restoreTerminalInputSession(saved.profile.id);
     if (activateWorkspace) activateSession(saved.profile.id);
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     setSessions((current) => {
@@ -3524,6 +3553,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         });
       }
     }
+    const inputEpochs = new Map(candidates.map((candidate) => [
+      candidate.id,
+      captureTerminalInputEpoch(candidate.id),
+    ]));
     return syncInputDispatcherRef.current.enqueue({
       sourceId: sessionId,
       text,
@@ -3531,7 +3564,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       applyAffixes: origin !== "interactive",
       settings,
       candidates,
-    }, (targetId, payload) => sendTerminalInput(targetId, payload, origin), () => syncInputRef.current).then((result) => {
+    }, (targetId, payload) => {
+      const epoch = inputEpochs.get(targetId);
+      return epoch === null || epoch === undefined
+        ? Promise.resolve()
+        : sendTerminalInput(targetId, payload, origin, epoch);
+    }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
         sessions.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
@@ -3547,8 +3585,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     });
   }
 
-  async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin) {
-    if (!sessionId || !text) return;
+  async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin, inputEpoch: number) {
+    if (!sessionId || !text || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
@@ -3559,6 +3597,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         } else {
           await invokeBackend<SessionEvent>("send_text", { sessionId, text });
         }
+        if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
         if (session.profile.connection.kind === "serial") {
           void refreshSerialCapture(sessionId);
         }
@@ -3572,6 +3611,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }
       }
     } catch (error) {
+      if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
       setLogs((current) => ({
         ...current,
         [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(session.profile, `PortMate: send failed: ${formatError(error)}`)],
@@ -3586,25 +3626,35 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     field: OneKeyPromptField,
     promptEventId: string,
   ) {
-    await syncInputDispatcherRef.current.enqueueOperation(() => invokeBackend<SessionEvent>("send_one_key", {
-      request: {
-        id: oneKeyId,
-        sessionId,
-        field,
-        source: "prompt-completion",
-        promptEventId,
-      },
-    }));
+    const inputEpoch = captureTerminalInputEpoch(sessionId);
+    if (inputEpoch === null) return;
+    await syncInputDispatcherRef.current.enqueueOperation(async () => {
+      if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
+      try {
+        await invokeBackend<SessionEvent>("send_one_key", {
+          request: {
+            id: oneKeyId,
+            sessionId,
+            field,
+            source: "prompt-completion",
+            promptEventId,
+          },
+        });
+      } catch (error) {
+        if (terminalInputIsCurrent(sessionId, inputEpoch)) throw error;
+      }
+    });
   }
 
-  async function sendTerminalBytes(sessionId: string, bytes: number[]) {
-    if (!sessionId || !bytes.length) return;
+  async function sendTerminalBytes(sessionId: string, bytes: number[], inputEpoch: number) {
+    if (!sessionId || !bytes.length || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
       if (isBackendAvailable()) {
         await invokeBackend<SessionEvent>("send_bytes", { sessionId, bytes });
+        if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
         if (session.profile.connection.kind === "serial") {
           void refreshSerialCapture(sessionId);
         }
@@ -3618,6 +3668,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }
       }
     } catch (error) {
+      if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
       setLogs((current) => ({
         ...current,
         [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(session.profile, `PortMate: send failed: ${formatError(error)}`)],
@@ -3636,6 +3687,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setNotice({ title: "发送", message: "没有可发送的目标会话。" });
       return;
     }
+    const inputEpochs = new Map(targets.map((target) => [target, captureTerminalInputEpoch(target)]));
     const sendToken = sendOperationGateRef.current.begin("send");
     if (sendToken === null) return;
     setSendBusy(true);
@@ -3643,11 +3695,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       await syncInputDispatcherRef.current.enqueueOperation(async () => {
         for (let index = 0; index < Math.max(1, sendCount); index += 1) {
           await Promise.all(
-            targets.map((target) =>
-              sendMode === "hex"
-                ? sendTerminalBytes(target, bytePayload)
-                : sendTerminalInput(target, textPayload, "atomic"),
-            ),
+            targets.map((target) => {
+              const inputEpoch = inputEpochs.get(target);
+              if (inputEpoch === null || inputEpoch === undefined) return Promise.resolve();
+              return sendMode === "hex"
+                ? sendTerminalBytes(target, bytePayload, inputEpoch)
+                : sendTerminalInput(target, textPayload, "atomic", inputEpoch);
+            }),
           );
           if (index + 1 < Math.max(1, sendCount)) {
             await delay(sendIntervalMs);
