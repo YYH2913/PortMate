@@ -492,6 +492,8 @@ try {
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
     window.__serialCaptureFrames = [];
+    window.__deferSerialCaptureReads = false;
+    window.__pendingSerialCaptureReads = [];
     window.__deferSerialCaptureOperations = false;
     window.__pendingSerialCaptureOperations = [];
     window.__deferSessionLists = deferStartupSessions;
@@ -810,12 +812,18 @@ try {
           const frames = !args.afterId || reset
             ? window.__serialCaptureFrames
             : window.__serialCaptureFrames.slice(afterIndex + 1);
-          return {
+          const result = {
             frames: structuredClone(frames),
             reset,
             totalFrames: window.__serialCaptureFrames.length,
             capturedBytes: window.__serialCaptureFrames.reduce((total, frame) => total + frame.originalLength, 0),
           };
+          if (!window.__deferSerialCaptureReads) return result;
+          return new Promise((resolve) => window.__pendingSerialCaptureReads.push({
+            args: structuredClone(args),
+            result,
+            resolve,
+          }));
         }
         if (command === "list_serial_capture_history") {
           return { frames: [], enabled: false, totalFrames: 0, capturedBytes: 0, droppedFrames: 0, unavailableFrames: 0 };
@@ -3196,6 +3204,102 @@ Host staging
   await page.waitForTimeout(100);
   assert(await page.locator(".notice-dialog").count() === 0,
     "a transfer response from the previous SSH session produced a stale notice");
+  await togglePanel("历史命令");
+  const serialMonitor = page.locator(".serial-monitor");
+  await serialMonitor.waitFor();
+  await page.evaluate(() => {
+    window.__serialCaptureFrames = [{
+      id: "main-rx-before-clear",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      bytes: [0x31, 0x32, 0x33],
+      originalLength: 3,
+      truncated: false,
+    }];
+  });
+  await serialMonitor.locator(".serial-monitor-row", { hasText: "31 32 33" }).waitFor();
+  await page.evaluate(() => {
+    window.__serialCaptureFrames = [{
+      id: "main-stale-read",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      bytes: [0x53, 0x54, 0x41, 0x4c, 0x45],
+      originalLength: 5,
+      truncated: false,
+    }];
+    window.__deferSerialCaptureReads = true;
+    window.__pendingSerialCaptureReads = [];
+    window.__deferSerialCaptureOperations = true;
+    window.__pendingSerialCaptureOperations = [];
+  });
+  await page.waitForFunction(() => window.__pendingSerialCaptureReads.length === 1);
+  await serialMonitor.getByRole("button", { name: "清空串口捕获", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
+  const mainSerialClearState = await page.evaluate(() => ({
+    clearCalls: window.__invokeCalls.filter((call) => call.command === "clear_serial_capture").length,
+    pendingReads: window.__pendingSerialCaptureReads.length,
+    pendingActions: window.__pendingSerialCaptureOperations.length,
+    busy: document.querySelector(".serial-monitor")?.getAttribute("aria-busy"),
+  }));
+  assert(mainSerialClearState.clearCalls === 1
+    && mainSerialClearState.pendingReads === 1
+    && mainSerialClearState.pendingActions === 1
+    && mainSerialClearState.busy === "true"
+    && await serialMonitor.getByRole("button", { name: "清空串口捕获", exact: true }).isDisabled()
+    && await serialMonitor.getByRole("button", { name: "导出可见串口帧", exact: true }).isDisabled(),
+  `main serial clear duplicated or left conflicting controls enabled: ${JSON.stringify(mainSerialClearState)}`);
+  await page.evaluate(() => {
+    window.__pendingSerialCaptureOperations.shift().resolve();
+  });
+  await serialMonitor.locator(".serial-monitor-row").waitFor({ state: "detached" });
+  await page.evaluate(() => {
+    const pending = window.__pendingSerialCaptureReads.shift();
+    pending.resolve(pending.result);
+  });
+  await page.waitForTimeout(100);
+  assert(await serialMonitor.locator(".serial-monitor-row").count() === 0,
+    "a stale main-window serial read restored frames after clearing");
+  await page.evaluate(() => {
+    window.__deferSerialCaptureReads = false;
+    window.__serialCaptureFrames = [{
+      id: "main-tx-after-clear",
+      ts: new Date().toISOString(),
+      direction: "outbound",
+      bytes: [0x41, 0x46, 0x54, 0x45, 0x52],
+      originalLength: 5,
+      truncated: false,
+    }];
+  });
+  await serialMonitor.locator(".serial-monitor-row", { hasText: "41 46 54 45 52" }).waitFor();
+  assert(await serialMonitor.getAttribute("aria-busy") === "false",
+    "main serial monitor did not resume polling after clearing");
+  await serialMonitor.getByRole("button", { name: "导出可见串口帧", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
+  const mainSerialExportState = await page.evaluate(() => ({
+    exportCalls: window.__invokeCalls.filter((call) => call.command === "export_serial_capture").length,
+    pendingActions: window.__pendingSerialCaptureOperations.length,
+    busy: document.querySelector(".serial-monitor")?.getAttribute("aria-busy"),
+  }));
+  assert(mainSerialExportState.exportCalls === 1
+    && mainSerialExportState.pendingActions === 1
+    && mainSerialExportState.busy === "true",
+  `main serial export duplicated: ${JSON.stringify(mainSerialExportState)}`);
+  await page.evaluate(() => {
+    window.__pendingSerialCaptureOperations.shift().resolve();
+    window.__deferSerialCaptureOperations = false;
+    window.__serialCaptureFrames = [];
+  });
+  const mainSerialExportNotice = page.locator(".notice-dialog", { hasText: "串口捕获已导出" });
+  await mainSerialExportNotice.waitFor();
+  await mainSerialExportNotice.getByRole("button", { name: "确定", exact: true }).click();
+  await togglePanel("历史命令");
+  await serialMonitor.waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
   await page.waitForFunction(() => (
     document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Edge Router")

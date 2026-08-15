@@ -263,6 +263,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
+  const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
@@ -366,8 +367,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
-  const serialCaptureRefreshesRef = useRef(new Set<string>());
-  const serialCaptureEpochRef = useRef<Record<string, number>>({});
+  const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
+  const serialCaptureActionTokensRef = useRef(new Map<string, number>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
   const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
@@ -1427,22 +1428,45 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setSerialCaptures((current) => ({ ...current, [sessionId]: frames }));
   }
 
+  function beginSerialCaptureAction(sessionId: string): number | null {
+    if (serialCaptureActionTokensRef.current.has(sessionId)) return null;
+    const token = serialCaptureOperationGateRef.current.replace(sessionId);
+    serialCaptureActionTokensRef.current.set(sessionId, token);
+    setSerialCaptureActionIds((current) => {
+      if (current.has(sessionId)) return current;
+      return new Set(current).add(sessionId);
+    });
+    return token;
+  }
+
+  function finishSerialCaptureAction(sessionId: string, token: number) {
+    if (serialCaptureActionTokensRef.current.get(sessionId) !== token) return;
+    serialCaptureActionTokensRef.current.delete(sessionId);
+    serialCaptureOperationGateRef.current.finish(sessionId, token);
+    setSerialCaptureActionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+  }
+
   async function refreshSerialCapture(sessionId: string) {
-    if (serialCaptureRefreshesRef.current.has(sessionId)) return;
-    serialCaptureRefreshesRef.current.add(sessionId);
-    const epoch = serialCaptureEpochRef.current[sessionId] ?? 0;
+    const gate = serialCaptureOperationGateRef.current;
+    const token = gate.begin(sessionId);
+    if (token === null) return;
     try {
       const current = serialCapturesRef.current[sessionId] ?? [];
       const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
         sessionId,
         afterId: current.at(-1)?.id ?? null,
       });
-      if ((serialCaptureEpochRef.current[sessionId] ?? 0) !== epoch) return;
+      if (!gate.isCurrent(sessionId, token)) return;
       storeSerialCapture(sessionId, mergeSerialCaptureSnapshot(current, snapshot));
     } catch {
       // Capture polling is best-effort; transport status and terminal output remain authoritative.
     } finally {
-      serialCaptureRefreshesRef.current.delete(sessionId);
+      gate.finish(sessionId, token);
     }
   }
 
@@ -1464,33 +1488,45 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function clearSerialCapture(sessionId: string) {
-    serialCaptureEpochRef.current = {
-      ...serialCaptureEpochRef.current,
-      [sessionId]: (serialCaptureEpochRef.current[sessionId] ?? 0) + 1,
-    };
-    if (!isBackendAvailable()) {
-      storeSerialCapture(sessionId, []);
-      return;
-    }
+    const token = beginSerialCaptureAction(sessionId);
+    if (token === null) return;
+    const gate = serialCaptureOperationGateRef.current;
     try {
+      if (!isBackendAvailable()) {
+        storeSerialCapture(sessionId, []);
+        return;
+      }
       const snapshot = await invokeBackend<SerialCaptureSnapshot>("clear_serial_capture", { sessionId });
+      if (!gate.isCurrent(sessionId, token)) return;
       storeSerialCapture(sessionId, mergeSerialCaptureSnapshot([], snapshot));
     } catch (error) {
-      setNotice({ title: "清空串口捕获失败", message: formatError(error) });
+      if (gate.isCurrent(sessionId, token)) {
+        setNotice({ title: "清空串口捕获失败", message: formatError(error) });
+      }
+    } finally {
+      finishSerialCaptureAction(sessionId, token);
     }
   }
 
   async function exportSerialCapture(sessionId: string, frameIds: string[]) {
+    const token = beginSerialCaptureAction(sessionId);
+    if (token === null) return;
+    const gate = serialCaptureOperationGateRef.current;
     try {
       const result = await invokeBackend<ExportSerialCaptureResult>("export_serial_capture", {
         request: { sessionId, frameIds },
       });
+      if (!gate.isCurrent(sessionId, token)) return;
       setNotice({
         title: "串口捕获已导出",
         message: `${result.frames} 帧 · ${formatBytes(result.capturedBytes)} · ${result.path}\nSHA-256 ${result.sha256}`,
       });
     } catch (error) {
-      setNotice({ title: "导出串口捕获失败", message: formatError(error) });
+      if (gate.isCurrent(sessionId, token)) {
+        setNotice({ title: "导出串口捕获失败", message: formatError(error) });
+      }
+    } finally {
+      finishSerialCaptureAction(sessionId, token);
     }
   }
 
@@ -1982,8 +2018,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setDraft((current) => current.id === profileId ? createSessionDraft() : current);
     setHostKeyPrompt((current) => current?.profile.id === profileId ? null : current);
     delete serialCapturesRef.current[profileId];
-    delete serialCaptureEpochRef.current[profileId];
-    serialCaptureRefreshesRef.current.delete(profileId);
+    serialCaptureOperationGateRef.current.invalidate(profileId);
+    serialCaptureActionTokensRef.current.delete(profileId);
+    setSerialCaptureActionIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
     activeLogRefreshGateRef.current.invalidate(profileId);
     delete logSignatureRef.current[profileId];
     sessionsSignatureRef.current = "";
@@ -3510,6 +3552,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                 onClear={() => void clearSerialCapture(active.profile.id)}
                 onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
                 canExport={isBackendAvailable()}
+                busy={serialCaptureActionIds.has(active.profile.id)}
               />
             ) : null}
           />
@@ -4462,12 +4505,14 @@ function SerialMonitorPanel({
   onClear,
   onExport,
   canExport,
+  busy,
 }: {
   frames: SerialCaptureFrame[];
   onOpen: () => void;
   onClear: () => void;
   onExport: (frameIds: string[]) => void;
   canExport: boolean;
+  busy: boolean;
 }) {
   const [direction, setDirection] = useState<SerialCaptureDirectionFilter>("all");
   const [query, setQuery] = useState("");
@@ -4477,7 +4522,7 @@ function SerialMonitorPanel({
   );
 
   return (
-    <div className="serial-monitor">
+    <div className="serial-monitor" aria-busy={busy}>
       <div className="serial-monitor-controls">
         <div className="serial-monitor-filters" aria-label="串口捕获方向">
           {(["all", "inbound", "outbound"] as const).map((value) => (
@@ -4502,12 +4547,12 @@ function SerialMonitorPanel({
             type="button"
             title="导出可见帧（原始字节，不脱敏）"
             aria-label="导出可见串口帧"
-            disabled={!canExport || !visible.length}
+            disabled={busy || !canExport || !visible.length}
             onClick={() => onExport(visible.map((frame) => frame.id))}
           >
             <Download size={13} />
           </button>
-          <button type="button" title="清空串口捕获" aria-label="清空串口捕获" disabled={!frames.length} onClick={onClear}>
+          <button type="button" title="清空串口捕获" aria-label="清空串口捕获" disabled={busy || !frames.length} onClick={onClear}>
             <Trash2 size={13} />
           </button>
         </div>
