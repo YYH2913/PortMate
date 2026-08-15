@@ -380,12 +380,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
+  const pendingProfileDeletionRef = useRef(new Map<string, { token: number; profileName: string }>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
   const screenLockOperationGateRef = useRef(new KeyedRequestGate<"prepare" | "unlock">());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
   const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
-  const profileDeleteHandlerRef = useRef<(sessionId: string) => void>(() => {});
+  const profileDeleteHandlerRef = useRef<(payload: DeleteSessionProfileResponse | string) => void>(() => {});
   const screenLockRef = useRef<ScreenLockState>(screenLock);
   const restoredScreenLockPreparedRef = useRef(false);
 
@@ -446,10 +447,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!summary?.profile?.id) return;
     applySavedSessionState(summary, false);
   };
-  profileDeleteHandlerRef.current = (sessionId) => {
+  profileDeleteHandlerRef.current = (payload) => {
+    const sessionId = typeof payload === "string" ? payload : payload?.deletedProfileId;
     if (!sessionId) return;
-    invalidateDeletedSessionProfileOperations(sessionId);
+    const response = typeof payload === "string"
+      ? deleteSessionProfileFromClientState(sessionId, { sessions, oneKeys, hostKeys, grants })
+      : payload;
+    const pending = pendingProfileDeletionRef.current.get(sessionId);
+    if (pending) pendingProfileDeletionRef.current.delete(sessionId);
+    applyDeletedSessionProfile(response);
     void refresh();
+    if (pending) {
+      setNotice({
+        title: "会话已删除",
+        message: `已删除 ${pending.profileName}；磁盘日志仍可在日志管理器中查看或清理。`,
+      });
+    }
   };
 
   function updateSyncInput(enabled: boolean) {
@@ -1156,7 +1169,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (disposed) nextUnlisten();
       else unlisten.add(nextUnlisten);
     }).catch(() => {});
-    void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
+    void listen<DeleteSessionProfileResponse | string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
       if (!disposed) profileDeleteHandlerRef.current(event.payload);
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
@@ -2281,19 +2294,25 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
 
+    pendingProfileDeletionRef.current.set(profileId, { token, profileName: target.profile.name });
     const gate = profileShortcutOperationGateRef.current;
     try {
       const response = isBackendAvailable()
         ? await invokeBackend<DeleteSessionProfileResponse>("delete_session_profile", { sessionId: profileId })
         : deleteSessionProfileFromClientState(profileId, { sessions, oneKeys, hostKeys, grants });
       if (!gate.isCurrent(profileId, token)) return;
+      pendingProfileDeletionRef.current.delete(profileId);
       applyDeletedSessionProfile(response);
       setNotice({ title: "会话已删除", message: `已删除 ${target.profile.name}；磁盘日志仍可在日志管理器中查看或清理。` });
     } catch (error) {
       if (gate.isCurrent(profileId, token)) {
+        pendingProfileDeletionRef.current.delete(profileId);
         setNotice({ title: "删除会话失败", message: formatError(error) });
       }
     } finally {
+      if (pendingProfileDeletionRef.current.get(profileId)?.token === token) {
+        pendingProfileDeletionRef.current.delete(profileId);
+      }
       finishProfileShortcutOperation(profileId, token);
     }
   }

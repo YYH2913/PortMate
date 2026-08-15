@@ -122,7 +122,7 @@ pub(super) async fn delete_session_profile_under_lifecycle_lock(
 
     cleanup_deleted_session_runtime_state(state, &session_id, &transfer_ids);
     if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit("portmate-session-profile-deleted", session_id);
+        let _ = app_handle.emit("portmate-session-profile-deleted", response.clone());
     }
     Ok(response)
 }

@@ -23,7 +23,7 @@ import { listenTerminalByteEvents } from "./terminal-byte-events";
 import TerminalCanvas from "./TerminalCanvas";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
-import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
+import type { DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
@@ -132,8 +132,11 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     if (!isBackendAvailable()) return;
     let disposed = false;
     const unlisten = new Set<() => void>();
-    void listen<string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
-      if (disposed || event.payload !== request.sessionId) return;
+    void listen<DeleteSessionProfileResponse | string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
+      const deletedProfileId = typeof event.payload === "string"
+        ? event.payload
+        : event.payload?.deletedProfileId;
+      if (disposed || deletedProfileId !== request.sessionId) return;
       sessionRefreshGenerationRef.current += 1;
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
       setError("会话 Profile 已删除");

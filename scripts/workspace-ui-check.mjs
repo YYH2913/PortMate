@@ -481,6 +481,7 @@ try {
     window.__pendingSessionCloses = [];
     window.__deferSessionProfileDeletes = false;
     window.__pendingSessionProfileDeletes = [];
+    window.__emitSessionProfileDeleteBeforeResolve = false;
     window.__deferDetachedOwnerCommands = false;
     window.__pendingDetachedOwnerCommands = [];
     window.__deferTerminalSends = false;
@@ -1602,13 +1603,21 @@ try {
                 updatedAt: new Date().toISOString(),
               };
             });
-            return {
+            const response = {
               deletedProfileId,
               sessions: window.__sessions,
               oneKeys: [],
               hostKeys: { keys: [] },
               grants: window.__mcpGrants,
             };
+            if (window.__emitSessionProfileDeleteBeforeResolve) {
+              window.__emitSessionProfileDeleteBeforeResolve = false;
+              window.__emitTauriEvent(
+                "portmate-session-profile-deleted",
+                structuredClone(response),
+              );
+            }
+            return response;
           };
           if (!window.__deferSessionProfileDeletes) return complete();
           return new Promise((resolve) => window.__pendingSessionProfileDeletes.push({
@@ -6680,6 +6689,7 @@ Host staging
     window.__pendingSessionLists = [];
     window.__deferSessionProfileDeletes = true;
     window.__pendingSessionProfileDeletes = [];
+    window.__emitSessionProfileDeleteBeforeResolve = true;
   });
   await deleteTarget.click();
   await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
@@ -6725,7 +6735,14 @@ Host staging
     "deleted profile retained a workspace view");
   await page.waitForFunction(() => !localStorage.getItem("portmate.workspace.v1")?.includes("bench-uart"));
   const deleteCalls = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_session_profile"));
-  assert(deleteCalls.length === 1 && deleteCalls[0].args.sessionId === "bench-uart",
+  const deleteEventOrderingState = await page.evaluate(() => ({
+    eventBeforeResponsePending: window.__emitSessionProfileDeleteBeforeResolve,
+    pendingDeletes: window.__pendingSessionProfileDeletes.length,
+  }));
+  assert(deleteCalls.length === 1
+    && deleteCalls[0].args.sessionId === "bench-uart"
+    && deleteEventOrderingState.eventBeforeResponsePending === false
+    && deleteEventOrderingState.pendingDeletes === 0,
     `profile deletion did not reach the backend exactly once: ${JSON.stringify(deleteCalls)}`);
   await deletionNotice.getByRole("button", { name: "确定", exact: true }).click();
 
