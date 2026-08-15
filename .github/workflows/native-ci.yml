@@ -128,8 +128,9 @@ jobs:
           "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "Vendored OpenSSL Perl: $perl ($perlOs)"
 
-      - uses: swift-actions/setup-swift@v3
-        if: runner.os == 'Linux'
+      - name: Install pinned Swift SDK client toolchain
+        uses: swift-actions/setup-swift@v3
+        if: runner.os != 'Windows'
         with:
           swift-version: "6.3.3"
 

@@ -73,6 +73,9 @@ describe("CI command logging", () => {
     expect(workflow).toContain("if: runner.os == 'Linux'");
     expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
+    const swiftSetup = workflowStep(workflow, "Install pinned Swift SDK client toolchain");
+    expect(swiftSetup).toContain("if: runner.os != 'Windows'");
+    expect(swiftSetup).toContain('swift-version: "6.3.3"');
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
     const nativePerl = workflowStep(workflow, "Install native Perl on Windows");

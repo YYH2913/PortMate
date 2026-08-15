@@ -16,7 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { swiftVersionIsAtLeast } from "./swift-toolchain-version.mjs";
+import { runSwiftBuildWithRecovery } from "./swift-package-state.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = join(projectRoot, "scripts", "mcp-swift-client-check");
@@ -81,7 +81,14 @@ for (const entry of matrix.sdks) {
     "--product",
     "McpSwiftClientCheck",
   );
-  run(swift, buildArguments, { env: environment, timeout: 600_000 });
+  await runSwiftBuildWithRecovery({
+    scratch,
+    cache,
+    build: () => runStreaming(swift, buildArguments, { env: environment, timeout: 600_000 }),
+    onRetry: (error) => {
+      console.warn(`Swift ${entry.version} package state was repaired after a checkout failure: ${error.message}`);
+    },
+  });
 
   const client = join(
     scratch,
@@ -152,7 +159,6 @@ function validateMatrix(value) {
   if (
     typeof value !== "object"
     || !versionPattern.test(value?.swift?.version)
-    || !versionPattern.test(value?.swift?.minimumSystemVersion)
     || typeof archives !== "object"
     || !Object.keys(archives).length
     || Object.values(archives).some((archive) => (
@@ -172,7 +178,7 @@ function validateMatrix(value) {
   }
 }
 
-async function ensureSwift({ version, minimumSystemVersion, archives }, environment) {
+async function ensureSwift({ version, archives }, environment) {
   const configuredSwift = process.env.PORTMATE_SWIFT?.trim();
   const command = configuredSwift || "swift";
   const probe = run(command, ["--version"], {
@@ -182,14 +188,6 @@ async function ensureSwift({ version, minimumSystemVersion, archives }, environm
     timeout: 10_000,
   });
   if (probe.status === 0 && matchesSwiftVersion(probe.stdout, version)) {
-    return command;
-  }
-  if (
-    !configuredSwift
-    && process.platform === "darwin"
-    && probe.status === 0
-    && swiftVersionIsAtLeast(probe.stdout, minimumSystemVersion)
-  ) {
     return command;
   }
   if (configuredSwift) {
@@ -353,4 +351,48 @@ function run(command, args, options = {}) {
     throw new Error(`${command} failed with exit code ${result.status ?? 1}${details ? `\n${details}` : ""}`);
   }
   return result;
+}
+
+function runStreaming(command, args, options = {}) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, args, {
+      cwd: projectRoot,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let output = "";
+    let timedOut = false;
+    const remember = (chunk) => {
+      output = `${output}${chunk}`.slice(-128 * 1024);
+    };
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      remember(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      remember(chunk);
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, options.timeout ?? 30_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectRun(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (timedOut) {
+        rejectRun(new Error(`${command} exceeded its ${options.timeout ?? 30_000} ms timeout\n${output.trim()}`));
+      } else if (code !== 0) {
+        rejectRun(new Error(
+          `${command} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? 1}`}${output.trim() ? `\n${output.trim()}` : ""}`,
+        ));
+      } else {
+        resolveRun();
+      }
+    });
+  });
 }
