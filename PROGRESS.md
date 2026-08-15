@@ -1,6 +1,6 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-08-15
+审查日期：2026-08-16
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
 
@@ -139,6 +139,10 @@ OneKey 保存、删除和发送补齐弹窗级同步 operation gate，入口在 
 主工作区发送面板补齐覆盖完整批次的同步 send gate，发送按钮与 `Ctrl+Enter` 在 React `sendBusy` 渲染前同帧触发时只允许一个调用进入；文本、Hex、次数、间隔和目标仍在批次开始时形成稳定快照。Workspace UI 延迟 `send_text` 响应并以同帧双击锁定单次后端调用、单个 pending 请求、发送按钮禁用和成功后一次命令历史记录。
 
 主工作区串口 DTR、RTS 和 BRK 共用每会话同步 control gate，与后端持有 serial registry/writer/Store 锁的真实串行边界一致；任一设备操作期间三枚按钮一起禁用，同帧重复事件不再排队第二次线路写入或第二个 250 ms Break 脉冲。Profile 删除会撤销 gate 和 busy 状态，迟到线路响应不能恢复已删会话。Workspace UI 以延迟 DTR/Break 响应分别锁定单次后端调用、同会话全控件禁用、DTR 权威回显和完成后解锁。
+
+2026-08-16 对当前 HEAD `032db8d` 重新生成未签名 Windows GNU x86_64 便携包：`PortMate-0.1.1-windows-x86_64-portable.zip` 为 22,891,245 字节，SHA-256 为 `2154fa3de858b9914b5fb359129aac47fca3121a4a144e79f5f16d10c58c25d7`。ZIP 完整性、主程序 GUI PE32+ x86_64、MCP sidecar console PE32+ x86_64、WebView2 loader、嵌入前端资源、Apache-2.0 及 JetBrains Mono OFL 许可证均通过静态门禁。该记录只证明当前源码的交叉构建和静态包边界，不替代真实 Windows 上的 WebView2、Credential Manager、MSVC/OpenSSL、启动、安装或签名验证。
+
+同一 HEAD 重新生成 Linux x86_64 DEB、RPM 和 AppImage，分别为 15,808,382、15,805,072 和 91,933,176 字节，SHA-256 分别为 `5f5cfd5e2acbce798e6fc4b1c3b88d9074eb99d93f5246c619d23c3f932a5ac6`、`7232cc0674853a08af26a0fcba45c66e83eaf8e76a561f588bf7b27b114da974` 和 `73ea6e0b9f77e5dcab36aa3e6d42c2ac5bcbaaed3cf777bf123d1cc194ea7e13`。DEB 与 AppImage 的主程序、MCP sidecar、执行权限、许可证和 AppImage 相对链接已通过解包核对；两个包内 sidecar 均通过根 TypeScript 客户端的 stdio 8 消息、HTTP 9 请求及 IPv6 `::1`/`::` 监听检查。当前宿主缺少 `xvfb-run`、`openbox` 和系统 `wmctrl`，因此这三个当前包尚未完成隔离 X11 窗口、Store 生命周期、迁移和九种 SDK 逐包矩阵；这些证据需由 GitHub Ubuntu Native CI 补齐。
 
 ## 当前实现快照
 
