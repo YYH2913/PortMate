@@ -450,7 +450,7 @@ fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
             cancel: Arc::clone(&ops_cancel),
         },
     );
-    let status = stop_tmux_control_inner(&state, "session:1", None).unwrap();
+    let status = stop_tmux_control_inner(&state, "session:1", None, None).unwrap();
     assert!(status.target.is_empty());
     assert!(status.runtime_id.is_none());
     assert!(!status.active);
@@ -460,7 +460,14 @@ fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
     assert!(!session_has_registered_runtime(&state, "session:1").unwrap());
     assert_eq!(state.tmux_controls.lock().unwrap().len(), 4);
 
-    let status = stop_tmux_control_inner(&state, "session:2", Some("lab")).unwrap();
+    let stale_status =
+        stop_tmux_control_inner(&state, "session:2", Some("lab"), Some("stale-control")).unwrap();
+    assert!(stale_status.active);
+    assert_eq!(stale_status.runtime_id.as_deref(), Some("control-3"));
+    assert!(!other_cancel.load(Ordering::SeqCst));
+
+    let status =
+        stop_tmux_control_inner(&state, "session:2", Some("lab"), Some("control-3")).unwrap();
     assert_eq!(status.target, "lab");
     assert_eq!(status.runtime_id.as_deref(), Some("control-3"));
     assert!(!status.active);

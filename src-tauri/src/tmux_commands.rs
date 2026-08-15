@@ -57,6 +57,12 @@ pub(crate) fn stop_tmux_control(
     state: State<'_, AppState>,
     session_id: String,
     target: Option<String>,
+    runtime_id: Option<String>,
 ) -> Result<TmuxControlStatus, String> {
-    stop_tmux_control_inner(state.inner(), &session_id, target.as_deref())
+    stop_tmux_control_inner(
+        state.inner(),
+        &session_id,
+        target.as_deref(),
+        runtime_id.as_deref(),
+    )
 }

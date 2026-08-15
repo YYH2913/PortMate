@@ -75,9 +75,12 @@ export default function TmuxDialog({
   const controlRefreshInFlightRef = useRef(false);
   const controlRefreshPendingRef = useRef(false);
   const stateRequestGateRef = useRef(new KeyedRequestGate<"state">());
+  const operationGateRef = useRef(new KeyedRequestGate<"operation">());
+  const controlOperationGateRef = useRef(new KeyedRequestGate<string>());
   sessionIdRef.current = session.profile.id;
   const windows = useMemo(() => groupTmuxPanes(state.panes, state.windows), [state.panes, state.windows]);
   const operationBusy = busy || Boolean(syncingTarget) || Boolean(mutatingTarget);
+  const controlOperationBusy = Boolean(controlBusyTargets.size);
 
   function publishControlRuntimes() {
     setControlRuntimes(new Map(controlRuntimesRef.current));
@@ -113,19 +116,29 @@ export default function TmuxDialog({
     controlRuntimesRef.current.clear();
     controlRequestedTargetsRef.current.clear();
     stoppedControlRuntimeIdsRef.current.clear();
+    operationGateRef.current.invalidateAll();
+    controlOperationGateRef.current.invalidateAll();
     controlRefreshPendingRef.current = false;
+    setBusy(false);
+    setSyncingTarget("");
+    setMutatingTarget("");
     setControlRuntimes(new Map());
     setControlBusyTargets(new Set());
     void refreshTmux();
     return () => {
       stateRequestGateRef.current.invalidate("state");
-      const ownedTargets = [...controlOwnedTargetsRef.current];
+      operationGateRef.current.invalidateAll();
+      controlOperationGateRef.current.invalidateAll();
+      const ownedRuntimes = [...controlOwnedTargetsRef.current].flatMap((target) => {
+        const runtimeId = controlRuntimesRef.current.get(target);
+        return runtimeId ? [{ target, runtimeId }] : [];
+      });
       controlOwnedTargetsRef.current.clear();
       controlRuntimesRef.current.clear();
       controlRequestedTargetsRef.current.clear();
       controlRefreshPendingRef.current = false;
-      for (const target of ownedTargets) {
-        void invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId, target }).catch(() => {});
+      for (const { target, runtimeId } of ownedRuntimes) {
+        void invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId, target, runtimeId }).catch(() => {});
       }
     };
   }, [session.profile.id]);
@@ -155,7 +168,6 @@ export default function TmuxDialog({
       if (controlRuntimesRef.current.get(payload.target) !== payload.runtimeId) return;
       controlOwnedTargetsRef.current.delete(payload.target);
       setControlRuntime(payload.target, null, payload.runtimeId);
-      setControlTargetBusy(payload.target, false);
       if (payload.error) setError(payload.error);
     })
       .then((nextUnlisten) => {
@@ -171,6 +183,9 @@ export default function TmuxDialog({
 
   async function refreshTmux() {
     const sessionId = session.profile.id;
+    const operationGate = operationGateRef.current;
+    const operationToken = operationGate.begin("operation");
+    if (operationToken === null) return;
     const gate = stateRequestGateRef.current;
     const token = gate.replace("state");
     setBusy(true);
@@ -189,7 +204,8 @@ export default function TmuxDialog({
       setError(formatTmuxError(error));
     } finally {
       gate.finish("state", token);
-      if (mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
+      if (operationGate.finish("operation", operationToken)
+        && mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
     }
   }
 
@@ -227,6 +243,9 @@ export default function TmuxDialog({
 
   async function startControl(nextTarget: string) {
     const sessionId = session.profile.id;
+    const gate = controlOperationGateRef.current;
+    const token = gate.begin(nextTarget);
+    if (token === null) return;
     setControlTargetBusy(nextTarget, true);
     setError("");
     setFeedback("");
@@ -239,9 +258,13 @@ export default function TmuxDialog({
         sessionId,
         target: nextTarget,
       });
-      if (!mountedRef.current || sessionIdRef.current !== sessionId) {
-        if (status.active) {
-          void invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId, target: nextTarget }).catch(() => {});
+      if (!isCurrentControlOperation(sessionId, nextTarget, token)) {
+        if (status.active && status.runtimeId) {
+          void invokeBackend<TmuxControlStatus>("stop_tmux_control", {
+            sessionId,
+            target: nextTarget,
+            runtimeId: status.runtimeId,
+          }).catch(() => {});
         }
         return;
       }
@@ -259,18 +282,21 @@ export default function TmuxDialog({
       setControlRuntime(nextTarget, runtimeId);
       setFeedback(`${nextTarget} 已开启 control-mode 实时监听`);
     } catch (error) {
+      if (!isCurrentControlOperation(sessionId, nextTarget, token)) return;
       controlOwnedTargetsRef.current.delete(nextTarget);
       controlRequestedTargetsRef.current.delete(nextTarget);
-      if (mountedRef.current && sessionIdRef.current === sessionId) {
-        setError(formatTmuxError(error));
-      }
+      setError(formatTmuxError(error));
     } finally {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setControlTargetBusy(nextTarget, false);
+      if (gate.finish(nextTarget, token)
+        && mountedRef.current && sessionIdRef.current === sessionId) setControlTargetBusy(nextTarget, false);
     }
   }
 
   async function stopControl(target: string) {
     const sessionId = session.profile.id;
+    const gate = controlOperationGateRef.current;
+    const token = gate.begin(target);
+    if (token === null) return;
     const previousRuntimeId = controlRuntimesRef.current.get(target) || "";
     const wasOwned = controlOwnedTargetsRef.current.has(target);
     setControlTargetBusy(target, true);
@@ -279,17 +305,26 @@ export default function TmuxDialog({
     controlOwnedTargetsRef.current.delete(target);
     controlRequestedTargetsRef.current.delete(target);
     try {
-      await invokeBackend<TmuxControlStatus>("stop_tmux_control", { sessionId, target });
-      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
+      const status = await invokeBackend<TmuxControlStatus>("stop_tmux_control", {
+        sessionId,
+        target,
+        runtimeId: previousRuntimeId || null,
+      });
+      if (!isCurrentControlOperation(sessionId, target, token)) return;
+      if (status.active) {
+        if (status.runtimeId) setControlRuntime(target, status.runtimeId);
+        setError("Tmux control-mode runtime 已更新，请重试停止");
+        return;
+      }
       setControlRuntime(target, null, previousRuntimeId);
       setFeedback(`${target} 已停止 control-mode 实时监听`);
     } catch (error) {
+      if (!isCurrentControlOperation(sessionId, target, token)) return;
       if (wasOwned) controlOwnedTargetsRef.current.add(target);
-      if (mountedRef.current && sessionIdRef.current === sessionId) {
-        setError(formatTmuxError(error));
-      }
+      setError(formatTmuxError(error));
     } finally {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setControlTargetBusy(target, false);
+      if (gate.finish(target, token)
+        && mountedRef.current && sessionIdRef.current === sessionId) setControlTargetBusy(target, false);
     }
   }
 
@@ -297,22 +332,29 @@ export default function TmuxDialog({
     const cleanTarget = nextTarget.trim();
     if (!cleanTarget) return;
     const sessionId = session.profile.id;
+    const operationGate = operationGateRef.current;
+    const operationToken = operationGate.begin("operation");
+    if (operationToken === null) return;
     setBusy(true);
     setError("");
     setFeedback("");
     try {
       await invokeBackend<SessionEvent>("attach_tmux", { sessionId, target: cleanTarget });
-      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
+      if (!isCurrentOperation(sessionId, operationToken)) return;
       onDone(`已发送 tmux attach/new-session：${cleanTarget}`);
     } catch (error) {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
+      if (isCurrentOperation(sessionId, operationToken)) setError(formatTmuxError(error));
     } finally {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
+      if (operationGate.finish("operation", operationToken)
+        && mountedRef.current && sessionIdRef.current === sessionId) setBusy(false);
     }
   }
 
   async function setPaneSync(nextTarget: string, enabled: boolean) {
     const sessionId = session.profile.id;
+    const operationGate = operationGateRef.current;
+    const operationToken = operationGate.begin("operation");
+    if (operationToken === null) return;
     const gate = stateRequestGateRef.current;
     const token = gate.replace("state");
     setSyncingTarget(nextTarget);
@@ -327,14 +369,15 @@ export default function TmuxDialog({
         enabled,
       });
       if (isCurrentStateRequest(sessionId, token)) setState(nextState);
-      if (mountedRef.current && sessionIdRef.current === sessionId) {
+      if (isCurrentOperation(sessionId, operationToken)) {
         setFeedback(`${nextTarget} 已${enabled ? "开启" : "关闭"} pane 同步输入`);
       }
     } catch (error) {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
+      if (isCurrentOperation(sessionId, operationToken)) setError(formatTmuxError(error));
     } finally {
       gate.finish("state", token);
-      if (mountedRef.current && sessionIdRef.current === sessionId) {
+      if (operationGate.finish("operation", operationToken)
+        && mountedRef.current && sessionIdRef.current === sessionId) {
         setSyncingTarget((current) => current === nextTarget ? "" : current);
       }
     }
@@ -348,6 +391,9 @@ export default function TmuxDialog({
     options: Pick<TmuxMutationRequest, "destination" | "layout" | "amount"> = {},
   ) {
     const sessionId = session.profile.id;
+    const operationGate = operationGateRef.current;
+    const operationToken = operationGate.begin("operation");
+    if (operationToken === null) return;
     const gate = stateRequestGateRef.current;
     const token = gate.replace("state");
     setMutatingTarget(mutationTarget);
@@ -363,7 +409,7 @@ export default function TmuxDialog({
       };
       const nextState = await invokeBackend<TmuxState>("mutate_tmux", { request });
       if (isCurrentStateRequest(sessionId, token)) setState(nextState);
-      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
+      if (!isCurrentOperation(sessionId, operationToken)) return;
       if (action === "rename-session" && name && target === mutationTarget) setTarget(name);
       if (action === "kill-session" && target === mutationTarget) {
         setTarget(nextState.sessions[0]?.name || "portmate");
@@ -372,10 +418,11 @@ export default function TmuxDialog({
       setDeleteConfirmation(null);
       setFeedback(successMessage);
     } catch (error) {
-      if (mountedRef.current && sessionIdRef.current === sessionId) setError(formatTmuxError(error));
+      if (isCurrentOperation(sessionId, operationToken)) setError(formatTmuxError(error));
     } finally {
       gate.finish("state", token);
-      if (mountedRef.current && sessionIdRef.current === sessionId) {
+      if (operationGate.finish("operation", operationToken)
+        && mountedRef.current && sessionIdRef.current === sessionId) {
         setMutatingTarget((current) => current === mutationTarget ? "" : current);
       }
     }
@@ -385,6 +432,18 @@ export default function TmuxDialog({
     return mountedRef.current
       && sessionIdRef.current === sessionId
       && stateRequestGateRef.current.isCurrent("state", token);
+  }
+
+  function isCurrentOperation(sessionId: string, token: number) {
+    return mountedRef.current
+      && sessionIdRef.current === sessionId
+      && operationGateRef.current.isCurrent("operation", token);
+  }
+
+  function isCurrentControlOperation(sessionId: string, target: string, token: number) {
+    return mountedRef.current
+      && sessionIdRef.current === sessionId
+      && controlOperationGateRef.current.isCurrent(target, token);
   }
 
   function submitEditor() {
@@ -462,12 +521,20 @@ export default function TmuxDialog({
   }
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => {
+      if (!controlOperationBusy && event.target === event.currentTarget) onClose();
+    }}>
       <section className="wind-dialog tmux-dialog">
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>Tmux</strong>
-          <button type="button" title="关闭 Tmux" aria-label="关闭 Tmux" onClick={onClose}><X size={20} /></button>
+          <button
+            type="button"
+            title={controlOperationBusy ? "等待 control-mode 操作完成" : "关闭 Tmux"}
+            aria-label="关闭 Tmux"
+            disabled={controlOperationBusy}
+            onClick={onClose}
+          ><X size={20} /></button>
         </header>
         <div className="tmux-content">
           <div className="tmux-toolbar">

@@ -325,12 +325,36 @@ pub(crate) fn stop_tmux_control_inner(
     state: &AppState,
     session_id: &str,
     target: Option<&str>,
+    expected_runtime_id: Option<&str>,
 ) -> Result<TmuxControlStatus, String> {
-    let (target, runtime_id) = if let Some(target) = target {
+    let (target, runtime_id, active) = if let Some(target) = target {
         let target = normalize_tmux_target(target)?.to_string();
-        let runtime = cancel_tmux_control_runtime(state, session_id, &target)?;
-        (target, runtime.map(|runtime| runtime.runtime_id))
+        let runtime = if expected_runtime_id.is_some() {
+            state
+                .tmux_controls
+                .lock()
+                .map_err(|error| error.to_string())?
+                .get(&(session_id.to_string(), target.clone()))
+                .cloned()
+        } else {
+            cancel_tmux_control_runtime(state, session_id, &target)?
+        };
+        let matches_expected = expected_runtime_id.is_none_or(|expected| {
+            runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.runtime_id == expected)
+        });
+        if expected_runtime_id.is_some() && matches_expected {
+            if let Some(runtime) = &runtime {
+                runtime.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+        let active = runtime.is_some() && !matches_expected;
+        (target, runtime.map(|runtime| runtime.runtime_id), active)
     } else {
+        if expected_runtime_id.is_some() {
+            return Err("tmux control runtimeId requires a target".to_string());
+        }
         let mut runtimes = cancel_tmux_control_runtimes_for_session(state, session_id)?;
         let target = if runtimes.len() == 1 {
             runtimes[0].target.clone()
@@ -342,12 +366,12 @@ pub(crate) fn stop_tmux_control_inner(
         } else {
             None
         };
-        (target, runtime_id)
+        (target, runtime_id, false)
     };
     Ok(TmuxControlStatus {
         session_id: session_id.to_string(),
         target,
-        active: false,
+        active,
         runtime_id,
     })
 }
