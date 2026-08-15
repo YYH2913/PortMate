@@ -3547,7 +3547,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     field: OneKeyPromptField,
     promptEventId: string,
   ) {
-    await invokeBackend<SessionEvent>("send_one_key", {
+    await syncInputDispatcherRef.current.enqueueOperation(() => invokeBackend<SessionEvent>("send_one_key", {
       request: {
         id: oneKeyId,
         sessionId,
@@ -3555,7 +3555,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         source: "prompt-completion",
         promptEventId,
       },
-    });
+    }));
   }
 
   async function sendTerminalBytes(sessionId: string, bytes: number[]) {
@@ -3601,18 +3601,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (sendToken === null) return;
     setSendBusy(true);
     try {
-      for (let index = 0; index < Math.max(1, sendCount); index += 1) {
-        await Promise.all(
-          targets.map((target) =>
-            sendMode === "hex"
-              ? sendTerminalBytes(target, bytePayload)
-              : sendTerminalInput(target, textPayload, "atomic"),
-          ),
-        );
-        if (index + 1 < Math.max(1, sendCount)) {
-          await delay(sendIntervalMs);
+      await syncInputDispatcherRef.current.enqueueOperation(async () => {
+        for (let index = 0; index < Math.max(1, sendCount); index += 1) {
+          await Promise.all(
+            targets.map((target) =>
+              sendMode === "hex"
+                ? sendTerminalBytes(target, bytePayload)
+                : sendTerminalInput(target, textPayload, "atomic"),
+            ),
+          );
+          if (index + 1 < Math.max(1, sendCount)) {
+            await delay(sendIntervalMs);
+          }
         }
-      }
+      });
       if (sendMode === "text" && textPayload.trim()) {
         rememberCommand(textPayload);
       }

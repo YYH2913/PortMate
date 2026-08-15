@@ -3690,6 +3690,9 @@ Host staging
     window.__pendingTerminalSends = [];
     return window.__invokeCalls.filter((call) => call.command === "send_text").length;
   });
+  await activeTerminalInput.focus();
+  await page.keyboard.press("q");
+  await page.waitForFunction(() => window.__pendingTerminalSends.length === 1);
   const senderSendButton = sender.getByRole("button", { name: "发送", exact: true });
   await senderSendButton.evaluate((button) => {
     button.click();
@@ -3703,11 +3706,18 @@ Host staging
   assert(pendingSenderLifecycle.calls === 1
     && pendingSenderLifecycle.pending === 1
     && await senderSendButton.isDisabled(),
-  `sender did not serialize or lock a same-frame send: ${JSON.stringify(pendingSenderLifecycle)}`);
+  `sender bypassed pending terminal input or did not lock: ${JSON.stringify(pendingSenderLifecycle)}`);
   await page.evaluate(() => {
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends.shift().resolve(null);
   });
+  await page.waitForFunction((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").length === start + 2, senderLifecycleStart);
+  const orderedSenderWrites = await page.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").slice(start)
+    .map((call) => call.args.text), senderLifecycleStart);
+  assert(JSON.stringify(orderedSenderWrites) === JSON.stringify(["q", "uname -a"]),
+    `sender changed terminal input order: ${JSON.stringify(orderedSenderWrites)}`);
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");
   const recordedCommandHistory = await page.evaluate(() => ({

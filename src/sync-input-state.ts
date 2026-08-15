@@ -1,3 +1,4 @@
+import { AsyncOperationQueue } from "./async-operation-queue";
 import type { SessionKind } from "./types";
 
 export type SyncNewlineMode = "protocol" | "preserve" | "lf" | "crlf";
@@ -104,7 +105,7 @@ export function formatSyncInput(
 }
 
 export class SyncInputDispatcher {
-  private tail: Promise<unknown> = Promise.resolve();
+  private readonly operationQueue = new AsyncOperationQueue();
   private broadcastGeneration = 0;
   private readonly cancellationWaiters = new Set<() => void>();
 
@@ -122,9 +123,11 @@ export class SyncInputDispatcher {
     isBroadcastEnabled: () => boolean,
   ): Promise<SyncInputDispatchResult> {
     const generation = this.broadcastGeneration;
-    const task = this.tail.then(() => this.dispatch(batch, send, isBroadcastEnabled, generation));
-    this.tail = task.catch(() => undefined);
-    return task;
+    return this.enqueueOperation(() => this.dispatch(batch, send, isBroadcastEnabled, generation));
+  }
+
+  enqueueOperation<Result>(operation: () => Promise<Result>): Promise<Result> {
+    return this.operationQueue.enqueue(operation);
   }
 
   private async dispatch(
