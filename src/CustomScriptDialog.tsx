@@ -35,6 +35,7 @@ export default function CustomScriptDialog({
   const [error, setError] = useState("");
   const [runSessionId, setRunSessionId] = useState(activeId);
   const operationGate = useRef(new KeyedRequestGate<"operation">());
+  const pendingRunSessionIdRef = useRef<string | null>(null);
   const runnableSessions = useMemo(() => draft ? runnableCustomScriptSessions(draft, sessions) : [], [draft, sessions]);
   const selectedScript = draft?.id ? scripts.find((script) => script.id === draft.id) : null;
   const hasUnsavedChanges = Boolean(draft && (!selectedScript || !customScriptDraftMatches(draft, selectedScript)));
@@ -60,6 +61,15 @@ export default function CustomScriptDialog({
     const preferred = runnableSessions.find((session) => session.profile.id === activeId) ?? runnableSessions[0];
     setRunSessionId(preferred?.profile.id ?? "");
   }, [activeId, runSessionId, runnableSessions]);
+
+  useEffect(() => {
+    const pendingSessionId = pendingRunSessionIdRef.current;
+    if (!pendingSessionId || sessions.some((session) => session.profile.id === pendingSessionId)) return;
+    operationGate.current.invalidate("operation");
+    pendingRunSessionIdRef.current = null;
+    setBusy(false);
+    setError("");
+  }, [sessions]);
 
   function selectScript(script: CustomScript) {
     if (operationGate.current.isActive("operation") || loading || busy) return;
@@ -182,6 +192,7 @@ export default function CustomScriptDialog({
     if (token === null) return;
     const pendingScript = selectedScript;
     const pendingSessionId = runSessionId;
+    pendingRunSessionIdRef.current = pendingSessionId;
     setBusy(true);
     setError("");
     try {
@@ -199,7 +210,10 @@ export default function CustomScriptDialog({
     } catch (reason) {
       if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
-      if (gate.finish("operation", token)) setBusy(false);
+      if (gate.finish("operation", token)) {
+        pendingRunSessionIdRef.current = null;
+        setBusy(false);
+      }
     }
   }
 

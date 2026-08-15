@@ -100,6 +100,7 @@ export default function OneKeyDialog({
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
   const mountedRef = useRef(true);
   const operationGateRef = useRef(new KeyedRequestGate<"operation">());
+  const pendingSendSessionIdRef = useRef<string | null>(null);
   const active = sessions.find((session) => session.profile.id === activeId);
   const compatibleSessions = useMemo(
     () => sessions.filter((session) => draft.kind === "account" || session.profile.kind === "ssh" || session.profile.kind === "tmux"),
@@ -136,6 +137,32 @@ export default function OneKeyDialog({
     setDraft(replacement ? draftFromItem(replacement) : emptyDraft());
     setFeedback(null);
   }, [oneKeys, selectedId]);
+
+  useEffect(() => {
+    const pendingSessionId = pendingSendSessionIdRef.current;
+    if (!pendingSessionId || sessions.some((session) => session.profile.id === pendingSessionId)) return;
+    operationGateRef.current.invalidate("operation");
+    pendingSendSessionIdRef.current = null;
+    setBusy((current) => current === "send" ? null : current);
+    setFeedback(null);
+  }, [sessions]);
+
+  useEffect(() => {
+    const validSessionIds = new Set(sessions.map((session) => session.profile.id));
+    setDraft((current) => {
+      const sessionIds = current.sessionIds.filter((sessionId) => validSessionIds.has(sessionId));
+      const identityRemoved = Boolean(
+        current.identitySelection && !validSessionIds.has(current.identitySelection.sourceProfileId),
+      );
+      if (sessionIds.length === current.sessionIds.length && !identityRemoved) return current;
+      return {
+        ...current,
+        sessionIds,
+        currentIdentity: identityRemoved ? null : current.currentIdentity,
+        identitySelection: identityRemoved ? null : current.identitySelection,
+      };
+    });
+  }, [sessions]);
 
   function selectItem(item: OneKeySummary) {
     if (busy !== null || !confirmDiscardChanges("切换 OneKey")) return;
@@ -268,19 +295,26 @@ export default function OneKeyDialog({
     if (!draft.id || !active || busy !== null || hasUnsavedChanges) return;
     const operationToken = operationGateRef.current.begin("operation");
     if (operationToken === null) return;
+    const pendingSessionId = active.profile.id;
+    pendingSendSessionIdRef.current = pendingSessionId;
     setBusy("send");
     setFeedback(null);
     try {
       await invokeBackend("send_one_key", {
-        request: { id: draft.id, sessionId: active.profile.id, field },
+        request: { id: draft.id, sessionId: pendingSessionId, field },
       });
-      if (mountedRef.current) {
+      if (operationGateRef.current.isCurrent("operation", operationToken) && mountedRef.current) {
         setFeedback({ kind: "status", text: `${field === "username" ? "用户名" : field === "password" ? "密码" : "私钥口令"}已发送。` });
       }
     } catch (error) {
-      if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
+      if (operationGateRef.current.isCurrent("operation", operationToken) && mountedRef.current) {
+        setFeedback({ kind: "error", text: String(error) });
+      }
     } finally {
-      if (operationGateRef.current.finish("operation", operationToken) && mountedRef.current) setBusy(null);
+      if (operationGateRef.current.finish("operation", operationToken)) {
+        pendingSendSessionIdRef.current = null;
+        if (mountedRef.current) setBusy(null);
+      }
     }
   }
 

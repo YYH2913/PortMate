@@ -501,6 +501,8 @@ try {
     window.__oneKeySequence = 0;
     window.__deferOneKeyMutations = false;
     window.__pendingOneKeyMutations = [];
+    window.__deferOneKeySends = false;
+    window.__pendingOneKeySends = [];
     window.__deferTunnelRefresh = false;
     window.__pendingTunnelRefresh = [];
     window.__tunnels = [];
@@ -1220,6 +1222,10 @@ try {
             throw new Error("simulated list_one_keys failure");
           }
           return structuredClone(window.__oneKeys);
+        }
+        if (command === "send_one_key") {
+          if (!window.__deferOneKeySends) return null;
+          return new Promise((resolve) => window.__pendingOneKeySends.push({ resolve }));
         }
         if (command === "save_one_key") {
           const request = args.request;
@@ -7277,6 +7283,99 @@ Host staging
   assert(oneKeyLifecycleErrors.length === 0,
     `OneKey lifecycle browser exceptions: ${JSON.stringify(oneKeyLifecycleErrors)}`);
   await oneKeyLifecyclePage.close();
+
+  const deletedOneKeySendPage = await context.newPage();
+  const deletedOneKeySendErrors = [];
+  deletedOneKeySendPage.on("pageerror", (error) => deletedOneKeySendErrors.push(error.message));
+  await deletedOneKeySendPage.goto(appUrl);
+  await deletedOneKeySendPage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  await deletedOneKeySendPage.getByRole("button", { name: "工具", exact: true }).click();
+  await deletedOneKeySendPage.getByRole("button", { name: "OneKeys", exact: true }).click();
+  const deletedOneKeyDialog = deletedOneKeySendPage.locator(".one-key-dialog");
+  await deletedOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").fill("Deleted target key");
+  await deletedOneKeyDialog.locator(".one-key-fields label", { hasText: "用户名" }).locator("input").fill("deleted-user");
+  await deletedOneKeyDialog.locator(".one-key-fields label", { hasText: "密码" }).locator("input").fill("deleted-secret");
+  await deletedOneKeyDialog.locator(".one-key-sessions label", { hasText: "Edge Router" }).click();
+  await deletedOneKeyDialog.locator('button[title="保存 OneKey"]').click();
+  await deletedOneKeyDialog.locator('.one-key-list [role="option"]', { hasText: "Deleted target key" }).waitFor();
+  await deletedOneKeySendPage.evaluate(() => { window.__deferOneKeySends = true; });
+  await deletedOneKeyDialog.getByRole("button", { name: "用户名", exact: true }).click();
+  await deletedOneKeySendPage.waitForFunction(() => window.__pendingOneKeySends.length === 1);
+  await deletedOneKeySendPage.evaluate(() => {
+    window.__oneKeys = window.__oneKeys.map((item) => ({
+      ...item,
+      identity: item.identity?.sourceProfileId === "edge-router" ? null : item.identity,
+      sessionIds: item.sessionIds.filter((sessionId) => sessionId !== "edge-router"),
+    }));
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedOneKeySendPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedOneKeySendPage.waitForFunction(() => {
+    const input = document.querySelector(".one-key-fields input");
+    return input && !input.disabled;
+  });
+  await deletedOneKeySendPage.evaluate(() => {
+    window.__deferOneKeySends = false;
+    window.__pendingOneKeySends.shift().resolve(null);
+  });
+  await deletedOneKeySendPage.waitForTimeout(100);
+  const deletedOneKeySendState = await deletedOneKeySendPage.evaluate(() => ({
+    feedback: document.querySelector(".one-key-dialog-actions [role='status']")?.textContent ?? "",
+    boundCount: document.querySelector(".one-key-sessions > header span")?.textContent ?? "",
+    pending: window.__pendingOneKeySends.length,
+  }));
+  assert(deletedOneKeySendState.feedback === ""
+    && deletedOneKeySendState.boundCount === "0"
+    && deletedOneKeySendState.pending === 0,
+  `a OneKey send response survived Profile deletion: ${JSON.stringify(deletedOneKeySendState)}`);
+  assert(deletedOneKeySendErrors.length === 0,
+    `deleted OneKey send browser exceptions: ${JSON.stringify(deletedOneKeySendErrors)}`);
+  await deletedOneKeySendPage.close();
+
+  const deletedScriptRunPage = await context.newPage();
+  const deletedScriptRunErrors = [];
+  deletedScriptRunPage.on("pageerror", (error) => deletedScriptRunErrors.push(error.message));
+  await deletedScriptRunPage.goto(appUrl);
+  await deletedScriptRunPage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  await deletedScriptRunPage.getByRole("button", { name: "工具", exact: true }).click();
+  await deletedScriptRunPage.getByRole("button", { name: "自定义脚本", exact: true }).click();
+  const deletedScriptDialog = deletedScriptRunPage.locator(".custom-script-dialog");
+  const deletedScriptRunButton = deletedScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true });
+  await deletedScriptRunPage.evaluate(() => { window.__deferCustomScriptRuns = true; });
+  await deletedScriptRunButton.click();
+  await deletedScriptRunPage.waitForFunction(() => window.__pendingCustomScriptRuns.length === 1);
+  await deletedScriptRunPage.evaluate(() => {
+    window.__customScripts = window.__customScripts.map((script) => ({
+      ...script,
+      allowedSessionIds: script.allowedSessionIds.filter((sessionId) => sessionId !== "edge-router"),
+      mcpEnabled: false,
+      updatedAt: new Date(Date.now() + 1_000).toISOString(),
+    }));
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedScriptRunPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).waitFor({ state: "visible" });
+  await deletedScriptRunPage.waitForFunction(() => !document.querySelector('[aria-label="关闭自定义脚本"]')?.disabled);
+  await deletedScriptRunPage.evaluate(() => {
+    window.__deferCustomScriptRuns = false;
+    const pending = window.__pendingCustomScriptRuns.shift();
+    pending.resolve(pending.result);
+  });
+  await deletedScriptRunPage.waitForTimeout(100);
+  const deletedScriptRunState = await deletedScriptRunPage.evaluate(() => ({
+    notices: [...document.querySelectorAll(".notice-dialog")].map((item) => item.textContent),
+    pending: window.__pendingCustomScriptRuns.length,
+    closeDisabled: document.querySelector('[aria-label="关闭自定义脚本"]')?.disabled,
+  }));
+  assert(deletedScriptRunState.notices.length === 0
+    && deletedScriptRunState.pending === 0
+    && deletedScriptRunState.closeDisabled === false,
+  `a custom script response survived Profile deletion: ${JSON.stringify(deletedScriptRunState)}`);
+  assert(deletedScriptRunErrors.length === 0,
+    `deleted custom script run browser exceptions: ${JSON.stringify(deletedScriptRunErrors)}`);
+  await deletedScriptRunPage.close();
 
   const quickCommandDraftPage = await context.newPage();
   const quickCommandDraftErrors = [];
