@@ -31,7 +31,8 @@ export default function LogManagerDialog({
   const [preview, setPreview] = useState<LogShardPreview | null>(null);
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<LogShardInfo["format"] | "all">("all");
-  const [busy, setBusy] = useState(false);
+  const [shardBusy, setShardBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [error, setError] = useState("");
   const [bundleSessionId, setBundleSessionId] = useState(activeId || sessions[0]?.profile.id || "");
   const [bundleRedacted, setBundleRedacted] = useState(true);
@@ -52,12 +53,13 @@ export default function LogManagerDialog({
   const selectedPaths = new Set(selected);
   const totalBytes = shards.reduce((sum, shard) => sum + shard.size, 0);
   const bundleAttachmentSelection = summarizeBundleAttachmentSelection(shards, selected);
+  const busy = shardBusy || previewBusy;
   const operationBusy = busy || archiveBusy || bundleBusy;
 
   async function refreshShards() {
     const token = requestGate.current.begin("shards");
     if (token === null) return;
-    setBusy(true);
+    setShardBusy(true);
     setError("");
     try {
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
@@ -71,7 +73,7 @@ export default function LogManagerDialog({
     } catch (error) {
       if (requestGate.current.isCurrent("shards", token)) setError(formatLogError(error));
     } finally {
-      if (requestGate.current.finish("shards", token)) setBusy(false);
+      if (requestGate.current.finish("shards", token)) setShardBusy(false);
     }
   }
 
@@ -91,7 +93,7 @@ export default function LogManagerDialog({
     requestGate.current.invalidate("preview");
     const token = requestGate.current.begin("preview");
     if (token === null) return;
-    setBusy(true);
+    setPreviewBusy(true);
     setError("");
     try {
       setActiveSearchMatch(null);
@@ -100,7 +102,7 @@ export default function LogManagerDialog({
     } catch (error) {
       if (requestGate.current.isCurrent("preview", token)) setError(formatLogError(error));
     } finally {
-      if (requestGate.current.finish("preview", token)) setBusy(false);
+      if (requestGate.current.finish("preview", token)) setPreviewBusy(false);
     }
   }
 
@@ -121,7 +123,7 @@ export default function LogManagerDialog({
     }
     requestGate.current.invalidate("preview");
     requestGate.current.invalidate("search");
-    setBusy(true);
+    setShardBusy(true);
     setError("");
     try {
       const result = await invokeBackend<DeleteLogShardsResult>("delete_log_shards", { paths: selected });
@@ -142,7 +144,7 @@ export default function LogManagerDialog({
         && requestGate.current.isCurrent("shards", token);
       requestGate.current.finish("shards", token);
       mutationGate.current.finish("write", mutationToken);
-      if (current) setBusy(false);
+      if (current) setShardBusy(false);
     }
   }
 

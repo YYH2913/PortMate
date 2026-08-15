@@ -527,6 +527,8 @@ try {
     ];
     window.__deferLogPreviews = false;
     window.__pendingLogPreviews = [];
+    window.__deferLogShardLists = false;
+    window.__pendingLogShardLists = [];
     window.__deferLogMutations = false;
     window.__pendingLogMutations = [];
     window.__deferMcpHttpConfig = false;
@@ -905,7 +907,14 @@ try {
             resolve: () => resolve(structuredClone(result)),
           }));
         }
-        if (command === "list_log_shards") return window.__logShards;
+        if (command === "list_log_shards") {
+          const result = structuredClone(window.__logShards);
+          if (!window.__deferLogShardLists) return result;
+          return new Promise((resolve) => window.__pendingLogShardLists.push({
+            result,
+            resolve: () => resolve(structuredClone(result)),
+          }));
+        }
         if (command === "read_log_shard") {
           if (!window.__deferLogPreviews) {
             return { path: args.path, content: `preview:${args.path}`, encoding: "utf8", bytesRead: 16, truncated: false };
@@ -5254,6 +5263,36 @@ Host staging
     "a stale log preview response replaced the latest selected shard");
 
   await logManager.getByRole("checkbox", { name: "选择 logs/a.txt", exact: true }).check();
+  await page.evaluate(() => {
+    window.__deferLogShardLists = true;
+    window.__pendingLogShardLists = [];
+    window.__deferLogPreviews = true;
+    window.__pendingLogPreviews = [];
+  });
+  await logManager.getByRole("button", { name: "刷新日志分片", exact: true }).click();
+  await logManager.getByRole("button", { name: /logs\/b\.jsonl/ }).click();
+  await page.waitForFunction(() => window.__pendingLogShardLists.length === 1
+    && window.__pendingLogPreviews.length === 1);
+  await page.evaluate(() => {
+    const pending = window.__pendingLogPreviews.shift();
+    pending.resolve({ path: pending.args.path, content: "concurrent preview", encoding: "utf8", bytesRead: 18, truncated: false });
+    window.__deferLogPreviews = false;
+  });
+  await logManager.locator(".log-preview", { hasText: "concurrent preview" }).waitFor();
+  assert(await logManager.getByRole("button", { name: "刷新日志分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "归档选中分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "删除选中分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "导出会话包", exact: true }).isDisabled(),
+  "a completed log preview released controls while the shard refresh was still pending");
+  await page.evaluate(() => {
+    window.__pendingLogShardLists.shift().resolve();
+    window.__deferLogShardLists = false;
+  });
+  await page.waitForFunction(() => !document.querySelector('button[aria-label="刷新日志分片"]')?.disabled);
+  assert(await logManager.getByRole("button", { name: "归档选中分片", exact: true }).isEnabled()
+    && await logManager.getByRole("button", { name: "删除选中分片", exact: true }).isEnabled()
+    && await logManager.getByRole("button", { name: "导出会话包", exact: true }).isEnabled(),
+  "log controls did not recover after both concurrent reads completed");
   await page.evaluate(() => {
     window.__deferLogMutations = true;
     window.__pendingLogMutations = [];
