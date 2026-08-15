@@ -448,10 +448,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   };
   profileDeleteHandlerRef.current = (sessionId) => {
     if (!sessionId) return;
-    keyManagerProfileMutationGateRef.current.invalidate(sessionId);
-    sessionSettingsProfileMutationGateRef.current.invalidate(sessionId);
-    invalidateProfileShortcutOperation(sessionId);
-    invalidateTerminalExportsForSession(sessionId);
+    invalidateDeletedSessionProfileOperations(sessionId);
     void refresh();
   };
 
@@ -2181,17 +2178,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  function applyDeletedSessionProfile(response: DeleteSessionProfileResponse) {
-    const profileId = response.deletedProfileId;
-    const remainingSessionIds = response.sessions.map((session) => session.profile.id);
-    const reconciled = reconcileWorkspaceSnapshot({
-      version: 4,
-      root: workspaceRoot,
-      activePaneId,
-      activeId,
-      tabColors,
-    }, remainingSessionIds, { fallbackToFirst: !workspaceWindowId });
-
+  function invalidateDeletedSessionProfileOperations(profileId: string) {
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
@@ -2205,6 +2192,48 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       next.delete(profileId);
       return next;
     });
+    const credentialRequest = credentialResolverRef.current;
+    if (credentialRequest?.sessionId === profileId) {
+      credentialResolverRef.current = null;
+      setCredentialPrompt(null);
+      credentialRequest.resolve(null);
+    }
+    if (hostKeyPrompt?.profile.id === profileId) {
+      hostKeyPromptOperationGateRef.current.invalidateAll();
+      setHostKeyPrompt(null);
+    }
+    serialCaptureOperationGateRef.current.invalidate(profileId);
+    serialCaptureActionTokensRef.current.delete(profileId);
+    setSerialCaptureActionIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
+    serialControlOperationGateRef.current.invalidate(profileId);
+    setSerialControlBusyIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
+    activeLogRefreshGateRef.current.invalidate(profileId);
+    delete logSignatureRef.current[profileId];
+    sessionsSignatureRef.current = "";
+  }
+
+  function applyDeletedSessionProfile(response: DeleteSessionProfileResponse) {
+    const profileId = response.deletedProfileId;
+    const remainingSessionIds = response.sessions.map((session) => session.profile.id);
+    const reconciled = reconcileWorkspaceSnapshot({
+      version: 4,
+      root: workspaceRoot,
+      activePaneId,
+      activeId,
+      tabColors,
+    }, remainingSessionIds, { fallbackToFirst: !workspaceWindowId });
+
+    invalidateDeletedSessionProfileOperations(profileId);
     setSessions(response.sessions);
     saveLocalSessionSummaries(response.sessions);
     updateOneKeys(response.oneKeys);
@@ -2235,29 +2264,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       draftExpectedProfileRef.current = null;
     }
     setDraft((current) => current.id === profileId ? createSessionDraft() : current);
-    if (hostKeyPrompt?.profile.id === profileId) {
-      hostKeyPromptOperationGateRef.current.invalidateAll();
-      setHostKeyPrompt(null);
-    }
     delete serialCapturesRef.current[profileId];
-    serialCaptureOperationGateRef.current.invalidate(profileId);
-    serialCaptureActionTokensRef.current.delete(profileId);
-    setSerialCaptureActionIds((current) => {
-      if (!current.has(profileId)) return current;
-      const next = new Set(current);
-      next.delete(profileId);
-      return next;
-    });
-    serialControlOperationGateRef.current.invalidate(profileId);
-    setSerialControlBusyIds((current) => {
-      if (!current.has(profileId)) return current;
-      const next = new Set(current);
-      next.delete(profileId);
-      return next;
-    });
-    activeLogRefreshGateRef.current.invalidate(profileId);
-    delete logSignatureRef.current[profileId];
-    sessionsSignatureRef.current = "";
   }
 
   async function deleteSessionFromContext(sessionId?: string | null) {

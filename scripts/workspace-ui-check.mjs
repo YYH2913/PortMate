@@ -8359,6 +8359,71 @@ Host staging
     `deleted Session Settings save browser exceptions: ${JSON.stringify(deletedSettingsSaveErrors)}`);
   await deletedSettingsSavePage.close();
 
+  const deletedCredentialPromptPage = await context.newPage();
+  const deletedCredentialPromptErrors = [];
+  deletedCredentialPromptPage.on("pageerror", (error) => deletedCredentialPromptErrors.push(error.message));
+  await deletedCredentialPromptPage.goto(appUrl);
+  await deletedCredentialPromptPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const deletedCredentialConnect = deletedCredentialPromptPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await deletedCredentialConnect.waitFor();
+  await deletedCredentialConnect.click();
+  const deletedCredentialDialog = deletedCredentialPromptPage.locator(".credential-dialog");
+  await deletedCredentialDialog.waitFor();
+  await deletedCredentialPromptPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedCredentialDialog.waitFor({ state: "detached" });
+  await deletedCredentialPromptPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  const deletedCredentialPromptState = await deletedCredentialPromptPage.evaluate(() => ({
+    saves: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+  }));
+  assert(deletedCredentialPromptState.saves === 0
+    && deletedCredentialPromptState.opens === 0
+    && await deletedCredentialPromptPage.locator(".notice-dialog").count() === 0,
+  `Profile deletion did not cancel its pending credential prompt: ${JSON.stringify(deletedCredentialPromptState)}`);
+  assert(deletedCredentialPromptErrors.length === 0,
+    `deleted credential prompt browser exceptions: ${JSON.stringify(deletedCredentialPromptErrors)}`);
+  await deletedCredentialPromptPage.close();
+
+  const deletedConnectionSavePage = await context.newPage();
+  const deletedConnectionSaveErrors = [];
+  deletedConnectionSavePage.on("pageerror", (error) => deletedConnectionSaveErrors.push(error.message));
+  await deletedConnectionSavePage.goto(appUrl);
+  await deletedConnectionSavePage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  await deletedConnectionSavePage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+  });
+  await deletedConnectionSavePage.getByRole("button", { name: "连接 Edge Router", exact: true }).click();
+  const deletedConnectionCredentialDialog = deletedConnectionSavePage.locator(".credential-dialog");
+  await deletedConnectionCredentialDialog.waitFor();
+  await deletedConnectionCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
+  await deletedConnectionSavePage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  await deletedConnectionSavePage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedConnectionSavePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedConnectionSavePage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  await deletedConnectionSavePage.waitForTimeout(100);
+  const deletedConnectionSaveState = await deletedConnectionSavePage.evaluate(() => ({
+    pending: window.__pendingSessionProfileSaves.length,
+    opens: window.__invokeCalls.filter((call) => call.command === "open_session").length,
+  }));
+  assert(deletedConnectionSaveState.pending === 0
+    && deletedConnectionSaveState.opens === 0
+    && await deletedConnectionSavePage.locator(".tree-session", { hasText: "Edge Router" }).count() === 0
+    && await deletedConnectionSavePage.locator(".notice-dialog").count() === 0,
+  `a connection save response restored its deleted Profile: ${JSON.stringify(deletedConnectionSaveState)}`);
+  assert(deletedConnectionSaveErrors.length === 0,
+    `deleted connection save browser exceptions: ${JSON.stringify(deletedConnectionSaveErrors)}`);
+  await deletedConnectionSavePage.close();
+
   const profileShortcutPage = await context.newPage();
   const profileShortcutErrors = [];
   profileShortcutPage.on("pageerror", (error) => profileShortcutErrors.push(error.message));
