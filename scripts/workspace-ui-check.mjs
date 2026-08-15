@@ -425,6 +425,9 @@ try {
     window.__failNextProfileSave = false;
     window.__deferTerminalExportDirectoryPicker = false;
     window.__pendingTerminalExportDirectoryPickers = [];
+    window.__deferTerminalTextExports = false;
+    window.__pendingTerminalTextExports = [];
+    window.__failNextTerminalTextExport = false;
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
@@ -873,7 +876,11 @@ try {
           }));
         }
         if (command === "export_terminal_text") {
-          return {
+          if (window.__failNextTerminalTextExport) {
+            window.__failNextTerminalTextExport = false;
+            throw new Error("simulated terminal text export failure");
+          }
+          const result = {
             path: args.request.destinationPath || "/tmp/portmate-terminal-export.txt",
             checksumPath: `${args.request.destinationPath || "/tmp/portmate-terminal-export.txt"}.sha256`,
             sha256: "b".repeat(64),
@@ -882,6 +889,12 @@ try {
             viewId: args.request.viewId,
             source: args.request.source,
           };
+          if (!window.__deferTerminalTextExports) return result;
+          return new Promise((resolve) => window.__pendingTerminalTextExports.push({
+            args: structuredClone(args),
+            result: structuredClone(result),
+            resolve: () => resolve(structuredClone(result)),
+          }));
         }
         if (command === "list_log_shards") return window.__logShards;
         if (command === "read_log_shard") {
@@ -2653,6 +2666,49 @@ Host staging
     && exportedTerminalLines.some((line) => line === `[${terminalTimestampProbe}] PORTMATE TIMESTAMP PROBE`),
   `chosen-path terminal export was not routed through the native save dialog: ${JSON.stringify(chosenTerminalExport)}`);
   await page.getByRole("button", { name: "确定", exact: true }).click();
+
+  const terminalExportOperationBaseline = await page.evaluate(() => {
+    window.__deferTerminalTextExports = true;
+    window.__pendingTerminalTextExports = [];
+    return window.__invokeCalls.filter((call) => call.command === "export_terminal_text").length;
+  });
+  await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
+  await terminalContextMenu.waitFor();
+  await terminalContextMenu.locator(".context-menu-row", { hasText: /^导出终端文本$/ }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTerminalTextExports.length === 1);
+  await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
+  await terminalContextMenu.waitFor();
+  for (const [label, pattern] of [
+    ["导出终端文本", /^导出终端文本$/],
+    ["导出终端文本到...", /^导出终端文本到\.\.\.$/],
+    ["导出选中文本", /^导出选中文本$/],
+  ]) {
+    assert(await terminalContextMenu.locator(".context-menu-row", { hasText: pattern }).isDisabled(),
+      `pending terminal export left ${label} actionable`);
+  }
+  await page.evaluate(() => {
+    window.__deferTerminalTextExports = false;
+    window.__pendingTerminalTextExports.shift().resolve();
+  });
+  const deferredTerminalExportNotice = page.locator(".notice-dialog", { hasText: "/tmp/portmate-terminal-export.txt" });
+  await deferredTerminalExportNotice.waitFor();
+  const terminalExportOperationCalls = await page.evaluate((baseline) => (
+    window.__invokeCalls.filter((call) => call.command === "export_terminal_text").length - baseline
+  ), terminalExportOperationBaseline);
+  assert(terminalExportOperationCalls === 1,
+    `terminal context action submitted ${terminalExportOperationCalls} duplicate exports`);
+  await deferredTerminalExportNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  await page.evaluate(() => { window.__failNextTerminalTextExport = true; });
+  await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
+  await terminalContextMenu.locator(".context-menu-row", { hasText: /^导出终端文本$/ }).click();
+  const failedTerminalExportNotice = page.locator(".notice-dialog", { hasText: "simulated terminal text export failure" });
+  await failedTerminalExportNotice.waitFor();
+  await failedTerminalExportNotice.getByRole("button", { name: "确定", exact: true }).click();
+
   await activeTerminalHost.click({ button: "right", position: { x: 40, y: 40 } });
   await terminalContextMenu.waitFor();
   await activeTerminalHost.dispatchEvent("scroll");
@@ -7966,11 +8022,28 @@ Host staging
     window.__emitTauriEvent("portmate-session-profile-updated", updated);
   });
   await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor();
+  await profileSyncTree.filter({ hasText: "Updated edge profile" }).click();
+  await profileSyncPage.locator(".terminal-pane.active .terminal-host").waitFor();
+  await profileSyncPage.evaluate(() => {
+    window.__deferTerminalTextExports = true;
+    window.__pendingTerminalTextExports = [];
+  });
+  const profileSyncTerminal = profileSyncPage.locator(".terminal-pane.active .terminal-host");
+  await profileSyncTerminal.click({ button: "right", position: { x: 40, y: 40 } });
+  await profileSyncPage.locator(".terminal-context-menu .context-menu-row", { hasText: /^导出终端文本$/ }).click();
+  await profileSyncPage.waitForFunction(() => window.__pendingTerminalTextExports.length === 1);
   await profileSyncPage.evaluate(() => {
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
   });
   await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor({ state: "detached" });
+  await profileSyncPage.evaluate(() => {
+    window.__deferTerminalTextExports = false;
+    window.__pendingTerminalTextExports.shift().resolve();
+  });
+  await profileSyncPage.waitForTimeout(100);
+  assert(await profileSyncPage.locator(".notice-dialog").count() === 0,
+    "a terminal export response that arrived after Profile deletion produced a stale notice");
   assert(profileSyncErrors.length === 0,
     `workspace Profile event synchronization browser exceptions: ${JSON.stringify(profileSyncErrors)}`);
   await profileSyncPage.close();

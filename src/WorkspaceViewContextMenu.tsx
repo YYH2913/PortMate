@@ -38,6 +38,7 @@ export default function WorkspaceViewContextMenu({
   sessionStatus,
   connectionBusy = false,
   profileBusy = false,
+  exportBusy = false,
   label,
   colors,
   canDuplicate,
@@ -62,6 +63,7 @@ export default function WorkspaceViewContextMenu({
   sessionStatus: SessionStatus;
   connectionBusy?: boolean;
   profileBusy?: boolean;
+  exportBusy?: boolean;
   label: string;
   colors: readonly { label: string; value: string }[];
   canDuplicate: boolean;
@@ -134,9 +136,9 @@ export default function WorkspaceViewContextMenu({
       <Divider />
       <MenuButton label="重新连接会话" disabled={connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
       <MenuButton label="保存会话配置" disabled={profileBusy} onClick={() => onAction("save")} />
-      <MenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
-      <MenuButton label="导出终端文本到..." onClick={() => onAction("export-buffer-to")} />
-      <MenuButton label="导出选中文本" onClick={() => onAction("export-selection")} />
+      <MenuButton label="导出终端文本" disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <MenuButton label="导出终端文本到..." disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <MenuButton label="导出选中文本" disabled={exportBusy} onClick={() => onAction("export-selection")} />
       <Divider />
       <MenuButton label="水平拆分视图" onClick={() => onAction("split-horizontal")} />
       <MenuButton label="垂直拆分视图" onClick={() => onAction("split-vertical")} />

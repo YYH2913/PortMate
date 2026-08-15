@@ -7,6 +7,7 @@ const ready: MenuCapabilityContext = {
   hasActiveView: true,
   activeKind: "ssh",
   activeStatus: "connected",
+  terminalExportBusy: false,
 };
 
 describe("top menu capabilities", () => {
@@ -46,6 +47,13 @@ describe("top menu capabilities", () => {
     expect(menuItemDisabled("启动会话", context({ activeStatus: "error" }))).toBe(false);
     expect(menuItemDisabled("串口分析器", context({ activeKind: "serial" }))).toBe(false);
     expect(menuItemDisabled("端口转发", context({ activeKind: "serial" }))).toBe(true);
+  });
+
+  it("locks terminal exports while the active view is exporting", () => {
+    const exporting = context({ terminalExportBusy: true });
+    expect(menuItemDisabled("导出终端文本", exporting)).toBe(true);
+    expect(menuItemDisabled("导出选中文本", exporting)).toBe(true);
+    expect(menuItemDisabled("查找", exporting)).toBe(false);
   });
 });
 

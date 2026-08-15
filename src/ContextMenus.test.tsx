@@ -79,6 +79,7 @@ describe("session context menu", () => {
         view={view}
         sessionStatus="connected"
         profileBusy
+        exportBusy
         label="Primary"
         colors={[]}
         canDuplicate
@@ -101,6 +102,9 @@ describe("session context menu", () => {
     );
     expect(buttonMarkup(html, "保存会话配置")).toContain("disabled");
     expect(buttonMarkup(html, "会话设置...")).toContain("disabled");
+    expect(buttonMarkup(html, "导出终端文本")).toContain("disabled");
+    expect(buttonMarkup(html, "导出终端文本到...")).toContain("disabled");
+    expect(buttonMarkup(html, "导出选中文本")).toContain("disabled");
     expect(buttonMarkup(html, "复制会话名称")).not.toContain("disabled");
   });
 
@@ -114,6 +118,20 @@ describe("session context menu", () => {
     expect(html).toContain("在线搜索");
     expect(html).toContain("导出终端文本");
     expect(html).toContain("导出终端文本到...");
+  });
+
+  it("locks every terminal text export while one export is pending", () => {
+    const html = renderToStaticMarkup(
+      <TerminalContextMenu
+        state={{ x: 100, y: 100, alternate: false, hasSelection: true }}
+        exportBusy
+        onAction={() => {}}
+      />,
+    );
+    for (const label of ["导出终端文本", "导出终端文本到...", "导出选中文本"]) {
+      expect(buttonMarkup(html, label)).toContain("disabled");
+    }
+    expect(buttonMarkup(html, "在线搜索")).not.toContain("disabled");
   });
 });
 

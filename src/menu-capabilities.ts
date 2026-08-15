@@ -14,6 +14,7 @@ export type MenuCapabilityContext = {
   hasActiveView: boolean;
   activeKind: SessionKind | null;
   activeStatus: SessionStatus | null;
+  terminalExportBusy: boolean;
 };
 
 const activeSessionItems = new Set<MenuItem>([
@@ -40,6 +41,7 @@ const activeViewItems = new Set<MenuItem>([
 const connectedViewItems = new Set<MenuItem>(["同步输入", "自由输入"]);
 
 export function menuItemDisabled(item: MenuItem, context: MenuCapabilityContext): boolean {
+  if (context.terminalExportBusy && (item === "导出终端文本" || item === "导出选中文本")) return true;
   if (activeSessionItems.has(item) && !context.hasActiveSession) return true;
   if (activeViewItems.has(item) && !context.hasActiveView) return true;
   if (connectedViewItems.has(item)) return !context.hasActiveView || context.activeStatus !== "connected";

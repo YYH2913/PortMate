@@ -103,9 +103,11 @@ export function SessionContextMenu({
 
 export function TerminalContextMenu({
   state,
+  exportBusy = false,
   onAction,
 }: {
   state: { x: number; y: number; alternate: boolean; hasSelection: boolean };
+  exportBusy?: boolean;
   onAction: (action: TerminalContextAction) => void;
 }) {
   const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
@@ -124,9 +126,9 @@ export function TerminalContextMenu({
       <ContextMenuButton label="选择全部" shortcut="Ctrl+Shift+A" onClick={() => onAction("select-all")} />
       <ContextMenuButton label="清除选择" disabled={!state.hasSelection} onClick={() => onAction("clear-selection")} />
       <ContextDivider />
-      <ContextMenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
-      <ContextMenuButton label="导出终端文本到..." onClick={() => onAction("export-buffer-to")} />
-      <ContextMenuButton label="导出选中文本" disabled={!state.hasSelection} onClick={() => onAction("export-selection")} />
+      <ContextMenuButton label="导出终端文本" disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label="导出终端文本到..." disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <ContextMenuButton label="导出选中文本" disabled={exportBusy || !state.hasSelection} onClick={() => onAction("export-selection")} />
       <ContextDivider />
       <ContextMenuButton label="管理触发器..." onClick={() => onAction("triggers")} />
     </div>

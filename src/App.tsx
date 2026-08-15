@@ -266,6 +266,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
+  const [terminalExportBusyViewIds, setTerminalExportBusyViewIds] = useState<Set<string>>(() => new Set());
   const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -377,6 +378,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCaptureActionTokensRef = useRef(new Map<string, number>());
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
+  const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
   const screenLockOperationGateRef = useRef(new KeyedRequestGate<"prepare" | "unlock">());
@@ -424,6 +426,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     hasActiveView: Boolean(activeWorkspaceView),
     activeKind: active?.profile.kind ?? null,
     activeStatus: active?.runtime.status ?? null,
+    terminalExportBusy: terminalExportBusyViewIds.has(activeWorkspaceView?.id ?? ""),
   };
   syncInputRef.current = syncInput;
   screenLockRef.current = screenLock;
@@ -445,6 +448,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   profileDeleteHandlerRef.current = (sessionId) => {
     if (!sessionId) return;
     invalidateProfileShortcutOperation(sessionId);
+    invalidateTerminalExportsForSession(sessionId);
     void refresh();
   };
 
@@ -592,6 +596,47 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       next.delete(profileId);
       return next;
     });
+  }
+
+  function beginTerminalExportOperation(viewId: string) {
+    const token = terminalExportOperationGateRef.current.begin(viewId);
+    if (token !== null) {
+      setTerminalExportBusyViewIds((current) => new Set(current).add(viewId));
+    }
+    return token;
+  }
+
+  function finishTerminalExportOperation(viewId: string, token: number) {
+    if (!terminalExportOperationGateRef.current.finish(viewId, token)) return;
+    setTerminalExportBusyViewIds((current) => {
+      if (!current.has(viewId)) return current;
+      const next = new Set(current);
+      next.delete(viewId);
+      return next;
+    });
+  }
+
+  function invalidateTerminalExportOperation(viewId: string) {
+    terminalExportOperationGateRef.current.invalidate(viewId);
+    setTerminalExportBusyViewIds((current) => {
+      if (!current.has(viewId)) return current;
+      const next = new Set(current);
+      next.delete(viewId);
+      return next;
+    });
+  }
+
+  function invalidateTerminalExportsForSession(sessionId: string) {
+    for (const pane of workspacePaneLeaves(workspaceRoot)) {
+      for (const view of pane.views) {
+        if (view.sessionId === sessionId) invalidateTerminalExportOperation(view.id);
+      }
+    }
+  }
+
+  function invalidateAllTerminalExportOperations() {
+    terminalExportOperationGateRef.current.invalidateAll();
+    setTerminalExportBusyViewIds((current) => current.size ? new Set() : current);
   }
 
   function beginKeyManagerCredentialOperation() {
@@ -1993,6 +2038,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
+    const token = beginTerminalExportOperation(viewId);
+    if (token === null) return;
+    const gate = terminalExportOperationGateRef.current;
     try {
       const destinationPath = destination === "choose" && isBackendAvailable()
         ? await chooseTerminalTextExportPath(
@@ -2000,8 +2048,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           terminalTextExportFileName(session.profile.name, source),
         )
         : null;
+      if (!gate.isCurrent(viewId, token)) return;
       if (destination === "choose" && isBackendAvailable() && destinationPath === null) return;
       const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId, source });
+      if (!gate.isCurrent(viewId, token)) return;
       if (payload.sessionId !== session.profile.id || payload.viewId !== viewId || payload.source !== source) {
         throw new Error("终端导出响应与目标视图不匹配。");
       }
@@ -2019,17 +2069,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             overwrite: destinationPath !== null,
           },
         });
+        if (!gate.isCurrent(viewId, token)) return;
         setNotice({
           title,
           message: `${formatBytes(result.size)} · ${payload.lineCount} 行 · SHA-256 ${result.sha256.slice(0, 16)}...\n${result.path}`,
         });
       } else {
         const { downloadTerminalText } = await import("./terminal-export-download");
+        if (!gate.isCurrent(viewId, token)) return;
         const fileName = downloadTerminalText(payload.text, session.profile.name, source);
         setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.lineCount} 行` });
       }
     } catch (error) {
-      setNotice({ title, message: formatError(error) });
+      if (gate.isCurrent(viewId, token)) setNotice({ title, message: formatError(error) });
+    } finally {
+      finishTerminalExportOperation(viewId, token);
     }
   }
 
@@ -2130,6 +2184,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
     invalidateProfileShortcutOperation(profileId);
+    invalidateTerminalExportsForSession(profileId);
     setDisconnectingSessionIds((current) => {
       if (!current.has(profileId)) return current;
       const next = new Set(current);
@@ -2420,6 +2475,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       sessions.map((session) => session.profile.id),
       { fallbackToFirst: !workspaceWindowId },
     );
+    invalidateAllTerminalExportOperations();
     setWorkspaceRoot(restored.root);
     setActivePaneId(restored.activePaneId);
     setActiveId(restored.activeId);
@@ -2579,6 +2635,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const nextActive = nextPanes.find((pane) => pane.id === activePaneId)
       ?? nextPanes[Math.min(Math.max(0, sourceIndex), nextPanes.length - 1)];
     if (!nextActive) return;
+    for (const item of closedViews) invalidateTerminalExportOperation(item.view.id);
     const shouldRefocus = nextActive.id !== activePaneId
       || (paneId === activePaneId && closedViews.some((item) => item.view.id === source.activeViewId));
     setWorkspaceRoot(nextRoot);
@@ -4071,6 +4128,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazyTerminalContextMenu
             state={contextMenu}
+            exportBusy={terminalExportBusyViewIds.has(contextMenu.viewId)}
             onAction={(action) => handleTerminalContextMenuAction(action, contextMenu)}
           />
         </Suspense>
@@ -4084,6 +4142,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             sessionStatus={workspaceContextSession.runtime.status}
             connectionBusy={disconnectingSessionIds.has(workspaceContextSession.profile.id)}
             profileBusy={profileShortcutBusyIds.has(workspaceContextSession.profile.id)}
+            exportBusy={terminalExportBusyViewIds.has(workspaceContextView.id)}
             label={workspaceContextView.title || workspaceContextSession.profile.name}
             colors={tabColorChoices}
             canMerge={workspaceContextCanMerge}
