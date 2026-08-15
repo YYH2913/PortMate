@@ -25,17 +25,29 @@ fn custom_script_fallback_lists_only_authorized_summaries_and_never_executes() {
         created_at: timestamp,
         updated_at: timestamp,
     });
+    let mut legacy_event = store
+        .record_stream_event(
+            "refresh-session",
+            portmate_core::EventDirection::Outbound,
+            portmate_core::EventStream::Stdout,
+            "private-script-body-marker",
+        )
+        .unwrap();
+    legacy_event
+        .annotations
+        .insert("customScriptId".to_string(), visible_id.to_string());
+    *store.events.last_mut().unwrap() = legacy_event;
     store.grants.push(portmate_core::McpGrant {
         client_id: "script-client".to_string(),
         name: "Script client".to_string(),
-        scopes: vec![McpScope::ReadScripts],
+        scopes: vec![McpScope::ReadScripts, McpScope::ReadLogs],
         allowed_sessions: vec!["refresh-session".to_string()],
         confirm_writes: false,
         expires_at: None,
         revoked_at: None,
     });
     let mut server = PortMateMcp {
-        store,
+        store: prepare_loaded_store(store).unwrap(),
         store_path: None,
         ipc: None,
         client_id: "script-client".to_string(),
@@ -53,6 +65,16 @@ fn custom_script_fallback_lists_only_authorized_summaries_and_never_executes() {
     assert!(!listed.contains("Desktop only"));
     assert!(!listed.contains("private-script-body-marker"));
     assert!(!listed.contains("hidden-script-body-marker"));
+
+    let screen = server
+        .tool_call(&json!({
+            "name": "read_screen",
+            "arguments": { "sessionId": "refresh-session" }
+        }))
+        .unwrap();
+    let screen = screen["content"][0]["text"].as_str().unwrap();
+    assert!(screen.contains(portmate_core::CUSTOM_SCRIPT_EVENT_TEXT));
+    assert!(!screen.contains("private-script-body-marker"));
 
     server.store.grants[0].scopes = vec![McpScope::RunScripts];
     assert!(server

@@ -141,6 +141,48 @@ pub(super) async fn run_command_inner_with_annotations(
     text: String,
     actor: &str,
     audit_action: Option<&str>,
+    additional_annotations: BTreeMap<String, String>,
+) -> Result<SessionEvent, String> {
+    run_command_inner_with_annotations_impl(
+        io,
+        session_id,
+        text,
+        None,
+        actor,
+        audit_action,
+        additional_annotations,
+    )
+    .await
+}
+
+pub(super) async fn run_command_inner_with_annotations_and_display_text(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    display_text: String,
+    actor: &str,
+    audit_action: Option<&str>,
+    additional_annotations: BTreeMap<String, String>,
+) -> Result<SessionEvent, String> {
+    run_command_inner_with_annotations_impl(
+        io,
+        session_id,
+        text,
+        Some(display_text),
+        actor,
+        audit_action,
+        additional_annotations,
+    )
+    .await
+}
+
+async fn run_command_inner_with_annotations_impl(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    display_text: Option<String>,
+    actor: &str,
+    audit_action: Option<&str>,
     mut additional_annotations: BTreeMap<String, String>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
@@ -166,10 +208,10 @@ pub(super) async fn run_command_inner_with_annotations(
         ("commandId".to_string(), command_id),
         ("commandState".to_string(), "started".to_string()),
     ]);
-    Ok(record_outbound_user_event_with_context(
+    Ok(record_outbound_user_event_with_display_text(
         &io,
         &session_id,
-        &text,
+        display_text.as_deref().unwrap_or(&text),
         wire_text.as_bytes(),
         actor,
         audit_action,
@@ -217,6 +259,26 @@ pub(super) fn record_outbound_user_event_with_context(
     audit_action: Option<&str>,
     additional_annotations: BTreeMap<String, String>,
 ) -> SessionEvent {
+    record_outbound_user_event_with_display_text(
+        io,
+        session_id,
+        text,
+        wire_bytes,
+        actor,
+        audit_action,
+        additional_annotations,
+    )
+}
+
+fn record_outbound_user_event_with_display_text(
+    io: &SessionIo,
+    session_id: &str,
+    display_text: &str,
+    wire_bytes: &[u8],
+    actor: &str,
+    audit_action: Option<&str>,
+    additional_annotations: BTreeMap<String, String>,
+) -> SessionEvent {
     let PendingEventLogs {
         profile,
         bytes_ref,
@@ -227,9 +289,10 @@ pub(super) fn record_outbound_user_event_with_context(
             let event = store.send_text_with_bytes_ref_and_audit_action(
                 actor,
                 session_id,
-                text,
+                display_text,
                 bytes_ref.clone(),
                 audit_action,
+                wire_bytes.len(),
             );
             match event {
                 Ok(mut event) => {
@@ -249,7 +312,7 @@ pub(super) fn record_outbound_user_event_with_context(
                 }
                 Err(error) => fallback_outbound_event(
                     session_id,
-                    text,
+                    display_text,
                     bytes_ref.clone(),
                     actor,
                     additional_annotations.clone(),
@@ -259,7 +322,7 @@ pub(super) fn record_outbound_user_event_with_context(
         }
         Err(error) => fallback_outbound_event(
             session_id,
-            text,
+            display_text,
             bytes_ref,
             actor,
             additional_annotations,

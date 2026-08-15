@@ -29,6 +29,33 @@ fn send_text_preserves_raw_bytes_reference_while_redacting_text() {
 }
 
 #[test]
+fn send_text_audit_can_record_the_transmitted_byte_count_separately() {
+    let mut store = test_store();
+    let event = store
+        .send_text_with_bytes_ref_and_audit_action(
+            "test",
+            "test-session",
+            "<custom-script>",
+            None,
+            Some("run_custom_script"),
+            27,
+        )
+        .unwrap();
+
+    assert_eq!(event.text.as_deref(), Some("<custom-script>"));
+    assert_eq!(
+        store
+            .audit
+            .last()
+            .unwrap()
+            .details
+            .get("bytes")
+            .map(String::as_str),
+        Some("27")
+    );
+}
+
+#[test]
 fn send_text_updates_runtime_activity_with_event_timestamp() {
     let mut store = test_store();
     let previous = Utc::now() - chrono::Duration::minutes(5);

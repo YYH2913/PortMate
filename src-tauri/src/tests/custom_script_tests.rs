@@ -1,6 +1,7 @@
 use super::*;
 use crate::custom_script_commands::{
-    delete_custom_script_from_store, normalize_custom_script_request, upsert_custom_script_in_store,
+    delete_custom_script_from_store, normalize_custom_script_request, run_custom_script_inner,
+    upsert_custom_script_in_store,
 };
 
 fn save_request(session_id: &str) -> SaveCustomScriptRequest {
@@ -214,4 +215,125 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
     .unwrap_err()
     .contains("grant changed"));
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected_wire = b"private-script-body-marker\n".to_vec();
+        let server_expected = expected_wire.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = vec![0_u8; server_expected.len()];
+            socket.read_exact(&mut received).await.unwrap();
+            received
+        });
+
+        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        profile.logging.enabled = true;
+        profile.logging.raw = false;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
+        let root = std::env::temp_dir().join(format!("portmate-script-wire-{}", Uuid::new_v4()));
+        let store_path = root.join("portmate-store.sqlite3");
+        let state = test_app_state(profile.clone(), store_path.clone());
+        let stream = TcpStream::connect(address).await.unwrap();
+        let (_reader, writer) = stream.into_split();
+        let (tap, _) = broadcast::channel(8);
+        state.tcp.lock().unwrap().insert(
+            profile.id.clone(),
+            TcpRuntime {
+                runtime_id: Uuid::new_v4().to_string(),
+                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
+                tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+        let script = stored_script(&profile.id, true);
+        state
+            .store
+            .lock()
+            .unwrap()
+            .custom_scripts
+            .push(script.clone());
+
+        let event = run_custom_script_inner(
+            &state,
+            RunCustomScriptRequest {
+                script_id: script.id.clone(),
+                session_id: profile.id.clone(),
+            },
+            "desktop-user",
+            Some("run_custom_script"),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("custom script TCP server timed out")
+            .expect("custom script TCP server failed");
+        assert_eq!(received, expected_wire);
+        assert_eq!(event.text.as_deref(), Some(CUSTOM_SCRIPT_EVENT_TEXT));
+        assert_eq!(
+            event.annotations.get("customScriptId").map(String::as_str),
+            Some(script.id.as_str())
+        );
+        assert!(!serde_json::to_string(&event)
+            .unwrap()
+            .contains("private-script-body-marker"));
+
+        {
+            let store = state.store.lock().unwrap();
+            assert_eq!(
+                store.screen(&profile.id).as_deref(),
+                Some(CUSTOM_SCRIPT_EVENT_TEXT)
+            );
+            assert_eq!(
+                store.summaries()[0].last_line.as_deref(),
+                Some(CUSTOM_SCRIPT_EVENT_TEXT)
+            );
+            let audit = store
+                .audit
+                .iter()
+                .find(|record| record.action == "run_custom_script")
+                .unwrap();
+            assert_eq!(
+                audit.details.get("bytes").cloned(),
+                Some(expected_wire.len().to_string())
+            );
+            assert!(store.events.iter().all(|stored| {
+                !stored
+                    .text
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("private-script-body-marker")
+            }));
+        }
+
+        for extension in ["txt", "jsonl"] {
+            let log = fs::read_to_string(log_shard_path(&store_path, &profile, extension).unwrap())
+                .unwrap();
+            assert!(log.contains(CUSTOM_SCRIPT_EVENT_TEXT));
+            assert!(!log.contains("private-script-body-marker"));
+        }
+        let persisted = load_store_sqlite(&store_path).unwrap();
+        assert_eq!(
+            persisted
+                .events
+                .last()
+                .and_then(|event| event.text.as_deref()),
+            Some(CUSTOM_SCRIPT_EVENT_TEXT)
+        );
+        let _ = fs::remove_dir_all(root);
+    });
 }

@@ -52,6 +52,7 @@ pub(crate) fn prepare_loaded_store(mut store: SessionStore) -> Result<SessionSto
         std::mem::take(&mut store.custom_scripts),
         &known_session_ids,
     );
+    portmate_core::redact_custom_script_event_bodies(&mut store.events);
     store.normalize_bounded_histories();
     Ok(store)
 }

@@ -9,7 +9,8 @@ pub mod triggers;
 pub mod tunnels;
 
 pub use custom_scripts::{
-    normalize_custom_script_content, normalize_loaded_custom_scripts, validate_custom_script,
+    normalize_custom_script_content, normalize_loaded_custom_scripts,
+    redact_custom_script_event_bodies, validate_custom_script, CUSTOM_SCRIPT_EVENT_TEXT,
     MAX_CUSTOM_SCRIPTS, MAX_CUSTOM_SCRIPT_CONTENT_BYTES, MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS,
     MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS, MAX_CUSTOM_SCRIPT_NAME_CHARACTERS,
     MAX_CUSTOM_SCRIPT_SESSIONS,

@@ -149,10 +149,11 @@ pub(super) async fn run_custom_script_inner(
         script.content,
         is_telnet_session(&state.store, &request.session_id)?,
     );
-    run_command_inner_with_annotations(
+    run_command_inner_with_annotations_and_display_text(
         state.session_io(),
         request.session_id,
         text,
+        CUSTOM_SCRIPT_EVENT_TEXT.to_string(),
         actor,
         audit_action,
         BTreeMap::from([("customScriptId".to_string(), script.id)]),

@@ -55,6 +55,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - MCP content upload staging is private, quota-bound, integrity checked, client-owned, session-grant
   scoped, and excluded from logs. HTTP and desktop IPC retain bounded messages, concurrency,
   deadlines, origin/token checks, and fail-closed authorization.
+- Saved custom-script bodies are sent only to the selected terminal transport. Structured events,
+  screen summaries, text/JSONL logs, desktop command results, MCP responses, and audit records retain
+  only a placeholder, transmitted byte count, and authorized script identifier as applicable.
 - Dependency gates now reject moderate-or-higher npm advisories and unreviewed RustSec changes. The
   remaining RSA advisory and upstream warnings are documented with exact mitigations in
   [SECURITY.md](./SECURITY.md).

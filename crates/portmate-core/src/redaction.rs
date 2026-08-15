@@ -95,6 +95,7 @@ pub fn redact_session_summary(mut summary: SessionSummary) -> SessionSummary {
 }
 
 pub fn redact_session_event(mut event: SessionEvent) -> SessionEvent {
+    crate::redact_custom_script_event_bodies(std::slice::from_mut(&mut event));
     event.text = event.text.take().map(|text| redact_secrets(&text));
     event.bytes_ref = None;
     for value in event.annotations.values_mut() {
@@ -212,5 +213,30 @@ mod tests {
         assert_eq!(redacted.message.as_deref(), Some("running"));
         assert_eq!(transfer.source, "/home/operator/private-source");
         assert_eq!(transfer.destination, "remote:/srv/private-target");
+    }
+
+    #[test]
+    fn event_redaction_never_returns_a_custom_script_body() {
+        let event = SessionEvent {
+            id: "event-1".to_string(),
+            session_id: "session-1".to_string(),
+            pane_id: "session-1:main".to_string(),
+            ts: chrono::Utc::now(),
+            direction: crate::models::EventDirection::Outbound,
+            stream: crate::models::EventStream::Stdout,
+            bytes_ref: Some("raw:0:27".to_string()),
+            text: Some("private-script-body-marker".to_string()),
+            annotations: std::collections::BTreeMap::from([(
+                "customScriptId".to_string(),
+                "69c06a07-dc48-4d4e-9498-6f42b6deab21".to_string(),
+            )]),
+        };
+
+        let redacted = redact_session_event(event);
+        assert_eq!(
+            redacted.text.as_deref(),
+            Some(crate::CUSTOM_SCRIPT_EVENT_TEXT)
+        );
+        assert!(redacted.bytes_ref.is_none());
     }
 }

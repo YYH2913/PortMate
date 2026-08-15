@@ -321,6 +321,7 @@ pub(super) fn normalize_loaded_store_at(
         std::mem::take(&mut store.custom_scripts),
         &known_session_ids,
     );
+    redact_custom_script_event_bodies(&mut store.events);
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
             runtime.pane_id = saved.pane_id.clone();

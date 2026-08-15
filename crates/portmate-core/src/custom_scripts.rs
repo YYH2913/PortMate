@@ -1,4 +1,4 @@
-use crate::CustomScript;
+use crate::{CustomScript, SessionEvent};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -8,9 +8,26 @@ pub const MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS: usize = 1_024;
 pub const MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS: usize = 65_536;
 pub const MAX_CUSTOM_SCRIPT_CONTENT_BYTES: usize = 256 * 1024;
 pub const MAX_CUSTOM_SCRIPT_SESSIONS: usize = 1_024;
+pub const CUSTOM_SCRIPT_EVENT_TEXT: &str = "<custom-script>";
 
 pub fn normalize_custom_script_content(value: &str) -> String {
     value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+pub fn redact_custom_script_event_bodies(events: &mut [SessionEvent]) -> usize {
+    let mut redacted = 0;
+    for event in events {
+        if event.annotations.contains_key("customScriptId")
+            && event
+                .text
+                .as_deref()
+                .is_some_and(|text| text != CUSTOM_SCRIPT_EVENT_TEXT)
+        {
+            event.text = Some(CUSTOM_SCRIPT_EVENT_TEXT.to_string());
+            redacted += 1;
+        }
+    }
+    redacted
 }
 
 pub fn validate_custom_script(script: &CustomScript) -> Result<(), String> {
@@ -148,5 +165,28 @@ mod tests {
         assert_eq!(normalized.len(), 1);
         assert_eq!(normalized[0].content, "line 1\nline 2\n");
         assert_eq!(normalized[0].allowed_session_ids, ["session-a"]);
+    }
+
+    #[test]
+    fn loaded_custom_script_events_drop_persisted_bodies() {
+        let mut events = vec![crate::SessionEvent {
+            id: Uuid::new_v4().to_string(),
+            session_id: "session-a".to_string(),
+            pane_id: "session-a:main".to_string(),
+            ts: Utc::now(),
+            direction: crate::EventDirection::Outbound,
+            stream: crate::EventStream::Stdout,
+            bytes_ref: Some("raw:0:27".to_string()),
+            text: Some("private-script-body-marker".to_string()),
+            annotations: std::collections::BTreeMap::from([(
+                "customScriptId".to_string(),
+                Uuid::new_v4().to_string(),
+            )]),
+        }];
+
+        assert_eq!(redact_custom_script_event_bodies(&mut events), 1);
+        assert_eq!(events[0].text.as_deref(), Some(CUSTOM_SCRIPT_EVENT_TEXT));
+        assert_eq!(redact_custom_script_event_bodies(&mut events), 0);
+        assert!(events[0].bytes_ref.is_some());
     }
 }

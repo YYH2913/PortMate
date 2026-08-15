@@ -242,6 +242,7 @@ impl SessionStore {
             text,
             bytes_ref,
             Some("send_text"),
+            text.len(),
         )
     }
 
@@ -252,6 +253,7 @@ impl SessionStore {
         text: &str,
         bytes_ref: Option<String>,
         audit_action: Option<&str>,
+        audit_bytes: usize,
     ) -> Result<SessionEvent, String> {
         if !self.profiles.iter().any(|profile| profile.id == session_id) {
             return Err(format!("unknown session: {session_id}"));
@@ -286,7 +288,7 @@ impl SessionStore {
                 action: action.to_string(),
                 session_id: Some(session_id.to_string()),
                 decision: "recorded".to_string(),
-                details: BTreeMap::from([("bytes".to_string(), text.len().to_string())]),
+                details: BTreeMap::from([("bytes".to_string(), audit_bytes.to_string())]),
             });
         }
         Ok(event)
