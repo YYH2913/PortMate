@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Braces, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   customScriptDraft,
   customScriptDraftMatches,
@@ -33,21 +34,25 @@ export default function CustomScriptDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [runSessionId, setRunSessionId] = useState(activeId);
+  const operationGate = useRef(new KeyedRequestGate<"operation">());
   const runnableSessions = useMemo(() => draft ? runnableCustomScriptSessions(draft, sessions) : [], [draft, sessions]);
   const selectedScript = draft?.id ? scripts.find((script) => script.id === draft.id) : null;
   const hasUnsavedChanges = Boolean(draft && (!selectedScript || !customScriptDraftMatches(draft, selectedScript)));
 
   useEffect(() => {
-    let cancelled = false;
+    const gate = operationGate.current;
+    const token = gate.replace("operation");
     void invokeBackend<CustomScript[]>("list_custom_scripts", {})
       .then((items) => {
-        if (cancelled) return;
+        if (!gate.isCurrent("operation", token)) return;
         setScripts(items);
         setDraft(items[0] ? customScriptDraft(items[0]) : null);
       })
-      .catch((reason) => !cancelled && setError(formatError(reason)))
-      .finally(() => !cancelled && setLoading(false));
-    return () => { cancelled = true; };
+      .catch((reason) => gate.isCurrent("operation", token) && setError(formatError(reason)))
+      .finally(() => {
+        if (gate.finish("operation", token)) setLoading(false);
+      });
+    return () => gate.invalidateAll();
   }, []);
 
   useEffect(() => {
@@ -57,14 +62,14 @@ export default function CustomScriptDialog({
   }, [activeId, runSessionId, runnableSessions]);
 
   function selectScript(script: CustomScript) {
-    if (loading || busy) return;
+    if (operationGate.current.isActive("operation") || loading || busy) return;
     if (!confirmDiscardChanges("切换脚本")) return;
     setDraft(customScriptDraft(script));
     setError("");
   }
 
   function createScript() {
-    if (loading || busy) return;
+    if (operationGate.current.isActive("operation") || loading || busy) return;
     if (scripts.length >= MAX_CUSTOM_SCRIPTS) {
       setError(`自定义脚本最多保存 ${MAX_CUSTOM_SCRIPTS} 条。`);
       return;
@@ -79,7 +84,7 @@ export default function CustomScriptDialog({
   }
 
   function closeDialog() {
-    if (loading || busy || !confirmDiscardChanges("关闭窗口")) return;
+    if (operationGate.current.isActive("operation") || loading || busy || !confirmDiscardChanges("关闭窗口")) return;
     onClose();
   }
 
@@ -90,18 +95,22 @@ export default function CustomScriptDialog({
 
   async function refreshScripts() {
     if (loading || busy || hasUnsavedChanges) return;
+    const gate = operationGate.current;
+    const token = gate.begin("operation");
+    if (token === null) return;
     const selectedId = draft?.id ?? null;
     setLoading(true);
     setError("");
     try {
       const items = await invokeBackend<CustomScript[]>("list_custom_scripts", {});
+      if (!gate.isCurrent("operation", token)) return;
       const selected = items.find((script) => script.id === selectedId) ?? items[0];
       setScripts(items);
       setDraft(selected ? customScriptDraft(selected) : null);
     } catch (reason) {
-      setError(formatError(reason));
+      if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
-      setLoading(false);
+      if (gate.finish("operation", token)) setLoading(false);
     }
   }
 
@@ -122,18 +131,22 @@ export default function CustomScriptDialog({
       setError(validation);
       return;
     }
+    const gate = operationGate.current;
+    const token = gate.begin("operation");
+    if (token === null) return;
     setBusy(true);
     setError("");
     try {
       const response = await invokeBackend<SaveCustomScriptResponse>("save_custom_script", { request: normalized });
+      if (!gate.isCurrent("operation", token)) return;
       const saved = response.scripts.find((script) => script.id === response.savedId);
       if (!saved) throw new Error("保存响应没有包含已提交的自定义脚本，请重新打开后检查。");
       setScripts(response.scripts);
       setDraft(customScriptDraft(saved));
     } catch (reason) {
-      setError(formatError(reason));
+      if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
-      setBusy(false);
+      if (gate.finish("operation", token)) setBusy(false);
     }
   }
 
@@ -141,40 +154,51 @@ export default function CustomScriptDialog({
     if (!selectedScript || busy) return;
     const unsavedWarning = hasUnsavedChanges ? "\n\n当前编辑器还有未保存的更改，也会一并丢弃。" : "";
     if (!window.confirm(`删除自定义脚本“${selectedScript.name}”？${unsavedWarning}`)) return;
+    const gate = operationGate.current;
+    const token = gate.begin("operation");
+    if (token === null) return;
+    const pendingScript = selectedScript;
     setBusy(true);
     setError("");
     try {
       const items = await invokeBackend<CustomScript[]>("delete_custom_script", {
-        request: { id: selectedScript.id, expectedUpdatedAt: selectedScript.updatedAt },
+        request: { id: pendingScript.id, expectedUpdatedAt: pendingScript.updatedAt },
       });
+      if (!gate.isCurrent("operation", token)) return;
       setScripts(items);
       setDraft(items[0] ? customScriptDraft(items[0]) : null);
     } catch (reason) {
-      setError(formatError(reason));
+      if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
-      setBusy(false);
+      if (gate.finish("operation", token)) setBusy(false);
     }
   }
 
   async function runScript() {
     if (!selectedScript || !runSessionId || busy || hasUnsavedChanges) return;
+    const gate = operationGate.current;
+    const token = gate.begin("operation");
+    if (token === null) return;
+    const pendingScript = selectedScript;
+    const pendingSessionId = runSessionId;
     setBusy(true);
     setError("");
     try {
       const request: RunCustomScriptRequest = {
-        scriptId: selectedScript.id,
-        sessionId: runSessionId,
-        expectedUpdatedAt: selectedScript.updatedAt,
+        scriptId: pendingScript.id,
+        sessionId: pendingSessionId,
+        expectedUpdatedAt: pendingScript.updatedAt,
       };
       await invokeBackend<SessionEvent>("run_custom_script", {
         request,
       });
-      const session = sessions.find((item) => item.profile.id === runSessionId);
-      onNotice(`已在 ${session?.profile.name ?? runSessionId} 运行 ${selectedScript.name}`);
+      if (!gate.isCurrent("operation", token)) return;
+      const session = sessions.find((item) => item.profile.id === pendingSessionId);
+      onNotice(`已在 ${session?.profile.name ?? pendingSessionId} 运行 ${pendingScript.name}`);
     } catch (reason) {
-      setError(formatError(reason));
+      if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
-      setBusy(false);
+      if (gate.finish("operation", token)) setBusy(false);
     }
   }
 

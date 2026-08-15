@@ -435,6 +435,8 @@ try {
     window.__customScripts = structuredClone(initialCustomScripts);
     window.__customScriptSequence = 0;
     window.__injectConcurrentCustomScriptBeforeSave = false;
+    window.__deferCustomScriptRuns = false;
+    window.__pendingCustomScriptRuns = [];
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
@@ -1188,7 +1190,9 @@ try {
             annotations: { customScriptId: script.id },
           };
           window.__events.push(event);
-          return structuredClone(event);
+          const result = structuredClone(event);
+          if (!window.__deferCustomScriptRuns) return result;
+          return new Promise((resolve) => window.__pendingCustomScriptRuns.push({ result, resolve }));
         }
         if (command === "list_one_keys") {
           if (window.__failOneKeyLists > 0) {
@@ -5211,7 +5215,41 @@ Host staging
   await page.waitForFunction(() => window.__customScripts.length === 3);
   assert(await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).inputValue() === "Collect diagnostics",
     "a concurrently created script replaced the script selected by the save response");
-  await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).click();
+  const customScriptRunButton = customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true });
+  const customScriptOperationBaseline = await page.evaluate(() => ({
+    runCalls: window.__invokeCalls.filter((item) => item.command === "run_custom_script").length,
+    events: window.__events.length,
+  }));
+  await page.evaluate(() => {
+    window.__deferCustomScriptRuns = true;
+    const runButton = document.querySelector('[aria-label="运行自定义脚本"]');
+    const closeButton = document.querySelector('[aria-label="关闭自定义脚本"]');
+    runButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    runButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    closeButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(() => window.__pendingCustomScriptRuns.length === 1);
+  const customScriptOperationState = await page.evaluate((baseline) => ({
+    runCalls: window.__invokeCalls.filter((item) => item.command === "run_custom_script").length - baseline.runCalls,
+    events: window.__events.length - baseline.events,
+    pending: window.__pendingCustomScriptRuns.length,
+    dialogVisible: Boolean(document.querySelector(".custom-script-dialog")),
+  }), customScriptOperationBaseline);
+  assert(customScriptOperationState.runCalls === 1
+    && customScriptOperationState.events === 1
+    && customScriptOperationState.pending === 1
+    && customScriptOperationState.dialogVisible
+    && await customScriptRunButton.isDisabled()
+    && await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).isDisabled()
+    && await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).isDisabled()
+    && await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isDisabled()
+    && await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).isDisabled(),
+  `custom script operation was duplicated or did not lock conflicting controls: ${JSON.stringify(customScriptOperationState)}`);
+  await page.evaluate(() => {
+    const pending = window.__pendingCustomScriptRuns.shift();
+    pending.resolve(pending.result);
+    window.__deferCustomScriptRuns = false;
+  });
   const scriptNotice = page.locator(".notice-dialog", { hasText: "Collect diagnostics" });
   await scriptNotice.waitFor();
   const scriptInvocation = await page.evaluate(() => {
