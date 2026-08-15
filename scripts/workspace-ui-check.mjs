@@ -471,6 +471,10 @@ try {
     window.__pendingSessionOpens = [];
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
+    window.__deferFileMutations = false;
+    window.__pendingFileMutations = [];
+    window.__deferFileBatches = false;
+    window.__pendingFileBatches = [];
     window.__deferFileProperties = false;
     window.__pendingFileProperties = [];
     window.__deferTailLogs = false;
@@ -871,7 +875,44 @@ try {
             window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
           });
         }
-        if (command === "create_file" || command === "delete_paths" || command === "move_paths") return null;
+        if (["create_directory", "create_file", "delete_paths", "rename_path", "move_paths", "chmod_path"].includes(command)) {
+          if (!window.__deferFileMutations) return null;
+          return new Promise((resolve, reject) => window.__pendingFileMutations.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(null),
+            reject,
+          }));
+        }
+        if (command === "start_file_batch") {
+          const request = structuredClone(args.request);
+          const result = {
+            tasks: request.paths.map((path, index) => ({
+              id: `file-batch-${window.__invokeCalls.filter((call) => call.command === "start_file_batch").length}-${index}`,
+              sessionId: request.sessionId,
+              protocol: "sftp",
+              source: request.sourceRemote ? `remote:${path}` : path,
+              destination: request.destinationRemote ? `remote:${request.destination}` : request.destination,
+              bytesTotal: 32,
+              bytesDone: 0,
+              status: "queued",
+              message: "queued",
+              startedAt: null,
+              finishedAt: null,
+              averageBytesPerSecond: null,
+            })),
+            skipped: [],
+            directoriesPrepared: 0,
+            totalBytes: request.paths.length * 32,
+          };
+          if (!window.__deferFileBatches) return structuredClone(result);
+          return new Promise((resolve) => window.__pendingFileBatches.push({
+            command,
+            args: structuredClone(args),
+            result: structuredClone(result),
+            resolve: () => resolve(structuredClone(result)),
+          }));
+        }
         if (command === "file_properties") {
           if (window.__deferFileProperties) {
             return new Promise((resolve) => {
@@ -2991,11 +3032,44 @@ Host staging
   const deleteCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_paths").length);
   await page.evaluate(() => {
     window.__originalConfirm = window.confirm;
-    window.confirm = () => true;
+    window.__fileDeleteConfirmCalls = 0;
+    window.__deferFileMutations = true;
+    window.confirm = () => {
+      window.__fileDeleteConfirmCalls += 1;
+      return true;
+    };
   });
-  await localFilePane.getByRole("button", { name: "删除", exact: true }).click();
+  const deleteButton = localFilePane.getByRole("button", { name: "删除", exact: true });
+  await deleteButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "delete_paths").length === count + 1, deleteCallsBefore);
-  const deleteRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_paths").at(-1)?.args.request);
+  await page.waitForFunction(() => window.__pendingFileMutations.length === 1);
+  const pendingDeleteState = await page.evaluate(() => ({
+    confirms: window.__fileDeleteConfirmCalls,
+    pending: window.__pendingFileMutations.map((request) => request.command),
+    request: window.__pendingFileMutations[0]?.args.request,
+  }));
+  assert(pendingDeleteState.confirms === 1
+    && JSON.stringify(pendingDeleteState.pending) === JSON.stringify(["delete_paths"])
+    && await deleteButton.isDisabled()
+    && await localFilePath.isDisabled()
+    && await localFilePane.getByRole("button", { name: "新建文件", exact: true }).isDisabled()
+    && await localFilePane.getByRole("combobox", { name: "文件冲突策略", exact: true }).isDisabled()
+    && await localFilePane.locator('.file-row[role="option"]').first().getAttribute("aria-disabled") === "true",
+  `a pending file delete did not lock duplicate or stale pane operations: ${JSON.stringify(pendingDeleteState)}`);
+  await page.evaluate(() => {
+    window.__pendingFileMutations[0].resolve();
+    window.__deferFileMutations = false;
+  });
+  await localFilePane.getByRole("button", { name: "新建文件", exact: true }).waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const pane = document.querySelector('.file-browser-pane[data-file-pane="local"]');
+    return pane?.querySelector('[aria-label="新建文件"]')?.disabled === false
+      && pane?.querySelector('[aria-label="本地路径"]')?.disabled === false;
+  });
+  const deleteRequest = pendingDeleteState.request;
   await page.evaluate(() => {
     window.confirm = window.__originalConfirm;
     delete window.__originalConfirm;
@@ -3006,6 +3080,85 @@ Host staging
   ]) && deleteRequest?.remote === false
     && deleteRequest?.sessionId === "edge-router",
   `batch delete did not target the selected local items: ${JSON.stringify(deleteRequest)}`);
+
+  await page.evaluate(() => {
+    window.__deferFileLoads = true;
+    window.__pendingFileLoads = [];
+  });
+  await localFilePath.fill("/portmate-transfer");
+  await localFilePath.press("Enter");
+  await page.waitForFunction(() => window.__pendingFileLoads.some((request) => request.args.request.path === "/portmate-transfer"));
+  await page.evaluate(() => {
+    const pending = window.__pendingFileLoads.find((request) => request.args.request.path === "/portmate-transfer");
+    pending.resolve([{
+      name: "SESSION-SWITCH.bin",
+      path: "/portmate-transfer/SESSION-SWITCH.bin",
+      isDir: false,
+      size: 32,
+      modified: null,
+    }]);
+    window.__deferFileLoads = false;
+  });
+  const transferSwitchRow = localFilePane.locator(".file-row", { hasText: "SESSION-SWITCH.bin" });
+  await transferSwitchRow.waitFor();
+  await transferSwitchRow.click();
+  await page.evaluate(() => {
+    window.__deferFileBatches = true;
+    window.__pendingFileBatches = [];
+  });
+  const remoteFilePane = page.locator('.file-browser-pane[data-file-pane="remote"]');
+  const uploadButton = localFilePane.getByRole("button", { name: "上传", exact: true });
+  await uploadButton.click();
+  await page.waitForFunction(() => window.__pendingFileBatches.length === 1);
+  const pendingFileTransfer = await page.evaluate(() => window.__pendingFileBatches[0]?.args.request);
+  assert(pendingFileTransfer?.sessionId === "edge-router"
+    && JSON.stringify(pendingFileTransfer?.paths) === JSON.stringify(["/portmate-transfer/SESSION-SWITCH.bin"])
+    && pendingFileTransfer?.sourceRemote === false
+    && pendingFileTransfer?.destinationRemote === true
+    && pendingFileTransfer?.destination === "."
+    && await uploadButton.isDisabled()
+    && await localFilePath.isDisabled()
+    && await remoteFilePane.getByRole("textbox", { name: "远端路径", exact: true }).isDisabled(),
+  `a batch transfer did not own both file panes: ${JSON.stringify(pendingFileTransfer)}`);
+
+  await explorerTab.click();
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
+  await page.waitForFunction(() => (
+    document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART")
+  ));
+  await page.waitForFunction(() => {
+    const pane = document.querySelector('.file-browser-pane[data-file-pane="local"]');
+    return pane?.querySelector('[aria-label="新建文件"]')?.disabled === false
+      && pane?.querySelector('[aria-label="本地路径"]')?.disabled === false;
+  });
+  const releasedFilePaneState = await page.evaluate(() => {
+    const pane = document.querySelector('.file-browser-pane[data-file-pane="local"]');
+    return {
+      pathDisabled: pane?.querySelector('[aria-label="本地路径"]')?.disabled ?? null,
+      createDisabled: pane?.querySelector('[aria-label="新建文件"]')?.disabled ?? null,
+      busy: pane?.getAttribute("aria-busy") ?? null,
+    };
+  });
+  assert(releasedFilePaneState.pathDisabled === false
+    && releasedFilePaneState.createDisabled === false
+    && releasedFilePaneState.busy === "false",
+  `switching away from an SSH session left the local half of a cross-pane operation locked: ${JSON.stringify(releasedFilePaneState)}`);
+  await page.evaluate(() => {
+    const pending = window.__pendingFileBatches[0];
+    pending.resolve();
+    window.__pendingFileBatches = [];
+    window.__deferFileBatches = false;
+  });
+  await page.waitForTimeout(100);
+  assert(await page.locator(".notice-dialog").count() === 0,
+    "a transfer response from the previous SSH session produced a stale notice");
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
+  await page.waitForFunction(() => (
+    document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Edge Router")
+  ));
+  await fileManagerTab.click();
+  await page.waitForFunction(() => document.querySelector('.workspace-dock[data-dock="left"]')?.getAttribute("data-active-panel") === "fileManager");
+  await page.locator('.file-browser-pane[data-file-pane="remote"]').waitFor();
   await page.screenshot({ path: `${screenshotPrefix}-file-manager.png`, fullPage: true });
 
   const fileTitle = leftDock.locator('.workspace-dock-tab[data-panel="fileManager"]');
