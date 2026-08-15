@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { cargoLockPinsPackage } from "./cargo-lock-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 
@@ -35,7 +36,9 @@ describe("MCP client dependency locks", () => {
   it("tracks and validates every Rust SDK Cargo lock", () => {
     for (const { version } of matrix("mcp-rust-client-versions.json")) {
       const lock = textLock("mcp-rust-client-check", version, "Cargo.lock");
-      expect(lock).toContain(`name = "rmcp"\nversion = "${version}"`);
+      expect(cargoLockPinsPackage(lock, "rmcp", version)).toBe(true);
+      expect(cargoLockPinsPackage(lock.replaceAll("\n", "\r\n"), "rmcp", version)).toBe(true);
+      expect(cargoLockPinsPackage(lock, "rmcp", `${version}-mismatch`)).toBe(false);
     }
     expect(script("mcp-rust-client-check.mjs")).not.toContain("generate-lockfile");
   });

@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { cargoLockPinsPackage } from "./cargo-lock-state.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const project = join(projectRoot, "scripts", "mcp-rust-client-check");
@@ -60,7 +61,7 @@ tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-th
     throw new Error(`MCP Rust SDK ${sdkVersion} lock file does not exist: ${lockSource}`);
   }
   const locked = readFileSync(lockSource, "utf8");
-  if (!locked.includes(`name = "rmcp"\nversion = "${sdkVersion}"`)) {
+  if (!cargoLockPinsPackage(locked, "rmcp", sdkVersion)) {
     throw new Error(`MCP Rust SDK ${sdkVersion} lock file pins a different SDK version`);
   }
   cpSync(lockSource, join(environmentRoot, "Cargo.lock"));
