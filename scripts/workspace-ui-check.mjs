@@ -6592,6 +6592,24 @@ Host staging
   await startupDomainPage.getByRole("button", { name: "传输任务", exact: true }).click();
   const startupTransferRow = startupDomainPage.locator(".transfer-row", { hasText: "/tmp/startup-source.bin" });
   await startupTransferRow.waitFor();
+  await startupDomainPage.evaluate(() => {
+    window.__trackedTransferDismissTimers = [];
+    window.__originalTransferSetTimeout = window.setTimeout;
+    window.__originalTransferClearTimeout = window.clearTimeout;
+    window.setTimeout = (handler, delay, ...args) => {
+      const timerId = window.__originalTransferSetTimeout(handler, delay, ...args);
+      const numericDelay = Number(delay);
+      if (numericDelay >= 5_000 && numericDelay <= 6_100) {
+        window.__trackedTransferDismissTimers.push({ timerId, delay: numericDelay, cancelled: false });
+      }
+      return timerId;
+    };
+    window.clearTimeout = (timerId) => {
+      const tracked = window.__trackedTransferDismissTimers.find((item) => item.timerId === timerId);
+      if (tracked) tracked.cancelled = true;
+      return window.__originalTransferClearTimeout(timerId);
+    };
+  });
   const completedAt = new Date().toISOString();
   await startupDomainPage.evaluate(({ task, completedAt }) => {
     window.__emitTauriEvent("portmate-transfer-task", {
@@ -6604,6 +6622,33 @@ Host staging
   }, { task: hydrationTransfer, completedAt });
   await startupTransferRow.getByRole("button", { name: "关闭已完成传输", exact: true }).click();
   await startupTransferRow.waitFor({ state: "detached" });
+  await startupDomainPage.waitForFunction(() => window.__trackedTransferDismissTimers.length === 1
+    && window.__trackedTransferDismissTimers[0].cancelled);
+  await startupDomainPage.evaluate((task) => {
+    window.__emitTauriEvent("portmate-transfer-task", {
+      ...task,
+      id: "startup-dismiss-timer-probe",
+      source: "/tmp/dismiss-timer-probe.bin",
+      destination: "/srv/dismiss-timer-probe.bin",
+      status: "queued",
+      message: "queued",
+      bytesDone: 0,
+      startedAt: null,
+      finishedAt: null,
+      averageBytesPerSecond: null,
+    });
+  }, hydrationTransfer);
+  await startupDomainPage.waitForTimeout(100);
+  const transferDismissTimerState = await startupDomainPage.evaluate(() => {
+    const state = structuredClone(window.__trackedTransferDismissTimers);
+    window.setTimeout = window.__originalTransferSetTimeout;
+    window.clearTimeout = window.__originalTransferClearTimeout;
+    delete window.__originalTransferSetTimeout;
+    delete window.__originalTransferClearTimeout;
+    return state;
+  });
+  assert(transferDismissTimerState.length === 1 && transferDismissTimerState[0].cancelled,
+    `a hidden completed transfer retained or recreated its timer: ${JSON.stringify(transferDismissTimerState)}`);
   await startupDomainPage.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await startupDomainPage.locator(".transfer-dialog").waitFor({ state: "detached" });
   await startupDomainPage.getByRole("button", { name: "工具", exact: true }).click();

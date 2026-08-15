@@ -28,7 +28,7 @@ export default function TransferList({
     const now = Date.now();
     const completedIds = new Set<string>();
     const timers = transfers
-      .filter((task) => task.status === "completed")
+      .filter((task) => task.status === "completed" && !dismissedTransferIds.has(task.id))
       .map((task) => {
         completedIds.add(task.id);
         const completedDeadline = completedTransferDismissDeadline(task.finishedAt, now);
@@ -42,12 +42,13 @@ export default function TransferList({
         }, Math.max(0, deadline - Date.now()));
       });
     for (const id of dismissDeadlines.current.keys()) {
-      if (!completedIds.has(id) && !transfers.some((task) => task.id === id && task.status === "completed")) {
+      if (dismissedTransferIds.has(id)
+        || (!completedIds.has(id) && !transfers.some((task) => task.id === id && task.status === "completed"))) {
         dismissDeadlines.current.delete(id);
       }
     }
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [onDismiss, transfers]);
+  }, [dismissedTransferIds, onDismiss, transfers]);
 
   const visibleTransfers = transfers.filter((task) => !dismissedTransferIds.has(task.id));
   if (!visibleTransfers.length) return <div className="empty-pane top">没有传输任务</div>;
