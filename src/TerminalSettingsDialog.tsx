@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { Ban, FolderOpen, RotateCcw, X } from "lucide-react";
 import { isBackendAvailable } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   MAX_SCREEN_LOCK_TIMEOUT_MINUTES,
   MIN_SCREEN_LOCK_TIMEOUT_MINUTES,
@@ -81,7 +82,7 @@ export default function TerminalSettingsDialog({
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
   const [settingsError, setSettingsError] = useState("");
   const [directoryBusy, setDirectoryBusy] = useState(false);
-  const directoryRequestRef = useRef(0);
+  const directoryRequestGate = useRef(new KeyedRequestGate<"directory">());
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
   const dirty = terminalSettingsDraftHasUnsavedChanges(
@@ -90,22 +91,23 @@ export default function TerminalSettingsDialog({
   );
 
   useEffect(() => () => {
-    directoryRequestRef.current += 1;
+    directoryRequestGate.current.invalidateAll();
   }, []);
 
   async function selectTerminalExportDirectory() {
-    if (directoryBusy) return;
-    const token = ++directoryRequestRef.current;
+    const gate = directoryRequestGate.current;
+    const token = gate.begin("directory");
+    if (token === null) return;
     setDirectoryBusy(true);
     setSettingsError("");
     try {
       const selected = await chooseTerminalExportDirectory(prefs.terminalTextExportDirectory);
-      if (directoryRequestRef.current !== token) return;
+      if (!gate.isCurrent("directory", token)) return;
       if (selected !== null) updatePref("terminalTextExportDirectory", selected);
     } catch (error) {
-      if (directoryRequestRef.current === token) setSettingsError(error instanceof Error ? error.message : String(error));
+      if (gate.isCurrent("directory", token)) setSettingsError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (directoryRequestRef.current === token) setDirectoryBusy(false);
+      if (gate.finish("directory", token)) setDirectoryBusy(false);
     }
   }
 

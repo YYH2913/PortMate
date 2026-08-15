@@ -423,6 +423,8 @@ try {
     window.__pendingSecretWrites = [];
     window.__failSecretWriteAt = 0;
     window.__failNextProfileSave = false;
+    window.__deferTerminalExportDirectoryPicker = false;
+    window.__pendingTerminalExportDirectoryPickers = [];
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
@@ -559,7 +561,10 @@ try {
           return null;
         }
         if (command === "plugin:dialog|save") return "/tmp/portmate-picked-terminal.txt";
-        if (command === "plugin:dialog|open") return "/tmp/portmate-terminal-text";
+        if (command === "plugin:dialog|open") {
+          if (!window.__deferTerminalExportDirectoryPicker) return "/tmp/portmate-terminal-text";
+          return new Promise((resolve) => window.__pendingTerminalExportDirectoryPickers.push({ resolve }));
+        }
         if (command === "plugin:path|join") return args.paths.join("/").replace(/\/{2,}/g, "/");
         if (command === "list_sessions") {
           if (!window.__deferSessionLists) return window.__sessions;
@@ -3923,6 +3928,32 @@ Host staging
   assert(await terminalExportDirectory.count() === 1
     && await page.getByRole("button", { name: "选择终端文本导出目录", exact: true }).count() === 1,
   "terminal export directory setting is incomplete");
+  const terminalExportDirectoryPickerBaseline = await page.evaluate(() => {
+    window.__deferTerminalExportDirectoryPicker = true;
+    window.__pendingTerminalExportDirectoryPickers = [];
+    return window.__invokeCalls.filter((call) => call.command === "plugin:dialog|open").length;
+  });
+  const chooseTerminalExportDirectoryButton = page.getByRole("button", {
+    name: "选择终端文本导出目录",
+    exact: true,
+  });
+  await chooseTerminalExportDirectoryButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTerminalExportDirectoryPickers.length === 1);
+  assert(await chooseTerminalExportDirectoryButton.isDisabled(),
+    "a pending terminal export directory picker remained actionable");
+  await page.evaluate(() => {
+    window.__deferTerminalExportDirectoryPicker = false;
+    window.__pendingTerminalExportDirectoryPickers.shift().resolve("/tmp/picked-terminal-text");
+  });
+  await page.waitForFunction(() => document.querySelector('[aria-label="终端文本默认导出目录"]')?.value === "/tmp/picked-terminal-text");
+  const terminalExportDirectoryPickerCalls = await page.evaluate((baseline) => (
+    window.__invokeCalls.filter((call) => call.command === "plugin:dialog|open").length - baseline
+  ), terminalExportDirectoryPickerBaseline);
+  assert(terminalExportDirectoryPickerCalls === 1,
+    `terminal export directory picker opened ${terminalExportDirectoryPickerCalls} times`);
   assert(await firstStartup.isDisabled() && await secondStartup.isDisabled(),
     "specific startup selectors are enabled outside specific mode");
   const settingsText = await page.locator(".terminal-settings-dialog").textContent();
