@@ -33,18 +33,23 @@ export default function TunnelDialog({
   const [tunnels, setTunnels] = useState<TunnelStatus[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [stoppingId, setStoppingId] = useState("");
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
   const refreshGate = useRef(new KeyedRequestGate<"tunnels">());
+  const createGate = useRef(new KeyedRequestGate<"create">());
+  const stopGate = useRef(new KeyedRequestGate<string>());
 
   useEffect(() => {
     refreshGate.current.invalidate("tunnels");
     setTunnels([]);
-    setStoppingId("");
+    stopGate.current.invalidateAll();
+    setStoppingIds(new Set());
     void refreshTunnels();
     const timer = window.setInterval(() => void refreshTunnels(true), 2_000);
     return () => {
       refreshGate.current.invalidate("tunnels");
+      createGate.current.invalidateAll();
+      stopGate.current.invalidateAll();
       window.clearInterval(timer);
     };
   }, [session.profile.id]);
@@ -79,6 +84,9 @@ export default function TunnelDialog({
       setError("端口必须是 0 到 65535 之间的整数，目标端口不能为 0。");
       return;
     }
+    const gate = createGate.current;
+    const token = gate.begin("create");
+    if (token === null) return;
     setBusy(true);
     try {
       const tunnel = await invokeBackend<TunnelSpec>("create_tunnel", {
@@ -92,28 +100,39 @@ export default function TunnelDialog({
           routeRules: mode === "dynamic" ? normalizedRouteRules(routeRules) : [],
         },
       });
+      if (!gate.isCurrent("create", token)) return;
       refreshGate.current.invalidate("tunnels");
       setTunnels((current) => mergeTunnels(current, emptyTunnelStatus(tunnel)));
       onDone(`已创建 ${mode} tunnel：${tunnel.label}`);
     } catch (error) {
-      setError(formatTunnelError(error));
+      if (gate.isCurrent("create", token)) setError(formatTunnelError(error));
     } finally {
-      setBusy(false);
+      if (gate.finish("create", token)) setBusy(false);
     }
   }
 
   async function stopTunnel(tunnel: TunnelStatus) {
-    setStoppingId(tunnel.spec.id);
+    const tunnelId = tunnel.spec.id;
+    const token = stopGate.current.begin(tunnelId);
+    if (token === null) return;
+    setStoppingIds((current) => new Set(current).add(tunnelId));
     setError("");
     try {
-      await invokeBackend<TunnelStatus>("stop_tunnel", { tunnelId: tunnel.spec.id });
+      await invokeBackend<TunnelStatus>("stop_tunnel", { tunnelId });
+      if (!stopGate.current.isCurrent(tunnelId, token)) return;
       refreshGate.current.invalidate("tunnels");
-      setTunnels((current) => current.filter((item) => item.spec.id !== tunnel.spec.id));
+      setTunnels((current) => current.filter((item) => item.spec.id !== tunnelId));
       onDone(`已停止 tunnel：${tunnel.spec.label}`);
     } catch (error) {
-      setError(formatTunnelError(error));
+      if (stopGate.current.isCurrent(tunnelId, token)) setError(formatTunnelError(error));
     } finally {
-      setStoppingId("");
+      if (stopGate.current.finish(tunnelId, token)) {
+        setStoppingIds((current) => {
+          const next = new Set(current);
+          next.delete(tunnelId);
+          return next;
+        });
+      }
     }
   }
 
@@ -254,7 +273,7 @@ export default function TunnelDialog({
                       </small>
                       {tunnel.lastError ? <small className="tunnel-error">{tunnel.lastError}</small> : null}
                     </div>
-                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingId === tunnel.spec.id} title="停止 tunnel">
+                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingIds.has(tunnel.spec.id)} title="停止 tunnel">
                       <Square size={13} />
                     </button>
                   </div>

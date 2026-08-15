@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { deviceLoadEndpoint, isModemTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
 import { COMMON_SERIAL_BAUD_RATES } from "./serial-connection-settings";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import TransferList from "./TransferList";
 import type { SessionSummary, TransferTask } from "./types";
 
@@ -33,7 +34,10 @@ export default function TransferDialog({
   const [loadAddress, setLoadAddress] = useState("");
   const [loadBaudRate, setLoadBaudRate] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
+  const startGateRef = useRef(new KeyedRequestGate<"start">());
+  const transferOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
   const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
   const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
@@ -47,6 +51,17 @@ export default function TransferDialog({
     }
   }, [protocol, protocols]);
 
+  useEffect(() => {
+    startGateRef.current.invalidateAll();
+    transferOperationGateRef.current.invalidateAll();
+    setBusy(false);
+    setBusyTransferIds(new Set());
+    return () => {
+      startGateRef.current.invalidateAll();
+      transferOperationGateRef.current.invalidateAll();
+    };
+  }, [session.profile.id]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -58,6 +73,9 @@ export default function TransferDialog({
       setError("连接会话后才能开始传输。");
       return;
     }
+    const gate = startGateRef.current;
+    const token = gate.begin("start");
+    if (token === null) return;
     setBusy(true);
     try {
       const transferDestination = deviceLoadMode
@@ -66,33 +84,59 @@ export default function TransferDialog({
       const task = await invokeBackend<TransferTask>("start_transfer", {
         request: { sessionId: session.profile.id, protocol, source, destination: transferDestination },
       });
+      if (!gate.isCurrent("start", token)) return;
       onTask(task);
       onNotice(`${task.protocol} ${task.status}: ${task.message ?? ""}`);
     } catch (error) {
-      setError(formatTransferError(error));
+      if (gate.isCurrent("start", token)) setError(formatTransferError(error));
     } finally {
-      setBusy(false);
+      if (gate.finish("start", token)) setBusy(false);
     }
   }
 
   async function retryTransfer(task: TransferTask) {
+    const token = beginTransferOperation(task.id);
+    if (token === null) return;
     try {
       const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
+      if (!transferOperationGateRef.current.isCurrent(task.id, token)) return;
       onTask(retried);
       onNotice(`${retried.protocol} ${retried.status}: ${retried.message ?? ""}`);
     } catch (error) {
-      setError(formatTransferError(error));
+      if (transferOperationGateRef.current.isCurrent(task.id, token)) setError(formatTransferError(error));
+    } finally {
+      finishTransferOperation(task.id, token);
     }
   }
 
   async function cancelTransfer(task: TransferTask) {
+    const token = beginTransferOperation(task.id);
+    if (token === null) return;
     try {
       const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
+      if (!transferOperationGateRef.current.isCurrent(task.id, token)) return;
       onTask(cancelled);
       onNotice(`${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}`);
     } catch (error) {
-      setError(formatTransferError(error));
+      if (transferOperationGateRef.current.isCurrent(task.id, token)) setError(formatTransferError(error));
+    } finally {
+      finishTransferOperation(task.id, token);
     }
+  }
+
+  function beginTransferOperation(transferId: string): number | null {
+    const token = transferOperationGateRef.current.begin(transferId);
+    if (token !== null) setBusyTransferIds((current) => new Set(current).add(transferId));
+    return token;
+  }
+
+  function finishTransferOperation(transferId: string, token: number) {
+    if (!transferOperationGateRef.current.finish(transferId, token)) return;
+    setBusyTransferIds((current) => {
+      const next = new Set(current);
+      next.delete(transferId);
+      return next;
+    });
   }
 
   async function cancelRunningTransfers() {
@@ -154,15 +198,16 @@ export default function TransferDialog({
             <header>
               <strong>队列</strong>
               <div>
-                <button type="button" onClick={() => void retryFailedTransfers()} disabled={!retryableTransfers.length}>重试失败</button>
-                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={!runningTransfers.length}>取消运行中</button>
+                <button type="button" onClick={() => void retryFailedTransfers()} disabled={Boolean(busyTransferIds.size) || !retryableTransfers.length}>重试失败</button>
+                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={Boolean(busyTransferIds.size) || !runningTransfers.length}>取消运行中</button>
               </div>
             </header>
             <TransferList
               transfers={sessionTransfers}
               dismissedTransferIds={dismissedTransferIds}
-              onRetry={(task) => void retryTransfer(task)}
-              onCancel={(task) => void cancelTransfer(task)}
+              busyTransferIds={busyTransferIds}
+              onRetry={retryTransfer}
+              onCancel={cancelTransfer}
               onDismiss={onDismissTransfer}
             />
           </div>

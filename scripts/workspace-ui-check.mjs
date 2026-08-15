@@ -456,6 +456,8 @@ try {
       };
     };
     window.__transfers = [];
+    window.__deferTransferMutations = false;
+    window.__pendingTransferMutations = [];
     window.__commandHistory = { entries: [], migrated: false, revision: 0 };
     window.__injectCommandHistoryStartupRace = true;
     window.__clipboardText = "";
@@ -476,6 +478,9 @@ try {
     window.__pendingOneKeyMutations = [];
     window.__deferTunnelRefresh = false;
     window.__pendingTunnelRefresh = [];
+    window.__tunnels = [];
+    window.__deferTunnelMutations = false;
+    window.__pendingTunnelMutations = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
     window.__deferSessionLists = deferStartupSessions;
@@ -723,7 +728,7 @@ try {
         if (command === "start_transfer") {
           const request = structuredClone(args.request);
           const task = {
-            id: `transfer-${window.__transfers.length + 1}`,
+            id: `transfer-${window.__invokeCalls.filter((call) => call.command === "start_transfer").length}`,
             ...request,
             bytesTotal: 0,
             bytesDone: 0,
@@ -733,8 +738,49 @@ try {
             finishedAt: null,
             averageBytesPerSecond: null,
           };
-          window.__transfers.push(task);
-          return structuredClone(task);
+          const complete = () => {
+            window.__transfers.push(task);
+            return structuredClone(task);
+          };
+          if (!window.__deferTransferMutations) return complete();
+          return new Promise((resolve) => window.__pendingTransferMutations.push({
+            command,
+            args: structuredClone(args),
+            result: structuredClone(task),
+            resolve: () => resolve(complete()),
+          }));
+        }
+        if (command === "retry_transfer" || command === "cancel_transfer") {
+          const existing = window.__transfers.find((task) => task.id === args.transferId);
+          const task = {
+            ...(existing ?? {
+              id: args.transferId,
+              sessionId: "edge-router",
+              protocol: "sftp",
+              source: `/tmp/${args.transferId}.bin`,
+              destination: `/srv/${args.transferId}.bin`,
+              bytesTotal: 1024,
+              bytesDone: 0,
+              startedAt: null,
+              finishedAt: null,
+              averageBytesPerSecond: null,
+            }),
+            status: command === "retry_transfer" ? "queued" : "cancelled",
+            message: command === "retry_transfer" ? "queued for retry" : "cancelled",
+          };
+          const complete = () => {
+            const index = window.__transfers.findIndex((item) => item.id === task.id);
+            if (index >= 0) window.__transfers[index] = task;
+            else window.__transfers.push(task);
+            return structuredClone(task);
+          };
+          if (!window.__deferTransferMutations) return complete();
+          return new Promise((resolve) => window.__pendingTransferMutations.push({
+            command,
+            args: structuredClone(args),
+            result: structuredClone(task),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "list_serial_capture") {
           return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
@@ -779,14 +825,15 @@ try {
           return { name: path.split("/").at(-1), path, remote: args.request.remote, kind: "file", isDir: false, isFile: true, isSymlink: false, size: 0 };
         }
         if (command === "list_tunnels") {
-          if (!window.__deferTunnelRefresh) return [];
+          const result = structuredClone(window.__tunnels);
+          if (!window.__deferTunnelRefresh) return result;
           return new Promise((resolve) => {
-            window.__pendingTunnelRefresh.push({ args: structuredClone(args), resolve });
+            window.__pendingTunnelRefresh.push({ args: structuredClone(args), result, resolve });
           });
         }
         if (command === "create_tunnel") {
           const request = structuredClone(args.request);
-          return {
+          const spec = {
             id: `tunnel-${window.__invokeCalls.filter((call) => call.command === "create_tunnel").length}`,
             label: request.mode === "dynamic"
               ? `${request.bindHost}:${request.bindPort} -> SOCKS5`
@@ -794,6 +841,40 @@ try {
             ...request,
             enabled: true,
           };
+          const status = {
+            spec,
+            activeConnections: 0,
+            totalConnections: 0,
+            tcpToSshBytes: 0,
+            sshToTcpBytes: 0,
+            lastActivity: null,
+            lastError: null,
+          };
+          const complete = () => {
+            window.__tunnels.push(status);
+            return structuredClone(spec);
+          };
+          if (!window.__deferTunnelMutations) return complete();
+          return new Promise((resolve) => window.__pendingTunnelMutations.push({
+            command,
+            args: structuredClone(args),
+            result: structuredClone(spec),
+            resolve: () => resolve(complete()),
+          }));
+        }
+        if (command === "stop_tunnel") {
+          const existing = window.__tunnels.find((tunnel) => tunnel.spec.id === args.tunnelId) ?? null;
+          const complete = () => {
+            window.__tunnels = window.__tunnels.filter((tunnel) => tunnel.spec.id !== args.tunnelId);
+            return structuredClone(existing);
+          };
+          if (!window.__deferTunnelMutations) return complete();
+          return new Promise((resolve) => window.__pendingTunnelMutations.push({
+            command,
+            args: structuredClone(args),
+            result: structuredClone(existing),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "list_sysmon_history" || command === "refresh_sysmon") {
           if (!window.__deferSysmon) return command === "list_sysmon_history" ? [] : null;
@@ -1644,17 +1725,107 @@ Host staging
   assert(!toolMenuState["传输任务"] && !toolMenuState["端口转发"] && !toolMenuState.Tmux
     && toolMenuState["串口分析器"],
   `SSH tool capabilities are wrong: ${JSON.stringify(toolMenuState)}`);
+  const transferOperationFixtures = [
+    { id: "retry-transfer-a", status: "failed", source: "/tmp/retry-a.bin", message: "failed A" },
+    { id: "retry-transfer-b", status: "cancelled", source: "/tmp/retry-b.bin", message: "cancelled B" },
+    { id: "cancel-transfer-a", status: "running", source: "/tmp/cancel-a.bin", message: "running A" },
+    { id: "cancel-transfer-b", status: "running", source: "/tmp/cancel-b.bin", message: "running B" },
+  ].map((task) => ({
+    sessionId: "edge-router",
+    protocol: "sftp",
+    destination: `/srv/${task.id}.bin`,
+    bytesTotal: 1024,
+    bytesDone: task.status === "running" ? 512 : 0,
+    startedAt: task.status === "running" ? new Date().toISOString() : null,
+    finishedAt: null,
+    averageBytesPerSecond: task.status === "running" ? 256 : null,
+    ...task,
+  }));
+  await page.evaluate((tasks) => {
+    window.__transfers = structuredClone(tasks);
+    window.__deferTransferMutations = true;
+    window.__pendingTransferMutations = [];
+    for (const task of tasks) window.__emitTauriEvent("portmate-transfer-task", task);
+  }, transferOperationFixtures);
   await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
-  await page.locator(".transfer-dialog").waitFor();
-  const sshTransferOptions = await page.locator(".transfer-dialog select").locator("option")
+  const transferDialog = page.locator(".transfer-dialog");
+  await transferDialog.waitFor();
+  const sshTransferOptions = await transferDialog.locator("select").locator("option")
     .evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent })));
   assert(JSON.stringify(sshTransferOptions.map((option) => option.value)) === JSON.stringify(["sftp", "scp", "xmodem", "ymodem", "zmodem"]),
     `SSH transfer capabilities are wrong: ${JSON.stringify(sshTransferOptions)}`);
-  assert(await page.locator(".transfer-dialog select").inputValue() === "sftp",
+  assert(await transferDialog.locator("select").inputValue() === "sftp",
     "SSH transfer dialog did not select its first enabled protocol");
+  const retryTransferA = transferDialog.locator(".transfer-row", { hasText: "/tmp/retry-a.bin" });
+  const retryTransferB = transferDialog.locator(".transfer-row", { hasText: "/tmp/retry-b.bin" });
+  const cancelTransferA = transferDialog.locator(".transfer-row", { hasText: "/tmp/cancel-a.bin" });
+  const cancelTransferB = transferDialog.locator(".transfer-row", { hasText: "/tmp/cancel-b.bin" });
+  await retryTransferA.getByRole("button", { name: "重试", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTransferMutations.length === 1);
+  assert(await retryTransferA.getByRole("button", { name: "重试", exact: true }).isDisabled()
+    && !await retryTransferB.getByRole("button", { name: "重试", exact: true }).isDisabled(),
+  "retrying one transfer did not disable only that transfer");
+  await retryTransferB.getByRole("button", { name: "重试", exact: true }).click();
+  await cancelTransferA.getByRole("button", { name: "取消", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTransferMutations.length === 3);
+  assert(await cancelTransferA.getByRole("button", { name: "取消", exact: true }).isDisabled()
+    && !await cancelTransferB.getByRole("button", { name: "取消", exact: true }).isDisabled(),
+  "cancelling one transfer did not leave another transfer independently actionable");
+  await cancelTransferB.getByRole("button", { name: "取消", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingTransferMutations.length === 4);
+  const transferMutationCalls = await page.evaluate(() => window.__pendingTransferMutations.map((pending) => ({
+    command: pending.command,
+    transferId: pending.args.transferId,
+  })));
+  assert(JSON.stringify(transferMutationCalls) === JSON.stringify([
+    { command: "retry_transfer", transferId: "retry-transfer-a" },
+    { command: "retry_transfer", transferId: "retry-transfer-b" },
+    { command: "cancel_transfer", transferId: "cancel-transfer-a" },
+    { command: "cancel_transfer", transferId: "cancel-transfer-b" },
+  ]), `transfer operations were duplicated or globally serialized: ${JSON.stringify(transferMutationCalls)}`);
+  await page.evaluate(() => {
+    for (const pending of window.__pendingTransferMutations.splice(0)) pending.resolve();
+  });
+  const transferMutationNotice = page.locator(".notice-dialog");
+  await transferMutationNotice.waitFor();
+  await transferMutationNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  await transferDialog.locator(".dialog-field", { hasText: "来源:" }).locator("input").fill("/tmp/start-once.bin");
+  await transferDialog.locator(".dialog-field", { hasText: "目标:" }).locator("input").fill("remote:/srv/start-once.bin");
+  await transferDialog.evaluate((form) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await page.waitForFunction(() => window.__pendingTransferMutations.filter((pending) => pending.command === "start_transfer").length === 1);
+  assert(await transferDialog.getByRole("button", { name: "执行中", exact: true }).isDisabled(),
+    "pending transfer start did not disable the submit action");
+  const pendingStartTransfer = await page.evaluate(() => window.__pendingTransferMutations
+    .filter((pending) => pending.command === "start_transfer").length);
+  assert(pendingStartTransfer === 1, `transfer start was submitted more than once: ${pendingStartTransfer}`);
   await page.screenshot({ path: `${screenshotPrefix}-transfer.png`, fullPage: true });
-  await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
-  await page.locator(".transfer-dialog").waitFor({ state: "detached" });
+  await transferDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await transferDialog.waitFor({ state: "detached" });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
+  const replacementTransferDialog = page.locator(".transfer-dialog");
+  await replacementTransferDialog.waitFor();
+  await page.evaluate(() => {
+    const pending = window.__pendingTransferMutations.find((item) => item.command === "start_transfer");
+    pending.resolve();
+    window.__pendingTransferMutations = [];
+    window.__deferTransferMutations = false;
+  });
+  await page.waitForTimeout(100);
+  assert(await replacementTransferDialog.count() === 1 && await page.locator(".notice-dialog").count() === 0,
+    "a late transfer response mutated or obscured the replacement dialog");
+  await replacementTransferDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await replacementTransferDialog.waitFor({ state: "detached" });
 
   await page.evaluate(() => {
     window.__deferTunnelRefresh = true;
@@ -1738,8 +1909,29 @@ Host staging
     for (const pending of window.__pendingTunnelRefresh) pending.resolve([]);
     window.__pendingTunnelRefresh = [];
     window.__deferTunnelRefresh = false;
+    window.__deferTunnelMutations = true;
+    window.__pendingTunnelMutations = [];
   });
-  await tunnelCreate.click();
+  const tunnelCreateCallsBefore = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "create_tunnel").length);
+  await tunnelDialog.evaluate((form) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await page.waitForFunction(() => window.__pendingTunnelMutations
+    .filter((pending) => pending.command === "create_tunnel").length === 1);
+  assert(await tunnelDialog.getByRole("button", { name: "创建中", exact: true }).isDisabled(),
+    "pending tunnel create did not disable the submit action");
+  const tunnelCreateCallsAfter = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "create_tunnel").length);
+  assert(tunnelCreateCallsAfter === tunnelCreateCallsBefore + 1,
+    `tunnel create was submitted more than once: ${tunnelCreateCallsAfter - tunnelCreateCallsBefore}`);
+  await page.evaluate(() => {
+    const pending = window.__pendingTunnelMutations.find((item) => item.command === "create_tunnel");
+    pending.resolve();
+    window.__pendingTunnelMutations = [];
+    window.__deferTunnelMutations = false;
+  });
   await tunnelDialog.waitFor({ state: "detached" });
   const tunnelCreateRequest = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "create_tunnel").at(-1)?.args.request);
@@ -1753,6 +1945,71 @@ Host staging
   const tunnelNotice = page.locator(".notice-dialog", { hasText: "已创建 dynamic tunnel" });
   await tunnelNotice.waitFor();
   await tunnelNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  const tunnelStopFixtures = ["tunnel-stop-a", "tunnel-stop-b"].map((id, index) => ({
+    spec: {
+      id,
+      sessionId: "edge-router",
+      mode: "local",
+      label: `Stop tunnel ${index + 1}`,
+      bindHost: "127.0.0.1",
+      bindPort: 11001 + index,
+      targetHost: "10.0.0.1",
+      targetPort: 22,
+      routeRules: [],
+      enabled: true,
+    },
+    activeConnections: 0,
+    totalConnections: 0,
+    tcpToSshBytes: 0,
+    sshToTcpBytes: 0,
+    lastActivity: null,
+    lastError: null,
+  }));
+  await page.evaluate((tunnels) => {
+    window.__tunnels = structuredClone(tunnels);
+    window.__deferTunnelMutations = true;
+    window.__pendingTunnelMutations = [];
+  }, tunnelStopFixtures);
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
+  const tunnelStopDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
+  const tunnelStopA = tunnelStopDialog.locator(".tunnel-row", { hasText: "Stop tunnel 1" });
+  const tunnelStopB = tunnelStopDialog.locator(".tunnel-row", { hasText: "Stop tunnel 2" });
+  await tunnelStopA.waitFor();
+  await tunnelStopA.getByRole("button", { name: "停止 tunnel", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTunnelMutations.length === 1);
+  assert(await tunnelStopA.getByRole("button", { name: "停止 tunnel", exact: true }).isDisabled()
+    && !await tunnelStopB.getByRole("button", { name: "停止 tunnel", exact: true }).isDisabled(),
+  "stopping one tunnel did not leave another tunnel independently actionable");
+  await tunnelStopB.getByRole("button", { name: "停止 tunnel", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingTunnelMutations.length === 2);
+  const tunnelStopCalls = await page.evaluate(() => window.__pendingTunnelMutations.map((pending) => ({
+    command: pending.command,
+    tunnelId: pending.args.tunnelId,
+  })));
+  assert(JSON.stringify(tunnelStopCalls) === JSON.stringify([
+    { command: "stop_tunnel", tunnelId: "tunnel-stop-a" },
+    { command: "stop_tunnel", tunnelId: "tunnel-stop-b" },
+  ]), `tunnel stops were duplicated or globally serialized: ${JSON.stringify(tunnelStopCalls)}`);
+  await tunnelStopDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await tunnelStopDialog.waitFor({ state: "detached" });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
+  const replacementTunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
+  await replacementTunnelDialog.waitFor();
+  await page.evaluate(() => {
+    for (const pending of window.__pendingTunnelMutations.splice(0)) pending.resolve();
+    window.__deferTunnelMutations = false;
+  });
+  await page.waitForTimeout(100);
+  assert(await replacementTunnelDialog.count() === 1 && await page.locator(".notice-dialog").count() === 0,
+    "a late tunnel stop response mutated or obscured the replacement dialog");
+  await replacementTunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+  await replacementTunnelDialog.waitFor({ state: "detached" });
 
   const sysmonSnapshot = (sessionId, cpuPercent, networkInterfaces = []) => ({
     sessionId,
@@ -2796,6 +3053,9 @@ Host staging
   await page.evaluate(() => document.querySelector('[aria-label="搜索会话"]')?.click());
   await page.locator(".search-dialog").waitFor();
   await page.waitForFunction(() => Boolean(document.activeElement?.closest(".search-dialog")));
+  await page.waitForFunction(() => Boolean(
+    document.querySelector(".terminal-pane.active .xterm-helper-textarea")?.closest("[inert]"),
+  ));
   const modalBoundaryResult = await page.evaluate(async () => {
     const terminalInput = document.querySelector(".terminal-pane.active .xterm-helper-textarea");
     const terminalCanvas = document.querySelector(".terminal-pane.active .terminal-canvas");

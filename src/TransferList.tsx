@@ -8,12 +8,14 @@ import type { TransferTask } from "./types";
 export default function TransferList({
   transfers,
   dismissedTransferIds,
+  busyTransferIds = EMPTY_BUSY_TRANSFER_IDS,
   onRetry,
   onCancel,
   onDismiss,
 }: {
   transfers: readonly TransferTask[];
   dismissedTransferIds: ReadonlySet<string>;
+  busyTransferIds?: ReadonlySet<string>;
   onRetry: (task: TransferTask) => void;
   onCancel: (task: TransferTask) => void;
   onDismiss: (transferId: string) => void;
@@ -50,6 +52,7 @@ export default function TransferList({
   return (
     <div className="transfer-list">
       {visibleTransfers.slice().reverse().map((task) => {
+        const operationBusy = busyTransferIds.has(task.id);
         const message = transferDisplayMessage(task);
         const StatusIcon = task.status === "queued" ? Clock3
           : task.status === "running" ? LoaderCircle
@@ -63,10 +66,10 @@ export default function TransferList({
               <span className="transfer-status"><StatusIcon size={14} /><span>{transferStatusLabel(task.status)}</span></span>
               <div className="transfer-row-actions">
                 {task.status === "running" ? (
-                  <button type="button" onClick={() => onCancel(task)}>取消</button>
+                  <button type="button" disabled={operationBusy} onClick={() => onCancel(task)}>取消</button>
                 ) : null}
                 {task.status === "failed" || task.status === "cancelled" ? (
-                  <button type="button" onClick={() => onRetry(task)}>重试</button>
+                  <button type="button" disabled={operationBusy} onClick={() => onRetry(task)}>重试</button>
                 ) : null}
                 {task.status === "failed" ? (
                   <button
@@ -109,3 +112,5 @@ export default function TransferList({
     </div>
   );
 }
+
+const EMPTY_BUSY_TRANSFER_IDS: ReadonlySet<string> = new Set();

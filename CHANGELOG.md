@@ -63,6 +63,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   being implicitly assigned to the currently selected Profile when opened for editing.
 - Fixed the multi-page terminal settings dialog silently discarding unsaved preferences, sync input,
   and keymap changes, and isolated late terminal-export directory picker responses.
+- Fixed duplicate transfer start/retry/cancel and tunnel create/stop submissions. Pending row actions
+  are isolated by task ID, and responses from a closed dialog cannot update or close its replacement.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

@@ -107,12 +107,16 @@ export default function FileManagerPanel({
   const fileLoadEpochs = useRef({ local: 0, remote: 0 });
   const activeFileSessionIdRef = useRef("");
   const filePropertiesGate = useRef(new KeyedRequestGate<"properties">());
+  const transferOperationGate = useRef(new KeyedRequestGate<string>());
+  const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
   activeFileSessionIdRef.current = canRemote ? active?.profile.id ?? "" : "";
 
   useEffect(() => {
     void loadFiles(false, defaultLocalPath(), "reset");
   }, []);
+
+  useEffect(() => () => transferOperationGate.current.invalidateAll(), []);
 
   useEffect(() => {
     if (canRemote) {
@@ -563,23 +567,52 @@ export default function FileManagerPanel({
   }
 
   async function retryTransfer(task: TransferTask) {
+    const token = beginTransferOperation(task.id);
+    if (token === null) return;
     try {
       const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
+      if (!transferOperationGate.current.isCurrent(task.id, token)) return;
       onTransfer(retried);
       onNotice({ title: "重试传输", message: `${retried.protocol} ${retried.status}: ${retried.message ?? ""}` });
     } catch (error) {
-      onNotice({ title: "重试传输失败", message: formatError(error) });
+      if (transferOperationGate.current.isCurrent(task.id, token)) {
+        onNotice({ title: "重试传输失败", message: formatError(error) });
+      }
+    } finally {
+      finishTransferOperation(task.id, token);
     }
   }
 
   async function cancelTransfer(task: TransferTask) {
+    const token = beginTransferOperation(task.id);
+    if (token === null) return;
     try {
       const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
+      if (!transferOperationGate.current.isCurrent(task.id, token)) return;
       onTransfer(cancelled);
       onNotice({ title: "取消传输", message: `${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}` });
     } catch (error) {
-      onNotice({ title: "取消传输失败", message: formatError(error) });
+      if (transferOperationGate.current.isCurrent(task.id, token)) {
+        onNotice({ title: "取消传输失败", message: formatError(error) });
+      }
+    } finally {
+      finishTransferOperation(task.id, token);
     }
+  }
+
+  function beginTransferOperation(transferId: string): number | null {
+    const token = transferOperationGate.current.begin(transferId);
+    if (token !== null) setBusyTransferIds((current) => new Set(current).add(transferId));
+    return token;
+  }
+
+  function finishTransferOperation(transferId: string, token: number) {
+    if (!transferOperationGate.current.finish(transferId, token)) return;
+    setBusyTransferIds((current) => {
+      const next = new Set(current);
+      next.delete(transferId);
+      return next;
+    });
   }
 
   return (
@@ -665,8 +698,9 @@ export default function FileManagerPanel({
       <TransferList
         transfers={transfers.slice(-3)}
         dismissedTransferIds={dismissedTransferIds}
-        onRetry={(task) => void retryTransfer(task)}
-        onCancel={(task) => void cancelTransfer(task)}
+        busyTransferIds={busyTransferIds}
+        onRetry={retryTransfer}
+        onCancel={cancelTransfer}
         onDismiss={onDismissTransfer}
       />
       {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={closePropertiesDialog} /> : null}
