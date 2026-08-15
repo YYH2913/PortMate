@@ -68,6 +68,8 @@ describe("CI command logging", () => {
     );
     expect(workflow).toContain("--test-threads=1");
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
+    expect(workflow.match(/dtolnay\/rust-toolchain@1\.97\.1/g)).toHaveLength(4);
+    expect(workflow).not.toContain("dtolnay/rust-toolchain@stable");
     expect(workflow).toContain("if: runner.os == 'Linux'");
     expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");

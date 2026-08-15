@@ -3,6 +3,7 @@ use super::SessionStore;
 use crate::models::{
     AuditRecord, CommandHistoryEntry, SysmonSnapshot, TimelineMark, TransferStatus, TransferTask,
 };
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_AUDIT_RECORDS_PER_SCOPE: usize = 5000;
@@ -110,7 +111,7 @@ impl SessionStore {
             Vec::with_capacity(entries.len().saturating_add(self.command_history.len()));
         merged.extend_from_slice(entries);
         merged.extend(self.command_history.iter().cloned());
-        merged.sort_by(|left, right| right.recorded_at.cmp(&left.recorded_at));
+        merged.sort_by_key(|entry| Reverse(entry.recorded_at));
         self.replace_command_history(&merged, limit, retention_days, now_ms)
     }
 
