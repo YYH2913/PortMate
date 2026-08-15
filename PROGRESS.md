@@ -94,6 +94,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同一 HEAD `29f1135` 已重新生成包含三项自定义脚本并发/授权修复的未签名 Windows GNU x86_64 便携包：`target/release-artifacts/PortMate-0.1.1-windows-x86_64-portable.zip` 为 22,884,281 字节，SHA-256 为 `5b7d3cdbd2844994faa41a753d2c4301b213ee5a8f4af90ad44edfe579ccc9ad`。包内主程序为 63,529,343 字节的 PE32+ x86_64 GUI，SHA-256 为 `97099eb010b6eaac035ab8be104d1a7940316c0b626fac0905f1ba90971549bc`；MCP sidecar 为 9,760,496 字节的 PE32+ x86_64 console，SHA-256 为 `f8d7755cb9e4c43e492206cf9c29a707a554e9ac48e5371f68b282ddafe66854`。WebView2 loader、生产前端资源、Apache-2.0/OFL 许可证、固定 payload、逐项哈希和 ZIP 完整性均通过构建门禁，布局/PE 验证器另有 16 项正常与拒绝夹具通过。该记录证明当前源码的交叉构建和静态包边界，不替代真实 Windows 上的 WebView2 启动、Credential Manager、MSI/NSIS、签名或安装卸载 smoke。
 
+同一功能代码状态已重新生成并验证 Linux x86_64 DEB、RPM 和 AppImage：三包分别为 15,787,990、15,786,414 和 91,908,600 字节，SHA-256 分别为 `dbd57a1aa5699c55ebf797c4034334bd3dd35f60132ef69fc4238b4718670b7e`、`b1f99ed621cb43a71314a27e533c92ef6a249eb5f556165bb8b2a3ba85989a0e` 和 `85a38a06bcca6027ea99a369e48f961c0b88ca91f488e5758864e28eb24c953f`。每个包均从含空格的隔离路径通过主程序、MCP sidecar、desktop entry、图标、许可证、生产 CSP、三类窗口 capability、权限/portable 链接、两次稳定 Store 重启、旧 app-data 原子迁移、双 Store 冲突 fail-closed、IPC 地址/凭据轮换、正常退出 endpoint 清理、sidecar HTTP readiness 和异常父进程退出回收；三份包内 sidecar 又分别通过 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全固定版本的 stdio/HTTP 矩阵。最终 AppImage 在 VMware/Wayland 的 XWayland 显示上完成三次 1440x920 真实窗口启动，首帧分别采样到 669、638、669 种颜色，自动 VMware 软件渲染回退、Store 哈希稳定、迁移和冲突拒绝均通过。本轮本机缺少系统级 `wmctrl` 且无交互 sudo，测试使用 `target/native-tools/` 内只读解包的 Ubuntu `wmctrl` 1.07-7ubuntu3 控制窗口；该方式不修改系统或源码。以上是当前本机包级与窗口证据，不替代干净 Ubuntu Native CI、发行仓库安装或签名发布记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
