@@ -95,8 +95,8 @@ import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
 import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
-import { commitWorkspaceViewDetach } from "./workspace-detach-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
+import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
@@ -339,8 +339,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
   const [sessionSettingsMode, setSessionSettingsMode] = useState<SessionSettingsMode>("create");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
-  const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode | null>(initialWorkspace.root);
-  const [activePaneId, setActivePaneId] = useState(initialWorkspace.activePaneId);
+  const [workspaceRoot, setWorkspaceRootState] = useState<WorkspaceNode | null>(initialWorkspace.root);
+  const workspaceRootRef = useRef<WorkspaceNode | null>(workspaceRoot);
+  const [activePaneId, setActivePaneIdState] = useState(initialWorkspace.activePaneId);
+  const activePaneIdRef = useRef(activePaneId);
   const [zoomedPaneId, setZoomedPaneId] = useState("");
   const [workspaceGroupMove, setWorkspaceGroupMove] = useState<WorkspaceGroupMoveRequest>(null);
   const [workspaceViewRename, setWorkspaceViewRename] = useState<WorkspaceViewRenameRequest>(null);
@@ -386,8 +388,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
   const detachedWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
-  const workspaceRootRef = useRef<WorkspaceNode | null>(workspaceRoot);
-  const activePaneIdRef = useRef(activePaneId);
   const pendingProfileDeletionRef = useRef(new Map<string, { token: number; profileName: string }>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
@@ -453,6 +453,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       reattachDetachedPane(command);
     }
   };
+
+  function setWorkspaceRoot(update: SetStateAction<WorkspaceNode | null>) {
+    const next = typeof update === "function" ? update(workspaceRootRef.current) : update;
+    workspaceRootRef.current = next;
+    setWorkspaceRootState(next);
+  }
+
+  function setActivePaneId(update: SetStateAction<string>) {
+    const next = typeof update === "function" ? update(activePaneIdRef.current) : update;
+    activePaneIdRef.current = next;
+    setActivePaneIdState(next);
+  }
   profileUpdateHandlerRef.current = (summary) => {
     if (!summary?.profile?.id) return;
     applySavedSessionState(summary, false);
@@ -3174,96 +3186,31 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color, keyMode: command.keyMode };
-    const alreadyReturned = workspacePaneLeaves(workspaceRoot).find((pane) => pane.views.some((view) => view.id === command.viewId));
-    if (alreadyReturned) {
-      setWorkspaceRoot(activateWorkspacePaneView(workspaceRoot, alreadyReturned.id, command.viewId));
-      setActivePaneId(alreadyReturned.id);
-      setActiveId(command.sessionId);
-      focusWorkspacePaneInput(alreadyReturned.id);
+    const committed = commitWorkspaceViewReattach(
+      workspaceRootRef.current,
+      activePaneIdRef.current,
+      command.paneId,
+      returnedView,
+    );
+    if (committed.status === "conflict") {
+      setNotice({ title: "返回主窗口失败", message: "返回的视图标识与当前工作区冲突。" });
       return;
     }
-    const existingPane = findWorkspacePane(workspaceRoot, command.paneId);
-    if (existingPane) {
-      const replacedFullGroup = existingPane.views.length >= MAX_WORKSPACE_GROUP_TABS;
-      if (replacedFullGroup) {
-        const replacedView = workspacePaneActiveView(existingPane);
-        pushClosedWorkspaceViews([{ view: replacedView, paneId: existingPane.id, index: existingPane.views.findIndex((view) => view.id === replacedView.id) }]);
-      }
-      setWorkspaceRoot(replacedFullGroup
-        ? replaceWorkspacePaneView(workspaceRoot, existingPane.id, returnedView)
-        : insertWorkspacePaneView(workspaceRoot, existingPane.id, returnedView, existingPane.views.length));
-      setActivePaneId(existingPane.id);
-      setActiveId(command.sessionId);
-      focusWorkspacePaneInput(existingPane.id);
-      if (replacedFullGroup) {
-        setNotice({ title: "窗格已返回", message: `原分组已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图，已替换该分组的活动视图。` });
-      }
-      return;
-    }
-    const panes = workspacePaneLeaves(workspaceRoot);
-    if (!workspaceRoot) {
-      const pane = createWorkspacePaneFromViews(command.paneId, [returnedView], returnedView.id)!;
-      setWorkspaceRoot(pane);
-      setActivePaneId(pane.id);
-      setActiveId(returnedView.sessionId);
-      focusWorkspacePaneInput(pane.id);
-      return;
-    }
-    const target = findWorkspacePane(workspaceRoot, activePaneId) ?? panes[0];
-    if (!target) return;
-    if (panes.length >= MAX_WORKSPACE_PANES) {
-      const replacedFullGroup = target.views.length >= MAX_WORKSPACE_GROUP_TABS;
-      if (replacedFullGroup) {
-        const replacedView = workspacePaneActiveView(target);
-        pushClosedWorkspaceViews([{ view: replacedView, paneId: target.id, index: target.views.findIndex((view) => view.id === replacedView.id) }]);
-      }
-      setWorkspaceRoot(replacedFullGroup
-        ? replaceWorkspacePaneView(workspaceRoot, target.id, returnedView)
-        : insertWorkspacePaneView(workspaceRoot, target.id, returnedView, target.views.length));
-      setActivePaneId(target.id);
-      setActiveId(command.sessionId);
+    setWorkspaceRoot(committed.root);
+    setActivePaneId(committed.activePaneId);
+    setActiveId(committed.activeId);
+    if (committed.replaced) pushClosedWorkspaceViews([committed.replaced]);
+    if (committed.placement !== "existing-view" && committed.placement !== "original-pane" && committed.placement !== "empty-workspace") {
       setZoomedPaneId("");
-      focusWorkspacePaneInput(target.id);
+    }
+    focusWorkspacePaneInput(committed.activePaneId);
+    if (committed.placement === "original-pane" && committed.replaced) {
+      setNotice({ title: "窗格已返回", message: `原分组已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图，已替换该分组的活动视图。` });
+    } else if (committed.placement === "max-panes") {
       setNotice({ title: "窗格已返回", message: `工作区已达到 ${MAX_WORKSPACE_PANES} 个窗格，已在当前窗格打开返回的会话。` });
-      return;
-    }
-    let nextRoot = workspaceRoot;
-    for (const candidate of [target, ...panes.filter((pane) => pane.id !== target.id)]) {
-      const candidateRoot = splitWorkspacePaneWithView(
-        workspaceRoot,
-        candidate.id,
-        "vertical",
-        returnedView,
-        command.paneId,
-        createWorkspaceNodeId("split"),
-        "second",
-      );
-      if (candidateRoot !== workspaceRoot) {
-        nextRoot = candidateRoot;
-        break;
-      }
-    }
-    if (nextRoot === workspaceRoot) {
-      const replacedFullGroup = target.views.length >= MAX_WORKSPACE_GROUP_TABS;
-      if (replacedFullGroup) {
-        const replacedView = workspacePaneActiveView(target);
-        pushClosedWorkspaceViews([{ view: replacedView, paneId: target.id, index: target.views.findIndex((view) => view.id === replacedView.id) }]);
-      }
-      setWorkspaceRoot(replacedFullGroup
-        ? replaceWorkspacePaneView(workspaceRoot, target.id, returnedView)
-        : insertWorkspacePaneView(workspaceRoot, target.id, returnedView, target.views.length));
-      setActivePaneId(target.id);
-      setActiveId(command.sessionId);
-      setZoomedPaneId("");
-      focusWorkspacePaneInput(target.id);
+    } else if (committed.placement === "max-depth") {
       setNotice({ title: "窗格已返回", message: `所有窗格均已达到 ${MAX_WORKSPACE_DEPTH} 层深度，已在当前窗格打开返回的会话。` });
-      return;
     }
-    setWorkspaceRoot(nextRoot);
-    setActivePaneId(command.paneId);
-    setActiveId(command.sessionId);
-    setZoomedPaneId("");
-    focusWorkspacePaneInput(command.paneId);
   }
 
   function swapWorkspacePane(direction: WorkspacePaneDirection, sourcePaneId = activePaneId) {

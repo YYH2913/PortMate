@@ -9055,6 +9055,55 @@ Host staging
   assert(cancelledDetachState.notices === 0
     && JSON.stringify(cancelledDetachState.sessions) === JSON.stringify(["Bench UART"]),
   `closing a view did not cancel its older detached-window request: ${JSON.stringify(cancelledDetachState)}`);
+
+  await workspaceWindowPage.evaluate(() => {
+    const base = {
+      action: "reattach",
+      ownerWindowId: "workspace-ui-regression",
+      title: "",
+      color: "",
+      keyMode: "remote",
+    };
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      ...base,
+      windowId: "reattach-edge-window",
+      paneId: "reattach-edge-pane",
+      viewId: "reattach-edge-view",
+      sessionId: "edge-router",
+    });
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      ...base,
+      windowId: "reattach-local-window",
+      paneId: "reattach-local-pane",
+      viewId: "reattach-local-view",
+      sessionId: "local-shell",
+    });
+  });
+  await workspaceWindowPage.waitForFunction(() => document.querySelectorAll(".workspace-pane-tab").length === 3);
+  const sequentialReattachState = await workspaceWindowPage.evaluate(() => ({
+    groups: document.querySelectorAll(".terminal-pane").length,
+    sessions: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+  }));
+  assert(sequentialReattachState.groups === 3
+    && JSON.stringify(sequentialReattachState.sessions) === JSON.stringify(["Bench UART", "Edge Router", "Local Shell"]),
+  `same-frame detached returns overwrote each other: ${JSON.stringify(sequentialReattachState)}`);
+
+  await workspaceWindowPage.evaluate(() => {
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      action: "reattach",
+      windowId: "reattach-edge-window",
+      ownerWindowId: "workspace-ui-regression",
+      paneId: "reattach-edge-pane",
+      viewId: "reattach-edge-view",
+      sessionId: "edge-router",
+      title: "",
+      color: "",
+      keyMode: "remote",
+    });
+  });
+  await workspaceWindowPage.waitForTimeout(50);
+  assert(await workspaceWindowPage.locator(".workspace-pane-tab").count() === 3,
+    "a repeated detached return duplicated its workspace view");
   await workspaceWindowPage.screenshot({ path: `${screenshotPrefix}-workspace-window.png`, fullPage: true });
   await workspaceWindowPage.evaluate(() => {
     window.__workspaceWindowPopupCalls = [];

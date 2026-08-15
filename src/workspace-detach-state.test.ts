@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commitWorkspaceViewDetach } from "./workspace-detach-state";
+import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
 import { findWorkspacePane, workspacePaneLeaves } from "./workspace-state";
 import type { WorkspaceNode } from "./workspace-state";
 
@@ -57,6 +57,85 @@ describe("workspace view detach commit", () => {
       .toEqual({ status: "missing" });
     expect(commitWorkspaceViewDetach(root, "pane-a", "view-local", "edge-router"))
       .toEqual({ status: "missing" });
+  });
+});
+
+describe("workspace view reattach commit", () => {
+  it("combines sequential returns against the latest layout", () => {
+    const initial = pane("pane-main", "view-bench", [view("view-bench", "bench-uart")]);
+    const first = commitWorkspaceViewReattach(
+      initial,
+      "pane-main",
+      "pane-edge",
+      view("view-edge", "edge-router"),
+      () => "split-edge",
+    );
+    expect(first.status).toBe("reattached");
+    if (first.status !== "reattached") return;
+
+    const second = commitWorkspaceViewReattach(
+      first.root,
+      first.activePaneId,
+      "pane-local",
+      view("view-local", "local-shell"),
+      () => "split-local",
+    );
+    expect(second.status).toBe("reattached");
+    if (second.status !== "reattached") return;
+    expect(workspacePaneLeaves(second.root).map((item) => item.views.map((candidate) => candidate.id)))
+      .toEqual([["view-bench"], ["view-edge"], ["view-local"]]);
+    expect(second.activePaneId).toBe("pane-local");
+  });
+
+  it("returns to an existing original group without discarding newer tabs", () => {
+    const root = pane("pane-a", "view-local", [
+      view("view-bench", "bench-uart"),
+      view("view-local", "local-shell"),
+    ]);
+
+    const result = commitWorkspaceViewReattach(
+      root,
+      "pane-a",
+      "pane-a",
+      view("view-edge", "edge-router"),
+    );
+
+    expect(result.status).toBe("reattached");
+    if (result.status !== "reattached") return;
+    expect(result.placement).toBe("original-pane");
+    expect(findWorkspacePane(result.root, "pane-a")?.views.map((item) => item.id))
+      .toEqual(["view-bench", "view-local", "view-edge"]);
+  });
+
+  it("makes a repeated return idempotent", () => {
+    const root = pane("pane-a", "view-bench", [
+      view("view-bench", "bench-uart"),
+      view("view-edge", "edge-router"),
+    ]);
+
+    const result = commitWorkspaceViewReattach(
+      root,
+      "pane-a",
+      "pane-old",
+      view("view-edge", "edge-router"),
+    );
+
+    expect(result.status).toBe("reattached");
+    if (result.status !== "reattached") return;
+    expect(result.placement).toBe("existing-view");
+    expect(findWorkspacePane(result.root, "pane-a")?.views).toHaveLength(2);
+    expect(findWorkspacePane(result.root, "pane-a")?.activeViewId).toBe("view-edge");
+  });
+
+  it("rejects a returned view ID already owned by another session", () => {
+    const root = pane("pane-a", "view-edge", [view("view-edge", "edge-router")]);
+
+    expect(commitWorkspaceViewReattach(
+      root,
+      "pane-a",
+      "pane-old",
+      view("view-edge", "local-shell"),
+    )).toEqual({ status: "conflict" });
   });
 });
 
