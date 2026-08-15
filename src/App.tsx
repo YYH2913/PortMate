@@ -371,6 +371,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const hostKeyPromptOperationGateRef = useRef(new KeyedRequestGate<"scan" | "decision">());
   const keyManagerCredentialOperationGateRef = useRef(new KeyedRequestGate<"credentials">());
   const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
+  const sessionSettingsProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const profileShortcutOperationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
@@ -448,6 +449,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   profileDeleteHandlerRef.current = (sessionId) => {
     if (!sessionId) return;
     keyManagerProfileMutationGateRef.current.invalidate(sessionId);
+    sessionSettingsProfileMutationGateRef.current.invalidate(sessionId);
     invalidateProfileShortcutOperation(sessionId);
     invalidateTerminalExportsForSession(sessionId);
     void refresh();
@@ -2194,6 +2196,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
     keyManagerProfileMutationGateRef.current.invalidate(profileId);
+    sessionSettingsProfileMutationGateRef.current.invalidate(profileId);
     invalidateProfileShortcutOperation(profileId);
     invalidateTerminalExportsForSession(profileId);
     setDisconnectingSessionIds((current) => {
@@ -3163,19 +3166,27 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   async function saveDraft(proxyPasswordUpdate: ProxyPasswordUpdate = null): Promise<SessionSummary | null> {
     const profile = prepareSessionProfile(draft);
+    const gate = sessionSettingsProfileMutationGateRef.current;
+    const token = gate.begin(profile.id);
+    if (token === null) return null;
     try {
       const saved = await saveProfile(
         profile,
         draftExpectedProfileRef.current,
         proxyPasswordUpdate,
       );
+      if (!gate.isCurrent(profile.id, token)) return null;
       applySavedSession(saved);
       setDraft(saved.profile);
       draftExpectedProfileRef.current = cloneSessionProfile(saved.profile);
       return saved;
     } catch (error) {
-      setNotice({ title: "保存会话失败", message: formatError(error) });
+      if (gate.isCurrent(profile.id, token)) {
+        setNotice({ title: "保存会话失败", message: formatError(error) });
+      }
       return null;
+    } finally {
+      gate.finish(profile.id, token);
     }
   }
 

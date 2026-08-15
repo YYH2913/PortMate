@@ -8318,6 +8318,47 @@ Host staging
     `Session Settings operation lifecycle browser exceptions: ${JSON.stringify(sessionOperationErrors)}`);
   await sessionOperationPage.close();
 
+  const deletedSettingsSavePage = await context.newPage();
+  const deletedSettingsSaveErrors = [];
+  deletedSettingsSavePage.on("pageerror", (error) => deletedSettingsSaveErrors.push(error.message));
+  await deletedSettingsSavePage.goto(appUrl);
+  await deletedSettingsSavePage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  await deletedSettingsSavePage.getByRole("button", { name: "会话", exact: true }).click();
+  await deletedSettingsSavePage.getByRole("button", { name: "会话设置", exact: true }).click();
+  const deletedSettingsSaveDialog = deletedSettingsSavePage.locator(".session-settings-dialog");
+  await deletedSettingsSaveDialog.getByLabel("名称:(N)", { exact: true }).fill("Stale settings save");
+  await deletedSettingsSavePage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+  });
+  await deletedSettingsSaveDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await deletedSettingsSavePage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  await deletedSettingsSavePage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedSettingsSavePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedSettingsSavePage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  await deletedSettingsSavePage.waitForTimeout(100);
+  const deletedSettingsSaveState = await deletedSettingsSavePage.evaluate(() => ({
+    profiles: window.__sessions.map((session) => session.profile.id),
+    pending: window.__pendingSessionProfileSaves.length,
+  }));
+  assert(!deletedSettingsSaveState.profiles.includes("edge-router")
+    && deletedSettingsSaveState.pending === 0
+    && await deletedSettingsSavePage.locator(".tree-session", { hasText: "Stale settings save" }).count() === 0
+    && await deletedSettingsSavePage.locator(".notice-dialog").count() === 0
+    && !await deletedSettingsSaveDialog.getByRole("button", { name: "取消", exact: true }).isDisabled(),
+  `a Session Settings save response restored a deleted Profile: ${JSON.stringify(deletedSettingsSaveState)}`);
+  await deletedSettingsSaveDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await deletedSettingsSaveDialog.waitFor({ state: "detached" });
+  assert(deletedSettingsSaveErrors.length === 0,
+    `deleted Session Settings save browser exceptions: ${JSON.stringify(deletedSettingsSaveErrors)}`);
+  await deletedSettingsSavePage.close();
+
   const profileShortcutPage = await context.newPage();
   const profileShortcutErrors = [];
   profileShortcutPage.on("pageerror", (error) => profileShortcutErrors.push(error.message));
