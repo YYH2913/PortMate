@@ -150,6 +150,10 @@ OneKey 保存、删除和发送补齐弹窗级同步 operation gate，入口在 
 
 同一 HEAD 重新生成 Linux x86_64 DEB、RPM 和 AppImage，分别为 15,808,382、15,805,072 和 91,933,176 字节，SHA-256 分别为 `5f5cfd5e2acbce798e6fc4b1c3b88d9074eb99d93f5246c619d23c3f932a5ac6`、`7232cc0674853a08af26a0fcba45c66e83eaf8e76a561f588bf7b27b114da974` 和 `73ea6e0b9f77e5dcab36aa3e6d42c2ac5bcbaaed3cf777bf123d1cc194ea7e13`。三包均从含空格的私有临时路径通过主程序、MCP sidecar、desktop entry、图标、许可证、生产 CSP、三类窗口 capability、权限与便携链接核对；每个包内 sidecar 均通过 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 全固定版本的 stdio/HTTP 矩阵、HTTP readiness 及 IPv6 `::1`/`::` 监听，并在异常父进程退出后回收 sidecar。三包主程序又各自通过两次 Store 稳定重启、旧 app-data 原子迁移、双 Store 冲突 fail-closed、IPC 地址/凭据轮换、正常退出和 endpoint 清理。最终 AppImage 在 VMware/XWayland 上连续三次生成 1440x920 窗口，每次采样 331,200 像素、669 种颜色，并验证自动 VMware 软件渲染回退、Store 哈希稳定、迁移和冲突拒绝。本轮使用 `target/native-tools/` 中只读解包的 `wmctrl`，不修改系统；这些是当前包的本机真实生命周期与窗口证据，仍不替代干净 Ubuntu Native CI、发行仓库安装或签名发布记录。
 
+Profile 删除后的输入生命周期现由每会话 input epoch 收敛：主工作区与独立终端中已经进入 FIFO 或仍等待 IPC 的普通文本、字节、Quick Command、OneKey 和发送面板批次，在权威 Profile 列表删除目标后全部失效；迟到成功或失败不能再更新已删除会话，也不能向同 ID 后续重新创建的 Profile 泄漏输入。当前权威列表或 Profile 更新重新引入同 ID 时只恢复新 epoch，旧操作仍保持无效。Workspace UI 以主窗口和独立窗口的挂起/排队输入覆盖删除、迟到响应和同 ID 恢复；完整前端为 112 文件/611 项，生产构建和 Workspace UI 均通过。
+
+2026-08-16 对当前 HEAD 再次完整执行本机高风险兼容门禁：21 个 SSH/SFTP/SCP 服务端、11 组 SFTP/SCP 活动断线、11 组 X/Y/ZModem 活动断线、15 类 SSH 健康故障和 38 类传输故障全部通过；18 个 TCP/Telnet/TLS 服务端、Debian/Ubuntu/Alpine 的 vttest 与 Vim/less/top/dialog 全屏程序、Tmux 3.1c/3.3a/3.5a/3.7b 及完整 Tmux 控制工作流也全部通过。MCP 根 stdio/HTTP、TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全固定版本矩阵和九种官方 SDK freshness 审计均通过；Swift 0.11.0/0.12.1 从隔离 working copy 重新构建，确认串行 SwiftPM 恢复和旧版兼容编译修复消除了此前的 repository working-copy 故障。Docker DNS 的瞬时失败由既有三次完整镜像构建重试成功恢复，没有被误记为服务端兼容失败。项目与本机活动工具链保持 Rust/Cargo 1.97.1 和 Node 22.20.0；这些本机证据仍不替代 Windows/macOS Native runner、Microsoft AD、真实远端 OS、物理串口或签名发布证据。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
