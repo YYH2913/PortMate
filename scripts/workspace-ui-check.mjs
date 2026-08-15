@@ -470,6 +470,7 @@ try {
     window.__commandHistory = { entries: [], migrated: false, revision: 0 };
     window.__injectCommandHistoryStartupRace = true;
     window.__clipboardText = "";
+    window.__clipboardWriteFailures = 0;
     window.__closeSessionError = false;
     window.__failSessionOpenFor = recoverSilentSshStartup ? "edge-router" : "";
     window.__deferSessionOpens = false;
@@ -541,7 +542,13 @@ try {
       configurable: true,
       value: {
         readText: async () => window.__clipboardText,
-        writeText: async (value) => { window.__clipboardText = String(value); },
+        writeText: async (value) => {
+          if (window.__clipboardWriteFailures > 0) {
+            window.__clipboardWriteFailures -= 1;
+            throw new Error("simulated clipboard denial");
+          }
+          window.__clipboardText = String(value);
+        },
       },
     });
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
@@ -2575,10 +2582,30 @@ Host staging
     "enabled synchronized input did not expose the inverse action");
   await page.locator(".context-menu-row", { hasText: "关闭同步输入(S)" }).click();
   await page.waitForFunction(() => !document.querySelector(".sync-status")?.classList.contains("active"));
+  await page.evaluate(() => {
+    window.__clipboardText = "clipboard-before-denial";
+    window.__clipboardWriteFailures = 1;
+  });
+  await edge.click({ button: "right" });
+  await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
+  const sessionNameClipboardError = page.locator(".notice-dialog", { hasText: "复制会话名称失败" });
+  await sessionNameClipboardError.waitFor();
+  assert(await sessionNameClipboardError.locator(".notice-content").textContent() === "simulated clipboard denial"
+    && await page.evaluate(() => window.__clipboardText) === "clipboard-before-denial",
+  "resource session name copy did not report a clipboard write failure");
+  await sessionNameClipboardError.getByRole("button", { name: "确定", exact: true }).click();
   await edge.click({ button: "right" });
   await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
   assert(await page.evaluate(() => window.__clipboardText) === "Edge Router",
     "resource context menu targeted a different session");
+  await page.evaluate(() => { window.__clipboardWriteFailures = 1; });
+  await edge.click({ button: "right" });
+  await page.locator(".context-menu-row", { hasText: "复制会话 URL(U)" }).click();
+  const sessionUrlClipboardError = page.locator(".notice-dialog", { hasText: "复制会话 URL失败" });
+  await sessionUrlClipboardError.waitFor();
+  assert(await sessionUrlClipboardError.locator(".notice-content").textContent() === "simulated clipboard denial",
+    "resource session URL copy did not report a clipboard write failure");
+  await sessionUrlClipboardError.getByRole("button", { name: "确定", exact: true }).click();
 
   const activeTerminalHost = page.locator(".terminal-pane.active .terminal-host");
   await page.waitForFunction((expectedTimestamp) => {
@@ -5509,6 +5536,13 @@ Host staging
   await page.waitForFunction(() => document.querySelector(".mcp-http-command")?.value.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"));
   assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled(),
     "MCP HTTP valid unsaved settings did not produce a copyable command preview");
+  await page.evaluate(() => { window.__clipboardWriteFailures = 1; });
+  await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).click();
+  await mcpDialog.locator(".utility-error", { hasText: "simulated clipboard denial" }).waitFor();
+  await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).click();
+  await mcpDialog.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert((await page.evaluate(() => window.__clipboardText)).includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"),
+    "MCP HTTP command copy did not recover after a clipboard write failure");
   await page.evaluate(() => {
     window.__mcpHttpDiscardPrompts = [];
     window.__originalMcpConfirm = window.confirm;

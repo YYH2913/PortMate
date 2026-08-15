@@ -68,6 +68,7 @@ export default function McpDialog({
   const [ccSwitchServerId, setCcSwitchServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
   const [ccSwitchToolTimeout, setCcSwitchToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
   const [ccSwitchCopied, setCcSwitchCopied] = useState(false);
+  const [httpCommandCopied, setHttpCommandCopied] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditQuery, setAuditQuery] = useState("");
@@ -165,6 +166,8 @@ export default function McpDialog({
   useEffect(() => () => requestGateRef.current.invalidateAll(), []);
 
   useEffect(() => setCcSwitchCopied(false), [ccSwitchJson]);
+
+  useEffect(() => setHttpCommandCopied(false), [httpConfig?.startCommand]);
 
   useEffect(() => {
     if (!expiryEditor) return;
@@ -336,10 +339,23 @@ export default function McpDialog({
   async function copyCcSwitchJson() {
     if (!ccSwitchJson) return;
     try {
-      await navigator.clipboard.writeText(ccSwitchJson);
+      await writeClipboardText(ccSwitchJson);
       setCcSwitchCopied(true);
       setError("");
     } catch (nextError) {
+      setError(formatError(nextError));
+    }
+  }
+
+  async function copyHttpCommand() {
+    const command = httpConfig?.startCommand;
+    if (!command) return;
+    try {
+      await writeClipboardText(command);
+      setHttpCommandCopied(true);
+      setError("");
+    } catch (nextError) {
+      setHttpCommandCopied(false);
       setError(formatError(nextError));
     }
   }
@@ -691,7 +707,7 @@ export default function McpDialog({
                 <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpRuntimeLocked || httpDirty || !httpConfig}><KeyRound size={14} />{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
                 <button type="button" onClick={() => void startHttpRuntime()} disabled={httpBusy || httpRuntimeBusy || !httpRuntime || httpRuntimeActive || httpDirty || !httpConfig?.tokenAvailable}><Play size={14} />启动服务</button>
                 <button type="button" onClick={() => void stopHttpRuntime()} disabled={httpRuntimeBusy || !httpRuntime || httpRuntime.phase === "stopped"}><Square size={13} />停止服务</button>
-                <button type="button" onClick={() => void navigator.clipboard?.writeText(httpConfig?.startCommand ?? "")} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />复制命令</button>
+                <button type="button" onClick={() => void copyHttpCommand()} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />{httpCommandCopied ? "已复制" : "复制命令"}</button>
               </div>
             </div>
           </section>
@@ -778,4 +794,9 @@ function formatDateTime(value: string) {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function writeClipboardText(text: string) {
+  if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
+  await navigator.clipboard.writeText(text);
 }

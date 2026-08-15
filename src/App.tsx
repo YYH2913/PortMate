@@ -2010,17 +2010,26 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     );
   }
 
+  async function writeSessionClipboardText(title: string, text: string) {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      setNotice({ title: `${title}失败`, message: formatError(error) });
+    }
+  }
+
   function copySessionNameFromContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
     if (!session) return;
-    void navigator.clipboard?.writeText(session.profile.name);
+    void writeSessionClipboardText("复制会话名称", session.profile.name);
   }
 
   function copySessionUrlFromContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
     if (!session) return;
     const url = `portmate://sessions/${encodeURIComponent(session.profile.id)}?kind=${encodeURIComponent(session.profile.kind)}&endpoint=${encodeURIComponent(describeProfileEndpoint(session.profile))}`;
-    void navigator.clipboard?.writeText(url);
+    void writeSessionClipboardText("复制会话 URL", url);
   }
 
   async function exportTerminalText(
