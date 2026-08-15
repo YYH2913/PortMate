@@ -128,6 +128,8 @@ Tmux 工具补齐请求并发和 watcher 所有权边界：刷新、attach、pan
 
 MCP 写操作审批在弹窗和 App 调用边界分别按 approval ID 建立同步 single-flight：同一渲染帧内双击允许/拒绝只会提交一次 `respond_mcp_approval`，在途决定期间到期计时不会先移除请求，跨过到期点后失败会立即收敛为过期而不是留下死锁项，普通失败只会解锁仍属于原审批的控件。Workspace UI 以延迟审批响应覆盖双击、互斥按钮锁定、下一队列项的独立拒绝和跨到期失败收敛。
 
+连接失败后的 SSH Host Key 安全提示补齐全局 prompt operation gate：新的扫描会使旧扫描和旧决策失去 UI 所有权，关闭、删除 Profile 或转入验证设置会隔离迟到响应；信任决策同步 single-flight，同帧双击不会重复写入或启动两次重连。信任完成后的 Host Key 列表还通过既有全局 mutation token 提交，不能用旧列表覆盖更新的密钥管理操作。Workspace UI 通过真实连接失败入口延迟扫描和信任写入，覆盖双击仅一次、全部冲突按钮锁定和单份 Host Key 落库。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

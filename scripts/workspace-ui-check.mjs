@@ -469,6 +469,7 @@ try {
     window.__failSessionOpenFor = recoverSilentSshStartup ? "edge-router" : "";
     window.__deferSessionOpens = false;
     window.__pendingSessionOpens = [];
+    window.__sessionOpenErrors = {};
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
     window.__deferFileMutations = false;
@@ -1401,6 +1402,9 @@ try {
         }
         if (command === "open_session" || command === "open_session_with_one_key") {
           const sessionId = command === "open_session" ? args.request.sessionId : args.sessionId;
+          if (window.__sessionOpenErrors[sessionId]) {
+            throw new Error(window.__sessionOpenErrors[sessionId]);
+          }
           if (window.__failSessionOpenFor === sessionId) {
             throw new Error("simulated silent startup failure");
           }
@@ -7143,6 +7147,72 @@ Host staging
   assert(connectionLifecycleErrors.length === 0,
     `connection lifecycle browser exceptions: ${JSON.stringify(connectionLifecycleErrors)}`);
   await connectionLifecyclePage.close();
+
+  const hostKeyPromptPage = await context.newPage();
+  const hostKeyPromptErrors = [];
+  hostKeyPromptPage.on("pageerror", (error) => hostKeyPromptErrors.push(error.message));
+  await hostKeyPromptPage.goto(appUrl);
+  await hostKeyPromptPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const hostKeyPromptConnect = hostKeyPromptPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await hostKeyPromptConnect.waitFor();
+  await hostKeyPromptPage.evaluate(() => {
+    window.__sessionOpenErrors["edge-router"] = "SSH Host Key 已变化: simulated mismatch";
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+  });
+  await hostKeyPromptConnect.click();
+  const hostKeyCredentialDialog = hostKeyPromptPage.locator(".credential-dialog");
+  await hostKeyCredentialDialog.waitFor();
+  await hostKeyCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
+  await hostKeyPromptPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const hostKeyPromptDialog = hostKeyPromptPage.locator(".hostkey-dialog");
+  await hostKeyPromptDialog.waitFor();
+  assert((await hostKeyPromptDialog.textContent()).includes("扫描中"),
+    "Host Key prompt did not expose its pending scan state");
+  await hostKeyPromptPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  const trustAndReconnect = hostKeyPromptDialog.getByRole("button", { name: "加入 Profile 并重连", exact: true });
+  await trustAndReconnect.waitFor();
+  const hostKeyTrustBaseline = await hostKeyPromptPage.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "trust_scanned_host_key").length);
+  await trustAndReconnect.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await hostKeyPromptPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const hostKeyPromptPendingState = await hostKeyPromptPage.evaluate((baseline) => ({
+    pending: window.__pendingSessionValidation.length,
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - baseline,
+  }), hostKeyTrustBaseline);
+  assert(hostKeyPromptPendingState.pending === 1
+    && hostKeyPromptPendingState.trustCalls === 1
+    && await trustAndReconnect.isDisabled()
+    && await hostKeyPromptDialog.getByRole("button", { name: "仅本次并重连", exact: true }).isDisabled()
+    && await hostKeyPromptDialog.getByRole("button", { name: "替换 Profile 并重连", exact: true }).isDisabled()
+    && await hostKeyPromptDialog.getByRole("button", { name: "拒绝", exact: true }).isDisabled(),
+  `Host Key prompt submitted duplicate or conflicting decisions: ${JSON.stringify(hostKeyPromptPendingState)}`);
+  await hostKeyPromptPage.evaluate(() => {
+    delete window.__sessionOpenErrors["edge-router"];
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation.shift().resolve();
+  });
+  await hostKeyPromptDialog.waitFor({ state: "detached" });
+  const hostKeyPromptFinalState = await hostKeyPromptPage.evaluate((baseline) => ({
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - baseline,
+    trustedKeys: window.__hostKeys.filter((key) => key.profileId === "edge-router").length,
+  }), hostKeyTrustBaseline);
+  assert(hostKeyPromptFinalState.trustCalls === 1 && hostKeyPromptFinalState.trustedKeys === 1,
+    `Host Key prompt did not commit exactly one trust decision: ${JSON.stringify(hostKeyPromptFinalState)}`);
+  const hostKeyNotice = hostKeyPromptPage.locator(".notice-dialog", { hasText: "Host key 已确认" });
+  if (await hostKeyNotice.count()) {
+    await hostKeyNotice.getByRole("button", { name: "确定", exact: true }).click();
+  }
+  const reconnectCredentialDialog = hostKeyPromptPage.locator(".credential-dialog");
+  if (await reconnectCredentialDialog.count()) {
+    await reconnectCredentialDialog.getByRole("button", { name: "取消", exact: true }).click();
+  }
+  assert(hostKeyPromptErrors.length === 0,
+    `Host Key prompt lifecycle browser exceptions: ${JSON.stringify(hostKeyPromptErrors)}`);
+  await hostKeyPromptPage.close();
 
   const sessionOperationPage = await context.newPage();
   const sessionOperationErrors = [];

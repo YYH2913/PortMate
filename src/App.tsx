@@ -363,6 +363,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
+  const hostKeyPromptOperationGateRef = useRef(new KeyedRequestGate<"scan" | "decision">());
   const keyManagerCredentialOperationGateRef = useRef(new KeyedRequestGate<"credentials">());
   const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
@@ -2043,7 +2044,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       draftExpectedProfileRef.current = null;
     }
     setDraft((current) => current.id === profileId ? createSessionDraft() : current);
-    setHostKeyPrompt((current) => current?.profile.id === profileId ? null : current);
+    if (hostKeyPrompt?.profile.id === profileId) {
+      hostKeyPromptOperationGateRef.current.invalidateAll();
+      setHostKeyPrompt(null);
+    }
     delete serialCapturesRef.current[profileId];
     serialCaptureOperationGateRef.current.invalidate(profileId);
     serialCaptureActionTokensRef.current.delete(profileId);
@@ -3144,30 +3148,46 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
+    const gate = hostKeyPromptOperationGateRef.current;
+    gate.invalidate("decision");
+    const token = gate.replace("scan");
     setHostKeyPrompt({ profile, message, scan: null, scanError: null, busy: true });
     try {
       const credentialHandle = credentials
         ? await stageConnectionCredentials(invokeBackend, profile.id, credentials)
         : null;
+      if (!gate.isCurrent("scan", token)) return;
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
         request: { profile: prepareSessionProfile(profile), credentialHandle },
       });
-      setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
+      if (gate.isCurrent("scan", token)) {
+        setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
+      }
     } catch (error) {
-      setHostKeyPrompt({ profile, message, scan: null, scanError: formatError(error), busy: false });
+      if (gate.isCurrent("scan", token)) {
+        setHostKeyPrompt({ profile, message, scan: null, scanError: formatError(error), busy: false });
+      }
+    } finally {
+      gate.finish("scan", token);
     }
   }
 
   async function applyHostKeyPromptDecision(decision: HostKeyDecisionValue, reconnect: boolean) {
-    if (!hostKeyPrompt?.scan) return;
-    const profile = prepareSessionProfile(hostKeyPrompt.profile);
+    const prompt = hostKeyPrompt;
+    if (!prompt?.scan) return;
+    const gate = hostKeyPromptOperationGateRef.current;
+    const token = gate.begin("decision");
+    if (token === null) return;
+    const hostKeyMutationToken = beginHostKeyMutation();
+    const profile = prepareSessionProfile(prompt.profile);
     setHostKeyPrompt((current) => current ? { ...current, busy: true } : current);
     try {
       await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
-        request: { profile, observation: hostKeyPrompt.scan.observation, decision },
+        request: { profile, observation: prompt.scan.observation, decision },
       });
       const nextHostKeys = await callBackend("list_host_keys", {}, hostKeys);
-      updateHostKeys(nextHostKeys);
+      commitHostKeyMutation(nextHostKeys, hostKeyMutationToken);
+      if (!gate.isCurrent("decision", token)) return;
       setDraft(profile);
       setHostKeyPrompt(null);
       setNotice({ title: "Host key 已确认", message: reconnect ? "已保存信任决策，正在重新连接。" : "已保存信任决策。" });
@@ -3175,12 +3195,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void connectSession(profile.id);
       }
     } catch (error) {
-      setHostKeyPrompt((current) => current ? { ...current, busy: false, scanError: formatError(error) } : current);
+      if (gate.isCurrent("decision", token)) {
+        setHostKeyPrompt((current) => current ? { ...current, busy: false, scanError: formatError(error) } : current);
+      }
+    } finally {
+      finishHostKeyMutation(hostKeyMutationToken);
+      gate.finish("decision", token);
     }
+  }
+
+  function closeHostKeyPrompt() {
+    hostKeyPromptOperationGateRef.current.invalidateAll();
+    setHostKeyPrompt(null);
   }
 
   function openHostKeySettingsFromPrompt() {
     if (!hostKeyPrompt) return;
+    hostKeyPromptOperationGateRef.current.invalidateAll();
     openSessionProfileDialog(hostKeyPrompt.profile, hostKeyPrompt.profile, "验证");
     setHostKeyPrompt(null);
   }
@@ -4098,7 +4129,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           state={hostKeyPrompt}
           onDecision={(decision, reconnect) => void applyHostKeyPromptDecision(decision, reconnect)}
           onOpenSettings={openHostKeySettingsFromPrompt}
-          onClose={() => setHostKeyPrompt(null)}
+          onClose={closeHostKeyPrompt}
         />
       )}
       {notice && (
