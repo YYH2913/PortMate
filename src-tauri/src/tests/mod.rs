@@ -135,6 +135,8 @@ mod release_upgrade_tests;
 mod runtime_capacity_tests;
 #[path = "scp_protocol_tests.rs"]
 mod scp_protocol_tests;
+#[path = "secret_command_tests.rs"]
+mod secret_command_tests;
 #[path = "serial_tests.rs"]
 mod serial_tests;
 #[path = "session_credential_tests.rs"]

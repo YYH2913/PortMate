@@ -60,6 +60,8 @@ import type {
   TrustedHostKey,
 } from "./types";
 
+const MAX_PRIVATE_KEY_IMPORT_BYTES = 1024 * 1024;
+
 const migrationRecoveryStateLabels: Record<ProfileSecretMigrationRecoverySummary["state"], string> = {
   "target-write-pending": "目标写入待核对",
   "targets-verified": "目标已验证",
@@ -163,6 +165,9 @@ export default function KeyManagerDialog({
   const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
+  const privateKeyFileReadGate = useRef(new KeyedRequestGate<"private-key-file">());
+  const privateKeyFileReadActive = useRef(false);
+  const [privateKeyFileReadBusy, setPrivateKeyFileReadBusy] = useState(false);
   const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
   const [portableVaultPassword, setPortableVaultPassword] = useState("");
   const [portableVaultCurrentPassword, setPortableVaultCurrentPassword] = useState("");
@@ -235,6 +240,7 @@ export default function KeyManagerDialog({
   const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
   const credentialMutationControlsDisabled = vaultOperationBusy || credentialMutationsFrozen;
   const clientKeyControlsDisabled = clientKeyMutationBusy || credentialMutationControlsDisabled;
+  const privateKeyImportControlsDisabled = clientKeyControlsDisabled || privateKeyFileReadBusy;
   const hostKeyDraftDirty = hostKeyEditDraftHasUnsavedChanges(editDraft);
   const clientIdentityDraftDirty = clientIdentityEditDraftHasUnsavedChanges(
     clientKeyEditDraft,
@@ -253,6 +259,8 @@ export default function KeyManagerDialog({
     return () => {
       mountedRef.current = false;
       refreshGate.current.invalidateAll();
+      privateKeyFileReadGate.current.invalidateAll();
+      privateKeyFileReadActive.current = false;
     };
   }, []);
 
@@ -882,21 +890,45 @@ export default function KeyManagerDialog({
 
   async function readPrivateKeyFile(file: File | null) {
     if (!file) return;
+    const token = privateKeyFileReadGate.current.replace("private-key-file");
+    privateKeyFileReadActive.current = true;
+    setPrivateKeyFileReadBusy(true);
     setError("");
     setStatus("");
+    setPrivateKeyText("");
+    if (file.size > MAX_PRIVATE_KEY_IMPORT_BYTES) {
+      setError(`私钥文件不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+      if (privateKeyFileReadGate.current.finish("private-key-file", token)) {
+        privateKeyFileReadActive.current = false;
+        setPrivateKeyFileReadBusy(false);
+      }
+      return;
+    }
     try {
-      setPrivateKeyText(await file.text());
+      const text = await file.text();
+      if (!privateKeyFileReadGate.current.isCurrent("private-key-file", token)) return;
+      setPrivateKeyText(text);
       if (!privateKeyLabel.trim()) {
         setPrivateKeyLabel(file.name.replace(/\.(pem|key|txt)$/i, "") || "profile key");
       }
       setStatus(`已读取 ${file.name}`);
     } catch (error) {
-      setError(formatError(error));
+      if (privateKeyFileReadGate.current.isCurrent("private-key-file", token)) {
+        setError(formatError(error));
+      }
+    } finally {
+      if (privateKeyFileReadGate.current.finish("private-key-file", token)) {
+        privateKeyFileReadActive.current = false;
+        setPrivateKeyFileReadBusy(false);
+      }
     }
   }
 
   async function importPrivateKeyToProfile() {
-    if (clientKeyControlsDisabled || !selectedProfile || !isSshLikeProfile(selectedProfile)) return;
+    if (privateKeyFileReadActive.current
+      || clientKeyControlsDisabled
+      || !selectedProfile
+      || !isSshLikeProfile(selectedProfile)) return;
     if (!portableVault?.unlocked) {
       setError("请先解锁 Stronghold，再导入私钥");
       return;
@@ -904,6 +936,10 @@ export default function KeyManagerDialog({
     const profile = selectedProfile;
     const privateKey = privateKeyText.trim();
     if (!privateKey) return;
+    if (new TextEncoder().encode(privateKeyText).byteLength > MAX_PRIVATE_KEY_IMPORT_BYTES) {
+      setError(`私钥内容不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+      return;
+    }
     if (!privateKey.includes("PRIVATE KEY")) {
       setError("私钥内容看起来不是 OpenSSH/PEM private key");
       return;
@@ -1742,13 +1778,23 @@ export default function KeyManagerDialog({
                 ) : null}
               </section>
             ) : null}
-            <details className="key-import-panel">
+            <details className="key-import-panel" aria-busy={privateKeyFileReadBusy}>
               <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
-              <input value={privateKeyLabel} disabled={clientKeyControlsDisabled} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
-              <input type="file" accept=".pem,.key,.txt" disabled={clientKeyControlsDisabled} onChange={(event) => void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null)} />
+              <input value={privateKeyLabel} disabled={privateKeyImportControlsDisabled} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
+              <input type="file" accept=".pem,.key,.txt" disabled={clientKeyControlsDisabled} onChange={(event) => {
+                void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null);
+                event.currentTarget.value = "";
+              }} />
               <input value="存储：Stronghold（需先解锁）" aria-label="私钥存储" readOnly />
-              <textarea value={privateKeyText} disabled={clientKeyControlsDisabled} onChange={(event) => setPrivateKeyText(event.target.value)} placeholder="粘贴 OpenSSH private key" />
-              <button onClick={() => void importPrivateKeyToProfile()} disabled={clientKeyControlsDisabled || !portableVault?.unlocked || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+              <textarea value={privateKeyText} maxLength={MAX_PRIVATE_KEY_IMPORT_BYTES} disabled={privateKeyImportControlsDisabled} onChange={(event) => {
+                const value = event.target.value;
+                if (new TextEncoder().encode(value).byteLength > MAX_PRIVATE_KEY_IMPORT_BYTES) {
+                  setError(`私钥内容不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+                  return;
+                }
+                setPrivateKeyText(value);
+              }} placeholder="粘贴 OpenSSH private key" />
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={privateKeyImportControlsDisabled || !portableVault?.unlocked || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
             </details>
             <div className="key-agent-header agent-section-header">
               <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>

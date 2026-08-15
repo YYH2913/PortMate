@@ -1,5 +1,23 @@
 use super::*;
 
+pub(super) const MAX_STORED_SECRET_BYTES: usize = 1024 * 1024;
+
+pub(super) fn prepare_stored_secret(secret: String) -> Result<String, String> {
+    if secret.len() > MAX_STORED_SECRET_BYTES {
+        return Err(format!(
+            "密钥内容不能超过 {MAX_STORED_SECRET_BYTES} 字节"
+        ));
+    }
+    if secret.contains('\0') {
+        return Err("密钥内容不能包含 NUL".to_string());
+    }
+    let secret = secret.trim_end_matches(['\r', '\n']).to_string();
+    if secret.trim().is_empty() {
+        return Err("密钥内容不能为空".to_string());
+    }
+    Ok(secret)
+}
+
 #[tauri::command]
 pub(crate) fn save_secret(
     state: State<'_, AppState>,
@@ -7,10 +25,7 @@ pub(crate) fn save_secret(
 ) -> Result<SecretWriteResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let secret = request.secret.trim_end_matches(['\r', '\n']).to_string();
-    if secret.trim().is_empty() {
-        return Err("密钥内容不能为空".to_string());
-    }
+    let secret = prepare_stored_secret(request.secret)?;
     let secret_ref =
         if let Some(secret_ref) = request.secret_ref.filter(|value| !value.trim().is_empty()) {
             if is_reserved_internal_secret_ref(&secret_ref) {

@@ -6511,6 +6511,61 @@ Host staging
   await importingKeyManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
   const importPanel = importingKeyManager.locator(".key-import-panel");
   await importPanel.locator("summary").click();
+  await privateKeyImportLifecyclePage.evaluate(() => {
+    window.__pendingPrivateKeyFileReads = [];
+    window.__originalPrivateKeyFileText = File.prototype.text;
+    File.prototype.text = function deferredPrivateKeyFileText() {
+      const file = this;
+      return new Promise((resolve, reject) => window.__pendingPrivateKeyFileReads.push({
+        name: file.name,
+        resolve: () => window.__originalPrivateKeyFileText.call(file).then(resolve, reject),
+      }));
+    };
+  });
+  const privateKeyFileInput = importPanel.locator('input[type="file"]');
+  const privateKeyLabelInput = importPanel.getByPlaceholder("Key label", { exact: true });
+  const privateKeyTextInput = importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true });
+  const privateKeyImportButton = importPanel.getByRole("button", { name: "导入到 Profile", exact: true });
+  await privateKeyFileInput.setInputFiles({
+    name: "first.key",
+    mimeType: "text/plain",
+    buffer: Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\nfirst-key-body\n-----END OPENSSH PRIVATE KEY-----"),
+  });
+  await privateKeyFileInput.setInputFiles({
+    name: "second.key",
+    mimeType: "text/plain",
+    buffer: Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\nsecond-key-body\n-----END OPENSSH PRIVATE KEY-----"),
+  });
+  await privateKeyImportLifecyclePage.waitForFunction(() => window.__pendingPrivateKeyFileReads.length === 2);
+  assert(await privateKeyFileInput.inputValue() === ""
+    && await privateKeyFileInput.isEnabled()
+    && await privateKeyLabelInput.isDisabled()
+    && await privateKeyTextInput.isDisabled()
+    && await privateKeyTextInput.getAttribute("maxlength") === String(1024 * 1024)
+    && await privateKeyImportButton.isDisabled()
+    && await importPanel.getAttribute("aria-busy") === "true",
+  "a pending private-key file read did not lock stale import fields or reset the file input");
+  await privateKeyImportLifecyclePage.evaluate(() => window.__pendingPrivateKeyFileReads
+    .find((pending) => pending.name === "second.key").resolve());
+  await privateKeyImportLifecyclePage.waitForFunction(() => document.querySelector('.key-import-panel textarea')?.value.includes("second-key-body"));
+  assert(await privateKeyTextInput.isEnabled()
+    && await privateKeyImportButton.isEnabled()
+    && await importPanel.getAttribute("aria-busy") === "false",
+  "private-key import controls did not recover after the latest file read");
+  await privateKeyImportLifecyclePage.evaluate(() => window.__pendingPrivateKeyFileReads
+    .find((pending) => pending.name === "first.key").resolve());
+  await privateKeyImportLifecyclePage.waitForTimeout(100);
+  const privateKeyFileReadState = await privateKeyImportLifecyclePage.evaluate(() => {
+    File.prototype.text = window.__originalPrivateKeyFileText;
+    return {
+      text: document.querySelector('.key-import-panel textarea')?.value ?? "",
+      status: document.querySelector(".key-dialog .utility-status")?.textContent ?? "",
+    };
+  });
+  assert(privateKeyFileReadState.text.includes("second-key-body")
+    && !privateKeyFileReadState.text.includes("first-key-body")
+    && privateKeyFileReadState.status.includes("second.key"),
+  `an older private-key file read replaced the latest selection: ${JSON.stringify(privateKeyFileReadState)}`);
   await importPanel.getByPlaceholder("Key label", { exact: true }).fill("Deferred imported key");
   await importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true }).fill([
     "-----BEGIN OPENSSH PRIVATE KEY-----",

@@ -75,6 +75,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   format changes or close. Overlapping file reads can no longer submit or restore a stale preview.
 - Fixed duplicate file-manager create, delete, rename, move, chmod, and transfer-planning operations.
   Stale listings and superseded remote sessions can no longer own a mutation.
+- Fixed overlapping private-key file reads in Key Manager so an older file cannot replace or submit
+  the latest selection. Generic Secret writes now reject NUL and payloads larger than 1 MiB.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
