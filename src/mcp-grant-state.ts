@@ -14,6 +14,21 @@ export function createMcpGrant(): McpGrant {
   };
 }
 
+export function mcpGrantDraftHasUnsavedChanges(
+  draft: McpGrant | null,
+  saved: McpGrant | null | undefined,
+): boolean {
+  if (!draft) return false;
+  const baseline = saved ?? createMcpGrant();
+  return draft.clientId !== baseline.clientId
+    || draft.name !== baseline.name
+    || draft.confirmWrites !== baseline.confirmWrites
+    || (draft.expiresAt ?? null) !== (baseline.expiresAt ?? null)
+    || (draft.revokedAt ?? null) !== (baseline.revokedAt ?? null)
+    || !sameStringSet(draft.scopes, baseline.scopes)
+    || !sameStringSet(draft.allowedSessions, baseline.allowedSessions);
+}
+
 export function generateMcpClientId(): string {
   const source = globalThis.crypto;
   if (!source?.getRandomValues) {
@@ -48,4 +63,10 @@ export function parseMcpGrantExpiryInput(value: string): string | null {
     || date.getHours() !== hour
     || date.getMinutes() !== minute) return null;
   return date.toISOString();
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(right);
+  return expected.size === left.length && left.every((value) => expected.has(value));
 }

@@ -3,6 +3,7 @@ import {
   createMcpGrant,
   formatMcpGrantExpiryInput,
   generateMcpClientId,
+  mcpGrantDraftHasUnsavedChanges,
   parseMcpGrantExpiryInput,
 } from "./mcp-grant-state";
 
@@ -17,6 +18,34 @@ describe("MCP grant editor state", () => {
       expiresAt: null,
       revokedAt: null,
     });
+  });
+
+  it("detects grant edits while ignoring set ordering", () => {
+    const saved = {
+      ...createMcpGrant(),
+      clientId: "ops-client",
+      name: "Ops client",
+      allowedSessions: ["session-a", "session-b"],
+    };
+    expect(mcpGrantDraftHasUnsavedChanges({
+      ...saved,
+      scopes: [...saved.scopes].reverse(),
+      allowedSessions: [...saved.allowedSessions].reverse(),
+    }, saved)).toBe(false);
+    for (const changed of [
+      { name: "Changed" },
+      { confirmWrites: false },
+      { expiresAt: "2031-04-05T06:07:00.000Z" },
+      { scopes: ["read-sessions" as const] },
+      { allowedSessions: ["session-a"] },
+    ]) {
+      expect(mcpGrantDraftHasUnsavedChanges({ ...saved, ...changed }, saved)).toBe(true);
+    }
+  });
+
+  it("keeps a pristine new grant clean until the user enters a value", () => {
+    expect(mcpGrantDraftHasUnsavedChanges(createMcpGrant(), null)).toBe(false);
+    expect(mcpGrantDraftHasUnsavedChanges({ ...createMcpGrant(), clientId: "new-client" }, null)).toBe(true);
   });
 
   it("round-trips local minute inputs as canonical timestamps", () => {

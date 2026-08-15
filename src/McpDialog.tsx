@@ -4,7 +4,7 @@ import { CalendarClock, Copy, Dices, Download, KeyRound, Play, Plus, RefreshCw, 
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, parseMcpGrantExpiryInput } from "./mcp-grant-state";
+import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, parseMcpGrantExpiryInput } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -101,6 +101,9 @@ export default function McpDialog({
   const httpRemoteListener = isNonLoopbackMcpHost(httpSettings.listenHost);
   const httpRuntimeActive = httpRuntime?.phase === "starting" || httpRuntime?.phase === "running";
   const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
+  const httpControlsLocked = httpBusy || httpRuntimeLocked;
+  const savedDraftGrant = editingClientId ? grants.find((grant) => grant.clientId === editingClientId) : null;
+  const grantDirty = mcpGrantDraftHasUnsavedChanges(draft, savedDraftGrant);
   const expiryCandidate = expiryEditor
     ? parseMcpGrantExpiryInput(`${expiryEditor.date}T${expiryEditor.time}`)
     : null;
@@ -342,7 +345,7 @@ export default function McpDialog({
   }
 
   async function saveGrant() {
-    if (!draft) return;
+    if (!draft || grantBusy) return;
     const pendingGrant = draft;
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
@@ -368,6 +371,11 @@ export default function McpDialog({
   }
 
   async function revokeGrant(clientId: string) {
+    if (grantBusy) return;
+    const saved = grants.find((grant) => grant.clientId === clientId);
+    const label = saved?.name.trim() || clientId;
+    const unsavedWarning = grantDirty ? "\n\n当前授权编辑器还有未保存的更改，也会一并丢弃。" : "";
+    if (!window.confirm(`撤销 MCP 授权“${label}”（${clientId}）？${unsavedWarning}`)) return;
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
     const mutationToken = onGrantMutationStart();
@@ -422,6 +430,7 @@ export default function McpDialog({
   }
 
   function selectGrant(grant: McpGrant) {
+    if (grantBusy || !confirmDiscardGrant("切换授权")) return;
     setExpiryEditor(null);
     setDraft(grant);
     setEditingClientId(grant.clientId);
@@ -430,6 +439,7 @@ export default function McpDialog({
   }
 
   function newGrant() {
+    if (grantBusy || !confirmDiscardGrant("新建授权")) return;
     setExpiryEditor(null);
     setDraft(createMcpGrant());
     setEditingClientId(null);
@@ -442,7 +452,7 @@ export default function McpDialog({
   }
 
   function fillRandomClientId() {
-    if (!draft || editingClientId !== null) return;
+    if (!draft || editingClientId !== null || grantBusy) return;
     try {
       let clientId = "";
       for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -465,7 +475,7 @@ export default function McpDialog({
   }
 
   function openExpiryEditor() {
-    if (!draft) return;
+    if (!draft || grantBusy) return;
     const current = formatMcpGrantExpiryInput(draft.expiresAt) || defaultMcpGrantExpiryInput();
     const [date = "", time = ""] = current.split("T");
     setExpiryEditor({ date, time });
@@ -476,20 +486,21 @@ export default function McpDialog({
   }
 
   function applyExpiry() {
-    if (!draft || !expiryCandidate) return;
+    if (!draft || !expiryCandidate || grantBusy) return;
     setDraft({ ...draft, expiresAt: expiryCandidate });
     setExpiryEditor(null);
     setError("");
   }
 
   function clearExpiry() {
-    if (!draft) return;
+    if (!draft || grantBusy) return;
     setDraft({ ...draft, expiresAt: null });
     setExpiryEditor(null);
     setError("");
   }
 
   function toggleScope(scope: McpScope) {
+    if (grantBusy) return;
     setDraft((current) => current ? ({
       ...current,
       scopes: current.scopes.includes(scope) ? current.scopes.filter((item) => item !== scope) : [...current.scopes, scope],
@@ -497,19 +508,31 @@ export default function McpDialog({
   }
 
   function toggleSession(sessionId: string) {
+    if (grantBusy) return;
     setDraft((current) => current ? ({
       ...current,
       allowedSessions: current.allowedSessions.includes(sessionId) ? current.allowedSessions.filter((item) => item !== sessionId) : [...current.allowedSessions, sessionId],
     }) : current);
   }
 
+  function confirmDiscardGrant(action: string): boolean {
+    return !grantDirty || window.confirm(`当前 MCP 授权有未保存的更改，${action}将放弃这些内容。是否继续？`);
+  }
+
+  function closeDialog() {
+    const dirtySections = [grantDirty ? "授权草稿" : "", httpDirty ? "HTTP 配置" : ""].filter(Boolean);
+    if (dirtySections.length
+      && !window.confirm(`MCP ${dirtySections.join("和")}尚未保存，关闭窗口将放弃这些内容。是否继续？`)) return;
+    onClose();
+  }
+
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
       <section className="wind-dialog mcp-dialog" data-tab={tab} aria-label="MCP Bridge">
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>MCP Bridge</strong>
-          <button type="button" title="关闭" aria-label="关闭 MCP Bridge" onClick={onClose}><X size={20} /></button>
+          <button type="button" title="关闭" aria-label="关闭 MCP Bridge" onClick={closeDialog}><X size={20} /></button>
         </header>
         <nav className="mcp-tabs" role="tablist" aria-label="MCP Bridge 视图">
           {([['grants', '授权'], ['http', 'HTTP'], ['audit', '审计']] as const).map(([id, label]) => (
@@ -539,21 +562,21 @@ export default function McpDialog({
               <section className="mcp-editor">
                 <McpFieldGroup label="Client ID:">
                   <div className="mcp-client-id-control">
-                    <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
+                    <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} disabled={grantBusy} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
                     {editingClientId === null ? <button type="button" title="随机生成 Client ID" aria-label="随机生成 Client ID" disabled={grantBusy} onMouseDown={(event) => event.preventDefault()} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
                   </div>
                 </McpFieldGroup>
-                <McpField label="名称:"><input value={draft.name} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+                <McpField label="名称:"><input value={draft.name} disabled={grantBusy} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
                 <McpFieldGroup label="到期时间:">
                   <div className="mcp-expiry-control" ref={expiryEditorRef}>
                     <div className="mcp-expiry-summary">
-                      <input type="text" readOnly aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} placeholder="永不过期" onClick={openExpiryEditor} onKeyDown={(event) => {
+                      <input type="text" readOnly disabled={grantBusy} aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} placeholder="永不过期" onClick={openExpiryEditor} onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
                           openExpiryEditor();
                         }
                       }} />
-                      <button type="button" title="编辑到期时间" aria-label="编辑 MCP 授权到期时间" aria-expanded={Boolean(expiryEditor)} onClick={() => expiryEditor ? setExpiryEditor(null) : openExpiryEditor()}><CalendarClock size={15} /></button>
+                      <button type="button" title="编辑到期时间" aria-label="编辑 MCP 授权到期时间" aria-expanded={Boolean(expiryEditor)} disabled={grantBusy} onClick={() => expiryEditor ? setExpiryEditor(null) : openExpiryEditor()}><CalendarClock size={15} /></button>
                     </div>
                     {expiryEditor ? (
                       <div className="mcp-expiry-editor" onKeyDown={(event) => {
@@ -566,26 +589,26 @@ export default function McpDialog({
                           applyExpiry();
                         }
                       }}>
-                        <label><span>日期</span><input ref={expiryDateInputRef} type="text" inputMode="numeric" aria-label="MCP 授权到期日期" maxLength={10} placeholder="YYYY-MM-DD" value={expiryEditor.date} onChange={(event) => setExpiryEditor({ ...expiryEditor, date: event.target.value })} /></label>
-                        <label><span>时间</span><input type="text" inputMode="numeric" aria-label="MCP 授权到期时刻" maxLength={5} placeholder="HH:mm" value={expiryEditor.time} onChange={(event) => setExpiryEditor({ ...expiryEditor, time: event.target.value })} /></label>
+                        <label><span>日期</span><input ref={expiryDateInputRef} type="text" inputMode="numeric" aria-label="MCP 授权到期日期" disabled={grantBusy} maxLength={10} placeholder="YYYY-MM-DD" value={expiryEditor.date} onChange={(event) => setExpiryEditor({ ...expiryEditor, date: event.target.value })} /></label>
+                        <label><span>时间</span><input type="text" inputMode="numeric" aria-label="MCP 授权到期时刻" disabled={grantBusy} maxLength={5} placeholder="HH:mm" value={expiryEditor.time} onChange={(event) => setExpiryEditor({ ...expiryEditor, time: event.target.value })} /></label>
                         <small className={expiryEditor.date && expiryEditor.time && !expiryCandidate ? "invalid" : ""}>{expiryEditor.date && expiryEditor.time && !expiryCandidate ? "请输入有效的本地日期和时间" : "使用本机时区"}</small>
                         <div className="mcp-expiry-actions">
-                          <button type="button" onClick={clearExpiry}>清除</button>
-                          <button type="button" onClick={() => setExpiryEditor(null)}>取消</button>
-                          <button type="button" className="primary" disabled={!expiryCandidate} onClick={applyExpiry}>确定</button>
+                          <button type="button" disabled={grantBusy} onClick={clearExpiry}>清除</button>
+                          <button type="button" disabled={grantBusy} onClick={() => setExpiryEditor(null)}>取消</button>
+                          <button type="button" className="primary" disabled={grantBusy || !expiryCandidate} onClick={applyExpiry}>确定</button>
                         </div>
                       </div>
                     ) : null}
                   </div>
                 </McpFieldGroup>
-                <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
+                <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" disabled={grantBusy} checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
                 <fieldset className="mcp-check-grid">
                   <legend>权限范围</legend>
-                  {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
+                  {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" disabled={grantBusy} checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
                 </fieldset>
                 <fieldset className="mcp-session-list">
                   <legend>允许会话 · {draft.allowedSessions.length ? `${draft.allowedSessions.length} 个` : "全部"}</legend>
-                  {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
+                  {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={grantBusy} checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
                 </fieldset>
                 {error ? <div className="utility-error">{error}</div> : null}
                 <div className="mcp-actions">
@@ -611,24 +634,24 @@ export default function McpDialog({
                 <div className="mcp-http-field-grid">
                   <McpFieldGroup label="监听 IP:">
                     <div className="mcp-http-listen-editor">
-                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} disabled={httpRuntimeLocked} onChange={(event) => {
+                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} disabled={httpControlsLocked} onChange={(event) => {
                         const listenHost = event.target.value === MCP_HTTP_CUSTOM_LISTEN_PRESET ? "" : event.target.value;
                         updateHttpListenHost(listenHost);
                         if (!listenHost) requestAnimationFrame(() => httpListenInputRef.current?.focus());
                       }}>
                         {mcpHttpListenOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                       </select>
-                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} disabled={httpRuntimeLocked} onChange={(event) => updateHttpListenHost(event.target.value)} />
+                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpListenHost(event.target.value)} />
                     </div>
                   </McpFieldGroup>
-                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
-                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
-                  <McpField label="客户端地址:"><input aria-label="MCP HTTP 客户端地址" value={httpSettings.clientHost} maxLength={253} spellCheck={false} disabled={httpRuntimeLocked} placeholder="192.168.33.222" onChange={(event) => updateHttpSettings({ clientHost: event.target.value })} /></McpField>
+                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
+                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
+                  <McpField label="客户端地址:"><input aria-label="MCP HTTP 客户端地址" value={httpSettings.clientHost} maxLength={253} spellCheck={false} disabled={httpControlsLocked} placeholder="192.168.33.222" onChange={(event) => updateHttpSettings({ clientHost: event.target.value })} /></McpField>
                 </div>
-                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpRuntimeLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
+                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpControlsLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
                 <div className="mcp-http-options">
-                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={httpRuntimeLocked || !httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
-                  <label><input type="checkbox" checked={httpSettings.trusted} disabled={httpRuntimeLocked} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
+                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={httpControlsLocked || !httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
+                  <label><input type="checkbox" checked={httpSettings.trusted} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
                 </div>
                 {httpRemoteListener ? (
                   <div className={`mcp-http-exposure ${httpSettings.allowRemote ? "allowed" : "blocked"}`} role="status">

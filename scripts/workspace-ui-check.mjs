@@ -494,6 +494,8 @@ try {
     window.__pendingLogPreviews = [];
     window.__deferMcpHttpConfig = false;
     window.__pendingMcpHttpConfig = [];
+    window.__deferMcpHttpMutations = false;
+    window.__pendingMcpHttpMutations = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
     window.__tauriCallbackId = 0;
@@ -1084,7 +1086,9 @@ try {
         if (command === "preview_mcp_http_config") return window.__buildMcpHttpConfig(args.settings);
         if (command === "save_mcp_http_settings") {
           window.__mcpHttpConfig = window.__buildMcpHttpConfig(args.settings);
-          return structuredClone(window.__mcpHttpConfig);
+          const result = structuredClone(window.__mcpHttpConfig);
+          if (!window.__deferMcpHttpMutations) return result;
+          return new Promise((resolve) => window.__pendingMcpHttpMutations.push({ result, resolve }));
         }
         if (command === "mcp_http_runtime_status") {
           const result = structuredClone(window.__mcpHttpRuntime);
@@ -4155,7 +4159,33 @@ Host staging
   assert(/^client-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generatedClientId)
     && await newGrantClientId.evaluate((input) => input === document.activeElement),
   `MCP random Client ID action produced an invalid value: ${generatedClientId}`);
+  await page.evaluate(() => {
+    window.__mcpGrantDiscardPrompts = [];
+    window.__originalMcpConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mcpGrantDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
   await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
+  assert(await newGrantClientId.inputValue() === generatedClientId
+    && await mcpDialog.locator(".mcp-grant-draft.active").count() === 1,
+  "MCP grant switch discarded a new unsaved draft after cancellation");
+  await page.evaluate(() => {
+    window.confirm = (message) => {
+      window.__mcpGrantDiscardPrompts.push(String(message));
+      return true;
+    };
+  });
+  await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
+  const mcpGrantDiscardPrompts = await page.evaluate(() => {
+    window.confirm = window.__originalMcpConfirm;
+    return window.__mcpGrantDiscardPrompts;
+  });
+  assert(mcpGrantDiscardPrompts.length === 2
+    && mcpGrantDiscardPrompts.every((prompt) => prompt.includes("切换授权"))
+    && mcpGrantDiscardPrompts.every((prompt) => !prompt.includes(generatedClientId)),
+  `MCP grant discard confirmation was missing or exposed draft values: ${JSON.stringify(mcpGrantDiscardPrompts)}`);
   const mcpGrantEditorBounds = await mcpDialog.locator(".mcp-editor").evaluate((editor) => {
     const editorRect = editor.getBoundingClientRect();
     const actionsRect = editor.querySelector(".mcp-actions").getBoundingClientRect();
@@ -4171,12 +4201,29 @@ Host staging
   `MCP grant actions are clipped by the editor viewport: ${JSON.stringify(mcpGrantEditorBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
 
+  await page.evaluate(() => {
+    window.__mcpRevokePrompts = [];
+    window.__originalMcpConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mcpRevokePrompts.push(String(message));
+      return true;
+    };
+  });
   for (const grant of mcpGrants) {
     const grantRow = mcpDialog.locator(".mcp-grants > button", { hasText: grant.name });
     await grantRow.click();
     await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "撤销", exact: true }).click();
     await grantRow.waitFor({ state: "detached" });
   }
+  const mcpRevokePrompts = await page.evaluate(() => {
+    window.confirm = window.__originalMcpConfirm;
+    return window.__mcpRevokePrompts;
+  });
+  assert(mcpRevokePrompts.length === mcpGrants.length
+    && mcpGrants.every((grant) => mcpRevokePrompts.some((prompt) => (
+      prompt.includes(grant.clientId) && prompt.includes(grant.name)
+    ))),
+  `MCP revocation confirmation omitted an exact target: ${JSON.stringify(mcpRevokePrompts)}`);
   await mcpDialog.locator(".mcp-editor-empty").waitFor();
   assert(await mcpDialog.locator(".mcp-grant-draft").count() === 0
     && await mcpDialog.locator(".mcp-editor .dialog-field").count() === 0,
@@ -4299,7 +4346,41 @@ Host staging
   await page.waitForFunction(() => document.querySelector(".mcp-http-command")?.value.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"));
   assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled(),
     "MCP HTTP valid unsaved settings did not produce a copyable command preview");
+  await page.evaluate(() => {
+    window.__mcpHttpDiscardPrompts = [];
+    window.__originalMcpConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mcpHttpDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
+  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  const retainedMcpHttpDraft = await page.evaluate(() => ({
+    prompts: window.__mcpHttpDiscardPrompts,
+    dialogVisible: Boolean(document.querySelector(".mcp-dialog")),
+    clientHost: document.querySelector('[aria-label="MCP HTTP 客户端地址"]')?.value,
+  }));
+  assert(retainedMcpHttpDraft.dialogVisible
+    && retainedMcpHttpDraft.clientHost === "192.168.33.222"
+    && retainedMcpHttpDraft.prompts.length === 1
+    && retainedMcpHttpDraft.prompts[0].includes("HTTP 配置")
+    && !retainedMcpHttpDraft.prompts[0].includes("192.168.33.222"),
+  `MCP HTTP draft was discarded or exposed without confirmation: ${JSON.stringify(retainedMcpHttpDraft)}`);
+  await page.evaluate(() => {
+    window.confirm = window.__originalMcpConfirm;
+    window.__deferMcpHttpMutations = true;
+  });
   await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).click();
+  await page.waitForFunction(() => window.__pendingMcpHttpMutations.length === 1);
+  assert(await mcpListenHost.isDisabled()
+    && await mcpClientHost.isDisabled()
+    && await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).isDisabled(),
+  "MCP HTTP settings remained editable while a save request was pending");
+  await page.evaluate(() => {
+    for (const pending of window.__pendingMcpHttpMutations) pending.resolve(pending.result);
+    window.__pendingMcpHttpMutations = [];
+    window.__deferMcpHttpMutations = false;
+  });
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
   const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
@@ -5202,8 +5283,27 @@ Host staging
   await grantLifecyclePage.evaluate(() => { window.__deferGrantMutations = true; });
   await lifecycleMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
   await grantLifecyclePage.waitForFunction(() => window.__pendingGrantMutations.length === 1);
+  assert(await lifecycleMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").isDisabled()
+    && await lifecycleMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").isDisabled(),
+  "MCP grant editor remained mutable while a save request was pending");
+  await grantLifecyclePage.evaluate(() => {
+    window.__mcpPendingSavePrompts = [];
+    window.__originalMcpConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mcpPendingSavePrompts.push(String(message));
+      return true;
+    };
+  });
   await lifecycleMcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
   await lifecycleMcpDialog.waitFor({ state: "detached" });
+  const pendingMcpSavePrompts = await grantLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalMcpConfirm;
+    return window.__mcpPendingSavePrompts;
+  });
+  assert(pendingMcpSavePrompts.length === 1
+    && pendingMcpSavePrompts[0].includes("授权草稿")
+    && !pendingMcpSavePrompts[0].includes("late-close-client"),
+  `MCP pending-save close did not protect or exposed its draft: ${JSON.stringify(pendingMcpSavePrompts)}`);
   await grantLifecyclePage.evaluate(() => {
     window.__deferGrantMutations = false;
     const pending = window.__pendingGrantMutations.shift();
