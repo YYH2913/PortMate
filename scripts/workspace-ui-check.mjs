@@ -491,6 +491,9 @@ try {
     window.__pendingTunnelMutations = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
+    window.__serialCaptureFrames = [];
+    window.__deferSerialCaptureOperations = false;
+    window.__pendingSerialCaptureOperations = [];
     window.__deferSessionLists = deferStartupSessions;
     window.__pendingSessionLists = [];
     window.__deferTransferLists = deferStartupDomains;
@@ -800,10 +803,51 @@ try {
           }));
         }
         if (command === "list_serial_capture") {
-          return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
+          const afterIndex = args.afterId
+            ? window.__serialCaptureFrames.findIndex((frame) => frame.id === args.afterId)
+            : -1;
+          const reset = Boolean(args.afterId) && afterIndex < 0;
+          const frames = !args.afterId || reset
+            ? window.__serialCaptureFrames
+            : window.__serialCaptureFrames.slice(afterIndex + 1);
+          return {
+            frames: structuredClone(frames),
+            reset,
+            totalFrames: window.__serialCaptureFrames.length,
+            capturedBytes: window.__serialCaptureFrames.reduce((total, frame) => total + frame.originalLength, 0),
+          };
         }
         if (command === "list_serial_capture_history") {
           return { frames: [], enabled: false, totalFrames: 0, capturedBytes: 0, droppedFrames: 0, unavailableFrames: 0 };
+        }
+        if (command === "clear_serial_capture") {
+          const complete = () => {
+            window.__serialCaptureFrames = [];
+            return { frames: [], reset: false, totalFrames: 0, capturedBytes: 0 };
+          };
+          if (!window.__deferSerialCaptureOperations) return complete();
+          return new Promise((resolve) => window.__pendingSerialCaptureOperations.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(complete()),
+          }));
+        }
+        if (command === "export_serial_capture" || command === "export_serial_capture_history") {
+          const complete = () => ({
+            path: "/tmp/portmate-serial-capture.txt",
+            checksumPath: "/tmp/portmate-serial-capture.txt.sha256",
+            sha256: "d".repeat(64),
+            size: 64,
+            frames: args.request.frameIds.length,
+            capturedBytes: 3,
+            truncatedFrames: 0,
+          });
+          if (!window.__deferSerialCaptureOperations) return complete();
+          return new Promise((resolve) => window.__pendingSerialCaptureOperations.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "export_terminal_text") {
           return {
@@ -4540,6 +4584,95 @@ Host staging
   await serialAnalyzerPage.getByLabel("筛选分析帧", { exact: true }).fill("post-lock-probe");
   assert(await serialAnalyzerPage.getByLabel("筛选分析帧", { exact: true }).inputValue() === "post-lock-probe",
     "serial analyzer remained inert after the shared screen lock closed");
+  await serialAnalyzerPage.getByLabel("筛选分析帧", { exact: true }).fill("");
+  await serialAnalyzerPage.evaluate(() => {
+    window.__serialCaptureFrames = [{
+      id: "rx-after-lock",
+      ts: new Date().toISOString(),
+      direction: "inbound",
+      bytes: [0x41, 0x42, 0x43],
+      originalLength: 3,
+      truncated: false,
+    }];
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-status-strip", { hasText: "捕获 1" }).waitFor();
+  const serialClearButton = serialAnalyzerPage.getByRole("button", { name: "清空串口捕获", exact: true });
+  const serialRefreshButton = serialAnalyzerPage.getByRole("button", { name: "刷新串口捕获", exact: true });
+  const serialExportButton = serialAnalyzerPage.getByRole("button", { name: "导出筛选串口帧", exact: true });
+  await serialAnalyzerPage.evaluate(() => {
+    window.__deferSerialCaptureOperations = true;
+    window.__serialAnalyzerOriginalConfirm = window.confirm;
+    window.confirm = () => true;
+    const button = document.querySelector('[aria-label="清空串口捕获"]');
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await serialAnalyzerPage.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
+  const serialListCallsDuringClear = await serialAnalyzerPage.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "list_serial_capture").length
+  ));
+  await serialAnalyzerPage.waitForTimeout(900);
+  const serialClearBusyState = await serialAnalyzerPage.evaluate(() => ({
+    pending: window.__pendingSerialCaptureOperations.length,
+    clearCalls: window.__invokeCalls.filter((call) => call.command === "clear_serial_capture").length,
+    listCalls: window.__invokeCalls.filter((call) => call.command === "list_serial_capture").length,
+    toolbarBusy: document.querySelector(".serial-analyzer-toolbar")?.getAttribute("aria-busy"),
+  }));
+  assert(serialClearBusyState.pending === 1
+    && serialClearBusyState.clearCalls === 1
+    && serialClearBusyState.listCalls === serialListCallsDuringClear
+    && serialClearBusyState.toolbarBusy === "true"
+    && await serialClearButton.isDisabled()
+    && await serialRefreshButton.isDisabled()
+    && await serialExportButton.isDisabled(),
+  `serial analyzer clear overlapped polling or duplicated: ${JSON.stringify(serialClearBusyState)}`);
+  await serialAnalyzerPage.evaluate(() => {
+    window.__pendingSerialCaptureOperations.shift().resolve();
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-footer", { hasText: "捕获已清空" }).waitFor();
+  await serialAnalyzerPage.evaluate(() => {
+    window.__serialCaptureFrames = [{
+      id: "tx-after-clear",
+      ts: new Date().toISOString(),
+      direction: "outbound",
+      bytes: [0x44, 0x45, 0x46],
+      originalLength: 3,
+      truncated: false,
+    }];
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-status-strip", { hasText: "捕获 1" }).waitFor();
+  await serialAnalyzerPage.waitForFunction((previousCalls) => (
+    window.__invokeCalls.filter((call) => call.command === "list_serial_capture").length > previousCalls
+  ), serialListCallsDuringClear);
+  assert(await serialAnalyzerPage.locator(".serial-analyzer-toolbar").getAttribute("aria-busy") === "false"
+    && await serialClearButton.isEnabled()
+    && await serialRefreshButton.isEnabled()
+    && await serialExportButton.isEnabled(),
+  "serial analyzer did not resume capture actions after clearing");
+  await serialAnalyzerPage.evaluate(() => {
+    const button = document.querySelector('[aria-label="导出筛选串口帧"]');
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await serialAnalyzerPage.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
+  const serialExportBusyState = await serialAnalyzerPage.evaluate(() => ({
+    pending: window.__pendingSerialCaptureOperations.length,
+    exportCalls: window.__invokeCalls.filter((call) => call.command === "export_serial_capture").length,
+    toolbarBusy: document.querySelector(".serial-analyzer-toolbar")?.getAttribute("aria-busy"),
+  }));
+  assert(serialExportBusyState.pending === 1
+    && serialExportBusyState.exportCalls === 1
+    && serialExportBusyState.toolbarBusy === "true"
+    && await serialClearButton.isDisabled()
+    && await serialRefreshButton.isDisabled()
+    && await serialExportButton.isDisabled(),
+  `serial analyzer export duplicated or left conflicting actions enabled: ${JSON.stringify(serialExportBusyState)}`);
+  await serialAnalyzerPage.evaluate(() => {
+    window.__pendingSerialCaptureOperations.shift().resolve();
+    window.__deferSerialCaptureOperations = false;
+    window.confirm = window.__serialAnalyzerOriginalConfirm;
+  });
+  await serialAnalyzerPage.locator(".serial-analyzer-footer", { hasText: "/tmp/portmate-serial-capture.txt" }).waitFor();
   await serialAnalyzerPage.evaluate(() => { window.__deferSessionLists = true; });
   await serialAnalyzerPage.waitForFunction(() => window.__pendingSessionLists.length === 1);
   await serialAnalyzerPage.waitForTimeout(3_200);

@@ -55,6 +55,7 @@ import type {
 } from "./types";
 
 type SerialCaptureSource = "live" | "history";
+type SerialCaptureOperation = "refresh" | "clear" | "export";
 
 const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
   { value: "capture", label: "捕获" },
@@ -71,16 +72,18 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   const [frames, setFrames] = useState<SerialCaptureFrame[]>([]);
   const [source, setSource] = useState<SerialCaptureSource>("live");
   const [history, setHistory] = useState<SerialCaptureHistorySnapshot | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [captureOperation, setCaptureOperation] = useState<SerialCaptureOperation | null>(null);
   const [message, setMessage] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const sessionsRef = useRef<SessionSummary[]>(sessions);
   const sessionRefreshGateRef = useRef(new KeyedRequestGate<"sessions">());
   const framesRef = useRef<SerialCaptureFrame[]>([]);
-  const captureRefreshRef = useRef<number | null>(null);
+  const captureOperationGateRef = useRef(new KeyedRequestGate<"capture">());
   const captureEpochRef = useRef(0);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const isSerial = session?.profile.connection.kind === "serial";
+  const captureBusy = captureOperation !== null;
+  const refreshing = captureOperation === "refresh";
 
   useEffect(() => {
     document.title = `${session?.profile.name ?? "串口"} - PortMate 串口分析器`;
@@ -121,47 +124,58 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
     return () => {
       disposed = true;
       if (captureTimer !== null) window.clearInterval(captureTimer);
+      captureOperationGateRef.current.invalidate("capture");
     };
 
     async function refreshCapture(force = false) {
-      if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
-      captureRefreshRef.current = epoch;
-      setRefreshing(true);
+      if (!isBackendAvailable()) return;
+      const gate = captureOperationGateRef.current;
+      const token = gate.begin("capture");
+      if (token === null) return;
+      setCaptureOperation("refresh");
       try {
         const current = force ? [] : framesRef.current;
         const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
           sessionId: request.sessionId,
           afterId: current.at(-1)?.id ?? null,
         });
-        if (disposed || captureEpochRef.current !== epoch) return;
+        if (disposed || captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(mergeSerialCaptureSnapshot(current, snapshot));
         setHistory(null);
         setMessage("");
       } catch (error) {
-        if (!disposed && captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
+        if (!disposed && captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
+          setMessage(formatAnalyzerError(error));
+        }
       } finally {
-        if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
-        if (!disposed && captureEpochRef.current === epoch) setRefreshing(false);
+        if (gate.finish("capture", token) && !disposed && captureEpochRef.current === epoch) {
+          setCaptureOperation(null);
+        }
       }
     }
 
     async function refreshHistory() {
-      if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
-      captureRefreshRef.current = epoch;
-      setRefreshing(true);
+      if (!isBackendAvailable()) return;
+      const gate = captureOperationGateRef.current;
+      const token = gate.begin("capture");
+      if (token === null) return;
+      setCaptureOperation("refresh");
       try {
         const snapshot = await invokeBackend<SerialCaptureHistorySnapshot>("list_serial_capture_history", {
           sessionId: request.sessionId,
         });
-        if (disposed || captureEpochRef.current !== epoch) return;
+        if (disposed || captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(snapshot.frames);
         setHistory(snapshot);
         setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
       } catch (error) {
-        if (!disposed && captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
+        if (!disposed && captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
+          setMessage(formatAnalyzerError(error));
+        }
       } finally {
-        if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
-        if (!disposed && captureEpochRef.current === epoch) setRefreshing(false);
+        if (gate.finish("capture", token) && !disposed && captureEpochRef.current === epoch) {
+          setCaptureOperation(null);
+        }
       }
     }
   }, [request.sessionId, source]);
@@ -191,16 +205,18 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
 
   async function refreshNow() {
     const epoch = captureEpochRef.current;
-    if (!isBackendAvailable() || captureRefreshRef.current === epoch) return;
-    captureRefreshRef.current = epoch;
-    setRefreshing(true);
+    if (!isBackendAvailable()) return;
+    const gate = captureOperationGateRef.current;
+    const token = gate.begin("capture");
+    if (token === null) return;
+    setCaptureOperation("refresh");
     try {
       if (source === "live") {
         const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
           sessionId: request.sessionId,
           afterId: null,
         });
-        if (captureEpochRef.current !== epoch) return;
+        if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(mergeSerialCaptureSnapshot([], snapshot));
         setHistory(null);
         setMessage("");
@@ -208,53 +224,85 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         const snapshot = await invokeBackend<SerialCaptureHistorySnapshot>("list_serial_capture_history", {
           sessionId: request.sessionId,
         });
-        if (captureEpochRef.current !== epoch) return;
+        if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(snapshot.frames);
         setHistory(snapshot);
         setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
       }
       await refreshSessions();
     } catch (error) {
-      if (captureEpochRef.current === epoch) setMessage(formatAnalyzerError(error));
+      if (captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
+        setMessage(formatAnalyzerError(error));
+      }
     } finally {
-      if (captureRefreshRef.current === epoch) captureRefreshRef.current = null;
-      if (captureEpochRef.current === epoch) setRefreshing(false);
+      if (gate.finish("capture", token) && captureEpochRef.current === epoch) {
+        setCaptureOperation(null);
+      }
     }
   }
 
   async function clearCapture() {
     if (source !== "live") return;
-    if (!frames.length || !window.confirm("清空当前串口会话的全部内存捕获帧？")) return;
-    captureEpochRef.current += 1;
+    if (!frames.length) return;
+    const gate = captureOperationGateRef.current;
+    const token = gate.begin("capture");
+    if (token === null) return;
+    if (!window.confirm("清空当前串口会话的全部内存捕获帧？")) {
+      gate.finish("capture", token);
+      return;
+    }
+    const epoch = captureEpochRef.current;
+    setCaptureOperation("clear");
     try {
       if (isBackendAvailable()) {
         const snapshot = await invokeBackend<SerialCaptureSnapshot>("clear_serial_capture", { sessionId: request.sessionId });
+        if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(mergeSerialCaptureSnapshot([], snapshot));
       } else {
         storeFrames([]);
       }
       setMessage("捕获已清空");
     } catch (error) {
-      setMessage(formatAnalyzerError(error));
+      if (captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
+        setMessage(formatAnalyzerError(error));
+      }
+    } finally {
+      if (gate.finish("capture", token) && captureEpochRef.current === epoch) {
+        setCaptureOperation(null);
+      }
     }
   }
 
   async function exportFrames(frameIds: string[]) {
     if (!frameIds.length) return;
+    const gate = captureOperationGateRef.current;
+    const token = gate.begin("capture");
+    if (token === null) return;
+    const epoch = captureEpochRef.current;
+    const exportSource = source;
+    setCaptureOperation("export");
     try {
-      const command = source === "live" ? "export_serial_capture" : "export_serial_capture_history";
+      const command = exportSource === "live" ? "export_serial_capture" : "export_serial_capture_history";
       const result = await invokeBackend<ExportSerialCaptureResult>(command, {
         request: { sessionId: request.sessionId, frameIds },
       });
+      if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
       setMessage(`${result.frames} 帧 · ${formatAnalyzerBytes(result.capturedBytes)} · ${result.path}`);
     } catch (error) {
-      setMessage(formatAnalyzerError(error));
+      if (captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
+        setMessage(formatAnalyzerError(error));
+      }
+    } finally {
+      if (gate.finish("capture", token) && captureEpochRef.current === epoch) {
+        setCaptureOperation(null);
+      }
     }
   }
 
   function changeSource(next: SerialCaptureSource) {
-    if (next === source || refreshing) return;
+    if (next === source || captureBusy) return;
     captureEpochRef.current += 1;
+    captureOperationGateRef.current.invalidate("capture");
     storeFrames([]);
     setHistory(null);
     setMessage("");
@@ -278,6 +326,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
           frames={frames}
           source={source}
           history={history}
+          captureBusy={captureBusy}
           refreshing={refreshing}
           message={message}
           canExport={isBackendAvailable()}
@@ -304,6 +353,7 @@ function SerialAnalyzerWorkspace({
   frames,
   source,
   history,
+  captureBusy,
   refreshing,
   message,
   canExport,
@@ -317,6 +367,7 @@ function SerialAnalyzerWorkspace({
   frames: SerialCaptureFrame[];
   source: SerialCaptureSource;
   history: SerialCaptureHistorySnapshot | null;
+  captureBusy: boolean;
   refreshing: boolean;
   message: string;
   canExport: boolean;
@@ -424,7 +475,7 @@ function SerialAnalyzerWorkspace({
         <button type="button" title="关闭串口分析器" aria-label="关闭串口分析器" onClick={onClose}><X size={17} /></button>
       </header>
 
-      <section className="serial-analyzer-toolbar" aria-label="串口分析设置">
+      <section className="serial-analyzer-toolbar" aria-label="串口分析设置" aria-busy={captureBusy}>
         <div className="serial-analyzer-segmented" aria-label="帧解析方式">
           {parserModes.map((mode) => (
             <button key={mode.value} type="button" aria-pressed={stored.parser.mode === mode.value} onClick={() => updateParser({ mode: mode.value })}>{mode.label}</button>
@@ -453,7 +504,7 @@ function SerialAnalyzerWorkspace({
         </div>
         <div className="serial-analyzer-segmented source" aria-label="捕获数据源">
           {(["live", "history"] as const).map((value) => (
-            <button key={value} type="button" disabled={refreshing} aria-pressed={source === value} onClick={() => onSourceChange(value)}>{value === "live" ? "实时" : "日志"}</button>
+            <button key={value} type="button" disabled={captureBusy} aria-pressed={source === value} onClick={() => onSourceChange(value)}>{value === "live" ? "实时" : "日志"}</button>
           ))}
         </div>
         <div className="serial-analyzer-segmented direction" aria-label="帧方向">
@@ -464,9 +515,9 @@ function SerialAnalyzerWorkspace({
         <label className="serial-analyzer-search"><Search size={13} /><input aria-label="筛选分析帧" placeholder="Hex / ASCII" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
         <button type="button" className={stored.bookmarksOnly ? "active" : ""} aria-pressed={stored.bookmarksOnly} title="只显示书签" aria-label="只显示书签" onClick={() => setStored((current) => ({ ...current, bookmarksOnly: !current.bookmarksOnly }))}><Bookmark size={14} fill={stored.bookmarksOnly ? "currentColor" : "none"} /></button>
         <button type="button" className={stored.follow ? "active" : ""} aria-pressed={stored.follow} title="跟随最新帧" aria-label="跟随最新帧" onClick={() => setStored((current) => ({ ...current, follow: !current.follow }))}><ArrowDownToLine size={14} /></button>
-        <button type="button" title="刷新捕获" aria-label="刷新串口捕获" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
-        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={!canExport || !filtered.length || (source === "history" && !history?.enabled)} onClick={exportVisible}><Download size={14} /></button>
-        <button type="button" title={source === "live" ? "清空捕获" : "日志历史只可在日志管理器中清理"} aria-label="清空串口捕获" disabled={refreshing || source !== "live" || !frames.length} onClick={onClear}><Trash2 size={14} /></button>
+        <button type="button" title="刷新捕获" aria-label="刷新串口捕获" onClick={onRefresh} disabled={captureBusy}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
+        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={captureBusy || !canExport || !filtered.length || (source === "history" && !history?.enabled)} onClick={exportVisible}><Download size={14} /></button>
+        <button type="button" title={source === "live" ? "清空捕获" : "日志历史只可在日志管理器中清理"} aria-label="清空串口捕获" disabled={captureBusy || source !== "live" || !frames.length} onClick={onClear}><Trash2 size={14} /></button>
       </section>
 
       <section className="serial-analyzer-status-strip">
