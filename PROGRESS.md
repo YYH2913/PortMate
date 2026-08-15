@@ -164,6 +164,8 @@ Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和�
 
 主窗口的 Session、活动 Session、标签颜色、工作区 root 与活动 pane 现使用同步最新值提交：Profile 删除事件与独立终端返回同帧发生时，返回操作会看到已经删除的权威 Session 并明确拒绝，不会从旧 React 闭包复活标签；删除触发的慢 `list_sessions` 响应也会在完成时基于最新工作区树 reconciliation，期间用户新打开的标签不会被请求开始时的旧布局覆盖。连接、重连、断开及文本/字节输入的异步入口同样改为读取当前 Session 快照，浏览器 fallback 删除路径不再遗漏该边界。Workspace UI 新增慢 Profile 刷新期间开标签和同帧删除/返回的真实事件回归；完整前端 114 文件/625 项、生产构建、Workspace UI、release-source 和 diff whitespace gate 均通过。
 
+同一 HEAD 针对已报告的 Native CI 故障再次执行专项复验：WebGL Insert/Normal/Insert 光标分别采样到有效的 1 像素竖线、7x17 方块和 1x17 竖线；`libssh-rs` 22 项单线程库测试全部通过且 `sftp::tests::file_handles_keep_the_sftp_session_alive` 不再崩溃；npm dependency audit 报告 0 个允许或未处理发现，workspace all-targets Clippy 在 `-D warnings` 下通过。Swift SDK 0.11.0/0.12.1 均从隔离 working copy 重新建立依赖并分别通过 stdio 8 消息和 HTTP 8 请求，未再出现损坏 repository 路径。Windows MSVC/OpenSSL 的递归 `nmake.exe` 约束及 Windows `npm.cmd` 审计分支已有仓库测试覆盖，但最终原生编译仍需 Windows runner 的新成功记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
