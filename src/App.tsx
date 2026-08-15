@@ -264,6 +264,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
   const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
+  const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -372,6 +373,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
   const serialCaptureActionTokensRef = useRef(new Map<string, number>());
+  const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
@@ -2119,6 +2121,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       next.delete(profileId);
       return next;
     });
+    serialControlOperationGateRef.current.invalidate(profileId);
+    setSerialControlBusyIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
     activeLogRefreshGateRef.current.invalidate(profileId);
     delete logSignatureRef.current[profileId];
     sessionsSignatureRef.current = "";
@@ -3615,28 +3624,56 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session || session.profile.connection.kind !== "serial") return;
+    const controlToken = beginSerialControl(sessionId);
+    if (controlToken === null) return;
     try {
       const saved = await invokeBackend<SessionSummary>("serial_set_lines", {
         request: { sessionId, [line]: value },
       });
+      if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
       sessionSummaryRefreshGateRef.current.invalidate("summaries");
       setSessions((current) => mergeSessionSummaries(current, saved));
     } catch (error) {
+      if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
       setNotice({ title: "串口控制失败", message: formatError(error) });
       void refreshSessionSummaries();
+    } finally {
+      finishSerialControl(sessionId, controlToken);
     }
   }
 
   async function sendSerialBreak(sessionId: string) {
     const session = sessions.find((item) => item.profile.id === sessionId);
     if (!session || session.profile.connection.kind !== "serial") return;
+    const controlToken = beginSerialControl(sessionId);
+    if (controlToken === null) return;
     try {
       await invokeBackend("serial_send_break", { sessionId });
+      if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
       await refreshActiveLog(sessionId);
     } catch (error) {
+      if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
       setNotice({ title: "Break 失败", message: formatError(error) });
       void refreshActiveLog(sessionId);
+    } finally {
+      finishSerialControl(sessionId, controlToken);
     }
+  }
+
+  function beginSerialControl(sessionId: string) {
+    const token = serialControlOperationGateRef.current.begin(sessionId);
+    if (token !== null) setSerialControlBusyIds((current) => new Set(current).add(sessionId));
+    return token;
+  }
+
+  function finishSerialControl(sessionId: string, token: number) {
+    if (!serialControlOperationGateRef.current.finish(sessionId, token)) return;
+    setSerialControlBusyIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
   }
 
   function renderWorkspaceDockPanel(panel: WorkspaceDockPanelId) {
@@ -3914,6 +3951,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             copyOnSelect={terminalPrefs.mouseCopyOnSelect}
             blockSelection={blockSelection}
             connectionBusyIds={disconnectingSessionIds}
+            serialControlBusyIds={serialControlBusyIds}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onOneKeyCompletion={completeOneKeyPrompt}
             onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
@@ -4791,6 +4829,7 @@ function TerminalPaneGrid({
   copyOnSelect,
   blockSelection,
   connectionBusyIds,
+  serialControlBusyIds,
   onInput,
   onOneKeyCompletion,
   onKeyModeChange,
@@ -4821,6 +4860,7 @@ function TerminalPaneGrid({
   copyOnSelect: boolean;
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
+  serialControlBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4870,6 +4910,7 @@ function TerminalPaneGrid({
         copyOnSelect={copyOnSelect}
         blockSelection={blockSelection}
         connectionBusyIds={connectionBusyIds}
+        serialControlBusyIds={serialControlBusyIds}
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
@@ -4906,6 +4947,7 @@ type TerminalWorkspaceNodeProps = {
   copyOnSelect: boolean;
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
+  serialControlBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4940,6 +4982,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   const serialConnection = session?.profile.connection.kind === "serial" ? session.profile.connection : null;
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : null;
   const connectionBusy = Boolean(session && props.connectionBusyIds.has(session.profile.id));
+  const serialControlBusy = Boolean(session && props.serialControlBusyIds.has(session.profile.id));
   const connectionActionLabel = connectionBusy ? "正在断开" : connectionAction === "disconnect" ? "断开" : "连接";
   const connectionHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "";
   const groupViews = node.views.map((view) => ({
@@ -5103,11 +5146,13 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
           {!groupViews.length ? <strong>会话不可用</strong> : null}
         </div>
         {session && serialConnection && session.runtime.status === "connected" ? (
-          <div className="pane-serial-tools" aria-label="串口线路控制">
+          <div className="pane-serial-tools" aria-label="串口线路控制" aria-busy={serialControlBusy}>
             <button
               type="button"
               className={serialConnection.dtr ? "active" : ""}
               aria-pressed={serialConnection.dtr}
+              aria-busy={serialControlBusy}
+              disabled={serialControlBusy}
               title="切换 DTR"
               onClick={(event) => {
                 event.stopPropagation();
@@ -5118,6 +5163,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
               type="button"
               className={serialConnection.rts ? "active" : ""}
               aria-pressed={serialConnection.rts}
+              aria-busy={serialControlBusy}
+              disabled={serialControlBusy}
               title="切换 RTS"
               onClick={(event) => {
                 event.stopPropagation();
@@ -5127,6 +5174,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
             <button
               type="button"
               title="发送 Break"
+              aria-busy={serialControlBusy}
+              disabled={serialControlBusy}
               onClick={(event) => {
                 event.stopPropagation();
                 props.onSendSerialBreak(session.profile.id);

@@ -501,6 +501,8 @@ try {
     window.__pendingSerialCaptureReads = [];
     window.__deferSerialCaptureOperations = false;
     window.__pendingSerialCaptureOperations = [];
+    window.__deferSerialControls = false;
+    window.__pendingSerialControls = [];
     window.__deferSessionLists = deferStartupSessions;
     window.__pendingSessionLists = [];
     window.__deferTransferLists = deferStartupDomains;
@@ -1407,6 +1409,38 @@ try {
         if (command === "send_text" || command === "send_bytes") {
           if (!window.__deferTerminalSends) return null;
           return new Promise((resolve) => window.__pendingTerminalSends.push({ command, args, resolve }));
+        }
+        if (command === "serial_set_lines") {
+          const index = window.__sessions.findIndex((session) => session.profile.id === args.request.sessionId);
+          if (index < 0) throw new Error(`unknown session: ${args.request.sessionId}`);
+          const current = window.__sessions[index];
+          const result = {
+            ...current,
+            profile: {
+              ...current.profile,
+              connection: {
+                ...current.profile.connection,
+                ...(args.request.dtr === undefined ? {} : { dtr: args.request.dtr }),
+                ...(args.request.rts === undefined ? {} : { rts: args.request.rts }),
+              },
+            },
+          };
+          const complete = () => {
+            window.__sessions[index] = structuredClone(result);
+            return structuredClone(result);
+          };
+          if (!window.__deferSerialControls) return complete();
+          return new Promise((resolve) => window.__pendingSerialControls.push({
+            command,
+            resolve: () => resolve(complete()),
+          }));
+        }
+        if (command === "serial_send_break") {
+          if (!window.__deferSerialControls) return null;
+          return new Promise((resolve) => window.__pendingSerialControls.push({
+            command,
+            resolve: () => resolve(null),
+          }));
         }
         if (command === "open_session" || command === "open_session_with_one_key") {
           const sessionId = command === "open_session" ? args.request.sessionId : args.sessionId;
@@ -3544,8 +3578,53 @@ Host staging
   const uart = page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" });
   await uart.click();
   await page.waitForFunction(() => document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Bench UART"));
-  assert(await page.locator(".pane-serial-tools").count() === 1,
+  const serialControls = page.locator(".pane-serial-tools");
+  assert(await serialControls.count() === 1,
     "serial line controls were lost while consolidating the workspace toolbar");
+  const dtrButton = serialControls.getByRole("button", { name: "DTR", exact: true });
+  const breakButton = serialControls.getByRole("button", { name: "BRK", exact: true });
+  const serialControlStart = await page.evaluate(() => {
+    window.__deferSerialControls = true;
+    window.__pendingSerialControls = [];
+    return window.__invokeCalls.length;
+  });
+  await dtrButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingSerialControls.length === 1);
+  const pendingDtrControl = await page.evaluate((start) => ({
+    calls: window.__invokeCalls.slice(start).filter((call) => call.command === "serial_set_lines").length,
+    pending: window.__pendingSerialControls.map((request) => request.command),
+  }), serialControlStart);
+  assert(pendingDtrControl.calls === 1
+    && JSON.stringify(pendingDtrControl.pending) === JSON.stringify(["serial_set_lines"])
+    && await serialControls.getAttribute("aria-busy") === "true"
+    && await serialControls.locator("button:disabled").count() === 3,
+  `serial DTR control was duplicated or left sibling controls active: ${JSON.stringify(pendingDtrControl)}`);
+  await page.evaluate(() => window.__pendingSerialControls.shift().resolve());
+  await page.waitForFunction(() => document.querySelector('.pane-serial-tools button[aria-pressed="true"]')?.textContent === "DTR");
+  await dtrButton.waitFor({ state: "visible" });
+  assert(!await dtrButton.isDisabled(), "serial controls did not unlock after the DTR response");
+  const breakControlStart = await page.evaluate(() => window.__invokeCalls.length);
+  await breakButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingSerialControls.length === 1);
+  const pendingBreakControl = await page.evaluate((start) => ({
+    calls: window.__invokeCalls.slice(start).filter((call) => call.command === "serial_send_break").length,
+    pending: window.__pendingSerialControls.map((request) => request.command),
+  }), breakControlStart);
+  assert(pendingBreakControl.calls === 1
+    && JSON.stringify(pendingBreakControl.pending) === JSON.stringify(["serial_send_break"])
+    && await serialControls.locator("button:disabled").count() === 3,
+  `serial Break control was duplicated or left sibling controls active: ${JSON.stringify(pendingBreakControl)}`);
+  await page.evaluate(() => {
+    window.__deferSerialControls = false;
+    window.__pendingSerialControls.shift().resolve();
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".pane-serial-tools button:disabled").length === 0);
 
   const terminalInputBeforeModal = page.locator(".terminal-pane.active .xterm-helper-textarea");
   await terminalInputBeforeModal.focus();

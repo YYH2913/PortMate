@@ -91,6 +91,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   operations now acquire a synchronous dialog gate before React's pending state is rendered.
 - Fixed the Sender panel dispatching text or Hex twice when its button and keyboard shortcut fired
   in the same frame. A synchronous send gate now owns the complete configured send batch.
+- Fixed duplicate serial DTR, RTS, and Break actions queueing repeated device operations. The three
+  controls now share a per-session gate and ignore responses after their Profile is deleted.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

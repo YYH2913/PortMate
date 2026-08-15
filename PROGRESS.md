@@ -138,6 +138,8 @@ OneKey 保存、删除和发送补齐弹窗级同步 operation gate，入口在 
 
 主工作区发送面板补齐覆盖完整批次的同步 send gate，发送按钮与 `Ctrl+Enter` 在 React `sendBusy` 渲染前同帧触发时只允许一个调用进入；文本、Hex、次数、间隔和目标仍在批次开始时形成稳定快照。Workspace UI 延迟 `send_text` 响应并以同帧双击锁定单次后端调用、单个 pending 请求、发送按钮禁用和成功后一次命令历史记录。
 
+主工作区串口 DTR、RTS 和 BRK 共用每会话同步 control gate，与后端持有 serial registry/writer/Store 锁的真实串行边界一致；任一设备操作期间三枚按钮一起禁用，同帧重复事件不再排队第二次线路写入或第二个 250 ms Break 脉冲。Profile 删除会撤销 gate 和 busy 状态，迟到线路响应不能恢复已删会话。Workspace UI 以延迟 DTR/Break 响应分别锁定单次后端调用、同会话全控件禁用、DTR 权威回显和完成后解锁。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
