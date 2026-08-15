@@ -112,6 +112,8 @@ MCP 管理器补齐授权与 HTTP 配置的草稿边界：授权脏状态按 sco
 
 2026-08-16 继续审查前端异步所有权：Sysmon 状态栏 applet 在挂起采样期间停止监控或远端断线时会立即清除 busy 状态，常驻侧栏在隐藏、会话不可采样或断线时也会失效旧请求并停止旋转。主窗口的键盘输入、Quick Command、OneKey、文本/Hex 发送面板，以及独立终端的普通输入与 OneKey 现共用 FIFO 异步操作队列；慢 IPC 下后提交的操作不会越过先前按键，失败操作也不会阻塞后续输入。Workspace UI 以真实挂起请求验证 Sysmon 停止、独立终端 `a`/`b` 和主终端 `q`/`uname -a` 的精确顺序；完整前端 112 文件/611 项、生产构建和 Workspace UI 均通过。
 
+Transfer、Tunnel 和 Tmux 三个会话绑定工具现以 Profile ID 作为组件生命周期边界；另一窗口删除当前 Profile 并使工作区回退到备用 SSH 会话时，旧表单、busy 状态、运行列表和 Tmux 树会随旧组件清理，迟到的传输或 tunnel 响应不会向替代会话弹通知。Workspace UI 在独立工作区窗口内挂起旧会话请求，逐项验证 Transfer/Tunnel 默认状态、Tmux 新状态返回前不显示旧树、按 session 过滤的 tunnel 列表，以及替代会话状态最终加载；完整前端 112 文件/611 项、生产构建、Workspace UI 和 diff whitespace gate 均通过。
+
 传输与端口转发操作补齐按目标隔离的请求门禁：开始传输和创建 tunnel 只能单次提交，重试/取消传输及停止 tunnel 按任务 ID 防止重复调用，同时允许不同任务并发；传输对话框和文件管理器只禁用正在处理的行。关闭旧对话框、切换传输会话或切换 tunnel 会话会使在途 token 失效，迟到的成功、失败或停止响应不能再写状态、弹通知或关闭新打开的替代窗口。Workspace UI 以可控延迟后端覆盖同目标双击、不同目标并发、关闭后释放响应及替代窗口隔离；模态隔离回归另显式等待 MutationObserver 下一帧写入 `inert` 后再取样，消除焦点先到达对话框时的 CI 时序假失败。生产构建、Workspace UI 直接入口和 `ci-command-log` 包装入口、diff whitespace gate 均通过。
 
 Tmux 工具补齐请求并发和 watcher 所有权边界：刷新、attach、pane 同步及 session/window/pane 变更共享同步操作 gate，同一帧重复事件只能进入一次后端；control-mode 按 target 独立 gate，`lab` 与 `build` 可并行而同一 target 不可重复开停，请求期间禁止关闭窗口以避免未完成 watcher 失去结果上下文。`stop_tmux_control` 新增可选 `runtimeId` 条件，显式停止和窗口清理只能取消实际持有的 runtime；旧 runtime 已被替换时后端保留新 watcher 并返回 active，界面更新到新 ID、拒绝伪报停止并要求重试。Tmux Workflow 以延迟 attach/control/sync/mutation 覆盖双触发、不同 target 并发、关闭保护、旧 runtime 条件停止和迟到状态刷新；后端单测覆盖 runtime ID 匹配/不匹配，旧的无条件调用保持兼容。
