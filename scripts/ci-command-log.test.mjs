@@ -131,8 +131,9 @@ describe("CI command logging", () => {
     expect(opensslSetup).toContain("shell: pwsh");
     expect(opensslSetup).toContain("OPENSSL_SRC_PERL=$perl");
     expect(opensslSetup).toContain("$perlOs -ne 'MSWin32'");
-    expect(opensslSetup).not.toContain("Get-Command nmake.exe");
-    expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKE(?:FLAGS)?=/m);
+    expect(opensslSetup).toContain("Get-Command nmake.exe");
+    expect(opensslSetup).toContain('"MAKE=nmake.exe"');
+    expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKEFLAGS=/m);
 
     const freshnessWorkflow = readFileSync(
       resolve(import.meta.dirname, "..", ".github", "workflows", "mcp-sdk-freshness.yml"),
