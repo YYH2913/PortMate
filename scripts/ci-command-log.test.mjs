@@ -79,6 +79,19 @@ describe("CI command logging", () => {
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow.match(/dtolnay\/rust-toolchain@1\.97\.1/g)).toHaveLength(4);
     expect(workflow).not.toContain("dtolnay/rust-toolchain@stable");
+    expect(workflow.match(/actions\/checkout@v7/g)).toHaveLength(4);
+    expect(workflow.match(/actions\/setup-node@v7/g)).toHaveLength(4);
+    expect(workflow.match(/actions\/setup-python@v7/g)).toHaveLength(2);
+    expect(workflow.match(/actions\/setup-go@v7/g)).toHaveLength(2);
+    expect(workflow.match(/actions\/setup-java@v5/g)).toHaveLength(2);
+    expect(workflow.match(/actions\/setup-dotnet@v6/g)).toHaveLength(2);
+    expect(workflow.match(/actions\/upload-artifact@v7/g)).toHaveLength(3);
+    expect(workflow.match(/(?:^|\n)\s+cache: false/g)).toHaveLength(2);
+    expect(workflow).not.toMatch(/actions\/(?:checkout|setup-node)@v4/);
+    expect(workflow).not.toMatch(/actions\/(?:setup-python|setup-go)@v5/);
+    expect(workflow).not.toMatch(/actions\/setup-java@v4/);
+    expect(workflow).not.toMatch(/actions\/setup-dotnet@v4/);
+    expect(workflow).not.toMatch(/actions\/upload-artifact@v4/);
     expect(workflow).toContain("if: runner.os == 'Linux'");
     expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
@@ -96,6 +109,14 @@ describe("CI command logging", () => {
     expect(opensslSetup).toContain("$perlOs -ne 'MSWin32'");
     expect(opensslSetup).not.toContain("Get-Command nmake.exe");
     expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKE(?:FLAGS)?=/m);
+
+    const freshnessWorkflow = readFileSync(
+      resolve(import.meta.dirname, "..", ".github", "workflows", "mcp-sdk-freshness.yml"),
+      "utf8",
+    );
+    expect(freshnessWorkflow).toContain("actions/checkout@v7");
+    expect(freshnessWorkflow).toContain("actions/setup-node@v7");
+    expect(freshnessWorkflow).not.toMatch(/actions\/(?:checkout|setup-node)@v4/);
   });
 
   it("keeps native Rolldown bindings installable on every native runner", () => {
