@@ -95,6 +95,7 @@ import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
 import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
+import { commitWorkspaceViewDetach } from "./workspace-detach-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, createWorkspacePaneFromViews, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, replaceWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, splitWorkspacePaneWithView, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
@@ -268,6 +269,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
   const [terminalExportBusyViewIds, setTerminalExportBusyViewIds] = useState<Set<string>>(() => new Set());
+  const [detachingWorkspaceViewIds, setDetachingWorkspaceViewIds] = useState<Set<string>>(() => new Set());
   const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -383,6 +385,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
+  const detachedWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
+  const workspaceRootRef = useRef<WorkspaceNode | null>(workspaceRoot);
+  const activePaneIdRef = useRef(activePaneId);
   const pendingProfileDeletionRef = useRef(new Map<string, { token: number; profileName: string }>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
@@ -435,6 +440,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   };
   syncInputRef.current = syncInput;
   screenLockRef.current = screenLock;
+  workspaceRootRef.current = workspaceRoot;
+  activePaneIdRef.current = activePaneId;
   detachedCommandHandlerRef.current = (command) => {
     if (command.action === "lock-screen") {
       lockScreen("manual");
@@ -2228,6 +2235,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     sessionSettingsProfileMutationGateRef.current.invalidate(profileId);
     invalidateProfileShortcutOperation(profileId);
     invalidateTerminalExportsForSession(profileId);
+    const detachedViewIds = workspacePaneLeaves(workspaceRootRef.current)
+      .flatMap((pane) => pane.views)
+      .filter((view) => view.sessionId === profileId)
+      .map((view) => view.id);
+    invalidateWorkspaceViewDetachOperations(detachedViewIds);
     setDisconnectingSessionIds((current) => {
       if (!current.has(profileId)) return current;
       const next = new Set(current);
@@ -2262,6 +2274,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     activeLogRefreshGateRef.current.invalidate(profileId);
     delete logSignatureRef.current[profileId];
     sessionsSignatureRef.current = "";
+  }
+
+  function invalidateWorkspaceViewDetachOperations(viewIds?: readonly string[]) {
+    const gate = detachedWindowOperationGateRef.current;
+    if (viewIds === undefined) {
+      gate.invalidateAll();
+      setDetachingWorkspaceViewIds((current) => current.size ? new Set() : current);
+      return;
+    }
+    if (!viewIds.length) return;
+    const invalidated = new Set(viewIds);
+    for (const viewId of invalidated) gate.invalidate(viewId);
+    setDetachingWorkspaceViewIds((current) => {
+      const next = new Set([...current].filter((viewId) => !invalidated.has(viewId)));
+      return next.size === current.size ? current : next;
+    });
   }
 
   function applyDeletedSessionProfile(response: DeleteSessionProfileResponse) {
@@ -2556,6 +2584,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       sessions.map((session) => session.profile.id),
       { fallbackToFirst: !workspaceWindowId },
     );
+    invalidateWorkspaceViewDetachOperations();
     invalidateAllTerminalExportOperations();
     setWorkspaceRoot(restored.root);
     setActivePaneId(restored.activePaneId);
@@ -2717,6 +2746,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ?? nextPanes[Math.min(Math.max(0, sourceIndex), nextPanes.length - 1)];
     if (!nextActive) return;
     for (const item of closedViews) invalidateTerminalExportOperation(item.view.id);
+    invalidateWorkspaceViewDetachOperations(closedViews.map((item) => item.view.id));
     const shouldRefocus = nextActive.id !== activePaneId
       || (paneId === activePaneId && closedViews.some((item) => item.view.id === source.activeViewId));
     setWorkspaceRoot(nextRoot);
@@ -2898,6 +2928,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const removedIndex = panes.findIndex((pane) => pane.id === paneId);
     if (removedIndex < 0) return;
     const removedPane = panes[removedIndex];
+    invalidateWorkspaceViewDetachOperations(removedPane.views.map((view) => view.id));
     const nextRoot = removeWorkspacePane(workspaceRoot, paneId);
     const nextPanes = workspacePaneLeaves(nextRoot);
     const currentActive = nextPanes.find((pane) => pane.id === activePaneId);
@@ -3058,35 +3089,67 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const pane = panes.find((item) => item.id === paneId);
     const activeView = pane ? workspacePaneActiveView(pane) : undefined;
     const session = activeView ? sessions.find((item) => item.profile.id === activeView.sessionId) : undefined;
-    if (!pane || !session) return;
+    if (!pane || !activeView || !session) return;
     if (panes.length <= 1 && pane.views.length <= 1) {
       setNotice({ title: "移到新窗口", message: "主窗口中至少需要保留一个窗格或视图。" });
       return;
     }
+    const gate = detachedWindowOperationGateRef.current;
+    const token = gate.begin(activeView.id);
+    if (token === null) return;
+    setDetachingWorkspaceViewIds((current) => new Set(current).add(activeView.id));
     const request: DetachedPaneRequest = {
       windowId: createWorkspaceNodeId("pane").replace(/[^A-Za-z0-9_-]/g, "-"),
       ownerWindowId,
       paneId: pane.id,
-      viewId: activeView!.id,
-      sessionId: activeView!.sessionId,
-      title: activeView!.title,
-      color: activeView!.color,
-      keyMode: activeView!.keyMode,
+      viewId: activeView.id,
+      sessionId: activeView.sessionId,
+      title: activeView.title,
+      color: activeView.color,
+      keyMode: activeView.keyMode,
     };
     try {
-      await openDetachedPaneWindow(request, activeView!.title || session.profile.name);
-      if (pane.views.length > 1) {
-        const nextRoot = removeWorkspacePaneView(workspaceRoot, pane.id, activeView!.id);
-        const nextPane = findWorkspacePane(nextRoot, pane.id);
-        setWorkspaceRoot(nextRoot);
-        setActivePaneId(nextPane?.id ?? "");
-        setActiveId(nextPane ? workspacePaneActiveView(nextPane).sessionId : activeId);
-        setZoomedPaneId((current) => current ? nextPane?.id ?? "" : "");
-      } else {
-        closeWorkspacePane(pane.id, false);
+      const controller = await openDetachedPaneWindow(request, activeView.title || session.profile.name);
+      if (!gate.isCurrent(activeView.id, token)) {
+        await controller.close();
+        return;
+      }
+      const committed = commitWorkspaceViewDetach(
+        workspaceRootRef.current,
+        activePaneIdRef.current,
+        activeView.id,
+        activeView.sessionId,
+      );
+      if (committed.status === "last-view") {
+        await controller.close();
+        setNotice({
+          title: "移到新窗口",
+          message: "窗口创建期间工作区布局已变化；主窗口必须保留一个视图，请重试。",
+        });
+        return;
+      }
+      if (committed.status === "detached") {
+        workspaceRootRef.current = committed.root;
+        activePaneIdRef.current = committed.activePaneId;
+        setWorkspaceRoot(committed.root);
+        setActivePaneId(committed.activePaneId);
+        setActiveId(committed.activeId);
+        setZoomedPaneId((current) => current ? committed.activePaneId : "");
+        focusWorkspacePaneInput(committed.activePaneId);
       }
     } catch (error) {
-      setNotice({ title: "移到新窗口失败", message: formatError(error) });
+      if (gate.isCurrent(activeView.id, token)) {
+        setNotice({ title: "移到新窗口失败", message: formatError(error) });
+      }
+    } finally {
+      if (gate.finish(activeView.id, token)) {
+        setDetachingWorkspaceViewIds((current) => {
+          if (!current.has(activeView.id)) return current;
+          const next = new Set(current);
+          next.delete(activeView.id);
+          return next;
+        });
+      }
     }
   }
 
@@ -4266,6 +4329,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             canSwap={workspaceContextCanSwap}
             canZoom={workspacePanes.length > 1}
             {...workspaceContextCapabilities}
+            canDetach={workspaceContextCapabilities.canDetach && !detachingWorkspaceViewIds.has(workspaceContextView.id)}
             onColor={(color) => changeWorkspaceViewColor(workspaceContextPane.id, workspaceContextView.id, color)}
             onDuplicate={() => {
               setWorkspaceViewContextMenu(null);
@@ -6294,12 +6358,19 @@ async function openWorkspaceWindow(windowId: string): Promise<void> {
   }, "创建工作区窗口超时");
 }
 
-async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName: string): Promise<void> {
+type DetachedPaneWindowController = {
+  close: () => Promise<void>;
+};
+
+async function openDetachedPaneWindow(
+  request: DetachedPaneRequest,
+  sessionName: string,
+): Promise<DetachedPaneWindowController> {
   const path = buildDetachedPanePath(request);
   if (!isBackendAvailable()) {
     const popup = window.open(path, request.windowId, "popup,width=960,height=680,resizable=yes");
     if (!popup) throw new Error("浏览器阻止了独立窗口，请允许 PortMate 打开弹出窗口。");
-    return;
+    return { close: async () => popup.close() };
   }
   const child = new WebviewWindow(request.windowId, {
     url: path,
@@ -6319,6 +6390,7 @@ async function openDetachedPaneWindow(request: DetachedPaneRequest, sessionName:
     minWidth: 640,
     minHeight: 400,
   }), "创建独立窗口超时");
+  return { close: () => child.destroy() };
 }
 
 function loadWorkspaceSnapshot(storageKey: string | null = WORKSPACE_STORAGE_KEY): WorkspaceSnapshot {

@@ -484,6 +484,8 @@ try {
     window.__emitSessionProfileDeleteBeforeResolve = false;
     window.__deferDetachedOwnerCommands = false;
     window.__pendingDetachedOwnerCommands = [];
+    window.__deferChildWindowCreates = false;
+    window.__pendingChildWindowCreates = [];
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends = [];
     window.__sessionOpenErrors = {};
@@ -583,6 +585,13 @@ try {
         if (command === "plugin:event|unlisten") {
           window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(args.event, args.eventId);
           return null;
+        }
+        if (command === "plugin:webview|create_webview_window" && window.__deferChildWindowCreates) {
+          return new Promise((resolve, reject) => window.__pendingChildWindowCreates.push({
+            args: structuredClone(args),
+            reject,
+            resolve: () => resolve(null),
+          }));
         }
         if (command === "plugin:dialog|save") return "/tmp/portmate-picked-terminal.txt";
         if (command === "plugin:dialog|open") {
@@ -8981,6 +8990,71 @@ Host staging
     && workspaceWindowAfterOpen.panelsV1 === workspaceWindowInitial.panelsV1
     && workspaceWindowAfterOpen.panelsV2 === workspaceWindowInitial.panelsV2,
   `workspace window persisted into the main workspace snapshot: ${JSON.stringify({ before: workspaceWindowInitial, after: workspaceWindowAfterOpen })}`);
+  await workspaceWindowPage.locator(".tree-session", { hasText: "Bench UART" }).click();
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
+  const detachedCreateBaseline = await workspaceWindowPage.evaluate(() => {
+    window.__deferChildWindowCreates = true;
+    return window.__invokeCalls.filter((call) => call.command === "plugin:webview|create_webview_window").length;
+  });
+  const detachedEdgeTab = workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Edge Router" });
+  await detachedEdgeTab.click({ button: "right" });
+  const detachedRaceMenu = workspaceWindowPage.locator(".workspace-view-context-menu");
+  await detachedRaceMenu.getByRole("button", { name: "移到新窗口", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await workspaceWindowPage.waitForFunction(() => window.__pendingChildWindowCreates.length === 1);
+  await workspaceWindowPage.locator(".tree-session", { hasText: "Local Shell" }).click();
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Local Shell" }).waitFor();
+  await workspaceWindowPage.evaluate(() => window.__pendingChildWindowCreates.shift().resolve());
+  await detachedEdgeTab.waitFor({ state: "detached" });
+  const detachedRaceState = await workspaceWindowPage.evaluate((baseline) => ({
+    createCalls: window.__invokeCalls.filter((call) => call.command === "plugin:webview|create_webview_window").length - baseline,
+    destroyCalls: window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length,
+    sessions: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+  }), detachedCreateBaseline);
+  assert(detachedRaceState.createCalls === 1
+    && detachedRaceState.destroyCalls === 0
+    && JSON.stringify(detachedRaceState.sessions) === JSON.stringify(["Bench UART", "Local Shell"]),
+  `slow detached-window creation overwrote a newer workspace layout: ${JSON.stringify(detachedRaceState)}`);
+
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Bench UART" }).click({ button: "right" });
+  await detachedRaceMenu.getByRole("button", { name: "移到新窗口", exact: true }).click();
+  await workspaceWindowPage.waitForFunction(() => window.__pendingChildWindowCreates.length === 1);
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Local Shell" }).click({ button: "right" });
+  await detachedRaceMenu.getByRole("button", { name: "关闭视图", exact: true }).click();
+  await workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Local Shell" }).waitFor({ state: "detached" });
+  await workspaceWindowPage.evaluate(() => window.__pendingChildWindowCreates.shift().resolve());
+  const detachedRollbackNotice = workspaceWindowPage.locator(".notice-dialog", { hasText: "主窗口必须保留一个视图" });
+  await detachedRollbackNotice.waitFor();
+  const detachedRollbackState = await workspaceWindowPage.evaluate(() => ({
+    destroyCalls: window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length,
+    sessions: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+  }));
+  assert(detachedRollbackState.destroyCalls === 1
+    && JSON.stringify(detachedRollbackState.sessions) === JSON.stringify(["Bench UART"]),
+  `a detached-window rollback resurrected stale views or leaked its child: ${JSON.stringify(detachedRollbackState)}`);
+  await detachedRollbackNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  await workspaceWindowPage.locator(".tree-session", { hasText: "Local Shell" }).click();
+  const cancelledDetachTab = workspaceWindowPage.locator(".workspace-pane-tab", { hasText: "Local Shell" });
+  await cancelledDetachTab.click({ button: "right" });
+  await detachedRaceMenu.getByRole("button", { name: "移到新窗口", exact: true }).click();
+  await workspaceWindowPage.waitForFunction(() => window.__pendingChildWindowCreates.length === 1);
+  await cancelledDetachTab.click({ button: "right" });
+  await detachedRaceMenu.getByRole("button", { name: "关闭视图", exact: true }).click();
+  await cancelledDetachTab.waitFor({ state: "detached" });
+  await workspaceWindowPage.evaluate(() => window.__pendingChildWindowCreates.shift().resolve());
+  await workspaceWindowPage.waitForFunction(() => (
+    window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length === 2
+  ));
+  const cancelledDetachState = await workspaceWindowPage.evaluate(() => ({
+    notices: document.querySelectorAll(".notice-dialog").length,
+    sessions: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+  }));
+  assert(cancelledDetachState.notices === 0
+    && JSON.stringify(cancelledDetachState.sessions) === JSON.stringify(["Bench UART"]),
+  `closing a view did not cancel its older detached-window request: ${JSON.stringify(cancelledDetachState)}`);
   await workspaceWindowPage.screenshot({ path: `${screenshotPrefix}-workspace-window.png`, fullPage: true });
   await workspaceWindowPage.evaluate(() => {
     window.__workspaceWindowPopupCalls = [];
