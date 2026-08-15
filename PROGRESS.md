@@ -166,6 +166,8 @@ Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和�
 
 会话与终端命令入口继续收紧到相同的同步快照边界：资源树/标签/终端旧右键菜单、终端导出/选择/在线搜索/buffer 操作、布局恢复、分离窗口、同步输入目标和串口 DTR/RTS/Break 都会先核对当前 workspace view 与 Session；Profile 删除后尚未被 React 重绘移除的旧控件会静默失效，不能重新保存已删除 Profile、控制已删除串口或向其他会话误发输入。Workspace UI 在删除事件和旧控件点击同一 JavaScript task 内真实验证 `serial_set_lines` 与 `save_session_profile` 均为零新增调用，并继续确认独立窗口返回被拒绝；完整前端 114 文件/625 项、生产构建、Workspace UI 和 diff whitespace gate 均通过。
 
+工作区的同步提交边界已扩展到所有直接布局操作：热键焦点/标签循环、分屏、复制、重命名入口、着色、关闭/恢复、拖放拆组、跨组移动、整组合并、方向交换、缩放和关闭历史均读取调用时最新 root/active pane/Session；同一 React render 的连续事件不会再用旧树覆盖先前提交。顶部菜单和串口分析器/捕获/日志轮询也会拒绝已经失效的活动 Session，动态加载分析器期间删除 Profile 不会再打开孤立子窗口。Workspace UI 在独立工作区的同一 task 内连续两次点击旧“复制视图”按钮，验证形成三个唯一 view 及递增的“副本”/“副本 2”标题；完整前端 114 文件/625 项、生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
+
 同一 HEAD 针对已报告的 Native CI 故障再次执行专项复验：WebGL Insert/Normal/Insert 光标分别采样到有效的 1 像素竖线、7x17 方块和 1x17 竖线；`libssh-rs` 22 项单线程库测试全部通过且 `sftp::tests::file_handles_keep_the_sftp_session_alive` 不再崩溃；npm dependency audit 报告 0 个允许或未处理发现，workspace all-targets Clippy 在 `-D warnings` 下通过。Swift SDK 0.11.0/0.12.1 均从隔离 working copy 重新建立依赖并分别通过 stdio 8 消息和 HTTP 8 请求，未再出现损坏 repository 路径。Windows MSVC/OpenSSL 的递归 `nmake.exe` 约束及 Windows `npm.cmd` 审计分支已有仓库测试覆盖，但最终原生编译仍需 Windows runner 的新成功记录。
 
 ## 当前实现快照

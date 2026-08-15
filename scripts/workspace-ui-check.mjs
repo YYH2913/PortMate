@@ -9230,6 +9230,35 @@ Host staging
     `workspace window browser exceptions: ${JSON.stringify(workspaceWindowErrors)}`);
   await workspaceWindowPage.close();
 
+  const layoutSyncPage = await context.newPage();
+  const layoutSyncErrors = [];
+  layoutSyncPage.on("pageerror", (error) => layoutSyncErrors.push(error.message));
+  await layoutSyncPage.goto(`${appUrl}?workspaceWindow=1&windowId=workspace-layout-sync-regression`);
+  await layoutSyncPage.locator(".workspace-dock-content.panel-explorer .tree-session").first().click();
+  const layoutSyncTab = layoutSyncPage.locator(".workspace-pane-tab").first();
+  await layoutSyncTab.waitFor();
+  const layoutSyncBaseLabel = (await layoutSyncTab.locator(".workspace-pane-tab-label").textContent())?.trim();
+  await layoutSyncTab.click({ button: "right" });
+  const duplicateLayoutView = layoutSyncPage.locator(".workspace-view-context-menu")
+    .getByRole("button", { name: "复制视图", exact: true });
+  await duplicateLayoutView.waitFor();
+  await duplicateLayoutView.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await layoutSyncPage.waitForFunction(() => document.querySelectorAll(".workspace-pane-tab").length === 3);
+  const layoutSyncState = await layoutSyncPage.locator(".workspace-pane-tab").evaluateAll((tabs) => ({
+    ids: tabs.map((tab) => tab.getAttribute("data-view-id")),
+    labels: tabs.map((tab) => tab.querySelector(".workspace-pane-tab-label")?.textContent?.trim()),
+  }));
+  assert(new Set(layoutSyncState.ids).size === 3
+    && layoutSyncState.labels.includes(`${layoutSyncBaseLabel} 副本`)
+    && layoutSyncState.labels.includes(`${layoutSyncBaseLabel} 副本 2`),
+  `same-frame workspace mutations did not compose against the latest layout: ${JSON.stringify(layoutSyncState)}`);
+  assert(layoutSyncErrors.length === 0,
+    `same-frame workspace mutation browser exceptions: ${JSON.stringify(layoutSyncErrors)}`);
+  await layoutSyncPage.close();
+
   const lockSyncMainPage = await context.newPage();
   const lockSyncWorkspacePage = await context.newPage();
   const lockSyncErrors = [];

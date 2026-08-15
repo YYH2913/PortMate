@@ -350,7 +350,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [workspaceGroupMove, setWorkspaceGroupMove] = useState<WorkspaceGroupMoveRequest>(null);
   const [workspaceViewRename, setWorkspaceViewRename] = useState<WorkspaceViewRenameRequest>(null);
   const [workspaceViewContextMenu, setWorkspaceViewContextMenu] = useState<WorkspaceViewContextMenuState>(null);
-  const [closedWorkspaceViews, setClosedWorkspaceViews] = useState<ClosedWorkspaceView[]>([]);
+  const [closedWorkspaceViews, setClosedWorkspaceViewsState] = useState<ClosedWorkspaceView[]>([]);
+  const closedWorkspaceViewsRef = useRef<ClosedWorkspaceView[]>(closedWorkspaceViews);
   const [workspaceKeymap, setWorkspaceKeymap] = useState<WorkspaceKeymap>(() => (
     normalizeWorkspaceKeymap(loadLocalValue<unknown>(
       WORKSPACE_KEYMAP_STORAGE_KEY,
@@ -449,6 +450,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   tabColorsRef.current = tabColors;
   workspaceRootRef.current = workspaceRoot;
   activePaneIdRef.current = activePaneId;
+  closedWorkspaceViewsRef.current = closedWorkspaceViews;
   detachedCommandHandlerRef.current = (command) => {
     if (command.action === "lock-screen") {
       lockScreen("manual");
@@ -490,6 +492,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const next = typeof update === "function" ? update(activePaneIdRef.current) : update;
     activePaneIdRef.current = next;
     setActivePaneIdState(next);
+  }
+
+  function setClosedWorkspaceViews(update: SetStateAction<ClosedWorkspaceView[]>) {
+    const next = typeof update === "function" ? update(closedWorkspaceViewsRef.current) : update;
+    closedWorkspaceViewsRef.current = next;
+    setClosedWorkspaceViewsState(next);
   }
   profileUpdateHandlerRef.current = (summary) => {
     if (!summary?.profile?.id) return;
@@ -1083,7 +1091,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (!event.repeat) setFocusMode((current) => !current);
         return;
       }
-      const panes = workspacePaneLeaves(workspaceRoot);
+      const panes = workspacePaneLeaves(workspaceRootRef.current);
       const hadPendingChord = Boolean(chordPrefix);
       if (hadPendingChord && event.repeat) {
         consumeWorkspaceHotkey(event);
@@ -1099,7 +1107,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         panes.length,
         workspaceKeymap,
         chordPrefix,
-        { terminalKeyMode: activeTerminalKeyMode },
+        { terminalKeyMode: currentWorkspaceTarget()?.view.keyMode ?? activeTerminalKeyMode },
       );
       if (hadPendingChord && isModifierKeyEvent(event)) return;
       if (hadPendingChord) {
@@ -1118,7 +1126,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (resolution.kind !== "action") return;
       const hotkey = resolution.action;
       if (hotkey.kind === "focus") {
-        const nextPane = findWorkspacePaneInDirection(workspaceRoot, activePaneId, hotkey.direction);
+        const nextPane = findWorkspacePaneInDirection(
+          workspaceRootRef.current,
+          activePaneIdRef.current,
+          hotkey.direction,
+        );
         if (nextPane) activateWorkspacePane(nextPane.id, nextPane.activeViewId);
       } else if (hotkey.kind === "cycle-view") {
         cycleActiveWorkspaceView(hotkey.offset);
@@ -1655,6 +1667,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function refreshActiveLog(sessionId: string, limit = 600) {
+    if (!sessionsRef.current.some((session) => session.profile.id === sessionId)) return;
     const gate = activeLogRefreshGateRef.current;
     const token = gate.begin(sessionId);
     if (token === null) return;
@@ -1684,6 +1697,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function beginSerialCaptureAction(sessionId: string): number | null {
+    const session = sessionsRef.current.find((candidate) => candidate.profile.id === sessionId);
+    if (!session || session.profile.connection.kind !== "serial") return null;
     if (serialCaptureActionTokensRef.current.has(sessionId)) return null;
     const token = serialCaptureOperationGateRef.current.replace(sessionId);
     serialCaptureActionTokensRef.current.set(sessionId, token);
@@ -1707,6 +1722,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function refreshSerialCapture(sessionId: string) {
+    const session = sessionsRef.current.find((candidate) => candidate.profile.id === sessionId);
+    if (!session || session.profile.connection.kind !== "serial") return;
     const gate = serialCaptureOperationGateRef.current;
     const token = gate.begin(sessionId);
     if (token === null) return;
@@ -1823,6 +1840,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ).length, [activeId, paneSessions, syncInputSettings]);
 
   function handleMenuAction(item: MenuItem | "会话搜索") {
+    const renderedActiveId = active?.profile.id ?? "";
+    const activeSnapshotStale = renderedActiveId !== activeIdRef.current;
+    const currentActive = active?.profile.id === activeIdRef.current
+      ? sessionsRef.current.find((session) => session.profile.id === activeIdRef.current)
+      : undefined;
+    const terminalKeyMode = terminalKeyModeMenuItems[item];
+    const sessionBoundItem = terminalKeyMode || [
+      "查找",
+      "自由输入",
+      "跳转到行",
+      "导出终端文本",
+      "导出选中文本",
+      "启动会话",
+      "关闭会话",
+      "会话设置",
+      "端口转发",
+      "触发器",
+      "Sysmon",
+      "串口分析器",
+      "Tmux",
+      "传输任务",
+      "复制会话",
+    ].includes(item);
+    if (activeSnapshotStale && sessionBoundItem) return;
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) {
       const visible = focusMode || !workspacePanels[workspacePanel];
@@ -1859,12 +1900,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "查找") {
-      if (active) requestTerminalSearch();
+      if (currentActive) requestTerminalSearch();
       else setNotice({ title: "查找", message: "请先打开一个终端会话。" });
       return;
     }
     if (item === "自由输入") {
-      if (active) requestTerminalFreeInput();
+      if (currentActive) requestTerminalFreeInput();
       else setNotice({ title: "自由输入", message: "请先打开一个终端会话。" });
       return;
     }
@@ -1883,7 +1924,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "跳转到行") {
-      if (active) requestTerminalGotoLine();
+      if (currentActive) requestTerminalGotoLine();
       else setNotice({ title: "跳转到行", message: "请先打开一个终端会话。" });
       return;
     }
@@ -1891,7 +1932,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       void exportTerminalText(item === "导出终端文本" ? "buffer" : "selection");
       return;
     }
-    const terminalKeyMode = terminalKeyModeMenuItems[item];
     if (terminalKeyMode) {
       setActiveWorkspaceViewKeyMode(terminalKeyMode);
       return;
@@ -1917,21 +1957,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "启动会话") {
-      void connectSession();
+      if (currentActive) void connectSession(currentActive.profile.id);
       return;
     }
     if (item === "关闭会话") {
-      void disconnectSession();
+      if (currentActive) void disconnectSession(currentActive.profile.id);
       return;
     }
     if (item === "会话设置") {
-      if (!active) return;
-      openSessionProfileDialog(active.profile, active.profile, "会话");
+      if (!currentActive) return;
+      openSessionProfileDialog(currentActive.profile, currentActive.profile, "会话");
       return;
     }
     if (["端口转发", "触发器", "密钥管理器"].includes(item)) {
       if (item === "端口转发") {
-        if (!active || !isSshLikeProfile(active.profile) || active.runtime.status !== "connected") {
+        if (!currentActive || !isSshLikeProfile(currentActive.profile) || currentActive.runtime.status !== "connected") {
           setNotice({ title: "端口转发", message: "请选择一个已保存并已连接的 SSH/Tmux 会话后再创建 tunnel。" });
           return;
         }
@@ -1939,15 +1979,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       }
       if (item === "触发器") {
-        if (!active) return;
-        openSessionProfileDialog(active.profile, active.profile, "触发器");
+        if (!currentActive) return;
+        openSessionProfileDialog(currentActive.profile, currentActive.profile, "触发器");
         return;
       }
       setUtilityDialog("keys");
       return;
     }
     if (item === "Sysmon") {
-      if (!active) {
+      if (!currentActive) {
         setNotice({ title: "Sysmon", message: "请先选择一个会话。" });
         return;
       }
@@ -1955,15 +1995,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "串口分析器") {
-      if (!active || active.profile.connection.kind !== "serial") {
+      if (!currentActive || currentActive.profile.connection.kind !== "serial") {
         setNotice({ title: "串口分析器", message: "请先选择一个串口会话。" });
         return;
       }
-      void openSerialAnalyzer(active);
+      void openSerialAnalyzer(currentActive);
       return;
     }
     if (item === "Tmux") {
-      if (!active || !isSshLikeProfile(active.profile) || active.runtime.status !== "connected") {
+      if (!currentActive || !isSshLikeProfile(currentActive.profile) || currentActive.runtime.status !== "connected") {
         setNotice({ title: "Tmux", message: "请选择一个已连接的 SSH/Tmux 会话后再管理 tmux。" });
         return;
       }
@@ -1971,7 +2011,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "传输任务") {
-      if (!active) {
+      if (!currentActive) {
         setNotice({ title: item, message: "请先选择一个会话。" });
         return;
       }
@@ -1979,7 +2019,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "复制会话") {
-      duplicateSessionFromContext();
+      if (currentActive) duplicateSessionFromContext(currentActive.profile.id);
       return;
     }
     if (item === "还原布局") {
@@ -2468,6 +2508,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function handleContextMenuAction(action: SessionContextAction, sessionId?: string | null) {
     setContextMenu(null);
     const target = contextSession(sessionId);
+    if (sessionId && !target) return;
     switch (action) {
       case "sync-toggle":
         updateSyncInput(!syncInputRef.current);
@@ -2494,10 +2535,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void saveSessionFromContext(sessionId);
         return;
       case "split-h":
-        splitWorkspace(workspaceSplitDirectionForVisualOrientation("horizontal"));
+        if (target) {
+          splitWorkspace(
+            workspaceSplitDirectionForVisualOrientation("horizontal"),
+            "second",
+            findWorkspacePaneBySession(workspaceRootRef.current, target.profile.id)?.id,
+            target.profile.id,
+          );
+        }
         return;
       case "split-v":
-        splitWorkspace(workspaceSplitDirectionForVisualOrientation("vertical"));
+        if (target) {
+          splitWorkspace(
+            workspaceSplitDirectionForVisualOrientation("vertical"),
+            "second",
+            findWorkspacePaneBySession(workspaceRootRef.current, target.profile.id)?.id,
+            target.profile.id,
+          );
+        }
         return;
       case "move-group":
         void moveSessionToGroupFromContext(sessionId);
@@ -2656,7 +2711,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function cycleActiveWorkspaceView(offset: -1 | 1) {
-    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    const pane = findWorkspacePane(workspaceRootRef.current, activePaneIdRef.current);
     const view = pane ? workspacePaneViewAtOffset(pane, offset) : undefined;
     if (!pane || !view) return;
     if (view.id !== pane.activeViewId) activateWorkspacePane(pane.id, view.id);
@@ -2665,12 +2720,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function setActiveWorkspaceViewKeyMode(
     keyMode: TerminalKeyMode,
-    paneId = activePaneId,
-    viewId = findWorkspacePane(workspaceRoot, paneId)?.activeViewId,
+    paneId?: string,
+    viewId?: string,
   ) {
-    if (!viewId) return;
-    setWorkspaceRoot((current) => setWorkspacePaneViewKeyMode(current, paneId, viewId, keyMode));
-    focusWorkspacePaneInput(paneId);
+    const targetPaneId = paneId ?? activePaneIdRef.current;
+    const targetViewId = viewId ?? findWorkspacePane(workspaceRootRef.current, targetPaneId)?.activeViewId;
+    if (!targetPaneId || !targetViewId) return;
+    setWorkspaceRoot((current) => setWorkspacePaneViewKeyMode(current, targetPaneId, targetViewId, keyMode));
+    focusWorkspacePaneInput(targetPaneId);
   }
 
   function restoreWorkspaceLayout() {
@@ -2691,26 +2748,32 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function splitWorkspace(
     direction: WorkspaceSplitDirection,
     placement: WorkspaceSplitPlacement = "second",
-    paneId = activePaneId,
-    sessionId = activeId,
+    paneId?: string,
+    sessionId?: string,
   ) {
-    const primaryId = sessionId || sessions[0]?.profile.id;
+    const currentSessions = sessionsRef.current;
+    if (sessionId && !currentSessions.some((session) => session.profile.id === sessionId)) return;
+    const currentActiveId = activeIdRef.current;
+    const primaryId = sessionId
+      ?? (currentSessions.some((session) => session.profile.id === currentActiveId) ? currentActiveId : currentSessions[0]?.profile.id);
     if (!primaryId) {
       openNewSessionDialog();
       return;
     }
-    const root = workspaceRoot ?? createWorkspacePane(primaryId, paneId || createWorkspaceNodeId("pane"));
+    const currentRoot = workspaceRootRef.current;
+    const targetPaneId = paneId ?? activePaneIdRef.current;
+    const root = currentRoot ?? createWorkspacePane(primaryId, targetPaneId || createWorkspaceNodeId("pane"));
     const panes = workspacePaneLeaves(root);
     if (panes.length >= MAX_WORKSPACE_PANES) {
       setNotice({ title: "分屏", message: `最多同时打开 ${MAX_WORKSPACE_PANES} 个窗格。` });
       return;
     }
-    const targetPane = findWorkspacePane(root, paneId)
+    const targetPane = findWorkspacePane(root, targetPaneId)
       ?? findWorkspacePaneBySession(root, primaryId)
       ?? panes[0];
     if (!targetPane) return;
     const openSessionIds = new Set(panes.flatMap((pane) => pane.views.map((view) => view.sessionId)));
-    const nextId = sessions.find((session) => !openSessionIds.has(session.profile.id))?.profile.id ?? primaryId;
+    const nextId = currentSessions.find((session) => !openSessionIds.has(session.profile.id))?.profile.id ?? primaryId;
     const nextRoot = splitWorkspacePane(
       root,
       targetPane.id,
@@ -2737,18 +2800,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     ));
   }
 
-  function duplicateActiveWorkspaceView(paneId = activePaneId, viewId?: string) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
-    const source = pane?.views.find((view) => view.id === (viewId ?? pane.activeViewId));
-    if (!pane || !source) return;
+  function duplicateActiveWorkspaceView(paneId?: string, viewId?: string) {
+    const current = currentWorkspaceTarget({ paneId: paneId ?? activePaneIdRef.current, viewId });
+    if (!current) return;
+    const { pane, view: source } = current;
     if (pane.views.length >= MAX_WORKSPACE_GROUP_TABS) {
       setNotice({ title: "复制视图", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
       return;
     }
-    const sessionName = sessions.find((session) => session.profile.id === source.sessionId)?.profile.name ?? "会话";
+    const currentSessions = sessionsRef.current;
+    const sessionName = current.session.profile.name;
     const baseTitle = source.title || sessionName;
     const labels = new Set(pane.views.map((view) => (
-      view.title || sessions.find((session) => session.profile.id === view.sessionId)?.profile.name || "会话"
+      view.title || currentSessions.find((session) => session.profile.id === view.sessionId)?.profile.name || "会话"
     )));
     let duplicateTitle = `${baseTitle} 副本`;
     let suffix = 2;
@@ -2757,19 +2821,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       suffix += 1;
     }
     const duplicateId = createWorkspaceNodeId("view");
-    const nextRoot = duplicateWorkspacePaneView(workspaceRoot, pane.id, source.id, duplicateId, duplicateTitle);
-    if (nextRoot === workspaceRoot) return;
+    const currentRoot = workspaceRootRef.current;
+    const nextRoot = duplicateWorkspacePaneView(currentRoot, pane.id, source.id, duplicateId, duplicateTitle);
+    if (nextRoot === currentRoot) return;
     setWorkspaceRoot(nextRoot);
     setActivePaneId(pane.id);
     setActiveId(source.sessionId);
     focusWorkspacePaneInput(pane.id);
   }
 
-  function openWorkspaceViewRename(paneId = activePaneId, viewId?: string) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
-    const view = pane?.views.find((candidate) => candidate.id === (viewId ?? pane.activeViewId));
-    const sessionName = sessions.find((session) => session.profile.id === view?.sessionId)?.profile.name;
-    if (!pane || !view || !sessionName) return;
+  function openWorkspaceViewRename(paneId?: string, viewId?: string) {
+    const current = currentWorkspaceTarget({ paneId: paneId ?? activePaneIdRef.current, viewId });
+    if (!current) return;
+    const { pane, view, session } = current;
+    const sessionName = session.profile.name;
     setWorkspaceViewRename({
       paneId: pane.id,
       viewId: view.id,
@@ -2800,9 +2865,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function openWorkspaceViewContextMenu(paneId: string, viewId: string, x: number, y: number) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
-    const view = pane?.views.find((candidate) => candidate.id === viewId);
-    if (!pane || !view) return;
+    const current = currentWorkspaceTarget({ paneId, viewId });
+    if (!current) return;
+    const { pane, view } = current;
     activateWorkspacePane(pane.id, view.id);
     setOpenMenu(null);
     setContextMenu(null);
@@ -2810,13 +2875,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function changeWorkspaceViewColor(paneId: string, viewId: string, color: string) {
+    if (!currentWorkspaceTarget({ paneId, viewId })) return;
     setWorkspaceRoot((current) => setWorkspacePaneViewColor(current, paneId, viewId, color));
     setWorkspaceViewContextMenu(null);
     focusWorkspacePaneInput(paneId);
   }
 
   function closeWorkspaceViews(paneId: string, viewIds: string[]) {
-    const panes = workspacePaneLeaves(workspaceRoot);
+    const currentRoot = workspaceRootRef.current;
+    const panes = workspacePaneLeaves(currentRoot);
     const source = panes.find((pane) => pane.id === paneId);
     if (!source) return;
     const requested = new Set(viewIds);
@@ -2830,20 +2897,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
 
-    let nextRoot = workspaceRoot;
+    let nextRoot = currentRoot;
     for (const item of closedViews) {
       nextRoot = removeWorkspacePaneView(nextRoot, paneId, item.view.id);
     }
-    if (nextRoot === workspaceRoot) return;
+    if (nextRoot === currentRoot) return;
     const nextPanes = workspacePaneLeaves(nextRoot);
     const sourceIndex = panes.findIndex((pane) => pane.id === paneId);
-    const nextActive = nextPanes.find((pane) => pane.id === activePaneId)
+    const currentActivePaneId = activePaneIdRef.current;
+    const nextActive = nextPanes.find((pane) => pane.id === currentActivePaneId)
       ?? nextPanes[Math.min(Math.max(0, sourceIndex), nextPanes.length - 1)];
     if (!nextActive) return;
     for (const item of closedViews) invalidateTerminalExportOperation(item.view.id);
     invalidateWorkspaceViewDetachOperations(closedViews.map((item) => item.view.id));
-    const shouldRefocus = nextActive.id !== activePaneId
-      || (paneId === activePaneId && closedViews.some((item) => item.view.id === source.activeViewId));
+    const shouldRefocus = nextActive.id !== currentActivePaneId
+      || (paneId === currentActivePaneId && closedViews.some((item) => item.view.id === source.activeViewId));
     setWorkspaceRoot(nextRoot);
     setActivePaneId(nextActive.id);
     setActiveId(workspacePaneActiveView(nextActive).sessionId);
@@ -2853,12 +2921,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function closeActiveWorkspaceView() {
-    const pane = findWorkspacePane(workspaceRoot, activePaneId);
+    const pane = findWorkspacePane(workspaceRootRef.current, activePaneIdRef.current);
     if (pane) closeWorkspaceViews(pane.id, [pane.activeViewId]);
   }
 
-  function closeOtherWorkspaceViews(paneId = activePaneId, viewId?: string) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
+  function closeOtherWorkspaceViews(paneId = activePaneIdRef.current, viewId?: string) {
+    const pane = findWorkspacePane(workspaceRootRef.current, paneId);
     if (!pane) return;
     const activeViewId = viewId ?? pane.activeViewId;
     const viewIds = pane.views.filter((view) => view.id !== activeViewId).map((view) => view.id);
@@ -2869,8 +2937,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     closeWorkspaceViews(pane.id, viewIds);
   }
 
-  function closeRightWorkspaceViews(paneId = activePaneId, viewId?: string) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
+  function closeRightWorkspaceViews(paneId = activePaneIdRef.current, viewId?: string) {
+    const pane = findWorkspacePane(workspaceRootRef.current, paneId);
     if (!pane) return;
     const activeIndex = pane.views.findIndex((view) => view.id === (viewId ?? pane.activeViewId));
     if (activeIndex < 0) return;
@@ -2883,8 +2951,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function reopenClosedWorkspaceView() {
-    let historyIndex = closedWorkspaceViews.length - 1;
-    while (historyIndex >= 0 && !sessions.some((session) => session.profile.id === closedWorkspaceViews[historyIndex].view.sessionId)) {
+    const history = closedWorkspaceViewsRef.current;
+    const currentSessions = sessionsRef.current;
+    let historyIndex = history.length - 1;
+    while (historyIndex >= 0 && !currentSessions.some((session) => session.profile.id === history[historyIndex].view.sessionId)) {
       historyIndex -= 1;
     }
     if (historyIndex < 0) {
@@ -2892,16 +2962,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setNotice({ title: "重新打开已关闭视图", message: "没有可重新打开的视图。" });
       return;
     }
-    const closedView = closedWorkspaceViews[historyIndex];
-    const panes = workspacePaneLeaves(workspaceRoot);
-    const candidateIds = [closedView.paneId, activePaneId, ...panes.map((pane) => pane.id)];
+    const closedView = history[historyIndex];
+    const currentRoot = workspaceRootRef.current;
+    const panes = workspacePaneLeaves(currentRoot);
+    const candidateIds = [closedView.paneId, activePaneIdRef.current, ...panes.map((pane) => pane.id)];
     const target = candidateIds
       .filter((paneId, index) => paneId && candidateIds.indexOf(paneId) === index)
       .map((paneId) => panes.find((pane) => pane.id === paneId))
       .find((pane) => pane && (
         pane.views.length < MAX_WORKSPACE_GROUP_TABS
       ));
-    if (!target || !workspaceRoot) {
+    if (!target || !currentRoot) {
       setNotice({ title: "重新打开已关闭视图", message: `所有分组均已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
       return;
     }
@@ -2909,17 +2980,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ? closedView.index
       : target.views.length;
     const nextRoot = insertWorkspacePaneView(
-      workspaceRoot,
+      currentRoot,
       target.id,
       closedView.view,
       insertionIndex,
     );
-    if (nextRoot === workspaceRoot) return;
+    if (nextRoot === currentRoot) return;
     setWorkspaceRoot(nextRoot);
     setActivePaneId(target.id);
     setActiveId(closedView.view.sessionId);
     setZoomedPaneId((current) => current ? target.id : "");
-    setClosedWorkspaceViews((current) => current.slice(0, historyIndex));
+    setClosedWorkspaceViews(history.slice(0, historyIndex));
     focusWorkspacePaneInput(target.id);
   }
 
@@ -3017,35 +3088,39 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  function closeWorkspacePane(paneId = activePaneId, recordHistory = true) {
-    const panes = workspacePaneLeaves(workspaceRoot);
-    if (panes.length <= 1 || !paneId) return;
-    const removedIndex = panes.findIndex((pane) => pane.id === paneId);
+  function closeWorkspacePane(paneId?: string, recordHistory = true) {
+    const currentRoot = workspaceRootRef.current;
+    const currentActivePaneId = activePaneIdRef.current;
+    const targetPaneId = paneId ?? currentActivePaneId;
+    const panes = workspacePaneLeaves(currentRoot);
+    if (panes.length <= 1 || !targetPaneId) return;
+    const removedIndex = panes.findIndex((pane) => pane.id === targetPaneId);
     if (removedIndex < 0) return;
     const removedPane = panes[removedIndex];
     invalidateWorkspaceViewDetachOperations(removedPane.views.map((view) => view.id));
-    const nextRoot = removeWorkspacePane(workspaceRoot, paneId);
+    const nextRoot = removeWorkspacePane(currentRoot, targetPaneId);
     const nextPanes = workspacePaneLeaves(nextRoot);
-    const currentActive = nextPanes.find((pane) => pane.id === activePaneId);
+    const currentActive = nextPanes.find((pane) => pane.id === currentActivePaneId);
     const nextActive = currentActive ?? nextPanes[Math.min(removedIndex, nextPanes.length - 1)];
     setWorkspaceRoot(nextRoot);
     setActivePaneId(nextActive?.id ?? "");
-    setActiveId(nextActive ? workspacePaneActiveView(nextActive).sessionId : activeId);
+    setActiveId(nextActive ? workspacePaneActiveView(nextActive).sessionId : activeIdRef.current);
     setZoomedPaneId((current) => current ? nextActive?.id ?? "" : "");
     if (recordHistory) {
-      pushClosedWorkspaceViews(removedPane.views.map((view, index) => ({ view, paneId, index })));
+      pushClosedWorkspaceViews(removedPane.views.map((view, index) => ({ view, paneId: targetPaneId, index })));
     }
   }
 
   function splitWorkspaceViewToGroup(
     direction: WorkspaceSplitDirection,
     placement: WorkspaceSplitPlacement,
-    sourcePaneId = activePaneId,
+    sourcePaneId = activePaneIdRef.current,
     sourceViewId?: string,
   ) {
-    const panes = workspacePaneLeaves(workspaceRoot);
-    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
-    if (!workspaceRoot || !source) return;
+    const currentRoot = workspaceRootRef.current;
+    const panes = workspacePaneLeaves(currentRoot);
+    const source = findWorkspacePane(currentRoot, sourcePaneId);
+    if (!currentRoot || !source) return;
     if (source.views.length <= 1) {
       setNotice({ title: "视图拆分到新分组", message: "当前分组至少需要保留一个其他视图。" });
       return;
@@ -3057,7 +3132,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const newPaneId = createWorkspaceNodeId("pane");
     const activeView = source.views.find((view) => view.id === sourceViewId) ?? workspacePaneActiveView(source);
     const nextRoot = splitWorkspacePaneViewToGroup(
-      workspaceRoot,
+      currentRoot,
       source.id,
       activeView.id,
       direction,
@@ -3065,7 +3140,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       createWorkspaceNodeId("split"),
       placement,
     );
-    if (nextRoot === workspaceRoot) {
+    if (nextRoot === currentRoot) {
       setNotice({ title: "视图拆分到新分组", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
       return;
     }
@@ -3082,16 +3157,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     targetPaneId: string,
     edge: WorkspacePaneDirection,
   ) {
-    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
-    const target = findWorkspacePane(workspaceRoot, targetPaneId);
+    const currentRoot = workspaceRootRef.current;
+    const source = findWorkspacePane(currentRoot, sourcePaneId);
+    const target = findWorkspacePane(currentRoot, targetPaneId);
     const view = source?.views.find((candidate) => candidate.id === viewId);
-    if (!workspaceRoot || !source || !target || !view) return;
+    if (!currentRoot || !source || !target || !view) return;
     if (sourcePaneId === targetPaneId && source.views.length <= 1) {
       setNotice({ title: "拖放视图", message: "最终视图不能拆成空分组。" });
       return;
     }
     const paneDelta = source.views.length > 1 ? 1 : 0;
-    if (workspacePaneLeaves(workspaceRoot).length + paneDelta > MAX_WORKSPACE_PANES) {
+    if (workspacePaneLeaves(currentRoot).length + paneDelta > MAX_WORKSPACE_PANES) {
       setNotice({ title: "拖放视图", message: `工作区最多支持 ${MAX_WORKSPACE_PANES} 个分组。` });
       return;
     }
@@ -3099,7 +3175,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const placement: WorkspaceSplitPlacement = edge === "left" || edge === "up" ? "first" : "second";
     const newPaneId = createWorkspaceNodeId("pane");
     const nextRoot = moveWorkspacePaneViewToNewGroup(
-      workspaceRoot,
+      currentRoot,
       sourcePaneId,
       targetPaneId,
       viewId,
@@ -3108,7 +3184,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       createWorkspaceNodeId("split"),
       placement,
     );
-    if (nextRoot === workspaceRoot) {
+    if (nextRoot === currentRoot) {
       setNotice({ title: "拖放视图", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
       return;
     }
@@ -3120,7 +3196,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function moveWorkspaceView(sourcePaneId: string, targetPaneId: string) {
-    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
+    const source = findWorkspacePane(workspaceRootRef.current, sourcePaneId);
     if (!source || sourcePaneId === targetPaneId) return;
     const activeView = workspacePaneActiveView(source);
     moveWorkspaceViewToIndex(sourcePaneId, activeView.id, targetPaneId, Number.POSITIVE_INFINITY);
@@ -3132,16 +3208,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     targetPaneId: string,
     targetIndex: number,
   ) {
-    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
-    const target = findWorkspacePane(workspaceRoot, targetPaneId);
+    const currentRoot = workspaceRootRef.current;
+    const source = findWorkspacePane(currentRoot, sourcePaneId);
+    const target = findWorkspacePane(currentRoot, targetPaneId);
     const view = source?.views.find((candidate) => candidate.id === viewId);
     if (!source || !target || !view) return;
     if (sourcePaneId !== targetPaneId && target.views.length >= MAX_WORKSPACE_GROUP_TABS) {
       setNotice({ title: "移动视图到分组", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
       return;
     }
-    const nextRoot = moveWorkspacePaneView(workspaceRoot, sourcePaneId, targetPaneId, view.id, targetIndex);
-    if (nextRoot === workspaceRoot) return;
+    const nextRoot = moveWorkspacePaneView(currentRoot, sourcePaneId, targetPaneId, view.id, targetIndex);
+    if (nextRoot === currentRoot) return;
     setWorkspaceRoot(nextRoot);
     setActivePaneId(targetPaneId);
     setActiveId(view.sessionId);
@@ -3151,15 +3228,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function mergeWorkspaceGroup(sourcePaneId: string, targetPaneId: string) {
-    const source = findWorkspacePane(workspaceRoot, sourcePaneId);
-    const target = findWorkspacePane(workspaceRoot, targetPaneId);
+    const currentRoot = workspaceRootRef.current;
+    const source = findWorkspacePane(currentRoot, sourcePaneId);
+    const target = findWorkspacePane(currentRoot, targetPaneId);
     if (!source || !target || sourcePaneId === targetPaneId) return;
     if (target.views.length + source.views.length > MAX_WORKSPACE_GROUP_TABS) {
       setNotice({ title: "合并当前分组", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
       return;
     }
-    const nextRoot = mergeWorkspacePaneGroups(workspaceRoot, sourcePaneId, targetPaneId);
-    if (nextRoot === workspaceRoot) return;
+    const nextRoot = mergeWorkspacePaneGroups(currentRoot, sourcePaneId, targetPaneId);
+    if (nextRoot === currentRoot) return;
     setWorkspaceRoot(nextRoot);
     setActivePaneId(targetPaneId);
     setActiveId(workspacePaneActiveView(source).sessionId);
@@ -3249,14 +3327,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function openSerialAnalyzer(session: SessionSummary) {
+    const currentSession = sessionsRef.current.find((candidate) => candidate.profile.id === session.profile.id);
+    if (!currentSession || currentSession.profile.connection.kind !== "serial") return;
     const request: SerialAnalyzerRequest = {
       windowId: createWorkspaceNodeId("pane").replace(/^pane-/, "serial-analyzer-").replace(/[^A-Za-z0-9_-]/g, "-"),
       ownerWindowId,
-      sessionId: session.profile.id,
+      sessionId: currentSession.profile.id,
     };
     try {
       const { openSerialAnalyzerWindow } = await import("./serial-analyzer-window");
-      await openSerialAnalyzerWindow(request, session.profile.name);
+      const latestSession = sessionsRef.current.find((candidate) => candidate.profile.id === request.sessionId);
+      if (!latestSession || latestSession.profile.connection.kind !== "serial") return;
+      await openSerialAnalyzerWindow(request, latestSession.profile.name);
     } catch (error) {
       setNotice({ title: "打开串口分析器失败", message: formatError(error) });
     }
@@ -3299,18 +3381,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: true, error: "" };
   }
 
-  function swapWorkspacePane(direction: WorkspacePaneDirection, sourcePaneId = activePaneId) {
-    const nextPane = findWorkspacePaneInDirection(workspaceRoot, sourcePaneId, direction);
+  function swapWorkspacePane(direction: WorkspacePaneDirection, sourcePaneId = activePaneIdRef.current) {
+    const currentRoot = workspaceRootRef.current;
+    const nextPane = findWorkspacePaneInDirection(currentRoot, sourcePaneId, direction);
     if (!nextPane) {
       setNotice({ title: "交换窗格", message: "该方向没有可交换的窗格。" });
       return;
     }
-    setWorkspaceRoot(swapWorkspacePanes(workspaceRoot, sourcePaneId, nextPane.id));
+    setWorkspaceRoot(swapWorkspacePanes(currentRoot, sourcePaneId, nextPane.id));
     focusWorkspacePaneInput(sourcePaneId);
   }
 
-  function toggleWorkspaceZoom(paneId = activePaneId) {
-    if (workspacePaneLeaves(workspaceRoot).length <= 1 || !paneId) return;
+  function toggleWorkspaceZoom(paneId = activePaneIdRef.current) {
+    const currentRoot = workspaceRootRef.current;
+    if (workspacePaneLeaves(currentRoot).length <= 1 || !findWorkspacePane(currentRoot, paneId)) return;
     setZoomedPaneId((current) => current === paneId ? "" : paneId);
     focusWorkspacePaneInput(paneId);
   }
@@ -3405,7 +3489,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function connectSession(
-    sessionId = activeId,
+    sessionId = activeIdRef.current,
     sessionOverride?: SessionSummary,
     activateWorkspace = true,
     interaction: ConnectionInteraction = "interactive",
@@ -3589,7 +3673,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setHostKeyPrompt(null);
   }
 
-  async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
+  async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
     const closeToken = beginSessionDisconnect(sessionId);
     if (closeToken === null) return null;
     const closeIsCurrent = () => connectionCloseGateRef.current.isCurrent(sessionId, closeToken);
