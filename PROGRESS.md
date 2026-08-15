@@ -84,6 +84,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同日从当前 HEAD `5ff025e` 重新生成并验证包含 Ruby MCP SDK 1.2.0 矩阵的 Linux 与 Windows 产物。Linux DEB、RPM 和 AppImage 分别为 15,789,838、15,788,303 和 91,900,408 字节，SHA-256 分别为 `2fe568f2624f98affba775c94206e685dbd28167efcfbbb2bf3334c66ff9c5a0`、`ff4bc5fd594330a9b4cb96103bbc7e45df409c00904cba23b69281c6c5bdf0a6` 和 `67a80390f9a6c234ab62548cedb9f50c72de25a1347472ace11ed9c173c6c619`。三个包均通过结构、权限、CSP/capability、许可证、Store 重启/迁移/双 Store fail-closed、IPC 凭据轮换、sidecar 父进程异常退出清理及九语言全部版本的 MCP stdio/HTTP 包级矩阵；最终 AppImage 又在 VMware/X11 上完成三次 1440x920 真实窗口启动，每次采样到 669 种颜色，并验证无操作 Store 哈希稳定、IPC 地址/凭据轮换、旧目录迁移和冲突拒绝。未签名 Windows GNU x86_64 便携 ZIP 为 22,895,661 字节，SHA-256 为 `1ea1e543016faa7d7f2c3af75b8536e8153f3c6d93513fe6d09cd1a3815f51a5`；ZIP 完整性、主程序 GUI PE32+ x86_64、MCP sidecar console PE32+ x86_64、WebView2 loader、嵌入前端资源、许可证和 payload 布局均通过。Linux 记录是本机真实包级与窗口验证；Windows 记录仅是交叉构建和静态包验证，不能替代真实 Windows 上的 WebView2、Credential Manager、MSI/NSIS、签名或启动 smoke。
 
+同日对当前 HEAD 完成附件故障路径的最终本机复验：`npm run test:terminal-compat` 中 WebGL Insert/Normal/Insert 光标依次稳定采样为 1x17、7x17 和 1x17 像素；`npm run test:workspace-ui` 完整通过 MCP 随机 Client ID、授权、会话、传输、凭据生命周期及桌面/移动布局；`npm run test:portable-cross` 完整通过 Windows GNU x86_64、macOS Apple Silicon 和 FreeBSD x86_64 的五个可移植 crate。项目与本机活动工具链均固定为 Rust/Cargo 1.97.1。以上结果确认本机可复现的 WebGL 光标、Workspace UI 和跨目标编译故障已收敛，仍不替代 Windows/macOS 原生 runner 的最终执行记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
