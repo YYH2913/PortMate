@@ -106,6 +106,8 @@ MCP 管理器补齐授权与 HTTP 配置的草稿边界：授权脏状态按 sco
 
 快速命令管理器补齐库级草稿边界：增加按顺序比较 ID、名称、命令正文和回车模式的纯状态判断，新增、编辑、删除和排序均视为未保存；标题栏关闭、背景关闭和“取消”统一确认，取消确认后逐字保留当前输入，提示不回显命令名称或正文。单元测试覆盖所有变更类型，Workspace UI 覆盖取消关闭、确认放弃和重新打开后未误保存；完整前端现为 109 文件/598 项，生产构建、Workspace UI、release-source 和 diff whitespace gate 均通过。
 
+密钥管理器补齐 Host Key、Client Identity、known_hosts 和私钥导入的草稿边界：纯状态比较只读取字段是否变化及私钥/口令是否存在，不序列化敏感正文；切换或关闭编辑器、关闭管理器均保护未保存内容，确认文字只列内容类别。Host Key 导入/更新/删除/信任和 Identity 保存/轮换/导入期间冻结会被响应覆盖的输入与导航，批量 Host Key 删除、单个 Identity 移除/清理和批量 Identity 移除均要求明确目标确认；打开 project/user scope Host Key 不再把空 profileId 隐式替换为当前 Profile。Workspace UI 在延迟导入、更新、保存和 secret 写入下验证冻结、取消关闭、迟到响应隔离及确认文字不含 known_hosts、公钥、私钥、口令或草稿标签；新增 2 项状态单测后完整前端为 110 文件/600 项，生产构建、Workspace UI、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

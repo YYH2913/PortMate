@@ -1076,7 +1076,9 @@ try {
             scope: args.request.scope,
             label: args.request.label,
           };
-          return { keys: structuredClone(window.__hostKeys) };
+          const result = { keys: structuredClone(window.__hostKeys) };
+          if (!window.__deferHostKeyMutations) return result;
+          return new Promise((resolve) => window.__pendingHostKeyMutations.push({ result, resolve }));
         }
         if (command === "list_mcp_audit") return initialMcpAudit;
         if (command === "mcp_http_config") {
@@ -5500,6 +5502,16 @@ Host staging
   await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = true; });
   await firstKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
+  assert(await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").isDisabled(),
+    "known_hosts editor remained mutable while an import was pending");
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__keyManagerClosePrompts = [];
+    window.__originalKeyManagerConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__keyManagerClosePrompts.push(String(message));
+      return true;
+    };
+  });
   await firstKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await firstKeyManager.waitFor({ state: "detached" });
   await hostKeyLifecyclePage.evaluate(() => {
@@ -5518,6 +5530,14 @@ Host staging
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
   await secondKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await secondKeyManager.waitFor({ state: "detached" });
+  const keyManagerClosePrompts = await hostKeyLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalKeyManagerConfirm;
+    return window.__keyManagerClosePrompts;
+  });
+  assert(keyManagerClosePrompts.length === 2
+    && keyManagerClosePrompts.every((prompt) => prompt.includes("known_hosts 导入内容"))
+    && keyManagerClosePrompts.every((prompt) => !prompt.includes("AAAAFIRST") && !prompt.includes("AAAASECOND")),
+  `key-manager close confirmation was missing or exposed known_hosts contents: ${JSON.stringify(keyManagerClosePrompts)}`);
 
   await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = false; });
   await hostKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
@@ -5538,10 +5558,48 @@ Host staging
   await firstHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
   const hostKeyEditPanel = thirdKeyManager.locator(".key-edit-panel");
   await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").fill("Operator label");
+  const secondHostKeyRow = thirdKeyManager.locator(".key-row", { hasText: "second.example:22" });
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__hostKeyDraftPrompts = [];
+    window.__originalHostKeyDraftConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__hostKeyDraftPrompts.push(String(message));
+      return false;
+    };
+  });
+  await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "Alias:" }).locator("input").inputValue() === "first.example"
+    && await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").inputValue() === "Operator label",
+  "Host Key editor discarded an unsaved draft after switch cancellation");
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.confirm = (message) => {
+      window.__hostKeyDraftPrompts.push(String(message));
+      return true;
+    };
+  });
+  await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  await firstHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  const hostKeyDraftPrompts = await hostKeyLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalHostKeyDraftConfirm;
+    return window.__hostKeyDraftPrompts;
+  });
+  assert(hostKeyDraftPrompts.length === 2
+    && hostKeyDraftPrompts.every((prompt) => prompt.includes("切换 Host Key"))
+    && hostKeyDraftPrompts.every((prompt) => !prompt.includes("Operator label")),
+  `Host Key draft confirmation was missing or exposed draft values: ${JSON.stringify(hostKeyDraftPrompts)}`);
+  await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").fill("Operator label");
+  await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = true; });
   await hostKeyEditPanel.getByRole("button", { name: "保存编辑", exact: true }).click();
-  await hostKeyLifecyclePage.waitForFunction(() => (
-    window.__invokeCalls.filter((call) => call.command === "update_host_key").length === 1
-  ));
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
+  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").isDisabled()
+    && await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).isDisabled(),
+  "Host Key editor remained mutable while an update was pending");
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferHostKeyMutations = false;
+    const pending = window.__pendingHostKeyMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await hostKeyEditPanel.waitFor({ state: "detached" });
   const hostKeyLifecycleState = await hostKeyLifecyclePage.evaluate(() => {
     const updates = window.__invokeCalls.filter((call) => call.command === "update_host_key");
     return {
@@ -5617,6 +5675,17 @@ Host staging
   await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = true; });
   await firstProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
+  assert(await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").isDisabled()
+    && await firstProfileManager.locator(".client-key-edit-button").first().isDisabled(),
+  "Identity editor remained mutable while a save was pending");
+  await profileLifecyclePage.evaluate(() => {
+    window.__identityClosePrompts = [];
+    window.__originalIdentityCloseConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__identityClosePrompts.push(String(message));
+      return true;
+    };
+  });
   await firstProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await firstProfileManager.waitFor({ state: "detached" });
   await profileLifecyclePage.evaluate(() => {
@@ -5635,6 +5704,14 @@ Host staging
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
   await secondProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await secondProfileManager.waitFor({ state: "detached" });
+  const identityClosePrompts = await profileLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalIdentityCloseConfirm;
+    return window.__identityClosePrompts;
+  });
+  assert(identityClosePrompts.length === 2
+    && identityClosePrompts.every((prompt) => prompt.includes("Identity 草稿"))
+    && identityClosePrompts.every((prompt) => !prompt.includes("Closed identity") && !prompt.includes("Deferred identity")),
+  `Identity close confirmation was missing or exposed draft values: ${JSON.stringify(identityClosePrompts)}`);
 
   await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = false; });
   await profileLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
@@ -5672,6 +5749,31 @@ Host staging
       "Initial identity", "Closed identity", "Closed identity",
     ]),
   `a stale Profile mutation replaced the latest identity state: ${JSON.stringify(profileLifecycleState)}`);
+  const currentIdentityLabel = thirdProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input");
+  await currentIdentityLabel.fill("Unsaved identity label");
+  await profileLifecyclePage.evaluate(() => {
+    window.__identityDraftPrompts = [];
+    window.__originalIdentityDraftConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__identityDraftPrompts.push(String(message));
+      return false;
+    };
+  });
+  await thirdProfileManager.getByRole("button", { name: "关闭 identity 检查器", exact: true }).click();
+  assert(await currentIdentityLabel.inputValue() === "Unsaved identity label"
+    && await thirdProfileManager.locator(".client-key-inspector").isVisible(),
+  "Identity inspector discarded an unsaved draft after close cancellation");
+  await currentIdentityLabel.fill("Current identity");
+  await thirdProfileManager.getByRole("button", { name: "关闭 identity 检查器", exact: true }).click();
+  await thirdProfileManager.locator(".client-key-inspector").waitFor({ state: "detached" });
+  const identityDraftPrompts = await profileLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalIdentityDraftConfirm;
+    return window.__identityDraftPrompts;
+  });
+  assert(identityDraftPrompts.length === 1
+    && identityDraftPrompts[0].includes("关闭检查器")
+    && !identityDraftPrompts[0].includes("Unsaved identity label"),
+  `Identity draft confirmation was missing or exposed draft values: ${JSON.stringify(identityDraftPrompts)}`);
   assert(profileLifecycleErrors.length === 0,
     `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
   await profileLifecyclePage.close();
@@ -5698,8 +5800,27 @@ Host staging
   await privateKeyImportLifecyclePage.evaluate(() => { window.__deferSecretWrites = true; });
   await importPanel.getByRole("button", { name: "导入到 Profile", exact: true }).click();
   await privateKeyImportLifecyclePage.waitForFunction(() => window.__pendingSecretWrites.length === 1);
+  assert(await importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true }).isDisabled(),
+    "private-key import editor remained mutable while a secret write was pending");
+  await privateKeyImportLifecyclePage.evaluate(() => {
+    window.__privateKeyClosePrompts = [];
+    window.__originalPrivateKeyCloseConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__privateKeyClosePrompts.push(String(message));
+      return true;
+    };
+  });
   await importingKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await importingKeyManager.waitFor({ state: "detached" });
+  const privateKeyClosePrompts = await privateKeyImportLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalPrivateKeyCloseConfirm;
+    return window.__privateKeyClosePrompts;
+  });
+  assert(privateKeyClosePrompts.length === 1
+    && privateKeyClosePrompts[0].includes("私钥导入内容")
+    && !privateKeyClosePrompts[0].includes("test-key-body")
+    && !privateKeyClosePrompts[0].includes("private key import vault"),
+  `private-key close confirmation was missing or exposed secret values: ${JSON.stringify(privateKeyClosePrompts)}`);
 
   await privateKeyImportLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
   await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();

@@ -58,6 +58,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   grant-revocation confirmation, and locked mutable settings while save responses are pending.
 - Fixed the quick-command manager silently discarding unsaved additions, edits, deletions, and
   ordering changes when closed from the title bar, backdrop, or Cancel action.
+- Fixed Key Manager drafts and pasted key material being discarded or overwritten by pending
+  responses, added exact destructive-action confirmation, and stopped project/user Host Keys from
+  being implicitly assigned to the currently selected Profile when opened for editing.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
