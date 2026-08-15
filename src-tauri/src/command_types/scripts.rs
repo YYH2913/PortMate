@@ -38,4 +38,5 @@ pub struct DeleteCustomScriptRequest {
 pub struct RunCustomScriptRequest {
     pub script_id: String,
     pub session_id: String,
+    pub expected_updated_at: DateTime<Utc>,
 }

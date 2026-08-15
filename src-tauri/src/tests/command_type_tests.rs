@@ -89,4 +89,13 @@ fn remaining_command_types_keep_stable_json_contracts() {
         "69c06a07-dc48-4d4e-9498-6f42b6deab21"
     );
     assert!(saved_script["scripts"].as_array().unwrap().is_empty());
+
+    let run_script = serde_json::to_value(RunCustomScriptRequest {
+        script_id: "69c06a07-dc48-4d4e-9498-6f42b6deab21".to_string(),
+        session_id: "ssh-1".to_string(),
+        expected_updated_at: "2026-08-15T04:00:00Z".parse().unwrap(),
+    })
+    .unwrap();
+    assert_eq!(run_script["sessionId"], "ssh-1");
+    assert_eq!(run_script["expectedUpdatedAt"], "2026-08-15T04:00:00Z");
 }

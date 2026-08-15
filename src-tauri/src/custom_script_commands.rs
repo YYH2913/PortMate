@@ -136,7 +136,6 @@ pub(super) fn custom_script_for_session(
 pub(super) async fn run_custom_script_inner(
     state: &AppState,
     request: RunCustomScriptRequest,
-    expected_updated_at: Option<DateTime<Utc>>,
     actor: &str,
     audit_action: Option<&str>,
     require_mcp_enabled: bool,
@@ -150,11 +149,12 @@ pub(super) async fn run_custom_script_inner(
             require_mcp_enabled,
         )?
     };
-    if expected_updated_at.is_some_and(|expected| script.updated_at != expected) {
-        return Err(
-            "MCP custom script changed after authorization; review and approve it again"
-                .to_string(),
-        );
+    if script.updated_at != request.expected_updated_at {
+        return Err(if require_mcp_enabled {
+            "MCP custom script changed after authorization; review and approve it again".to_string()
+        } else {
+            "custom script changed in another window; refresh and try again".to_string()
+        });
     }
     let text = terminate_command_for_protocol(
         script.content,
@@ -211,7 +211,6 @@ pub(crate) async fn run_custom_script(
     run_custom_script_inner(
         state.inner(),
         request,
-        None,
         "desktop-user",
         Some("run_custom_script"),
         false,

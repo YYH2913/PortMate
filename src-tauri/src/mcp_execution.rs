@@ -202,8 +202,8 @@ async fn execute_ipc_request_inner(
                 RunCustomScriptRequest {
                     script_id,
                     session_id,
+                    expected_updated_at,
                 },
-                Some(expected_updated_at),
                 &actor,
                 None,
                 true,

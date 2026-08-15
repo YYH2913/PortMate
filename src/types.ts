@@ -540,6 +540,12 @@ export interface SaveCustomScriptResponse {
   savedId: string;
 }
 
+export interface RunCustomScriptRequest {
+  scriptId: string;
+  sessionId: string;
+  expectedUpdatedAt: string;
+}
+
 export interface McpGrant {
   clientId: string;
   name: string;

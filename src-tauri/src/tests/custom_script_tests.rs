@@ -226,14 +226,27 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         RunCustomScriptRequest {
             script_id: script.id.clone(),
             session_id: session_id.clone(),
+            expected_updated_at: script.updated_at,
         },
-        Some(script.updated_at),
         "script-runner",
         None,
         true,
     ))
     .unwrap_err()
     .contains("changed after authorization"));
+    assert!(tauri::async_runtime::block_on(run_custom_script_inner(
+        &state,
+        RunCustomScriptRequest {
+            script_id: script.id.clone(),
+            session_id: session_id.clone(),
+            expected_updated_at: script.updated_at,
+        },
+        "desktop-user",
+        Some("run_custom_script"),
+        false,
+    ))
+    .unwrap_err()
+    .contains("changed in another window"));
     state.store.lock().unwrap().custom_scripts[0].updated_at = script.updated_at;
 
     state.store.lock().unwrap().custom_scripts[0].mcp_enabled = false;
@@ -314,8 +327,8 @@ fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
             RunCustomScriptRequest {
                 script_id: script.id.clone(),
                 session_id: profile.id.clone(),
+                expected_updated_at: script.updated_at,
             },
-            Some(script.updated_at),
             "desktop-user",
             Some("run_custom_script"),
             false,

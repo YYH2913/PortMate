@@ -877,6 +877,9 @@ try {
         if (command === "run_custom_script") {
           const script = window.__customScripts.find((item) => item.id === args.request.scriptId);
           if (!script) throw new Error("unknown custom script");
+          if (script.updatedAt !== args.request.expectedUpdatedAt) {
+            throw new Error("custom script changed in another window; refresh and try again");
+          }
           const event = {
             id: `script-event-${window.__invokeCalls.length}`,
             sessionId: args.request.sessionId,
@@ -3992,6 +3995,9 @@ Host staging
   });
   assert(scriptInvocation.targetAllowed
     && typeof scriptInvocation.call?.args.request.scriptId === "string"
+    && scriptInvocation.call.args.request.expectedUpdatedAt
+      === (await page.evaluate((scriptId) => window.__customScripts.find((item) => item.id === scriptId)?.updatedAt,
+        scriptInvocation.call.args.request.scriptId))
     && !Object.hasOwn(scriptInvocation.call.args.request, "content"),
   `custom script execution did not select a saved script safely: ${JSON.stringify(scriptInvocation)}`);
   await scriptNotice.getByRole("button", { name: "确定", exact: true }).click();
@@ -4015,6 +4021,24 @@ Host staging
     && customScriptBounds.actionsInsideEditor,
   `custom script desktop workspace overflows or clips actions: ${JSON.stringify(customScriptBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-custom-scripts.png`, fullPage: true });
+  const staleScriptRun = await page.evaluate((scriptId) => {
+    const script = window.__customScripts.find((item) => item.id === scriptId);
+    if (!script) throw new Error("custom script fixture disappeared");
+    const original = { content: script.content, updatedAt: script.updatedAt };
+    script.content = "echo changed-in-another-window";
+    script.updatedAt = new Date(Date.now() + 60_000).toISOString();
+    return { scriptId, original, eventCount: window.__events.length };
+  }, scriptInvocation.call.args.request.scriptId);
+  await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).click();
+  const staleRunError = customScriptDialog.getByRole("alert");
+  await staleRunError.waitFor();
+  assert((await staleRunError.textContent())?.includes("changed in another window")
+    && await page.evaluate(() => window.__events.length) === staleScriptRun.eventCount,
+  "desktop custom script execution accepted a body changed in another window");
+  await page.evaluate(({ scriptId, original }) => {
+    const script = window.__customScripts.find((item) => item.id === scriptId);
+    if (script) Object.assign(script, original);
+  }, staleScriptRun);
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 2);
   await customScriptDialog.getByRole("option", { name: /Concurrent window script/ }).click();

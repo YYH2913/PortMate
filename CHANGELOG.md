@@ -46,6 +46,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   The approval dialog now identifies the exact saved script by its trusted name and UUID.
 - Fixed custom-script creation selecting a different script when another window saved concurrently.
   The backend now returns the exact committed script ID instead of requiring the UI to infer it.
+- Fixed desktop custom-script execution accepting a body changed in another window after it was
+  reviewed. Run requests now bind the displayed `updatedAt` version and fail before sending bytes.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

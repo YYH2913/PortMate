@@ -90,6 +90,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 自定义脚本保存响应进一步返回事务内实际提交的 `savedId`，前端只按该 ID 选择本次保存结果，不再通过保存前的本地 ID 列表猜测新记录。Workspace UI 回归在保存前注入另一窗口并发创建的脚本，确认仍选中并运行用户刚保存的 `Collect diagnostics`，且测试结束会清理两条临时记录。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered，core 68、MCP 51 及其他 crate/integration/doc-test 无失败）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source、release-upgrade 和 diff whitespace gate 全部通过。
 
+桌面自定义脚本运行请求现与用户界面显示的 `updatedAt` 版本绑定：后端读取脚本正文时必须精确匹配该版本，另一窗口在审阅后修改正文、范围或 MCP 开关会在任何终端字节发出前拒绝旧请求；MCP 路径继续只使用服务端授权上下文捕获的版本，不接受客户端提供正文或版本。Workspace UI 回归会在对话框保持旧快照时直接改写后端脚本并确认运行失败且出站事件数不变。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered，core 68、MCP 51 及其他 crate/integration/doc-test 无失败）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source、release-upgrade 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

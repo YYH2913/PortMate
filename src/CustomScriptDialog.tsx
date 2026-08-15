@@ -14,7 +14,7 @@ import {
   scriptAllowsSession,
   validateCustomScriptDraft,
 } from "./custom-script-state";
-import type { CustomScript, SaveCustomScriptRequest, SaveCustomScriptResponse, SessionEvent, SessionSummary } from "./types";
+import type { CustomScript, RunCustomScriptRequest, SaveCustomScriptRequest, SaveCustomScriptResponse, SessionEvent, SessionSummary } from "./types";
 
 export default function CustomScriptDialog({
   sessions,
@@ -130,8 +130,13 @@ export default function CustomScriptDialog({
     setBusy(true);
     setError("");
     try {
+      const request: RunCustomScriptRequest = {
+        scriptId: selectedScript.id,
+        sessionId: runSessionId,
+        expectedUpdatedAt: selectedScript.updatedAt,
+      };
       await invokeBackend<SessionEvent>("run_custom_script", {
-        request: { scriptId: selectedScript.id, sessionId: runSessionId },
+        request,
       });
       const session = sessions.find((item) => item.profile.id === runSessionId);
       onNotice(`已在 ${session?.profile.name ?? runSessionId} 运行 ${selectedScript.name}`);
