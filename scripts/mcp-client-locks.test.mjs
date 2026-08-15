@@ -58,6 +58,13 @@ describe("MCP client dependency locks", () => {
     expect(source).not.toContain("--force-evaluate");
   });
 
+  it("keeps Swift resolution locked and dependency checkout serial", () => {
+    const source = script("mcp-swift-client-check.mjs");
+    expect(source).toContain('"--disable-automatic-resolution"');
+    expect(source).toContain('"--disable-prefetching"');
+    expect(source).toContain('environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1"');
+  });
+
   it("pins every external Ruby dependency used by the SDK matrix", () => {
     const requiredVersions = [
       "faradayVersion",

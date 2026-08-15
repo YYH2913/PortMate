@@ -28,28 +28,39 @@ export function isRecoverableSwiftPackageFailure(error) {
     || /repository cache.*(?:corrupt|invalid)/i.test(message);
 }
 
-export async function runSwiftBuildWithRecovery({ scratch, cache, build, onRetry }) {
+export async function runSwiftBuildWithRecovery({
+  scratch,
+  cache,
+  build,
+  onRetry,
+  attempts = 3,
+}) {
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 5) {
+    throw new Error("Swift package recovery attempts must be an integer from 1 to 5");
+  }
   resetSwiftPackageState(scratch);
-  try {
-    return await build();
-  } catch (error) {
-    if (!isRecoverableSwiftPackageFailure(error)) throw error;
-    rmSync(scratch, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
-    for (const entry of ["repositories", "manifests"]) {
-      rmSync(join(cache, entry), {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await build();
+    } catch (error) {
+      if (!isRecoverableSwiftPackageFailure(error) || attempt === attempts) throw error;
+      rmSync(scratch, {
         recursive: true,
         force: true,
         maxRetries: 3,
         retryDelay: 100,
       });
+      for (const entry of ["repositories", "manifests"]) {
+        rmSync(join(cache, entry), {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+          retryDelay: 100,
+        });
+      }
+      mkdirSync(cache, { recursive: true });
+      onRetry?.(error, { attempt, attempts });
     }
-    mkdirSync(cache, { recursive: true });
-    onRetry?.(error);
-    return build();
   }
+  throw new Error("Swift package recovery exhausted without a build result");
 }

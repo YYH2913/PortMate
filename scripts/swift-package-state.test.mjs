@@ -29,7 +29,7 @@ describe("Swift package build state", () => {
     expect(existsSync(join(scratch, "release.yaml"))).toBe(true);
   });
 
-  it("cleans scratch and shared SCM caches before one recovery retry", async () => {
+  it("cleans scratch and shared SCM caches before bounded recovery retries", async () => {
     const root = temporaryRoot();
     const scratch = join(root, "scratch");
     const cache = join(root, "cache");
@@ -40,13 +40,18 @@ describe("Swift package build state", () => {
       .mockRejectedValueOnce(new Error(
         "Failed to clone repository: fatal: repository '/tmp/swift-atomics' does not exist",
       ))
+      .mockRejectedValueOnce(new Error(
+        "working copy '/tmp/swift-system' does not exist",
+      ))
       .mockResolvedValueOnce("built");
     const onRetry = vi.fn();
 
     await expect(runSwiftBuildWithRecovery({ scratch, cache, build, onRetry }))
       .resolves.toBe("built");
-    expect(build).toHaveBeenCalledTimes(2);
-    expect(onRetry).toHaveBeenCalledOnce();
+    expect(build).toHaveBeenCalledTimes(3);
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenNthCalledWith(1, expect.any(Error), { attempt: 1, attempts: 3 });
+    expect(onRetry).toHaveBeenNthCalledWith(2, expect.any(Error), { attempt: 2, attempts: 3 });
     expect(existsSync(join(scratch, "repositories"))).toBe(false);
     expect(existsSync(join(cache, "repositories"))).toBe(false);
     expect(existsSync(join(cache, "manifests"))).toBe(false);
@@ -61,6 +66,20 @@ describe("Swift package build state", () => {
       build,
     })).rejects.toThrow("compiler error");
     expect(build).toHaveBeenCalledOnce();
+  });
+
+  it("stops after the configured recovery bound", async () => {
+    const root = temporaryRoot();
+    const build = vi.fn().mockRejectedValue(new Error(
+      "Failed to clone repository: fatal: repository '/tmp/swift-log' does not exist",
+    ));
+    await expect(runSwiftBuildWithRecovery({
+      scratch: join(root, "scratch"),
+      cache: join(root, "cache"),
+      build,
+      attempts: 2,
+    })).rejects.toThrow("swift-log");
+    expect(build).toHaveBeenCalledTimes(2);
   });
 
   it("recognizes the missing repository diagnostics emitted by SwiftPM", () => {

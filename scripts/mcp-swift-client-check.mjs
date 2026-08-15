@@ -38,6 +38,7 @@ const binary = configured || join(
 if (!existsSync(binary)) throw new Error(`MCP Swift client check binary does not exist: ${binary}`);
 
 const environment = { ...process.env };
+environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1";
 const swift = await ensureSwift(matrix.swift, environment);
 const cache = join(projectRoot, "target", "mcp-swift-cache");
 mkdirSync(cache, { recursive: true });
@@ -74,6 +75,7 @@ for (const entry of matrix.sdks) {
     "--scratch-path",
     scratch,
     "--disable-automatic-resolution",
+    "--disable-prefetching",
   ];
   buildArguments.push(
     "--configuration",
