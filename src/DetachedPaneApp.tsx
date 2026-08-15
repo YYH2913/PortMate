@@ -26,6 +26,8 @@ import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
+type DetachedOwnerControlAction = Exclude<DetachedPaneCommand["action"], "lock-screen">;
+
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -34,7 +36,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
+  const [ownerCommandBusy, setOwnerCommandBusy] = useState<DetachedOwnerControlAction | null>(null);
   const sessionRefreshGenerationRef = useRef(0);
+  const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
@@ -221,6 +225,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   }
 
   async function sendOwnerCommand(action: DetachedPaneCommand["action"]) {
+    const controlAction = action === "lock-screen" ? null : action;
+    if (controlAction && ownerCommandBusyRef.current) return;
+    if (controlAction) {
+      ownerCommandBusyRef.current = controlAction;
+      setOwnerCommandBusy(controlAction);
+    }
     const command: DetachedPaneCommand = { ...request, keyMode, action };
     try {
       if (isBackendAvailable()) {
@@ -237,6 +247,11 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       }
     } catch (commandError) {
       setError(formatDetachedError(commandError));
+    } finally {
+      if (controlAction && ownerCommandBusyRef.current === controlAction) {
+        ownerCommandBusyRef.current = null;
+        setOwnerCommandBusy(null);
+      }
     }
   }
 
@@ -247,6 +262,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       data-pane-id={request.paneId}
       data-event-count={events.length}
       data-one-key-count={oneKeys.length}
+      data-owner-command-busy={ownerCommandBusy ?? ""}
     >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
@@ -262,15 +278,15 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           <RefreshCw size={14} />
         </button>
         {connectionAction === "disconnect" ? (
-          <button type="button" title="断开会话" aria-label="断开会话" onClick={() => void sendOwnerCommand("disconnect")}>
+          <button type="button" title="断开会话" aria-label="断开会话" disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("disconnect")}>
             <Square size={13} />
           </button>
         ) : (
-          <button type="button" title="连接会话" aria-label="连接会话" disabled={!session} onClick={() => void sendOwnerCommand("connect")}>
+          <button type="button" title="连接会话" aria-label="连接会话" disabled={!session || ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("connect")}>
             <Play size={14} />
           </button>
         )}
-        <button type="button" title="返回工作区" aria-label="返回工作区" onClick={() => void sendOwnerCommand("reattach")}>
+        <button type="button" title="返回工作区" aria-label="返回工作区" disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("reattach")}>
           <PanelLeftOpen size={15} />
         </button>
       </header>

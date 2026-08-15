@@ -477,6 +477,8 @@ try {
     window.__pendingSessionOpens = [];
     window.__deferSessionCloses = false;
     window.__pendingSessionCloses = [];
+    window.__deferDetachedOwnerCommands = false;
+    window.__pendingDetachedOwnerCommands = [];
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends = [];
     window.__sessionOpenErrors = {};
@@ -1558,6 +1560,14 @@ try {
           };
         }
         if (command === "list_serial_ports") return ["/dev/ttyUSB0"];
+        if (command === "plugin:event|emit_to" && args.event === "portmate-detached-pane-command"
+          && window.__deferDetachedOwnerCommands) {
+          return new Promise((resolve, reject) => window.__pendingDetachedOwnerCommands.push({
+            args: structuredClone(args),
+            resolve: () => resolve(null),
+            reject,
+          }));
+        }
         if (command.startsWith("plugin:event|")) return null;
         return null;
       },
@@ -4624,16 +4634,55 @@ Host staging
     && detachedRuntimeHealth.connectButtons === 0
     && detachedRuntimeHealth.disconnectButtons === 1,
   `detached reconnect action or diagnostic boundary is wrong: ${JSON.stringify(detachedRuntimeHealth)}`);
-  const detachedEmitCallsBefore = await detachedPage.evaluate(() => window.__invokeCalls.length);
-  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).click();
-  const detachedDisconnectCommand = await detachedPage.evaluate((start) => (
-    window.__invokeCalls.slice(start).find((call) => call.command === "plugin:event|emit_to") ?? null
-  ), detachedEmitCallsBefore);
-  assert(detachedDisconnectCommand?.args?.target?.label === "main"
-    && detachedDisconnectCommand.args.event === "portmate-detached-pane-command"
-    && detachedDisconnectCommand.args.payload?.action === "disconnect"
-    && detachedDisconnectCommand.args.payload?.sessionId === "local-shell",
-  `detached reconnect control emitted the wrong command: ${JSON.stringify(detachedDisconnectCommand)}`);
+  const detachedEmitCallsBefore = await detachedPage.evaluate(() => {
+    window.__deferDetachedOwnerCommands = true;
+    window.__pendingDetachedOwnerCommands = [];
+    return window.__invokeCalls.length;
+  });
+  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await detachedPage.waitForFunction(() => window.__pendingDetachedOwnerCommands.length === 1);
+  const detachedOwnerBusyState = await detachedPage.locator(".detached-pane-root").evaluate((root) => ({
+    action: root.getAttribute("data-owner-command-busy"),
+    disconnectDisabled: document.querySelector('button[aria-label="断开会话"]')?.disabled,
+    reattachDisabled: document.querySelector('button[aria-label="返回工作区"]')?.disabled,
+    calls: window.__invokeCalls.filter((call) => call.command === "plugin:event|emit_to"
+      && call.args.event === "portmate-detached-pane-command").length,
+  }));
+  assert(detachedOwnerBusyState.action === "disconnect"
+    && detachedOwnerBusyState.disconnectDisabled
+    && detachedOwnerBusyState.reattachDisabled
+    && detachedOwnerBusyState.calls === 1,
+  `detached owner command did not enter a single-flight state: ${JSON.stringify(detachedOwnerBusyState)}`);
+  await detachedPage.evaluate(() => {
+    window.__pendingDetachedOwnerCommands.shift().reject(new Error("simulated detached owner command failure"));
+  });
+  await detachedPage.locator(".detached-pane-status", { hasText: "simulated detached owner command failure" }).waitFor();
+  await detachedPage.waitForFunction(() => !document.querySelector('button[aria-label="断开会话"]')?.disabled);
+  await detachedPage.getByRole("button", { name: "断开会话", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await detachedPage.waitForFunction(() => window.__pendingDetachedOwnerCommands.length === 1);
+  const detachedDisconnectCommands = await detachedPage.evaluate((start) => window.__invokeCalls.slice(start)
+    .filter((call) => call.command === "plugin:event|emit_to"), detachedEmitCallsBefore);
+  assert(detachedDisconnectCommands.length === 2
+    && detachedDisconnectCommands.every((call) => call.args?.target?.label === "main"
+      && call.args.event === "portmate-detached-pane-command"
+      && call.args.payload?.action === "disconnect"
+      && call.args.payload?.sessionId === "local-shell"),
+  `detached reconnect control emitted duplicate or malformed commands: ${JSON.stringify(detachedDisconnectCommands)}`);
+  await detachedPage.evaluate(() => {
+    window.__pendingDetachedOwnerCommands.shift().resolve();
+    window.__deferDetachedOwnerCommands = false;
+  });
+  await detachedPage.waitForFunction(() => (
+    document.querySelector(".detached-pane-root")?.getAttribute("data-owner-command-busy") === ""
+      && !document.querySelector('button[aria-label="断开会话"]')?.disabled
+      && !document.querySelector(".detached-pane-status")?.textContent?.includes("simulated detached owner command failure")
+  ));
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-health.png`, fullPage: true });
   await detachedPage.evaluate(() => {
     const index = window.__sessions.findIndex((session) => session.profile.id === "local-shell");
