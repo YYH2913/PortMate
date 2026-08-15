@@ -506,6 +506,9 @@ try {
     window.__tunnels = [];
     window.__deferTunnelMutations = false;
     window.__pendingTunnelMutations = [];
+    window.__tmuxStates = {};
+    window.__deferTmuxReads = false;
+    window.__pendingTmuxReads = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
     window.__serialCaptureFrames = [];
@@ -1036,7 +1039,9 @@ try {
           return { name: path.split("/").at(-1), path, remote: args.request.remote, kind: "file", isDir: false, isFile: true, isSymlink: false, size: 0 };
         }
         if (command === "list_tunnels") {
-          const result = structuredClone(window.__tunnels);
+          const result = structuredClone(window.__tunnels.filter((tunnel) => (
+            tunnel.spec.sessionId === args.sessionId
+          )));
           if (!window.__deferTunnelRefresh) return result;
           return new Promise((resolve) => {
             window.__pendingTunnelRefresh.push({ args: structuredClone(args), result, resolve });
@@ -1085,6 +1090,19 @@ try {
             args: structuredClone(args),
             result: structuredClone(existing),
             resolve: () => resolve(complete()),
+          }));
+        }
+        if (command === "list_tmux_state") {
+          const result = structuredClone(window.__tmuxStates[args.sessionId] ?? {
+            sessions: [],
+            windows: [],
+            panes: [],
+          });
+          if (!window.__deferTmuxReads) return result;
+          return new Promise((resolve) => window.__pendingTmuxReads.push({
+            args: structuredClone(args),
+            result,
+            resolve: () => resolve(structuredClone(result)),
           }));
         }
         if (command === "list_sysmon_history" || command === "refresh_sysmon") {
@@ -2429,6 +2447,201 @@ Host staging
     "a late tunnel stop response mutated or obscured the replacement dialog");
   await replacementTunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
   await replacementTunnelDialog.waitFor({ state: "detached" });
+
+  {
+    const page = await context.newPage();
+    const sessionBoundUtilityErrors = [];
+    page.on("pageerror", (error) => sessionBoundUtilityErrors.push(error.message));
+    await page.goto(`${appUrl}?workspaceWindow=1&windowId=session-bound-utility-regression`);
+    const initialEdgeRouterTree = page.locator(
+      ".workspace-dock-content.panel-explorer .tree-session",
+      { hasText: "Edge Router" },
+    );
+    await initialEdgeRouterTree.waitFor();
+    await initialEdgeRouterTree.click();
+    await page.evaluate(() => {
+      const edge = structuredClone(window.__sessions.find((session) => session.profile.id === "edge-router"));
+      window.__edgeRouterFixture = edge;
+      const backup = structuredClone(edge);
+      backup.profile.id = "backup-router";
+      backup.profile.name = "Backup Router";
+      backup.runtime.sessionId = "backup-router";
+      backup.runtime.paneId = "backup-router:main";
+      backup.runtime.title = "Backup Router";
+      window.__sessions.push(backup);
+      window.__tmuxStates["edge-router"] = {
+        sessions: [{ name: "edge-work", windows: 1, attached: 1, created: new Date().toISOString() }],
+        windows: [{
+          session: "edge-work",
+          windowIndex: 0,
+          windowId: "@1",
+          name: "edge-window",
+          panes: 1,
+          active: true,
+          synchronized: false,
+        }],
+        panes: [{
+          session: "edge-work",
+          windowIndex: 0,
+          paneIndex: 0,
+          paneId: "%1",
+          active: true,
+          synchronized: false,
+          command: "zsh",
+          title: "edge pane",
+        }],
+      };
+      window.__tmuxStates["backup-router"] = {
+        sessions: [{ name: "backup-work", windows: 1, attached: 0, created: new Date().toISOString() }],
+        windows: [{
+          session: "backup-work",
+          windowIndex: 0,
+          windowId: "@2",
+          name: "backup-window",
+          panes: 1,
+          active: true,
+          synchronized: false,
+        }],
+        panes: [{
+          session: "backup-work",
+          windowIndex: 0,
+          paneIndex: 0,
+          paneId: "%2",
+          active: true,
+          synchronized: false,
+          command: "bash",
+          title: "backup pane",
+        }],
+      };
+      window.__emitTauriEvent("portmate-session-profile-updated", backup);
+    });
+    const backupRouterTree = page.locator(
+      ".workspace-dock-content.panel-explorer .tree-session",
+      { hasText: "Backup Router" },
+    );
+    const edgeRouterTree = page.locator(
+      ".workspace-dock-content.panel-explorer .tree-session",
+      { hasText: "Edge Router" },
+    );
+    await backupRouterTree.waitFor();
+    await backupRouterTree.click();
+    await edgeRouterTree.click();
+    const deleteEdgeRouterExternally = async () => page.evaluate(() => {
+      window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+      window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    });
+    const restoreEdgeRouter = async () => {
+      await page.evaluate(() => {
+        const edge = structuredClone(window.__edgeRouterFixture);
+        window.__sessions.push(edge);
+        window.__emitTauriEvent("portmate-session-profile-updated", edge);
+      });
+      await edgeRouterTree.waitFor();
+      await edgeRouterTree.click();
+    };
+
+    await page.evaluate(() => {
+      window.__deferTransferMutations = true;
+      window.__pendingTransferMutations = [];
+    });
+    await page.locator(".menu-trigger", { hasText: "工具" }).click();
+    await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
+    const switchingTransferDialog = page.locator(".transfer-dialog");
+    await switchingTransferDialog.locator(".dialog-field", { hasText: "来源:" }).locator("input").fill("/tmp/edge-switch.bin");
+    await switchingTransferDialog.locator(".dialog-field", { hasText: "目标:" }).locator("input").fill("remote:/tmp/edge-switch.bin");
+    await switchingTransferDialog.evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => window.__pendingTransferMutations.length === 1);
+    await deleteEdgeRouterExternally();
+    await page.waitForFunction(() => document.querySelector(".transfer-dialog .dialog-field input")?.value === "Backup Router");
+    const switchedTransferState = await switchingTransferDialog.evaluate((dialog) => ({
+      source: [...dialog.querySelectorAll(".dialog-field")]
+        .find((field) => field.textContent?.includes("来源:"))?.querySelector("input")?.value,
+      destination: [...dialog.querySelectorAll(".dialog-field")]
+        .find((field) => field.textContent?.includes("目标:"))?.querySelector("input")?.value,
+      action: dialog.querySelector('.utility-actions button[type="submit"]')?.textContent?.trim(),
+    }));
+    assert(switchedTransferState.source === ""
+      && switchedTransferState.destination === ""
+      && switchedTransferState.action === "开始",
+    `Transfer state leaked across sessions: ${JSON.stringify(switchedTransferState)}`);
+    await page.evaluate(() => {
+      window.__pendingTransferMutations.shift().resolve();
+      window.__deferTransferMutations = false;
+    });
+    await page.waitForTimeout(100);
+    assert(await page.locator(".notice-dialog").count() === 0,
+      "a transfer response from the previous session produced a stale notice");
+    await switchingTransferDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+    await switchingTransferDialog.waitFor({ state: "detached" });
+
+    await restoreEdgeRouter();
+    await page.evaluate(() => {
+      window.__deferTunnelMutations = true;
+      window.__pendingTunnelMutations = [];
+    });
+    await page.locator(".menu-trigger", { hasText: "工具" }).click();
+    await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
+    const switchingTunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
+    await switchingTunnelDialog.locator(".dialog-field", { hasText: "监听:" }).locator("input").fill("0.0.0.0");
+    await switchingTunnelDialog.evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => window.__pendingTunnelMutations.length === 1);
+    await deleteEdgeRouterExternally();
+    await page.waitForFunction(() => [...document.querySelectorAll(".utility-dialog .dialog-field")]
+      .find((field) => field.textContent?.includes("会话:"))?.querySelector("input")?.value === "Backup Router");
+    const switchedTunnelState = await switchingTunnelDialog.evaluate((dialog) => ({
+      bindHost: [...dialog.querySelectorAll(".dialog-field")]
+        .find((field) => field.textContent?.includes("监听:"))?.querySelector("input")?.value,
+      action: dialog.querySelector('.utility-actions button[type="submit"]')?.textContent?.trim(),
+    }));
+    assert(switchedTunnelState.bindHost === "127.0.0.1" && switchedTunnelState.action === "创建",
+      `Tunnel state leaked across sessions: ${JSON.stringify(switchedTunnelState)}`);
+    await page.evaluate(() => {
+      window.__pendingTunnelMutations.shift().resolve();
+      window.__deferTunnelMutations = false;
+    });
+    await page.waitForTimeout(100);
+    assert(await page.locator(".notice-dialog").count() === 0,
+      "a tunnel response from the previous session produced a stale notice");
+    await switchingTunnelDialog.locator(".utility-actions button", { hasText: "取消" }).click();
+    await switchingTunnelDialog.waitFor({ state: "detached" });
+
+    await restoreEdgeRouter();
+    await page.locator(".menu-trigger", { hasText: "工具" }).click();
+    await page.locator(".menu-popover button", { hasText: "Tmux" }).click();
+    const switchingTmuxDialog = page.locator(".tmux-dialog");
+    await switchingTmuxDialog.locator('[data-tmux-session="edge-work"]').waitFor();
+    await page.evaluate(() => {
+      window.__deferTmuxReads = true;
+      window.__pendingTmuxReads = [];
+    });
+    await deleteEdgeRouterExternally();
+    await page.waitForFunction(() => window.__pendingTmuxReads.some((request) => (
+      request.args.sessionId === "backup-router"
+    )));
+    assert(await switchingTmuxDialog.locator('[data-tmux-session="edge-work"]').count() === 0,
+      "Tmux displayed the previous session tree while loading the replacement session");
+    await page.evaluate(() => {
+      for (const pending of window.__pendingTmuxReads.filter((request) => (
+        request.args.sessionId === "backup-router"
+      ))) pending.resolve();
+      window.__pendingTmuxReads = [];
+      window.__deferTmuxReads = false;
+    });
+    await switchingTmuxDialog.locator('[data-tmux-session="backup-work"]').waitFor();
+    await switchingTmuxDialog.getByRole("button", { name: "关闭 Tmux", exact: true }).click();
+    await switchingTmuxDialog.waitFor({ state: "detached" });
+
+    await restoreEdgeRouter();
+    await page.evaluate(() => {
+      window.__sessions = window.__sessions.filter((session) => session.profile.id !== "backup-router");
+      delete window.__tmuxStates["backup-router"];
+      window.__emitTauriEvent("portmate-session-profile-deleted", "backup-router");
+    });
+    await backupRouterTree.waitFor({ state: "detached" });
+    assert(sessionBoundUtilityErrors.length === 0,
+      `session-bound utility lifecycle browser exceptions: ${JSON.stringify(sessionBoundUtilityErrors)}`);
+    await page.close();
+  }
 
   const sysmonSnapshot = (sessionId, cpuPercent, networkInterfaces = []) => ({
     sessionId,

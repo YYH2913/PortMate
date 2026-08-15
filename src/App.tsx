@@ -4256,6 +4256,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "transfer" && active && (
         <Suspense fallback={null}>
           <LazyTransferDialog
+            key={active.profile.id}
             session={active}
             transfers={transfers}
             dismissedTransferIds={dismissedTransferIds}
@@ -4272,7 +4273,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {utilityDialog === "tunnel" && active && (
         <Suspense fallback={null}>
-          <LazyTunnelDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
+          <LazyTunnelDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
             setUtilityDialog(null);
             setNotice({ title: "端口转发", message: label });
           }} />
@@ -4280,7 +4281,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {utilityDialog === "tmux" && active && (
         <Suspense fallback={null}>
-          <LazyTmuxDialog session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
+          <LazyTmuxDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
             setUtilityDialog(null);
             setNotice({ title: "Tmux", message });
             void refreshActiveLog(active.profile.id);
