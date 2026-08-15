@@ -4,6 +4,8 @@ import type { SessionSummary } from "./types";
 
 export const DETACHED_PANE_EVENT = "portmate-detached-pane-command";
 export const DETACHED_PANE_MESSAGE_TYPE = "portmate:detached-pane-command";
+export const DETACHED_PANE_RESULT_EVENT = "portmate-detached-pane-result";
+export const DETACHED_PANE_RESULT_MESSAGE_TYPE = "portmate:detached-pane-result";
 export const SESSION_PROFILE_DELETED_EVENT = "portmate-session-profile-deleted";
 export const SESSION_PROFILE_UPDATED_EVENT = "portmate-session-profile-updated";
 
@@ -20,6 +22,7 @@ export type DetachedPaneRequest = {
 
 export type DetachedPaneCommand = DetachedPaneRequest & {
   action: "connect" | "disconnect" | "reattach" | "lock-screen";
+  requestId: string;
 };
 
 export type DetachedPaneMessage = {
@@ -27,7 +30,21 @@ export type DetachedPaneMessage = {
   payload: DetachedPaneCommand;
 };
 
+export type DetachedPaneResult = {
+  windowId: string;
+  requestId: string;
+  action: "reattach";
+  ok: boolean;
+  error: string;
+};
+
+export type DetachedPaneResultMessage = {
+  type: typeof DETACHED_PANE_RESULT_MESSAGE_TYPE;
+  payload: DetachedPaneResult;
+};
+
 const windowIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
+const requestIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const ownerWindowIdPattern = /^(?:main|workspace-[A-Za-z0-9_-]{1,118})$/;
 
 export function buildDetachedPanePath(request: DetachedPaneRequest): string {
@@ -75,7 +92,8 @@ export function normalizeDetachedPaneCommand(value: unknown): DetachedPaneComman
     color: typeof source.color === "string" ? source.color : "",
     keyMode: typeof source.keyMode === "string" ? source.keyMode : "remote",
   })}`);
-  return request ? { ...request, action: source.action } : null;
+  const requestId = cleanOptionalRouteId(source.requestId);
+  return request && requestId !== null ? { ...request, action: source.action, requestId } : null;
 }
 
 export function normalizeDetachedPaneMessage(value: unknown): DetachedPaneMessage | null {
@@ -84,6 +102,26 @@ export function normalizeDetachedPaneMessage(value: unknown): DetachedPaneMessag
   if (source.type !== DETACHED_PANE_MESSAGE_TYPE) return null;
   const payload = normalizeDetachedPaneCommand(source.payload);
   return payload ? { type: DETACHED_PANE_MESSAGE_TYPE, payload } : null;
+}
+
+export function normalizeDetachedPaneResult(value: unknown): DetachedPaneResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const windowId = typeof source.windowId === "string" ? source.windowId : "";
+  const requestId = cleanOptionalRouteId(source.requestId);
+  const error = cleanResultError(source.error);
+  if (!windowIdPattern.test(windowId) || requestId === null || source.action !== "reattach" || typeof source.ok !== "boolean" || error === null) return null;
+  if (source.ok && error) return null;
+  if (!source.ok && !error) return null;
+  return { windowId, requestId, action: "reattach", ok: source.ok, error };
+}
+
+export function normalizeDetachedPaneResultMessage(value: unknown): DetachedPaneResultMessage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.type !== DETACHED_PANE_RESULT_MESSAGE_TYPE) return null;
+  const payload = normalizeDetachedPaneResult(source.payload);
+  return payload ? { type: DETACHED_PANE_RESULT_MESSAGE_TYPE, payload } : null;
 }
 
 export function upsertDetachedSessionSummary(
@@ -104,6 +142,12 @@ function cleanRouteId(value: string | null): string {
   return clean && clean.length <= 128 ? clean : "";
 }
 
+function cleanOptionalRouteId(value: unknown): string | null {
+  if (value === undefined) return "";
+  if (typeof value !== "string") return null;
+  return value === "" || requestIdPattern.test(value) ? value : null;
+}
+
 function cleanRouteTitle(value: string | null): string | null {
   const raw = value ?? "";
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
@@ -114,4 +158,10 @@ function cleanRouteTitle(value: string | null): string | null {
 function cleanRouteColor(value: string | null): string | null {
   if (!value) return "";
   return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : null;
+}
+
+function cleanResultError(value: unknown): string | null {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  const clean = value.trim();
+  return [...clean].length <= 512 ? clean : null;
 }

@@ -10,11 +10,15 @@ import {
   buildDetachedPanePath,
   DETACHED_PANE_EVENT,
   DETACHED_PANE_MESSAGE_TYPE,
+  DETACHED_PANE_RESULT_EVENT,
+  DETACHED_PANE_RESULT_MESSAGE_TYPE,
+  normalizeDetachedPaneResult,
+  normalizeDetachedPaneResultMessage,
   SESSION_PROFILE_DELETED_EVENT,
   SESSION_PROFILE_UPDATED_EVENT,
   upsertDetachedSessionSummary,
 } from "./detached-pane-state";
-import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
+import type { DetachedPaneCommand, DetachedPaneRequest, DetachedPaneResult } from "./detached-pane-state";
 import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
 import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
@@ -28,6 +32,7 @@ import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 type DetachedOwnerControlAction = Exclude<DetachedPaneCommand["action"], "lock-screen">;
+const DETACHED_REATTACH_RESULT_TIMEOUT_MS = 5_000;
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
@@ -273,9 +278,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       ownerCommandBusyRef.current = controlAction;
       setOwnerCommandBusy(controlAction);
     }
-    const command: DetachedPaneCommand = { ...request, keyMode, action };
+    const command: DetachedPaneCommand = { ...request, keyMode, action, requestId: createDetachedCommandRequestId() };
     try {
-      if (isBackendAvailable()) {
+      if (action === "reattach") {
+        const result = await requestReattachResult(command);
+        if (!result.ok) throw new Error(result.error);
+      } else if (isBackendAvailable()) {
         await emitTo(request.ownerWindowId, DETACHED_PANE_EVENT, command);
       } else if (window.opener && !window.opener.closed) {
         window.opener.postMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload: command }, window.location.origin);
@@ -349,6 +357,72 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       {screenLock ? <ChildWindowScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
     </main>
   );
+}
+
+async function requestReattachResult(command: DetachedPaneCommand): Promise<DetachedPaneResult> {
+  if (isBackendAvailable()) return requestTauriReattachResult(command);
+  return requestBrowserReattachResult(command);
+}
+
+async function requestTauriReattachResult(command: DetachedPaneCommand): Promise<DetachedPaneResult> {
+  let resolveResult!: (result: DetachedPaneResult) => void;
+  let rejectResult!: (error: Error) => void;
+  const resultPromise = new Promise<DetachedPaneResult>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
+  const unlisten = await listen<unknown>(DETACHED_PANE_RESULT_EVENT, (event) => {
+    const result = normalizeDetachedPaneResult(event.payload);
+    if (result?.windowId === command.windowId && result.requestId === command.requestId) resolveResult(result);
+  });
+  const timeout = window.setTimeout(() => {
+    rejectResult(new Error("主窗口未在 5 秒内确认返回结果。"));
+  }, DETACHED_REATTACH_RESULT_TIMEOUT_MS);
+  try {
+    const [, result] = await Promise.all([
+      emitTo(command.ownerWindowId, DETACHED_PANE_EVENT, command),
+      resultPromise,
+    ]);
+    return result;
+  } finally {
+    window.clearTimeout(timeout);
+    unlisten();
+  }
+}
+
+async function requestBrowserReattachResult(command: DetachedPaneCommand): Promise<DetachedPaneResult> {
+  const opener = window.opener;
+  if (!opener || opener.closed) throw new Error("来源工作区不可用");
+  let timeout = 0;
+  let handleMessage: ((event: MessageEvent) => void) | null = null;
+  const resultPromise = new Promise<DetachedPaneResult>((resolve, reject) => {
+    handleMessage = (event) => {
+      if (event.origin !== window.location.origin || event.source !== opener) return;
+      const message = normalizeDetachedPaneResultMessage(event.data);
+      if (message?.payload.windowId === command.windowId && message.payload.requestId === command.requestId) resolve(message.payload);
+    };
+    window.addEventListener("message", handleMessage);
+    timeout = window.setTimeout(() => {
+      reject(new Error("主窗口未在 5 秒内确认返回结果。"));
+    }, DETACHED_REATTACH_RESULT_TIMEOUT_MS);
+  });
+  try {
+    opener.postMessage({
+      type: DETACHED_PANE_MESSAGE_TYPE,
+      payload: command,
+    }, window.location.origin);
+    return await resultPromise;
+  } finally {
+    window.clearTimeout(timeout);
+    if (handleMessage) window.removeEventListener("message", handleMessage);
+  }
+}
+
+function createDetachedCommandRequestId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid
+    ? `request-${uuid}`
+    : `request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function loadLocalSessions(): SessionSummary[] {

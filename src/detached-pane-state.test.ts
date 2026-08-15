@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildDetachedPanePath,
   DETACHED_PANE_MESSAGE_TYPE,
+  DETACHED_PANE_RESULT_MESSAGE_TYPE,
   normalizeDetachedPaneCommand,
   normalizeDetachedPaneMessage,
+  normalizeDetachedPaneResult,
+  normalizeDetachedPaneResultMessage,
   parseDetachedPaneRequest,
   upsertDetachedSessionSummary,
 } from "./detached-pane-state";
@@ -39,12 +42,15 @@ describe("detached pane state", () => {
   });
 
   it("normalizes only supported cross-window commands", () => {
-    const payload = { action: "reattach", windowId: "pane-123", ownerWindowId: "workspace-owner", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
+    const payload = { action: "reattach", requestId: "request-123", windowId: "pane-123", ownerWindowId: "workspace-owner", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
     const { ownerWindowId: _, ...legacyPayload } = payload;
     expect(normalizeDetachedPaneCommand(legacyPayload)).toMatchObject({ ownerWindowId: "main" });
     expect(normalizeDetachedPaneCommand({ ...payload, keyMode: "invalid" })).toMatchObject({ keyMode: "remote" });
+    const { requestId: __, ...legacyRequestPayload } = payload;
+    expect(normalizeDetachedPaneCommand(legacyRequestPayload)).toMatchObject({ requestId: "" });
+    expect(normalizeDetachedPaneCommand({ ...payload, requestId: "bad/request" })).toBeNull();
     expect(normalizeDetachedPaneCommand({ ...payload, action: "remove" })).toBeNull();
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
       type: DETACHED_PANE_MESSAGE_TYPE,
@@ -54,13 +60,33 @@ describe("detached pane state", () => {
   });
 
   it("accepts a global lock request from a detached window", () => {
-    const payload = { action: "lock-screen", windowId: "pane-123", ownerWindowId: "main", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
+    const payload = { action: "lock-screen", requestId: "request-lock", windowId: "pane-123", ownerWindowId: "main", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
 
     expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
     expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
       type: DETACHED_PANE_MESSAGE_TYPE,
       payload,
     });
+  });
+
+  it("normalizes bounded reattach acknowledgements", () => {
+    const accepted = { windowId: "pane-123", requestId: "request-123", action: "reattach", ok: true, error: "" };
+    const rejected = { windowId: "pane-123", requestId: "request-123", action: "reattach", ok: false, error: "原会话已不存在。" };
+
+    expect(normalizeDetachedPaneResult(accepted)).toEqual(accepted);
+    expect(normalizeDetachedPaneResult(rejected)).toEqual(rejected);
+    expect(normalizeDetachedPaneResultMessage({
+      type: DETACHED_PANE_RESULT_MESSAGE_TYPE,
+      payload: rejected,
+    })).toEqual({ type: DETACHED_PANE_RESULT_MESSAGE_TYPE, payload: rejected });
+    expect(normalizeDetachedPaneResult({ ...accepted, windowId: "pane/bad" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...accepted, requestId: "request/bad" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...accepted, error: "unexpected" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "bad\u0000error" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "bad\nerror" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "x".repeat(513) })).toBeNull();
+    expect(normalizeDetachedPaneResultMessage({ type: "other", payload: accepted })).toBeNull();
   });
 
   it("upserts a detached session after a profile update", () => {

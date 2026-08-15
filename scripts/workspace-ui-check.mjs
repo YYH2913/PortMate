@@ -484,6 +484,7 @@ try {
     window.__emitSessionProfileDeleteBeforeResolve = false;
     window.__deferDetachedOwnerCommands = false;
     window.__pendingDetachedOwnerCommands = [];
+    window.__detachedReattachResult = null;
     window.__deferChildWindowCreates = false;
     window.__pendingChildWindowCreates = [];
     window.__deferTerminalSends = false;
@@ -1647,6 +1648,19 @@ try {
             resolve: () => resolve(null),
             reject,
           }));
+        }
+        if (command === "plugin:event|emit_to"
+          && args.event === "portmate-detached-pane-command"
+          && args.payload?.action === "reattach"
+          && window.__detachedReattachResult) {
+          const configured = structuredClone(window.__detachedReattachResult);
+          queueMicrotask(() => window.__emitTauriEvent("portmate-detached-pane-result", {
+            windowId: args.payload.windowId,
+            requestId: args.payload.requestId,
+            action: "reattach",
+            ...configured,
+          }));
+          return null;
         }
         if (command.startsWith("plugin:event|")) return null;
         return null;
@@ -5271,6 +5285,30 @@ Host staging
   })}`);
   await detachedPage.evaluate(() => localStorage.removeItem("portmate.screenLock.v1"));
   await detachedLockOverlay.waitFor({ state: "detached" });
+  const detachedCloseCallsBefore = await detachedPage.evaluate(() => {
+    window.__detachedReattachResult = { ok: false, error: "simulated owner reattach rejection" };
+    return window.__invokeCalls.filter((call) => call.command === "plugin:window|close").length;
+  });
+  await detachedPage.getByRole("button", { name: "返回工作区", exact: true }).click();
+  await detachedPage.locator(".detached-pane-status", { hasText: "simulated owner reattach rejection" }).waitFor();
+  const detachedRejectedReturnState = await detachedPage.evaluate((closeCallsBefore) => ({
+    busy: document.querySelector(".detached-pane-root")?.getAttribute("data-owner-command-busy"),
+    closeCalls: window.__invokeCalls.filter((call) => call.command === "plugin:window|close").length - closeCallsBefore,
+    resultListeners: window.__invokeCalls.filter((call) => call.command === "plugin:event|listen"
+      && call.args.event === "portmate-detached-pane-result").length,
+  }), detachedCloseCallsBefore);
+  assert(detachedRejectedReturnState.busy === ""
+    && detachedRejectedReturnState.closeCalls === 0
+    && detachedRejectedReturnState.resultListeners >= 1
+    && !detachedPage.isClosed(),
+  `detached window closed without an accepted owner acknowledgement: ${JSON.stringify(detachedRejectedReturnState)}`);
+  await detachedPage.evaluate(() => {
+    window.__detachedReattachResult = { ok: true, error: "" };
+  });
+  await detachedPage.getByRole("button", { name: "返回工作区", exact: true }).click();
+  await detachedPage.waitForFunction((closeCallsBefore) => (
+    window.__invokeCalls.filter((call) => call.command === "plugin:window|close").length > closeCallsBefore
+  ), detachedCloseCallsBefore);
   await detachedPage.screenshot({ path: `${screenshotPrefix}-detached-theme.png`, fullPage: true });
   await detachedPage.close();
 
@@ -9087,6 +9125,14 @@ Host staging
   assert(sequentialReattachState.groups === 3
     && JSON.stringify(sequentialReattachState.sessions) === JSON.stringify(["Bench UART", "Edge Router", "Local Shell"]),
   `same-frame detached returns overwrote each other: ${JSON.stringify(sequentialReattachState)}`);
+  const initialReattachAcks = await workspaceWindowPage.evaluate(() => window.__invokeCalls.filter((call) => (
+    call.command === "plugin:event|emit_to"
+      && call.args.event === "portmate-detached-pane-result"
+      && call.args.payload?.ok === true
+      && ["reattach-edge-window", "reattach-local-window"].includes(call.args.target?.label)
+  )).length);
+  assert(initialReattachAcks === 2,
+    `successful detached returns were not acknowledged exactly once: ${initialReattachAcks}`);
 
   await workspaceWindowPage.evaluate(() => {
     window.__emitTauriEvent("portmate-detached-pane-command", {
@@ -9104,6 +9150,34 @@ Host staging
   await workspaceWindowPage.waitForTimeout(50);
   assert(await workspaceWindowPage.locator(".workspace-pane-tab").count() === 3,
     "a repeated detached return duplicated its workspace view");
+  await workspaceWindowPage.evaluate(() => {
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      action: "reattach",
+      windowId: "reattach-edge-window",
+      ownerWindowId: "workspace-ui-regression",
+      paneId: "reattach-edge-pane",
+      viewId: "reattach-edge-view",
+      sessionId: "local-shell",
+      title: "",
+      color: "",
+      keyMode: "remote",
+    });
+  });
+  const rejectedReattachNotice = workspaceWindowPage.locator(".notice-dialog", { hasText: "返回的视图标识与当前工作区冲突" });
+  await rejectedReattachNotice.waitFor();
+  const rejectedReattachState = await workspaceWindowPage.evaluate(() => ({
+    tabs: document.querySelectorAll(".workspace-pane-tab").length,
+    acknowledgement: window.__invokeCalls.filter((call) => (
+      call.command === "plugin:event|emit_to"
+        && call.args.event === "portmate-detached-pane-result"
+        && call.args.target?.label === "reattach-edge-window"
+        && call.args.payload?.ok === false
+    )).at(-1)?.args.payload,
+  }));
+  assert(rejectedReattachState.tabs === 3
+    && rejectedReattachState.acknowledgement?.error?.includes("视图标识"),
+  `a rejected detached return was not preserved and acknowledged: ${JSON.stringify(rejectedReattachState)}`);
+  await rejectedReattachNotice.getByRole("button", { name: "确定", exact: true }).click();
   await workspaceWindowPage.screenshot({ path: `${screenshotPrefix}-workspace-window.png`, fullPage: true });
   await workspaceWindowPage.evaluate(() => {
     window.__workspaceWindowPopupCalls = [];

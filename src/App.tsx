@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   Activity,
@@ -46,8 +46,8 @@ import {
   hasActiveInteractionLayer,
   INTERACTION_LAYER_DISMISS_EVENT,
 } from "./modal-interaction-boundary";
-import { buildDetachedPanePath, DETACHED_PANE_EVENT, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage, SESSION_PROFILE_DELETED_EVENT, SESSION_PROFILE_UPDATED_EVENT } from "./detached-pane-state";
-import type { DetachedPaneCommand, DetachedPaneRequest } from "./detached-pane-state";
+import { buildDetachedPanePath, DETACHED_PANE_EVENT, DETACHED_PANE_RESULT_EVENT, DETACHED_PANE_RESULT_MESSAGE_TYPE, normalizeDetachedPaneCommand, normalizeDetachedPaneMessage, SESSION_PROFILE_DELETED_EVENT, SESSION_PROFILE_UPDATED_EVENT } from "./detached-pane-state";
+import type { DetachedPaneCommand, DetachedPaneRequest, DetachedPaneResult } from "./detached-pane-state";
 import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
 import { buildWorkspaceWindowPath } from "./workspace-window-route";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
@@ -392,7 +392,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
   const screenLockOperationGateRef = useRef(new KeyedRequestGate<"prepare" | "unlock">());
-  const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
+  const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => DetachedPaneResult | null>(() => null);
   const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
   const profileDeleteHandlerRef = useRef<(payload: DeleteSessionProfileResponse | string) => void>(() => {});
   const screenLockRef = useRef<ScreenLockState>(screenLock);
@@ -450,8 +450,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     } else if (command.action === "disconnect") {
       void disconnectSession(command.sessionId, false);
     } else {
-      reattachDetachedPane(command);
+      return reattachDetachedPane(command);
     }
+    return null;
   };
 
   function setWorkspaceRoot(update: SetStateAction<WorkspaceNode | null>) {
@@ -1497,13 +1498,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const handleBrowserMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       const message = normalizeDetachedPaneMessage(event.data);
-      if (message) detachedCommandHandlerRef.current(message.payload);
+      if (!message) return;
+      const result = detachedCommandHandlerRef.current(message.payload);
+      const source = event.source as WindowProxy | null;
+      if (result && source && typeof source.closed === "boolean") {
+        source.postMessage({
+          type: DETACHED_PANE_RESULT_MESSAGE_TYPE,
+          payload: result,
+        }, event.origin);
+      }
     };
     window.addEventListener("message", handleBrowserMessage);
     if (isBackendAvailable()) {
       void listen<unknown>(DETACHED_PANE_EVENT, (event) => {
         const command = normalizeDetachedPaneCommand(event.payload);
-        if (command) detachedCommandHandlerRef.current(command);
+        if (!command) return;
+        const result = detachedCommandHandlerRef.current(command);
+        if (result) void emitTo(command.windowId, DETACHED_PANE_RESULT_EVENT, result).catch(() => {});
       }).then((nextUnlisten) => {
         if (disposed) nextUnlisten();
         else unlisten = nextUnlisten;
@@ -3179,11 +3190,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  function reattachDetachedPane(command: DetachedPaneCommand) {
+  function reattachDetachedPane(command: DetachedPaneCommand): DetachedPaneResult {
     const session = sessions.find((item) => item.profile.id === command.sessionId);
     if (!session) {
-      setNotice({ title: "返回主窗口失败", message: "原会话已不存在。" });
-      return;
+      const error = "原会话已不存在。";
+      setNotice({ title: "返回主窗口失败", message: error });
+      return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: false, error };
     }
     const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color, keyMode: command.keyMode };
     const committed = commitWorkspaceViewReattach(
@@ -3193,8 +3205,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       returnedView,
     );
     if (committed.status === "conflict") {
-      setNotice({ title: "返回主窗口失败", message: "返回的视图标识与当前工作区冲突。" });
-      return;
+      const error = "返回的视图标识与当前工作区冲突。";
+      setNotice({ title: "返回主窗口失败", message: error });
+      return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: false, error };
     }
     setWorkspaceRoot(committed.root);
     setActivePaneId(committed.activePaneId);
@@ -3211,6 +3224,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     } else if (committed.placement === "max-depth") {
       setNotice({ title: "窗格已返回", message: `所有窗格均已达到 ${MAX_WORKSPACE_DEPTH} 层深度，已在当前窗格打开返回的会话。` });
     }
+    return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: true, error: "" };
   }
 
   function swapWorkspacePane(direction: WorkspacePaneDirection, sourcePaneId = activePaneId) {
