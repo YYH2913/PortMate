@@ -39,6 +39,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [ownerCommandBusy, setOwnerCommandBusy] = useState<DetachedOwnerControlAction | null>(null);
   const sessionRefreshGenerationRef = useRef(0);
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
+  const inputTailRef = useRef<Promise<void>>(Promise.resolve());
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
@@ -206,6 +207,12 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     }
   }
 
+  function enqueueInput(operation: () => Promise<void>): Promise<void> {
+    const task = inputTailRef.current.then(operation);
+    inputTailRef.current = task.catch(() => undefined);
+    return task;
+  }
+
   async function completeOneKeyPrompt(
     sessionId: string,
     oneKeyId: string,
@@ -213,7 +220,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     promptEventId: string,
   ) {
     if (!isBackendAvailable()) throw new Error("PortMate desktop backend is unavailable");
-    await invokeBackend("send_one_key", {
+    await enqueueInput(() => invokeBackend("send_one_key", {
       request: {
         id: oneKeyId,
         sessionId,
@@ -221,7 +228,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         source: "prompt-completion",
         promptEventId,
       },
-    });
+    }));
   }
 
   async function sendOwnerCommand(action: DetachedPaneCommand["action"]) {
@@ -291,7 +298,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void sendInput(sessionId, text)} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={(sessionId, text) => void enqueueInput(() => sendInput(sessionId, text))} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={statusError ? "detached-pane-status error" : "detached-pane-status"}>
         <span title={statusText} aria-live="polite">{statusText}</span>

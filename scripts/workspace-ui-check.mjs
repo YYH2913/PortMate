@@ -4811,6 +4811,32 @@ Host staging
   }
   assert(detachedCatchupSearch !== "0/0", "detached terminal did not render its polled log catch-up event");
   await detachedPage.getByRole("button", { name: "关闭查找", exact: true }).click();
+  const detachedInputStart = await detachedPage.evaluate(() => {
+    window.__deferTerminalSends = true;
+    window.__pendingTerminalSends = [];
+    return window.__invokeCalls.filter((call) => call.command === "send_text").length;
+  });
+  const detachedTerminalInput = detachedPage.locator(".detached-pane-terminal .xterm-helper-textarea");
+  await detachedTerminalInput.focus();
+  await detachedPage.keyboard.press("a");
+  await detachedPage.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  await detachedPage.keyboard.press("b");
+  await detachedPage.waitForTimeout(50);
+  const detachedFirstInput = await detachedPage.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").slice(start), detachedInputStart);
+  assert(detachedFirstInput.length === 1 && detachedFirstInput[0].args.text === "a",
+    `detached terminal dispatched overlapping input: ${JSON.stringify(detachedFirstInput)}`);
+  await detachedPage.evaluate(() => window.__pendingTerminalSends.shift().resolve(null));
+  await detachedPage.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  const detachedOrderedInput = await detachedPage.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").slice(start), detachedInputStart);
+  assert(detachedOrderedInput.length === 2
+    && detachedOrderedInput.map((call) => call.args.text).join("") === "ab",
+  `detached terminal input order changed: ${JSON.stringify(detachedOrderedInput)}`);
+  await detachedPage.evaluate(() => {
+    window.__deferTerminalSends = false;
+    window.__pendingTerminalSends.shift().resolve(null);
+  });
   const detachedOneKeyCallsBefore = await detachedPage.evaluate(() => {
     window.__oneKeys = [{
       id: "detached-one-key",
