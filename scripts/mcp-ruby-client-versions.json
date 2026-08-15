@@ -34,5 +34,17 @@
     "regexpParserVersion": "2.12.0",
     "simpleidnVersion": "0.2.3",
     "netHttpVersion": "0.9.1"
+  },
+  {
+    "version": "1.2.0",
+    "protocolVersion": "2025-06-18",
+    "faradayVersion": "2.14.3",
+    "eventStreamParserVersion": "1.0.0",
+    "jsonSchemerVersion": "2.5.0",
+    "faradayNetHttpVersion": "3.4.4",
+    "hanaVersion": "1.3.7",
+    "regexpParserVersion": "2.12.0",
+    "simpleidnVersion": "0.2.3",
+    "netHttpVersion": "0.9.1"
   }
 ]
