@@ -1617,6 +1617,46 @@ try {
   const openSshImportDialog = page.locator(".session-config-import-dialog");
   await openSshImportDialog.waitFor();
   const openSshConfigInput = openSshImportDialog.getByRole("textbox", { name: "OpenSSH 配置内容", exact: true });
+  await page.evaluate(() => {
+    window.__pendingImportFileReads = [];
+    window.__originalImportFileText = File.prototype.text;
+    File.prototype.text = function deferredImportFileText() {
+      const file = this;
+      return new Promise((resolve, reject) => window.__pendingImportFileReads.push({
+        name: file.name,
+        resolve: () => window.__originalImportFileText.call(file).then(resolve, reject),
+      }));
+    };
+  });
+  const importFileInput = openSshImportDialog.locator('input[type="file"]');
+  await importFileInput.setInputFiles({ name: "first.conf", mimeType: "text/plain", buffer: Buffer.from("Host first\n  HostName first.example.test") });
+  await importFileInput.setInputFiles({ name: "second.conf", mimeType: "text/plain", buffer: Buffer.from("Host second\n  HostName second.example.test") });
+  await page.waitForFunction(() => window.__pendingImportFileReads.length === 2);
+  assert(await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isDisabled()
+    && await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).isDisabled()
+    && await openSshImportDialog.locator(".dialog-title > button").isDisabled()
+    && await openSshImportDialog.getByRole("button", { name: "PuTTY", exact: true }).isDisabled()
+    && await openSshConfigInput.isDisabled()
+    && await openSshImportDialog.getByRole("button", { name: "选择文件", exact: true }).isEnabled(),
+  "a pending Session import file read did not lock stale preview actions");
+  await page.evaluate(() => window.__pendingImportFileReads.find((pending) => pending.name === "second.conf").resolve());
+  await openSshImportDialog.getByRole("checkbox", { name: "导入 second", exact: true }).waitFor();
+  assert(await openSshImportDialog.getByRole("button", { name: "导入", exact: true }).isEnabled()
+    && await openSshConfigInput.isEnabled(),
+  "Session import controls did not recover after the latest file read completed");
+  await page.evaluate(() => window.__pendingImportFileReads.find((pending) => pending.name === "first.conf").resolve());
+  await page.waitForTimeout(100);
+  const importFileReadState = await page.evaluate(() => {
+    File.prototype.text = window.__originalImportFileText;
+    return {
+      sourceName: document.querySelector(".session-import-source-header > span")?.textContent,
+      source: document.querySelector('[aria-label="OpenSSH 配置内容"]')?.value,
+    };
+  });
+  assert(importFileReadState.sourceName === "second.conf"
+    && importFileReadState.source.includes("second.example.test")
+    && !importFileReadState.source.includes("first.example.test"),
+  `an older Session import file read replaced the latest selection: ${JSON.stringify(importFileReadState)}`);
   await openSshConfigInput.fill(`Host *
   ServerAliveInterval 60
   User imported-default
@@ -1639,8 +1679,39 @@ Host staging
     && !(await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
   "OpenSSH config import preview did not apply safe Host * defaults to literal Host entries");
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });
+  await page.evaluate(() => {
+    window.__sessionImportPrompts = [];
+    window.__originalSessionImportConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__sessionImportPrompts.push(String(message));
+      return false;
+    };
+  });
+  await openSshImportDialog.getByRole("button", { name: "PuTTY", exact: true }).click();
+  await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
+  assert(await openSshConfigInput.inputValue().then((value) => value.includes("Host production"))
+    && await openSshImportDialog.getByRole("button", { name: "OpenSSH", exact: true }).getAttribute("aria-pressed") === "true",
+  "Session import discarded its OpenSSH draft after a cancelled switch or close");
+  await page.evaluate(() => {
+    window.confirm = (message) => {
+      window.__sessionImportPrompts.push(String(message));
+      return true;
+    };
+  });
+  await openSshImportDialog.getByRole("button", { name: "PuTTY", exact: true }).click();
+  await openSshImportDialog.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).waitFor();
   await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await openSshImportDialog.waitFor({ state: "detached" });
+  const sessionImportPrompts = await page.evaluate(() => {
+    window.confirm = window.__originalSessionImportConfirm;
+    return window.__sessionImportPrompts;
+  });
+  assert(sessionImportPrompts.length === 3
+    && sessionImportPrompts[0].includes("切换格式")
+    && sessionImportPrompts[1].includes("关闭窗口")
+    && sessionImportPrompts[2].includes("切换格式")
+    && sessionImportPrompts.every((prompt) => !prompt.includes("production") && !prompt.includes("app.example.test")),
+  `Session import draft confirmations are incomplete or expose source content: ${JSON.stringify(sessionImportPrompts)}`);
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   await page.locator(".menu-popover button", { hasText: "导入会话" }).click();
@@ -1674,6 +1745,7 @@ Host staging
     && (await puttyImportDialog.textContent()).includes("SSH 代理"),
   "PuTTY import preview did not preserve SSH and serial sessions");
   await page.screenshot({ path: `${screenshotPrefix}-putty-import.png`, fullPage: true });
+  await puttyImportDialog.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).fill("");
   await puttyImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await puttyImportDialog.waitFor({ state: "detached" });
 
@@ -1694,6 +1766,7 @@ Host staging
     && (await shellImportDialog.textContent()).includes("不是可直接导入的 Shell 路径"),
   "local Shell import preview did not preserve safe shell paths and reject arguments");
   await page.screenshot({ path: `${screenshotPrefix}-shell-import.png`, fullPage: true });
+  await shellImportDialog.getByRole("textbox", { name: "Shell 列表内容", exact: true }).fill("");
   await shellImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await shellImportDialog.waitFor({ state: "detached" });
 
@@ -5254,8 +5327,24 @@ Host staging
     && mobileOpenSshBounds.modeHeight > 0,
   `mobile OpenSSH import dialog overflows: ${JSON.stringify(mobileOpenSshBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import-mobile.png`, fullPage: true });
+  await page.evaluate(() => {
+    window.__mobileImportPrompts = [];
+    window.__originalMobileImportConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mobileImportPrompts.push(String(message));
+      return true;
+    };
+  });
   await mobileOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
   await mobileOpenSshImport.waitFor({ state: "detached" });
+  const mobileImportPrompts = await page.evaluate(() => {
+    window.confirm = window.__originalMobileImportConfirm;
+    return window.__mobileImportPrompts;
+  });
+  assert(mobileImportPrompts.length === 1
+    && mobileImportPrompts[0].includes("关闭窗口")
+    && !mobileImportPrompts[0].includes("mobile.example.test"),
+  `mobile Session import did not safely confirm draft disposal: ${JSON.stringify(mobileImportPrompts)}`);
 
   await page.evaluate(() => {
     const now = Date.now();
@@ -7009,7 +7098,28 @@ Host staging
   IdentitiesOnly no
   ForwardAgent yes
   ProxyJump ops@bastion.example.test:2222`);
-  await savingOpenSshImport.getByRole("button", { name: "导入", exact: true }).click();
+  await page.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+  });
+  await savingOpenSshImport.evaluate((dialog) => {
+    const buttons = [...dialog.querySelectorAll("button")];
+    const importButton = buttons.find((button) => button.textContent?.trim() === "导入");
+    importButton?.click();
+    importButton?.click();
+    buttons.find((button) => button.textContent?.trim() === "PuTTY")?.click();
+    buttons.find((button) => button.textContent?.trim() === "取消")?.click();
+  });
+  await page.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  assert(await savingOpenSshImport.getByRole("button", { name: "导入", exact: true }).isDisabled()
+    && await savingOpenSshImport.getByRole("button", { name: "PuTTY", exact: true }).isDisabled()
+    && await savingOpenSshImport.getByRole("button", { name: "取消", exact: true }).isDisabled()
+    && await savingOpenSshImport.locator(".dialog-title > button").isDisabled(),
+  "a pending Session import did not lock duplicate submit, mode switch, or close actions");
+  await page.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
   await savingOpenSshImport.locator(".dialog-note", { hasText: "已导入 1 个会话" }).waitFor();
   const openSshImportLifecycleState = await page.evaluate((start) => {
     const call = window.__invokeCalls.slice(start).find((item) => item.command === "save_session_profile");

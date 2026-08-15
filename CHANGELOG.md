@@ -71,6 +71,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   Closing the log manager now isolates late write results from a replacement dialog.
 - Fixed duplicate Session Settings saves, staged-secret writes, SSH health checks, and Host Key
   scan/trust actions. Host Key results are now bound to the exact SSH draft that requested them.
+- Fixed duplicate OpenSSH/PuTTY/Shell session imports and protected unsaved import drafts during
+  format changes or close. Overlapping file reads can no longer submit or restore a stale preview.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

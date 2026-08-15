@@ -6,6 +6,7 @@ import {
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { ReactNode } from "react";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
+import type { KeyedRequestGate } from "./keyed-request-gate";
 
 export type OpenSshConfigImportSaveResult = SessionConfigImportSaveResult;
 
@@ -15,10 +16,14 @@ export default function OpenSshConfigImportDialog({
   onImport,
   onClose,
   headerAddon,
+  operationGate,
+  onDraftDirtyChange,
 }: {
   onImport: (candidates: OpenSshImportCandidate[]) => Promise<OpenSshConfigImportSaveResult>;
   onClose: () => void;
   headerAddon?: (busy: boolean) => ReactNode;
+  operationGate: KeyedRequestGate<"operation">;
+  onDraftDirtyChange: (dirty: boolean) => void;
 }) {
   return <SessionConfigImportDialog
     title="导入 OpenSSH 会话"
@@ -36,6 +41,8 @@ export default function OpenSshConfigImportDialog({
       candidate.forwards.length ? `${candidate.forwards.length} 个转发` : "",
     ].filter(Boolean).join(" ")}
     headerAddon={headerAddon}
+    operationGate={operationGate}
+    onDraftDirtyChange={onDraftDirtyChange}
     onImport={onImport}
     onClose={onClose}
   />;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { AlertTriangle, FileUp, LoaderCircle, Upload, X } from "lucide-react";
+import { KeyedRequestGate } from "./keyed-request-gate";
 
 export type SessionConfigImportCandidate = {
   id: string;
@@ -30,6 +31,8 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
   candidateTarget,
   candidateDetails,
   headerAddon,
+  operationGate,
+  onDraftDirtyChange,
   onImport,
   onClose,
 }: {
@@ -44,24 +47,32 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
   candidateTarget: (candidate: C) => string;
   candidateDetails?: (candidate: C) => ReactNode;
   headerAddon?: (busy: boolean) => ReactNode;
+  operationGate: KeyedRequestGate<"operation">;
+  onDraftDirtyChange: (dirty: boolean) => void;
   onImport: (candidates: C[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileReadGate = useRef(new KeyedRequestGate<"file">());
   const [source, setSource] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceError, setSourceError] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const fileReadActive = useRef(false);
+  const [fileReadBusy, setFileReadBusy] = useState(false);
   const [resultMessage, setResultMessage] = useState<{ text: string; error: boolean } | null>(null);
   const parsed = useMemo(() => parse(source, sourceName), [parse, source, sourceName]);
   const activeError = sourceError || parsed.error;
   const selectedCandidates = parsed.candidates.filter((candidate) => selectedIds.has(candidate.id));
+  const locked = busy || fileReadBusy;
 
   useEffect(() => {
     setSelectedIds(new Set(parsed.candidates.map((candidate) => candidate.id)));
     setResultMessage(null);
   }, [source, sourceName]);
+
+  useEffect(() => () => fileReadGate.current.invalidateAll(), []);
 
   function updateSource(value: string, name = "") {
     if (value.length > maxSourceChars) {
@@ -71,19 +82,40 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
     setSource(value);
     setSourceName(name);
     setSourceError("");
+    onDraftDirtyChange(Boolean(value || name));
   }
 
   async function readConfigFile(file: File | null) {
     if (!file) return;
+    const token = fileReadGate.current.replace("file");
+    fileReadActive.current = true;
+    setFileReadBusy(true);
+    setResultMessage(null);
     if (file.size > maxSourceChars) {
       setSourceError(`文件超过 ${maxSourceChars.toLocaleString()} 字节限制`);
+      if (fileReadGate.current.finish("file", token)) {
+        fileReadActive.current = false;
+        setFileReadBusy(false);
+      }
       return;
     }
     try {
-      updateSource(await file.text(), file.name);
+      const text = await file.text();
+      if (fileReadGate.current.isCurrent("file", token)) updateSource(text, file.name);
     } catch (error) {
-      setSourceError(errorMessage(error));
+      if (fileReadGate.current.isCurrent("file", token)) setSourceError(errorMessage(error));
+    } finally {
+      if (fileReadGate.current.finish("file", token)) {
+        fileReadActive.current = false;
+        setFileReadBusy(false);
+      }
     }
+  }
+
+  function cancelFileRead() {
+    fileReadGate.current.invalidate("file");
+    fileReadActive.current = false;
+    setFileReadBusy(false);
   }
 
   function toggleCandidate(id: string, selected: boolean) {
@@ -94,17 +126,22 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
       return next;
     });
     setResultMessage(null);
+    onDraftDirtyChange(true);
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || activeError || !selectedCandidates.length) return;
+    if (fileReadActive.current || activeError || !selectedCandidates.length) return;
+    const token = operationGate.begin("operation");
+    if (token === null) return;
     setBusy(true);
     setResultMessage(null);
     try {
       const result = await onImport(selectedCandidates);
+      if (!operationGate.isCurrent("operation", token)) return;
       const failedIds = new Set(result.failures.map((failure) => failure.id));
       setSelectedIds(failedIds);
+      onDraftDirtyChange(failedIds.size > 0);
       const failures = result.failures.map((failure) => failure.message).filter(Boolean);
       setResultMessage({
         text: failures.length
@@ -113,22 +150,24 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
         error: failures.length > 0,
       });
     } catch (error) {
-      setResultMessage({ text: errorMessage(error), error: true });
+      if (operationGate.isCurrent("operation", token)) {
+        setResultMessage({ text: errorMessage(error), error: true });
+      }
     } finally {
-      setBusy(false);
+      if (operationGate.finish("operation", token)) setBusy(false);
     }
   }
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => {
-      if (!busy && event.target === event.currentTarget) onClose();
+      if (!locked && event.target === event.currentTarget) onClose();
     }}>
       <form className="wind-dialog session-config-import-dialog" role="dialog" aria-modal="true" aria-labelledby="session-config-import-title" onSubmit={(event) => void submit(event)}>
         <header className="dialog-title">
           <FileUp size={17} />
           <strong id="session-config-import-title">{title}</strong>
-          {headerAddon?.(busy)}
-          <button type="button" title="关闭" aria-label={`关闭${title}`} onClick={onClose} disabled={busy}><X size={18} /></button>
+          {headerAddon?.(locked)}
+          <button type="button" title="关闭" aria-label={`关闭${title}`} onClick={onClose} disabled={locked}><X size={18} /></button>
         </header>
         <section className="session-config-import-content">
           <div className="session-import-source-header">
@@ -152,8 +191,11 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
             value={source}
             spellCheck={false}
             placeholder={sourcePlaceholder}
-            onChange={(event) => updateSource(event.target.value)}
-            disabled={busy}
+            onChange={(event) => {
+              cancelFileRead();
+              updateSource(event.target.value);
+            }}
+            disabled={locked}
           />
           <div className="session-import-summary" aria-live="polite">
             <span>{parsed.candidates.length} 个会话</span>
@@ -170,7 +212,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
                     type="checkbox"
                     aria-label={`导入 ${name}`}
                     checked={selectedIds.has(candidate.id)}
-                    disabled={busy}
+                    disabled={locked}
                     onChange={(event) => toggleCandidate(candidate.id, event.target.checked)}
                   />
                   <span className="session-import-target">
@@ -197,8 +239,8 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
         <footer className="dialog-footer session-import-footer">
           <span>{selectedCandidates.length ? `已选择 ${selectedCandidates.length} 个` : ""}</span>
           <div className="dialog-actions inline">
-            <button type="button" onClick={onClose} disabled={busy}>取消</button>
-            <button type="submit" className="primary" disabled={busy || Boolean(activeError) || !selectedCandidates.length}>
+            <button type="button" onClick={onClose} disabled={locked}>取消</button>
+            <button type="submit" className="primary" disabled={locked || Boolean(activeError) || !selectedCandidates.length}>
               {busy ? <LoaderCircle size={15} className="spin" /> : <FileUp size={15} />}
               导入
             </button>

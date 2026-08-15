@@ -3,6 +3,7 @@ import { PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS, parsePuttySessions } from "./put
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ReactNode } from "react";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
+import type { KeyedRequestGate } from "./keyed-request-gate";
 
 const parseConfig = (source: string, sourceName: string) => parsePuttySessions(source, sourceName);
 
@@ -10,10 +11,14 @@ export default function PuttyConfigImportDialog({
   onImport,
   onClose,
   headerAddon,
+  operationGate,
+  onDraftDirtyChange,
 }: {
   onImport: (candidates: PuttySessionImportCandidate[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
   headerAddon?: (busy: boolean) => ReactNode;
+  operationGate: KeyedRequestGate<"operation">;
+  onDraftDirtyChange: (dirty: boolean) => void;
 }) {
   return <SessionConfigImportDialog
     title="导入 PuTTY 会话"
@@ -27,6 +32,8 @@ export default function PuttyConfigImportDialog({
     candidateTarget={formatTarget}
     candidateDetails={formatDetails}
     headerAddon={headerAddon}
+    operationGate={operationGate}
+    onDraftDirtyChange={onDraftDirtyChange}
     onImport={onImport}
     onClose={onClose}
   />;

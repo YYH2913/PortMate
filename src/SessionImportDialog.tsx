@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import OpenSshConfigImportDialog from "./OpenSshConfigImportDialog";
 import PuttyConfigImportDialog from "./PuttyConfigImportDialog";
 import ShellConfigImportDialog from "./ShellConfigImportDialog";
@@ -28,6 +29,43 @@ export default function SessionImportDialog({
   onClose: () => void;
 }) {
   const [mode, setMode] = useState<SessionImportMode>("openssh");
+  const operationGate = useRef(new KeyedRequestGate<"operation">());
+  const dirtyModes = useRef(new Set<SessionImportMode>());
+
+  useEffect(() => () => operationGate.current.invalidateAll(), []);
+
+  function setDraftDirty(dirty: boolean) {
+    if (dirty) dirtyModes.current.add(mode);
+    else dirtyModes.current.delete(mode);
+  }
+
+  function changeMode(nextMode: SessionImportMode) {
+    if (nextMode === mode) return;
+    const token = operationGate.current.begin("operation");
+    if (token === null) return;
+    try {
+      if (dirtyModes.current.has(mode)
+        && !window.confirm(`当前 ${importModeLabel(mode)} 导入内容尚未完成，切换格式将放弃这些内容。是否继续？`)) return;
+      dirtyModes.current.delete(mode);
+      setMode(nextMode);
+    } finally {
+      operationGate.current.finish("operation", token);
+    }
+  }
+
+  function closeDialog() {
+    const token = operationGate.current.begin("operation");
+    if (token === null) return;
+    try {
+      if (dirtyModes.current.has(mode)
+        && !window.confirm(`当前 ${importModeLabel(mode)} 导入内容尚未完成，关闭窗口将放弃这些内容。是否继续？`)) return;
+      dirtyModes.current.delete(mode);
+      onClose();
+    } finally {
+      operationGate.current.finish("operation", token);
+    }
+  }
+
   const headerAddon = (busy: boolean): ReactNode => (
     <div className="session-import-mode-switch" role="group" aria-label="导入格式">
       {importModes.map((option) => (
@@ -36,7 +74,7 @@ export default function SessionImportDialog({
           type="button"
           aria-pressed={mode === option.id}
           disabled={busy}
-          onClick={() => setMode(option.id)}
+          onClick={() => changeMode(option.id)}
         >
           {option.label}
         </button>
@@ -45,10 +83,14 @@ export default function SessionImportDialog({
   );
 
   if (mode === "putty") {
-    return <PuttyConfigImportDialog onImport={onImportPutty} onClose={onClose} headerAddon={headerAddon} />;
+    return <PuttyConfigImportDialog onImport={onImportPutty} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
   if (mode === "shell") {
-    return <ShellConfigImportDialog onImport={onImportShell} onClose={onClose} headerAddon={headerAddon} />;
+    return <ShellConfigImportDialog onImport={onImportShell} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
-  return <OpenSshConfigImportDialog onImport={onImportOpenSsh} onClose={onClose} headerAddon={headerAddon} />;
+  return <OpenSshConfigImportDialog onImport={onImportOpenSsh} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+}
+
+function importModeLabel(mode: SessionImportMode) {
+  return importModes.find((option) => option.id === mode)?.label ?? mode;
 }

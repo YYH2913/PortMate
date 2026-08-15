@@ -3,6 +3,7 @@ import { SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS, parseShellSessions } from "./she
 import type { ShellSessionImportCandidate } from "./shell-session-import";
 import type { ReactNode } from "react";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
+import type { KeyedRequestGate } from "./keyed-request-gate";
 
 const parseConfig = (source: string) => parseShellSessions(source);
 
@@ -10,10 +11,14 @@ export default function ShellConfigImportDialog({
   onImport,
   onClose,
   headerAddon,
+  operationGate,
+  onDraftDirtyChange,
 }: {
   onImport: (candidates: ShellSessionImportCandidate[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
   headerAddon?: (busy: boolean) => ReactNode;
+  operationGate: KeyedRequestGate<"operation">;
+  onDraftDirtyChange: (dirty: boolean) => void;
 }) {
   return <SessionConfigImportDialog
     title="导入本地 Shell"
@@ -27,6 +32,8 @@ export default function ShellConfigImportDialog({
     candidateTarget={(candidate) => candidate.program}
     candidateDetails={(candidate) => /[\\/]/.test(candidate.program) ? "" : "PATH"}
     headerAddon={headerAddon}
+    operationGate={operationGate}
+    onDraftDirtyChange={onDraftDirtyChange}
     onImport={onImport}
     onClose={onClose}
   />;
