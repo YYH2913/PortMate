@@ -5228,6 +5228,7 @@ Host staging
   oneKeyLifecyclePage.on("pageerror", (error) => oneKeyLifecycleErrors.push(error.message));
   await oneKeyLifecyclePage.goto(appUrl);
   await oneKeyLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await oneKeyLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).click();
   await oneKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
   await oneKeyLifecyclePage.getByRole("button", { name: "OneKeys", exact: true }).click();
   const firstOneKeyDialog = oneKeyLifecyclePage.locator(".one-key-dialog");
@@ -5240,8 +5241,27 @@ Host staging
   await oneKeyLifecyclePage.evaluate(() => { window.__deferOneKeyMutations = true; });
   await firstOneKeyDialog.locator('button[title="保存 OneKey"]').click();
   await oneKeyLifecyclePage.waitForFunction(() => window.__pendingOneKeyMutations.length === 1);
+  assert(await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").isDisabled()
+    && await firstOneKeyDialog.getByRole("button", { name: "添加 OneKey", exact: true }).isDisabled(),
+  "OneKey editor remained mutable while a save request was pending");
+  await oneKeyLifecyclePage.evaluate(() => {
+    window.__oneKeyClosePrompts = [];
+    window.__originalOneKeyConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__oneKeyClosePrompts.push(String(message));
+      return true;
+    };
+  });
   await firstOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
   await firstOneKeyDialog.waitFor({ state: "detached" });
+  const pendingOneKeyClosePrompts = await oneKeyLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalOneKeyConfirm;
+    return window.__oneKeyClosePrompts;
+  });
+  assert(pendingOneKeyClosePrompts.length === 1
+    && pendingOneKeyClosePrompts[0].includes("关闭窗口")
+    && !pendingOneKeyClosePrompts[0].includes("first-secret"),
+  `OneKey pending-save close did not protect or exposed its secret draft: ${JSON.stringify(pendingOneKeyClosePrompts)}`);
 
   await oneKeyLifecyclePage.evaluate(() => { window.__deferOneKeyMutations = false; });
   await oneKeyLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
@@ -5274,6 +5294,43 @@ Host staging
     && oneKeyLifecycleState.pending === 0
     && oneKeyLifecycleState.saveCalls === 2,
   `a stale OneKey mutation replaced the latest dialog state: ${JSON.stringify(oneKeyLifecycleState)}`);
+  const sendSavedOneKeyUsername = secondOneKeyDialog.getByRole("button", { name: "用户名", exact: true });
+  assert(!await sendSavedOneKeyUsername.isDisabled(),
+    "saved OneKey username was not available to the connected bound session");
+  const secondOneKeyUsername = secondOneKeyDialog.locator(".one-key-fields label", { hasText: "用户名" }).locator("input");
+  await secondOneKeyUsername.fill("unsaved-second-user");
+  assert(await sendSavedOneKeyUsername.isDisabled(),
+    "OneKey manager could send a stale saved username while a different value was visible");
+  await oneKeyLifecyclePage.evaluate(() => {
+    window.__oneKeyDiscardPrompts = [];
+    window.__originalOneKeyConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__oneKeyDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
+  await secondOneKeyDialog.locator('.one-key-list [role="option"]', { hasText: "First deferred key" }).click();
+  await secondOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
+  const retainedOneKeyDraft = await oneKeyLifecyclePage.evaluate(() => ({
+    prompts: window.__oneKeyDiscardPrompts,
+    selected: document.querySelector('.one-key-list [role="option"][aria-selected="true"] strong')?.textContent ?? "",
+    username: document.querySelector('.one-key-fields label:nth-child(3) input')?.value ?? "",
+    dialogVisible: Boolean(document.querySelector(".one-key-dialog")),
+  }));
+  assert(retainedOneKeyDraft.dialogVisible
+    && retainedOneKeyDraft.selected === "Second current key"
+    && retainedOneKeyDraft.username === "unsaved-second-user"
+    && retainedOneKeyDraft.prompts.length === 2
+    && retainedOneKeyDraft.prompts.some((prompt) => prompt.includes("切换 OneKey"))
+    && retainedOneKeyDraft.prompts.some((prompt) => prompt.includes("关闭窗口"))
+    && retainedOneKeyDraft.prompts.every((prompt) => !prompt.includes("second-secret")),
+  `OneKey draft was discarded or exposed without confirmation: ${JSON.stringify(retainedOneKeyDraft)}`);
+  await oneKeyLifecyclePage.evaluate(() => {
+    window.confirm = window.__originalOneKeyConfirm;
+  });
+  await secondOneKeyUsername.fill("second-user");
+  await secondOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
+  await secondOneKeyDialog.waitFor({ state: "detached" });
   assert(oneKeyLifecycleErrors.length === 0,
     `OneKey lifecycle browser exceptions: ${JSON.stringify(oneKeyLifecycleErrors)}`);
   await oneKeyLifecyclePage.close();

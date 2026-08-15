@@ -8,9 +8,9 @@ import {
   oneKeyIdentityUpdate,
   selectionFromOneKeyIdentity,
 } from "./one-key-identity-state";
-import type { OneKeyIdentitySelection } from "./one-key-identity-state";
+import { oneKeyDraftHasUnsavedChanges } from "./one-key-draft-state";
+import type { OneKeyDraftState } from "./one-key-draft-state";
 import type {
-  OneKeyIdentitySummary,
   OneKeyKind,
   OneKeyMutationResponse,
   OneKeySecretUpdate,
@@ -21,23 +21,7 @@ import type {
 
 const MAX_ONE_KEYS = 64;
 
-type OneKeyDraft = {
-  id: string | null;
-  label: string;
-  kind: OneKeyKind;
-  username: string;
-  password: string;
-  passphrase: string;
-  clearPassword: boolean;
-  clearPassphrase: boolean;
-  hasPassword: boolean;
-  hasPassphrase: boolean;
-  currentIdentity: OneKeyIdentitySummary | null;
-  identitySelection: OneKeyIdentitySelection | null;
-  sessionIds: string[];
-};
-
-function emptyDraft(): OneKeyDraft {
+function emptyDraft(): OneKeyDraftState {
   return {
     id: null,
     label: "",
@@ -55,7 +39,7 @@ function emptyDraft(): OneKeyDraft {
   };
 }
 
-function draftFromItem(item: OneKeySummary): OneKeyDraft {
+function draftFromItem(item: OneKeySummary): OneKeyDraftState {
   return {
     id: item.id,
     label: item.label,
@@ -110,7 +94,7 @@ export default function OneKeyDialog({
 }) {
   const [items, setItems] = useState(() => cloneItems(oneKeys));
   const [selectedId, setSelectedId] = useState(oneKeys[0]?.id ?? "");
-  const [draft, setDraft] = useState<OneKeyDraft>(() => oneKeys[0] ? draftFromItem(oneKeys[0]) : emptyDraft());
+  const [draft, setDraft] = useState<OneKeyDraftState>(() => oneKeys[0] ? draftFromItem(oneKeys[0]) : emptyDraft());
   const [busy, setBusy] = useState<"save" | "delete" | "send" | null>(null);
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
   const mountedRef = useRef(true);
@@ -132,6 +116,7 @@ export default function OneKeyDialog({
         && item.identity.id === currentIdentitySelection.identityId
       )),
   );
+  const hasUnsavedChanges = oneKeyDraftHasUnsavedChanges(draft, items);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -151,19 +136,31 @@ export default function OneKeyDialog({
   }, [oneKeys, selectedId]);
 
   function selectItem(item: OneKeySummary) {
+    if (busy !== null || !confirmDiscardChanges("切换 OneKey")) return;
     setSelectedId(item.id);
     setDraft(draftFromItem(item));
     setFeedback(null);
   }
 
   function addItem() {
+    if (busy !== null) return;
     if (items.length >= MAX_ONE_KEYS) {
       setFeedback({ kind: "error", text: `OneKey 最多保存 ${MAX_ONE_KEYS} 条。` });
       return;
     }
+    if (!confirmDiscardChanges("新建 OneKey")) return;
     setSelectedId("");
     setDraft(emptyDraft());
     setFeedback(null);
+  }
+
+  function confirmDiscardChanges(action: string): boolean {
+    return !hasUnsavedChanges || window.confirm(`当前 OneKey 有未保存的更改，${action}将放弃这些内容。是否继续？`);
+  }
+
+  function closeDialog() {
+    if (!confirmDiscardChanges("关闭窗口")) return;
+    onClose();
   }
 
   function toggleSession(sessionId: string) {
@@ -184,6 +181,7 @@ export default function OneKeyDialog({
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (busy !== null) return;
     if (!draft.label.trim() || !draft.username.trim()) {
       setFeedback({ kind: "error", text: "名称和用户名不能为空。" });
       return;
@@ -234,7 +232,9 @@ export default function OneKeyDialog({
   }
 
   async function remove() {
-    if (!draft.id || !window.confirm(`删除 OneKey “${draft.label}”？`)) return;
+    if (!draft.id || busy !== null) return;
+    const unsavedWarning = hasUnsavedChanges ? "\n\n当前编辑器还有未保存的更改，也会一并丢弃。" : "";
+    if (!window.confirm(`删除 OneKey “${draft.label}”？${unsavedWarning}`)) return;
     const mutationToken = onMutationStart();
     setBusy("delete");
     setFeedback(null);
@@ -256,7 +256,7 @@ export default function OneKeyDialog({
   }
 
   async function sendField(field: "username" | "password" | "passphrase") {
-    if (!draft.id || !active) return;
+    if (!draft.id || !active || busy !== null || hasUnsavedChanges) return;
     setBusy("send");
     setFeedback(null);
     try {
@@ -281,23 +281,23 @@ export default function OneKeyDialog({
   );
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
       <form className="wind-dialog utility-dialog one-key-dialog" role="dialog" aria-modal="true" aria-labelledby="one-key-dialog-title" onSubmit={(event) => void save(event)}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong id="one-key-dialog-title">OneKey 管理器</strong>
-          <button type="button" title="关闭" aria-label="关闭 OneKey 管理器" onClick={onClose}><X size={20} /></button>
+          <button type="button" title="关闭" aria-label="关闭 OneKey 管理器" onClick={closeDialog}><X size={20} /></button>
         </header>
         <section className="one-key-content">
           <aside className="one-key-list">
             <header>
               <strong>OneKeys</strong>
               <span>{items.length}/{MAX_ONE_KEYS}</span>
-              <button type="button" title="添加 OneKey" aria-label="添加 OneKey" onClick={addItem} disabled={items.length >= MAX_ONE_KEYS}><Plus size={14} /></button>
+              <button type="button" title="添加 OneKey" aria-label="添加 OneKey" onClick={addItem} disabled={busy !== null || items.length >= MAX_ONE_KEYS}><Plus size={14} /></button>
             </header>
             <div role="listbox" aria-label="OneKey 列表">
               {items.map((item) => (
-                <button key={item.id} type="button" role="option" aria-selected={item.id === selectedId} className={item.id === selectedId ? "active" : ""} onClick={() => selectItem(item)}>
+                <button key={item.id} type="button" role="option" aria-selected={item.id === selectedId} className={item.id === selectedId ? "active" : ""} disabled={busy !== null} onClick={() => selectItem(item)}>
                   {item.kind === "ssh" ? <KeyRound size={13} /> : <UserRound size={13} />}
                   <span><strong>{item.label}</strong><small>{item.username}</small></span>
                 </button>
@@ -307,8 +307,8 @@ export default function OneKeyDialog({
           </aside>
           <section className="one-key-editor">
             <div className="one-key-fields">
-              <label><span>名称</span><input value={draft.label} maxLength={64} onChange={(event) => setDraft((current) => ({ ...current, label: event.target.value }))} /></label>
-              <label><span>类型</span><select value={draft.kind} onChange={(event) => {
+              <label><span>名称</span><input value={draft.label} disabled={busy !== null} maxLength={64} onChange={(event) => setDraft((current) => ({ ...current, label: event.target.value }))} /></label>
+              <label><span>类型</span><select value={draft.kind} disabled={busy !== null} onChange={(event) => {
                 const kind = event.target.value as OneKeyKind;
                 setDraft((current) => ({
                   ...current,
@@ -320,12 +320,12 @@ export default function OneKeyDialog({
                   }),
                 }));
               }}><option value="account">Account</option><option value="ssh">SSH</option></select></label>
-              <label><span>用户名</span><input value={draft.username} maxLength={256} autoComplete="username" onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))} /></label>
-              <label><span>{draft.hasPassword ? "密码（已存）" : "密码"}</span><input type="password" value={draft.password} autoComplete="new-password" placeholder={draft.hasPassword ? "留空保持原值" : ""} onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value, clearPassword: false }))} /></label>
-              {draft.hasPassword ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassword} disabled={Boolean(draft.password)} onChange={(event) => setDraft((current) => ({ ...current, clearPassword: event.target.checked }))} /><span>清除已存密码</span></label> : null}
-              {draft.kind === "ssh" ? <label><span>{draft.hasPassphrase ? "私钥口令（已存）" : "私钥口令"}</span><input type="password" value={draft.passphrase} autoComplete="off" placeholder={draft.hasPassphrase ? "留空保持原值" : ""} onChange={(event) => setDraft((current) => ({ ...current, passphrase: event.target.value, clearPassphrase: false }))} /></label> : null}
-              {draft.kind === "ssh" && draft.hasPassphrase ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassphrase} disabled={Boolean(draft.passphrase)} onChange={(event) => setDraft((current) => ({ ...current, clearPassphrase: event.target.checked }))} /><span>清除已存口令</span></label> : null}
-              {draft.kind === "ssh" ? <label><span>公钥身份</span><select value={draft.identitySelection ? oneKeyIdentitySelectionKey(draft.identitySelection) : ""} onChange={(event) => {
+              <label><span>用户名</span><input value={draft.username} disabled={busy !== null} maxLength={256} autoComplete="username" onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))} /></label>
+              <label><span>{draft.hasPassword ? "密码（已存）" : "密码"}</span><input type="password" value={draft.password} disabled={busy !== null} autoComplete="new-password" placeholder={draft.hasPassword ? "留空保持原值" : ""} onChange={(event) => setDraft((current) => ({ ...current, password: event.target.value, clearPassword: false }))} /></label>
+              {draft.hasPassword ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassword} disabled={busy !== null || Boolean(draft.password)} onChange={(event) => setDraft((current) => ({ ...current, clearPassword: event.target.checked }))} /><span>清除已存密码</span></label> : null}
+              {draft.kind === "ssh" ? <label><span>{draft.hasPassphrase ? "私钥口令（已存）" : "私钥口令"}</span><input type="password" value={draft.passphrase} disabled={busy !== null} autoComplete="off" placeholder={draft.hasPassphrase ? "留空保持原值" : ""} onChange={(event) => setDraft((current) => ({ ...current, passphrase: event.target.value, clearPassphrase: false }))} /></label> : null}
+              {draft.kind === "ssh" && draft.hasPassphrase ? <label className="one-key-clear"><input type="checkbox" checked={draft.clearPassphrase} disabled={busy !== null || Boolean(draft.passphrase)} onChange={(event) => setDraft((current) => ({ ...current, clearPassphrase: event.target.checked }))} /><span>清除已存口令</span></label> : null}
+              {draft.kind === "ssh" ? <label><span>公钥身份</span><select value={draft.identitySelection ? oneKeyIdentitySelectionKey(draft.identitySelection) : ""} disabled={busy !== null} onChange={(event) => {
                 const candidate = identityCandidates.find((item) => oneKeyIdentitySelectionKey({ sourceProfileId: item.sourceProfileId, identityId: item.identity.id }) === event.target.value);
                 const saved = currentIdentitySelection && oneKeyIdentitySelectionKey(currentIdentitySelection) === event.target.value
                   ? currentIdentitySelection
@@ -351,14 +351,14 @@ export default function OneKeyDialog({
             <section className="one-key-sessions">
               <header><strong>绑定会话</strong><span>{draft.sessionIds.length}</span></header>
               <div>
-                {compatibleSessions.map((session) => <label key={session.profile.id}><input type="checkbox" checked={draft.sessionIds.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} /><span><strong>{session.profile.name}</strong><small>{session.profile.kind}</small></span></label>)}
+                {compatibleSessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={busy !== null} checked={draft.sessionIds.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} /><span><strong>{session.profile.name}</strong><small>{session.profile.kind}</small></span></label>)}
                 {!compatibleSessions.length ? <div>没有兼容会话</div> : null}
               </div>
             </section>
             <div className="one-key-editor-actions">
-              <button type="button" title="发送用户名" onClick={() => void sendField("username")} disabled={!canSend || busy !== null}><UserRound size={14} /><span>用户名</span></button>
-              <button type="button" title="发送密码" onClick={() => void sendField("password")} disabled={!canSend || !draft.hasPassword || busy !== null}><Send size={14} /><span>密码</span></button>
-              {draft.kind === "ssh" ? <button type="button" title="发送私钥口令" onClick={() => void sendField("passphrase")} disabled={!canSend || !draft.hasPassphrase || busy !== null}><KeyRound size={14} /><span>口令</span></button> : null}
+              <button type="button" title={hasUnsavedChanges ? "保存后发送用户名" : "发送用户名"} onClick={() => void sendField("username")} disabled={!canSend || busy !== null || hasUnsavedChanges}><UserRound size={14} /><span>用户名</span></button>
+              <button type="button" title={hasUnsavedChanges ? "保存后发送密码" : "发送密码"} onClick={() => void sendField("password")} disabled={!canSend || !draft.hasPassword || busy !== null || hasUnsavedChanges}><Send size={14} /><span>密码</span></button>
+              {draft.kind === "ssh" ? <button type="button" title={hasUnsavedChanges ? "保存后发送私钥口令" : "发送私钥口令"} onClick={() => void sendField("passphrase")} disabled={!canSend || !draft.hasPassphrase || busy !== null || hasUnsavedChanges}><KeyRound size={14} /><span>口令</span></button> : null}
               <span />
               {draft.id ? <button type="button" className="danger" title="删除 OneKey" aria-label="删除 OneKey" onClick={() => void remove()} disabled={busy !== null}><Trash2 size={14} /></button> : null}
               <button type="submit" className="primary" title="保存 OneKey" disabled={busy !== null}><Save size={14} /><span>保存</span></button>
@@ -368,7 +368,7 @@ export default function OneKeyDialog({
         <footer className="utility-actions one-key-dialog-actions">
           <span className={feedback?.kind ?? ""} role={feedback?.kind === "error" ? "alert" : "status"}>{feedback?.text ?? ""}</span>
           <span>{active ? `当前：${active.profile.name}` : "未选择会话"}</span>
-          <button type="button" onClick={onClose}>关闭</button>
+          <button type="button" onClick={closeDialog}>关闭</button>
         </footer>
       </form>
     </div>

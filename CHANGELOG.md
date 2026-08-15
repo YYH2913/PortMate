@@ -52,6 +52,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   selected script, loads its current version, and cannot discard unsaved editor changes.
 - Fixed custom-script drafts being discarded without confirmation when switching, creating, or
   closing, and added target-specific confirmation before deleting a saved script.
+- Fixed OneKey drafts being discarded during navigation and prevented send actions from using an
+  older saved credential while a different username or secret update is visible in the editor.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
