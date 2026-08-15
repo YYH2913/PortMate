@@ -61,6 +61,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Fixed Key Manager drafts and pasted key material being discarded or overwritten by pending
   responses, added exact destructive-action confirmation, and stopped project/user Host Keys from
   being implicitly assigned to the currently selected Profile when opened for editing.
+- Fixed the multi-page terminal settings dialog silently discarding unsaved preferences, sync input,
+  and keymap changes, and isolated late terminal-export directory picker responses.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

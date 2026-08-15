@@ -3173,8 +3173,40 @@ Host staging
   `terminal export directory controls overflow on mobile: ${JSON.stringify(mobileTerminalExportSetting)}`);
   await page.screenshot({ path: `${screenshotPrefix}-terminal-export-settings-mobile.png`, fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
+  await terminalExportDirectory.fill("/tmp/private-unsaved-terminal-export");
+  await page.evaluate(() => {
+    window.__terminalSettingsDiscardPrompts = [];
+    window.__originalTerminalSettingsConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__terminalSettingsDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  assert(await page.locator(".terminal-settings-dialog").isVisible()
+    && await terminalExportDirectory.inputValue() === "/tmp/private-unsaved-terminal-export",
+  "terminal settings discarded an unsaved path after close cancellation");
+  await page.evaluate(() => {
+    window.confirm = (message) => {
+      window.__terminalSettingsDiscardPrompts.push(String(message));
+      return true;
+    };
+  });
+  await page.getByRole("button", { name: "关闭终端设置", exact: true }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
+  const terminalSettingsDiscardState = await page.evaluate(() => {
+    const prompts = window.__terminalSettingsDiscardPrompts;
+    window.confirm = window.__originalTerminalSettingsConfirm;
+    return {
+      prompts,
+      savedPath: JSON.parse(localStorage.getItem("portmate.terminalPrefs")).terminalTextExportDirectory,
+    };
+  });
+  assert(terminalSettingsDiscardState.savedPath === "/tmp/portmate-terminal-text"
+    && terminalSettingsDiscardState.prompts.length === 2
+    && terminalSettingsDiscardState.prompts.every((prompt) => prompt.includes("未保存的更改"))
+    && terminalSettingsDiscardState.prompts.every((prompt) => !prompt.includes("private-unsaved-terminal-export")),
+  `terminal settings draft was persisted or exposed without confirmation: ${JSON.stringify(terminalSettingsDiscardState)}`);
 
   const expectedSessionPages = {
     Shell: ["会话", "终端", "日志", "触发器", "传输", "Shell"],

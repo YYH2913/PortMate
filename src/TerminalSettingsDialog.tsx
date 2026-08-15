@@ -10,6 +10,7 @@ import {
 import { allSyncProtocols, normalizeSyncInputSettings } from "./sync-input-state";
 import type { SyncInputSettings, SyncNewlineMode } from "./sync-input-state";
 import { terminalStartupSessionOptions } from "./terminal-settings-state";
+import { terminalSettingsDraftHasUnsavedChanges } from "./terminal-settings-draft-state";
 import {
   chooseTerminalExportDirectory,
   MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS,
@@ -79,16 +80,32 @@ export default function TerminalSettingsDialog({
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
   const [settingsError, setSettingsError] = useState("");
+  const [directoryBusy, setDirectoryBusy] = useState(false);
+  const directoryRequestRef = useRef(0);
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
+  const dirty = terminalSettingsDraftHasUnsavedChanges(
+    { prefs, syncSettings: syncDraft, workspaceKeymap: workspaceKeymapDraft },
+    { prefs: initialPrefs, syncSettings, workspaceKeymap },
+  );
+
+  useEffect(() => () => {
+    directoryRequestRef.current += 1;
+  }, []);
 
   async function selectTerminalExportDirectory() {
+    if (directoryBusy) return;
+    const token = ++directoryRequestRef.current;
+    setDirectoryBusy(true);
     setSettingsError("");
     try {
       const selected = await chooseTerminalExportDirectory(prefs.terminalTextExportDirectory);
+      if (directoryRequestRef.current !== token) return;
       if (selected !== null) updatePref("terminalTextExportDirectory", selected);
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : String(error));
+      if (directoryRequestRef.current === token) setSettingsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (directoryRequestRef.current === token) setDirectoryBusy(false);
     }
   }
 
@@ -104,8 +121,13 @@ export default function TerminalSettingsDialog({
     onClose();
   }
 
+  function closeDialog() {
+    if (dirty && !window.confirm("终端设置有未保存的更改，关闭窗口将放弃这些内容。是否继续？")) return;
+    onClose();
+  }
+
   return (
-    <DialogFrame title="终端设置" className="terminal-settings-dialog" onClose={onClose}>
+    <DialogFrame title="终端设置" className="terminal-settings-dialog" onClose={closeDialog}>
       <nav className="settings-tabs" role="tablist" aria-label="终端设置页面">
         {terminalSettingPages.map((page) => (
           <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
@@ -124,7 +146,8 @@ export default function TerminalSettingsDialog({
           onWorkspaceKeymapChange={setWorkspaceKeymapDraft}
           syncSettings={syncDraft}
           onSyncSettingsChange={setSyncDraft}
-          canChooseExportDirectory={isBackendAvailable()}
+          canChooseExportDirectory={isBackendAvailable() && !directoryBusy}
+          exportDirectoryBusy={directoryBusy}
           onChooseExportDirectory={() => void selectTerminalExportDirectory()}
           onExportDirectoryChange={(value) => {
             setSettingsError("");
@@ -138,7 +161,7 @@ export default function TerminalSettingsDialog({
         </div>
         <div className="dialog-actions inline">
           <button onClick={savePrefs} disabled={keymapConflictCount > 0}>保存</button>
-          <button onClick={onClose}>取消</button>
+          <button onClick={closeDialog}>取消</button>
         </div>
       </div>
     </DialogFrame>
@@ -156,6 +179,7 @@ function TerminalSettingsContent({
   syncSettings,
   onSyncSettingsChange,
   canChooseExportDirectory,
+  exportDirectoryBusy,
   onChooseExportDirectory,
   onExportDirectoryChange,
 }: {
@@ -169,6 +193,7 @@ function TerminalSettingsContent({
   syncSettings: SyncInputSettings;
   onSyncSettingsChange: (settings: SyncInputSettings) => void;
   canChooseExportDirectory: boolean;
+  exportDirectoryBusy: boolean;
   onChooseExportDirectory: () => void;
   onExportDirectoryChange: (value: string) => void;
 }) {
@@ -201,6 +226,7 @@ function TerminalSettingsContent({
               value={prefs.terminalTextExportDirectory}
               placeholder="PortMate 默认 exports 目录"
               canBrowse={canChooseExportDirectory}
+              disabled={exportDirectoryBusy}
               onBrowse={onChooseExportDirectory}
               onChange={onExportDirectoryChange}
             />
@@ -466,7 +492,7 @@ function DialogFrame({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button onClick={onClose}><X size={22} /></button>
+          <button type="button" title={`关闭${title}`} aria-label={`关闭${title}`} onClick={onClose}><X size={22} /></button>
         </header>
         {children}
       </section>
@@ -515,6 +541,7 @@ function SettingPath({
   value,
   placeholder,
   canBrowse,
+  disabled,
   onBrowse,
   onChange,
 }: {
@@ -522,6 +549,7 @@ function SettingPath({
   value: string;
   placeholder: string;
   canBrowse: boolean;
+  disabled: boolean;
   onBrowse: () => void;
   onChange: (value: string) => void;
 }) {
@@ -532,6 +560,7 @@ function SettingPath({
         <input
           aria-label="终端文本默认导出目录"
           value={value}
+          disabled={disabled}
           maxLength={MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
@@ -539,8 +568,8 @@ function SettingPath({
         <button
           type="button"
           aria-label="选择终端文本导出目录"
-          title={canBrowse ? "选择目录" : "目录选择仅在桌面版可用"}
-          disabled={!canBrowse}
+          title={disabled ? "正在选择目录" : canBrowse ? "选择目录" : "目录选择仅在桌面版可用"}
+          disabled={disabled || !canBrowse}
           onClick={onBrowse}
         >
           <FolderOpen size={16} />
