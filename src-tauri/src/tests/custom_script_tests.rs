@@ -45,7 +45,9 @@ fn custom_script_mutations_normalize_and_enforce_optimistic_concurrency() {
     assert_eq!(script.description, "Read state");
     assert_eq!(script.content, "uptime\nwhoami\n");
     assert_eq!(script.allowed_session_ids, [session_id.as_str()]);
-    upsert_custom_script_in_store(&mut store, script.clone()).unwrap();
+    let response = upsert_custom_script_in_store(&mut store, script.clone()).unwrap();
+    assert_eq!(response.saved_id, script.id);
+    assert_eq!(response.scripts, store.custom_scripts);
 
     let mut stale = save_request(&session_id);
     stale.id = Some(script.id.clone());

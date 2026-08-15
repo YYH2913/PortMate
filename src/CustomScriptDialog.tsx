@@ -14,7 +14,7 @@ import {
   scriptAllowsSession,
   validateCustomScriptDraft,
 } from "./custom-script-state";
-import type { CustomScript, SaveCustomScriptRequest, SessionEvent, SessionSummary } from "./types";
+import type { CustomScript, SaveCustomScriptRequest, SaveCustomScriptResponse, SessionEvent, SessionSummary } from "./types";
 
 export default function CustomScriptDialog({
   sessions,
@@ -96,13 +96,11 @@ export default function CustomScriptDialog({
     setBusy(true);
     setError("");
     try {
-      const previousIds = new Set(scripts.map((script) => script.id));
-      const items = await invokeBackend<CustomScript[]>("save_custom_script", { request: normalized });
-      const saved = normalized.id
-        ? items.find((script) => script.id === normalized.id)
-        : items.find((script) => !previousIds.has(script.id));
-      setScripts(items);
-      setDraft(saved ? customScriptDraft(saved) : items[0] ? customScriptDraft(items[0]) : null);
+      const response = await invokeBackend<SaveCustomScriptResponse>("save_custom_script", { request: normalized });
+      const saved = response.scripts.find((script) => script.id === response.savedId);
+      if (!saved) throw new Error("保存响应没有包含已提交的自定义脚本，请重新打开后检查。");
+      setScripts(response.scripts);
+      setDraft(customScriptDraft(saved));
     } catch (reason) {
       setError(formatError(reason));
     } finally {

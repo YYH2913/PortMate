@@ -70,7 +70,8 @@ pub(super) fn normalize_custom_script_request(
 pub(super) fn upsert_custom_script_in_store(
     store: &mut SessionStore,
     script: CustomScript,
-) -> Result<Vec<CustomScript>, String> {
+) -> Result<SaveCustomScriptResponse, String> {
+    let saved_id = script.id.clone();
     if let Some(existing) = store
         .custom_scripts
         .iter_mut()
@@ -85,7 +86,10 @@ pub(super) fn upsert_custom_script_in_store(
         }
         store.custom_scripts.push(script);
     }
-    Ok(store.custom_scripts.clone())
+    Ok(SaveCustomScriptResponse {
+        scripts: store.custom_scripts.clone(),
+        saved_id,
+    })
 }
 
 pub(super) fn delete_custom_script_from_store(
@@ -180,7 +184,7 @@ pub(crate) fn list_custom_scripts(
 pub(crate) fn save_custom_script(
     state: State<'_, AppState>,
     request: SaveCustomScriptRequest,
-) -> Result<Vec<CustomScript>, String> {
+) -> Result<SaveCustomScriptResponse, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let script = normalize_custom_script_request(&store, request, Utc::now())?;
     commit_store_mutation(&mut store, &state.store_path, |next_store| {

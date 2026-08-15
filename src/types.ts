@@ -535,6 +535,11 @@ export interface SaveCustomScriptRequest {
   expectedUpdatedAt: string | null;
 }
 
+export interface SaveCustomScriptResponse {
+  scripts: CustomScript[];
+  savedId: string;
+}
+
 export interface McpGrant {
   clientId: string;
   name: string;

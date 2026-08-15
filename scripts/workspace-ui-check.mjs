@@ -425,6 +425,7 @@ try {
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__customScripts = structuredClone(initialCustomScripts);
     window.__customScriptSequence = 0;
+    window.__injectConcurrentCustomScriptBeforeSave = false;
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
@@ -829,6 +830,22 @@ try {
           if (existing && existing.updatedAt !== request.expectedUpdatedAt) {
             throw new Error("custom script changed in another window");
           }
+          if (window.__injectConcurrentCustomScriptBeforeSave) {
+            window.__injectConcurrentCustomScriptBeforeSave = false;
+            const concurrentSequence = ++window.__customScriptSequence;
+            const concurrentNow = new Date(Date.now() + concurrentSequence).toISOString();
+            window.__customScripts.push({
+              id: `00000000-0000-4000-8000-${String(concurrentSequence).padStart(12, "0")}`,
+              name: "Concurrent window script",
+              description: "Created in another window",
+              content: "hostname",
+              allowAllSessions: false,
+              allowedSessionIds: ["edge-router"],
+              mcpEnabled: false,
+              createdAt: concurrentNow,
+              updatedAt: concurrentNow,
+            });
+          }
           const now = new Date(Date.now() + ++window.__customScriptSequence).toISOString();
           const saved = {
             id: existing?.id ?? `00000000-0000-4000-8000-${String(window.__customScriptSequence).padStart(12, "0")}`,
@@ -844,7 +861,10 @@ try {
           const index = window.__customScripts.findIndex((script) => script.id === saved.id);
           if (index >= 0) window.__customScripts[index] = saved;
           else window.__customScripts.push(saved);
-          return structuredClone(window.__customScripts);
+          return {
+            scripts: structuredClone(window.__customScripts),
+            savedId: saved.id,
+          };
         }
         if (command === "delete_custom_script") {
           const existing = window.__customScripts.find((script) => script.id === args.request.id);
@@ -3950,12 +3970,15 @@ Host staging
     "saved custom script did not become runnable");
 
   await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
+  await page.evaluate(() => { window.__injectConcurrentCustomScriptBeforeSave = true; });
   await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).fill("Collect diagnostics");
   await customScriptDialog.getByRole("textbox", { name: "脚本说明", exact: true }).fill("Capture runtime state");
   await customScriptDialog.getByRole("textbox", { name: "脚本正文", exact: true }).fill("uptime\ndf -h");
   await customScriptDialog.getByRole("checkbox", { name: "开放给 MCP", exact: true }).check();
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
-  await page.waitForFunction(() => window.__customScripts.length === 2);
+  await page.waitForFunction(() => window.__customScripts.length === 3);
+  assert(await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).inputValue() === "Collect diagnostics",
+    "a concurrently created script replaced the script selected by the save response");
   await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).click();
   const scriptNotice = page.locator(".notice-dialog", { hasText: "Collect diagnostics" });
   await scriptNotice.waitFor();
@@ -3992,6 +4015,9 @@ Host staging
     && customScriptBounds.actionsInsideEditor,
   `custom script desktop workspace overflows or clips actions: ${JSON.stringify(customScriptBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-custom-scripts.png`, fullPage: true });
+  await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => window.__customScripts.length === 2);
+  await customScriptDialog.getByRole("option", { name: /Concurrent window script/ }).click();
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 1);
   await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();

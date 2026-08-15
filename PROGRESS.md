@@ -88,6 +88,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同日继续审查自定义脚本的 MCP 授权生命周期，发现前端审批事件白名单遗漏 `run_custom_script`/`run-scripts`，启用 `confirmWrites` 的脚本调用会被桌面丢弃并在 60 秒后 fail-closed；同时原审批只绑定脚本 ID，没有绑定等待期间可能变化的正文版本。审批事件现携带仅由桌面 Store 生成的脚本名称与 UUID 摘要，弹窗在桌面/移动端明确显示目标且仍不包含正文；授权链在提示前捕获脚本 `updatedAt`，批准后和克隆发送正文时各自精确复核，脚本被编辑、禁用、删除或改目标后会拒绝旧审批并要求重新确认。前端事件解析严格要求 action/scope/目标类型/UUID/有界名称一致，并拒绝其他 action 夹带目标。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source 和 release-upgrade 全部通过；移动端 390x844 截图确认新增目标行、倒计时和审批按钮均在视口内。
 
+自定义脚本保存响应进一步返回事务内实际提交的 `savedId`，前端只按该 ID 选择本次保存结果，不再通过保存前的本地 ID 列表猜测新记录。Workspace UI 回归在保存前注入另一窗口并发创建的脚本，确认仍选中并运行用户刚保存的 `Collect diagnostics`，且测试结束会清理两条临时记录。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered，core 68、MCP 51 及其他 crate/integration/doc-test 无失败）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source、release-upgrade 和 diff whitespace gate 全部通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

@@ -44,6 +44,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   Client ID generation, modal interaction layering, and multiple path-preservation issues.
 - Fixed confirmed `run_custom_script` requests being dropped by the desktop approval event filter.
   The approval dialog now identifies the exact saved script by its trusted name and UUID.
+- Fixed custom-script creation selecting a different script when another window saved concurrently.
+  The backend now returns the exact committed script ID instead of requiring the UI to infer it.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

@@ -78,4 +78,15 @@ fn remaining_command_types_keep_stable_json_contracts() {
     assert_eq!(runtime["pid"], 4242);
     assert_eq!(runtime["endpoint"], "http://127.0.0.1:43123/mcp");
     assert!(runtime["startedAt"].is_string());
+
+    let saved_script = serde_json::to_value(SaveCustomScriptResponse {
+        scripts: Vec::new(),
+        saved_id: "69c06a07-dc48-4d4e-9498-6f42b6deab21".to_string(),
+    })
+    .unwrap();
+    assert_eq!(
+        saved_script["savedId"],
+        "69c06a07-dc48-4d4e-9498-6f42b6deab21"
+    );
+    assert!(saved_script["scripts"].as_array().unwrap().is_empty());
 }
