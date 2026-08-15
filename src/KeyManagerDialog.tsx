@@ -162,6 +162,7 @@ export default function KeyManagerDialog({
   const [clientKeyPrivateKey, setClientKeyPrivateKey] = useState("");
   const [clientKeyPassphrase, setClientKeyPassphrase] = useState("");
   const [clientKeyMutationBusy, setClientKeyMutationBusy] = useState(false);
+  const clientKeyMutationGate = useRef(new KeyedRequestGate<"profile-write">());
   const [selectedAgentKeyIds, setSelectedAgentKeyIds] = useState<string[]>([]);
   const [privateKeyLabel, setPrivateKeyLabel] = useState("profile key");
   const [privateKeyText, setPrivateKeyText] = useState("");
@@ -238,7 +239,7 @@ export default function KeyManagerDialog({
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
   const vaultOperationBusy = credentialOperationBusy || portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy || migrationDiagnosticBusy;
   const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
-  const credentialMutationControlsDisabled = vaultOperationBusy || credentialMutationsFrozen;
+  const credentialMutationControlsDisabled = clientKeyMutationBusy || vaultOperationBusy || credentialMutationsFrozen;
   const clientKeyControlsDisabled = clientKeyMutationBusy || credentialMutationControlsDisabled;
   const privateKeyImportControlsDisabled = clientKeyControlsDisabled || privateKeyFileReadBusy;
   const hostKeyDraftDirty = hostKeyEditDraftHasUnsavedChanges(editDraft);
@@ -330,6 +331,18 @@ export default function KeyManagerDialog({
     setMigrationPreviewState(null);
     setMigrationResult(null);
     setMigrationError("");
+  }
+
+  function beginClientKeyMutation() {
+    const token = clientKeyMutationGate.current.begin("profile-write");
+    if (token !== null) setClientKeyMutationBusy(true);
+    return token;
+  }
+
+  function finishClientKeyMutation(token: number) {
+    if (clientKeyMutationGate.current.finish("profile-write", token) && mountedRef.current) {
+      setClientKeyMutationBusy(false);
+    }
   }
 
   function currentMigrationRequest(): ProfileSecretMigrationRequest {
@@ -869,7 +882,10 @@ export default function KeyManagerDialog({
     expectedProfile: SessionProfile,
     message: string,
     existingMutationToken?: number,
+    existingClientMutationToken?: number,
   ): Promise<{ persisted: boolean; accepted: boolean }> {
+    const clientMutationToken = existingClientMutationToken ?? beginClientKeyMutation();
+    if (clientMutationToken === null) return { persisted: false, accepted: false };
     const mutationToken = existingMutationToken ?? onProfileMutationStart(profile.id);
     let backendSucceeded = false;
     setError("");
@@ -885,6 +901,7 @@ export default function KeyManagerDialog({
       return { persisted: false, accepted: false };
     } finally {
       onProfileMutationFinish(profile.id, mutationToken, backendSucceeded);
+      if (existingClientMutationToken === undefined) finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -944,10 +961,11 @@ export default function KeyManagerDialog({
       setError("私钥内容看起来不是 OpenSSH/PEM private key");
       return;
     }
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const mutationToken = onProfileMutationStart(profile.id);
     let mutationDelegated = false;
     let newSecretRef: string | null = null;
-    setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -984,7 +1002,7 @@ export default function KeyManagerDialog({
             identitiesOnly: true,
           },
         },
-      }, profile, `已导入私钥到 ${profile.name}`, mutationToken);
+      }, profile, `已导入私钥到 ${profile.name}`, mutationToken, clientMutationToken);
       if (saveResult.persisted) {
         newSecretRef = null;
         if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
@@ -1007,7 +1025,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       if (!mutationDelegated) onProfileMutationFinish(profile.id, mutationToken, true);
-      if (mountedRef.current) setClientKeyMutationBusy(false);
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1126,7 +1144,7 @@ export default function KeyManagerDialog({
   }
 
   async function moveSelectedClientIdentitiesFirst() {
-    if (!selectedClientIdentityItems.length) return;
+    if (!selectedClientIdentityItems.length || clientKeyControlsDisabled) return;
     const selectedIds = new Set(selectedClientIdentityItems.map((item) => item.selectionId));
     const targets = sshSessions.flatMap((session) => {
       const profile = session.profile;
@@ -1140,6 +1158,8 @@ export default function KeyManagerDialog({
       ));
       return [{ profile, identityRefs: [...selected, ...remaining] }];
     });
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const mutationTokens = new Map(targets.map(({ profile }) => [
       profile.id,
       onProfileMutationStart(profile.id),
@@ -1181,6 +1201,7 @@ export default function KeyManagerDialog({
           completedProfiles.has(targetProfileId),
         );
       }
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1200,6 +1221,8 @@ export default function KeyManagerDialog({
       return;
     }
     if (!window.confirm(`从各自 Profile 移除 ${removableCount} 个 client identity 引用${skipped ? `（另有 ${skipped} 个被 Jump Host 使用，将跳过）` : ""}？`)) return;
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const mutationTokens = new Map(targets.map(({ profile }) => [
       profile.id,
       onProfileMutationStart(profile.id),
@@ -1208,7 +1231,6 @@ export default function KeyManagerDialog({
     let superseded = false;
     setError("");
     setStatus("");
-    setClientKeyMutationBusy(true);
     let removed = 0;
     try {
       for (const { profile, removableItems } of targets) {
@@ -1242,7 +1264,7 @@ export default function KeyManagerDialog({
           completedProfiles.has(targetProfileId),
         );
       }
-      if (mountedRef.current) setClientKeyMutationBusy(false);
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1306,11 +1328,12 @@ export default function KeyManagerDialog({
   async function saveClientIdentity() {
     const expectedIdentity = clientKeyEditExpectedIdentityRef.current;
     if (!clientKeyEditDraft || !expectedIdentity || clientKeyControlsDisabled) return;
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const pendingDraft = clientKeyEditDraft;
     const mutationProfileId = pendingDraft.profileId;
     const mutationToken = onProfileMutationStart(mutationProfileId);
     let backendSucceeded = false;
-    setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -1332,7 +1355,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
-      if (mountedRef.current) setClientKeyMutationBusy(false);
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1342,10 +1365,11 @@ export default function KeyManagerDialog({
       setError("请先解锁 Stronghold，再轮换 Vault 私钥");
       return;
     }
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const mutationProfileId = clientKeyEditDraft.profileId;
     const mutationToken = onProfileMutationStart(mutationProfileId);
     let backendSucceeded = false;
-    setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -1367,7 +1391,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
-      if (mountedRef.current) setClientKeyMutationBusy(false);
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1378,10 +1402,11 @@ export default function KeyManagerDialog({
       ? "\n\n当前 Identity 编辑器还有未保存的更改，也会一并丢弃。"
       : "";
     if (!window.confirm(`${action}“${editingClientIdentityItem.identity.label}”（${editingClientIdentityItem.profileName}）？${unsavedWarning}`)) return;
+    const clientMutationToken = beginClientKeyMutation();
+    if (clientMutationToken === null) return;
     const mutationProfileId = clientKeyEditDraft.profileId;
     const mutationToken = onProfileMutationStart(mutationProfileId);
     let backendSucceeded = false;
-    setClientKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -1404,7 +1429,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onProfileMutationFinish(mutationProfileId, mutationToken, backendSucceeded);
-      if (mountedRef.current) setClientKeyMutationBusy(false);
+      finishClientKeyMutation(clientMutationToken);
     }
   }
 
@@ -1478,7 +1503,7 @@ export default function KeyManagerDialog({
             </div>
             <div className="key-batch-actions">
               <span>{selectedHostKeyIds.length} selected</span>
-              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={hostKeyMutationBusy || credentialMutationControlsDisabled || !selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
+              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
               <button type="button" onClick={() => void deleteSelectedHostKeys()} disabled={hostKeyMutationBusy || !selectedHostKeyIds.length}>删除</button>
             </div>
             {visibleHostKeys.map((key) => (
@@ -1491,7 +1516,7 @@ export default function KeyManagerDialog({
                 <small>{key.scope} · {key.label ?? key.host} · 最近验证 {formatHostKeyDate(key.lastSeen)}</small>
                 <div className="key-row-actions">
                   <button onClick={() => startEditKey(key)} disabled={hostKeyMutationBusy}>编辑</button>
-                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={hostKeyMutationBusy || credentialMutationControlsDisabled || !selectedProfile}>复制到 Profile</button>
+                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedProfile}>复制到 Profile</button>
                   <button onClick={() => void deleteKey(key.id)} disabled={hostKeyMutationBusy}>删除</button>
                 </div>
               </div>
@@ -1501,7 +1526,7 @@ export default function KeyManagerDialog({
           </section>
           <section className="key-editor">
             <DialogField label="Profile:">
-              <select value={profileId} disabled={hostKeyMutationBusy} onChange={(event) => setProfileId(event.target.value)}>
+              <select value={profileId} disabled={hostKeyMutationBusy || clientKeyMutationBusy} onChange={(event) => setProfileId(event.target.value)}>
                 {sshSessions.map((session) => (
                   <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
                 ))}
@@ -1712,12 +1737,12 @@ export default function KeyManagerDialog({
             </div>
             <div className="client-key-batch">
               <span>{selectedClientIdentityItems.length} selected</span>
-              <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={!visibleClientIdentityItems.length}>全选结果</button>
-              <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={!selectedClientKeyIds.length}>清除</button>
+              <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={clientKeyControlsDisabled || !visibleClientIdentityItems.length}>全选结果</button>
+              <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={clientKeyControlsDisabled || !selectedClientKeyIds.length}>清除</button>
               <div className="client-key-command-group">
-                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
-                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
-                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={credentialMutationControlsDisabled || !selectedClientIdentityItems.length}><Trash2 size={15} /></button>
+                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
+                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
+                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><Trash2 size={15} /></button>
               </div>
             </div>
             <div className="client-key-groups">
@@ -1726,7 +1751,7 @@ export default function KeyManagerDialog({
                   <header><strong>{group.label}</strong><span>{group.items.length}</span></header>
                   {group.items.map((item) => (
                     <div key={item.selectionId} className={`client-key-row${item.jumpInUse ? " in-use" : ""}${editingClientKeyId === item.selectionId ? " editing" : ""}`}>
-                      <input type="checkbox" checked={selectedClientKeyIds.includes(item.selectionId)} onChange={(event) => toggleClientIdentitySelection(item.selectionId, event.target.checked)} />
+                      <input type="checkbox" disabled={clientKeyControlsDisabled} checked={selectedClientKeyIds.includes(item.selectionId)} onChange={(event) => toggleClientIdentitySelection(item.selectionId, event.target.checked)} />
                       <span className="client-key-main">
                         <strong title={item.identity.label}>{item.identity.label}</strong>
                         <code title={item.identity.fingerprintSha256 ?? item.identity.path ?? item.identity.id}>{item.identity.fingerprintSha256 ?? item.identity.path ?? "No fingerprint"}</code>
@@ -1802,20 +1827,20 @@ export default function KeyManagerDialog({
             </div>
             <div className="client-key-batch agent-key-batch">
               <span>{selectedAgentKeys.length} selected</span>
-              <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={!agentKeys.length}>全选</button>
-              <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={!selectedAgentKeyIds.length}>清除</button>
-              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={credentialMutationControlsDisabled || !selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
+              <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={clientKeyControlsDisabled || !agentKeys.length}>全选</button>
+              <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={clientKeyControlsDisabled || !selectedAgentKeyIds.length}>清除</button>
+              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={clientKeyControlsDisabled || !selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
             </div>
             <div className="agent-key-list">
               {agentKeys.map((identity, index) => (
                 <div key={`${identityStableKey(identity)}:${index}`} className="client-key-row agent-row">
-                  <input type="checkbox" checked={selectedAgentKeyIds.includes(identityStableKey(identity))} onChange={(event) => toggleAgentIdentitySelection(identity, event.target.checked)} />
+                  <input type="checkbox" disabled={clientKeyControlsDisabled} checked={selectedAgentKeyIds.includes(identityStableKey(identity))} onChange={(event) => toggleAgentIdentitySelection(identity, event.target.checked)} />
                   <span className="client-key-main">
                     <strong title={identity.label}>{identity.label}</strong>
                     <code title={identity.fingerprintSha256 ?? ""}>{identity.fingerprintSha256 ?? "未识别指纹"}</code>
                   </span>
                   <span className="client-key-meta"><span>{identity.path ?? "ssh-agent"}</span></span>
-                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={credentialMutationControlsDisabled || !selectedProfile}><UserPlus size={15} /></button>
+                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={clientKeyControlsDisabled || !selectedProfile}><UserPlus size={15} /></button>
                 </div>
               ))}
               {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}

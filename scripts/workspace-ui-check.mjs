@@ -7614,6 +7614,30 @@ Host staging
     && hostKeyScanState.saved[0].fingerprint === "SHA256:scan-second"
     && !Number.isNaN(Date.parse(hostKeyScanState.saved[0].lastSeen)),
   `Host Key scan trust/replace lifecycle is wrong: ${JSON.stringify(hostKeyScanState)}`);
+  const hostKeyProfileCopy = firstHostKeyRow.getByRole("button", { name: "复制到 Profile", exact: true });
+  const hostKeyProfileCopyBaseline = await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+    return window.__invokeCalls.filter((call) => call.command === "save_session_profile").length;
+  });
+  await hostKeyProfileCopy.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  assert(await hostKeyProfileCopy.isDisabled(),
+    "a pending key-manager Profile copy remained actionable");
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  await thirdKeyManager.getByText("已复制 1 个 host key 到 Edge Router", { exact: true }).waitFor();
+  const hostKeyProfileCopyState = await hostKeyLifecyclePage.evaluate((baseline) => ({
+    pending: window.__pendingSessionProfileSaves.length,
+    saveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length - baseline,
+  }), hostKeyProfileCopyBaseline);
+  assert(hostKeyProfileCopyState.pending === 0 && hostKeyProfileCopyState.saveCalls === 1,
+    `key-manager Profile copy submitted duplicate writes: ${JSON.stringify(hostKeyProfileCopyState)}`);
   assert(hostKeyLifecycleErrors.length === 0,
     `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);
   await hostKeyLifecyclePage.close();
@@ -7630,7 +7654,10 @@ Host staging
   await firstProfileManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
   await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Closed identity");
   await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = true; });
-  await firstProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await firstProfileManager.getByRole("button", { name: "保存字段", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
   assert(await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").isDisabled()
     && await firstProfileManager.locator(".client-key-edit-button").first().isDisabled(),
@@ -9252,6 +9279,7 @@ Host staging
     grantLifecycle: grantLifecycleState,
     oneKeyLifecycle: oneKeyLifecycleState,
     hostKeyLifecycle: hostKeyLifecycleState,
+    hostKeyProfileCopy: hostKeyProfileCopyState,
     hostKeyScan: hostKeyScanState,
     profileLifecycle: profileLifecycleState,
     privateKeyImportLifecycle: privateKeyImportLifecycleState,
