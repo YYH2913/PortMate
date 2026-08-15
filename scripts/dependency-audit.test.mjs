@@ -31,6 +31,10 @@ describe("npm dependency audit policy", () => {
       expect(() => runNpmDependencyAudit({ spawn, command: "npm" })).toThrow(
         `nanoid (${severity})`,
       );
+      expect(spawn).toHaveBeenCalledWith("npm", ["audit", "--json"], expect.objectContaining({
+        timeout: 120_000,
+        windowsHide: true,
+      }));
     },
   );
 

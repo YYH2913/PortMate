@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { npmInvocation } from "./npm-invocation.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const matrix = JSON.parse(readFileSync(
@@ -49,20 +50,22 @@ for (const {
 
   const lockPath = join(environmentRoot, "package-lock.json");
   if (manifestChanged || !existsSync(lockPath)) {
-    run("npm", [
+    const npm = npmInvocation([
       "install",
       "--package-lock-only",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-    ], { cwd: environmentRoot, timeout: 120_000 });
+    ]);
+    run(npm.command, npm.args, { cwd: environmentRoot, timeout: 120_000 });
   }
-  run("npm", [
+  const npm = npmInvocation([
     "ci",
     "--ignore-scripts",
     "--no-audit",
     "--no-fund",
-  ], { cwd: environmentRoot, timeout: 120_000 });
+  ]);
+  run(npm.command, npm.args, { cwd: environmentRoot, timeout: 120_000 });
 
   const sdkRoot = join(environmentRoot, "node_modules", "@modelcontextprotocol", "sdk");
   const installed = JSON.parse(readFileSync(join(sdkRoot, "package.json"), "utf8"));

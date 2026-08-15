@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { npmInvocation } from "./npm-invocation.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 console.log("Preparing the PortMate MCP sidecar before starting Tauri...");
-run("npm", ["run", "sidecar:dev"]);
+const npm = npmInvocation(["run", "sidecar:dev"]);
+run(npm.command, npm.args);
 run(process.execPath, [
   join(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js"),
   "dev",

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { npmInvocation } from "./npm-invocation.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const blockedSeverities = new Set(["moderate", "high", "critical"]);
@@ -40,12 +41,22 @@ export function validateNpmDependencyAuditReport(report) {
 
 export function runNpmDependencyAudit(options = {}) {
   const spawn = options.spawn ?? spawnSync;
-  const command = options.command ?? (process.platform === "win32" ? "npm.cmd" : "npm");
-  const result = spawn(command, ["audit", "--json"], {
+  const environment = options.environment ?? process.env;
+  const invocation = options.command
+    ? { command: options.command, args: ["audit", "--json"] }
+    : npmInvocation(["audit", "--json"], {
+      environment,
+      execPath: options.execPath,
+      platform: options.platform,
+      pathExists: options.pathExists,
+    });
+  const result = spawn(invocation.command, invocation.args, {
     cwd: options.projectRoot ?? projectRoot,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
-    env: options.environment ?? process.env,
+    env: environment,
+    timeout: options.timeout ?? 120_000,
+    windowsHide: true,
   });
 
   if (result.error) {

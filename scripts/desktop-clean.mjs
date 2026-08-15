@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { buildDesktopEnvironment } from "./desktop-clean-environment.mjs";
+import { npmInvocation } from "./npm-invocation.mjs";
 import {
   isProjectViteCommand,
   parseWindowsListeningPids,
@@ -31,7 +32,8 @@ const env = buildDesktopEnvironment(process.env);
 
 await releaseConfiguredDevPort();
 
-const child = spawn("npm", ["run", "desktop"], {
+const npm = npmInvocation(["run", "desktop"], { environment: env });
+const child = spawn(npm.command, npm.args, {
   stdio: "inherit",
   env,
   cwd: projectRoot,
