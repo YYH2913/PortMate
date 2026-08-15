@@ -48,6 +48,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   The backend now returns the exact committed script ID instead of requiring the UI to infer it.
 - Fixed desktop custom-script execution accepting a body changed in another window after it was
   reviewed. Run requests now bind the displayed `updatedAt` version and fail before sending bytes.
+- Fixed custom-script conflict recovery by adding an explicit refresh action that preserves the
+  selected script, loads its current version, and cannot discard unsaved editor changes.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

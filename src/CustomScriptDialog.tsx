@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Braces, Play, Plus, Save, Trash2, X } from "lucide-react";
+import { Braces, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import {
   customScriptDraft,
@@ -57,7 +57,7 @@ export default function CustomScriptDialog({
   }, [activeId, runSessionId, runnableSessions]);
 
   function selectScript(script: CustomScript) {
-    if (busy) return;
+    if (loading || busy) return;
     setDraft(customScriptDraft(script));
     setError("");
   }
@@ -74,6 +74,23 @@ export default function CustomScriptDialog({
   function updateDraft(patch: Partial<SaveCustomScriptRequest>) {
     setDraft((current) => current ? { ...current, ...patch } : current);
     setError("");
+  }
+
+  async function refreshScripts() {
+    if (loading || busy || hasUnsavedChanges) return;
+    const selectedId = draft?.id ?? null;
+    setLoading(true);
+    setError("");
+    try {
+      const items = await invokeBackend<CustomScript[]>("list_custom_scripts", {});
+      const selected = items.find((script) => script.id === selectedId) ?? items[0];
+      setScripts(items);
+      setDraft(selected ? customScriptDraft(selected) : null);
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setLoading(false);
+    }
   }
 
   function toggleSession(sessionId: string) {
@@ -160,14 +177,15 @@ export default function CustomScriptDialog({
             <header>
               <strong>脚本</strong>
               <span>{scripts.length}/{MAX_CUSTOM_SCRIPTS}</span>
-              <button type="button" title="添加脚本" aria-label="添加自定义脚本" disabled={busy || scripts.length >= MAX_CUSTOM_SCRIPTS} onClick={createScript}><Plus size={14} /></button>
+              <button type="button" title={hasUnsavedChanges ? "保存或放弃编辑后刷新" : "刷新脚本"} aria-label="刷新自定义脚本" disabled={loading || busy || hasUnsavedChanges} onClick={() => void refreshScripts()}><RefreshCw size={14} /></button>
+              <button type="button" title="添加脚本" aria-label="添加自定义脚本" disabled={loading || busy || scripts.length >= MAX_CUSTOM_SCRIPTS} onClick={createScript}><Plus size={14} /></button>
             </header>
             <div role="listbox" aria-label="自定义脚本列表">
               {draft && !draft.id ? (
                 <button type="button" className="active" role="option" aria-selected="true"><Braces size={13} /><span>新脚本</span></button>
               ) : null}
               {scripts.map((script) => (
-                <button key={script.id} type="button" role="option" aria-selected={draft?.id === script.id} className={draft?.id === script.id ? "active" : ""} onClick={() => selectScript(script)}>
+                <button key={script.id} type="button" role="option" aria-selected={draft?.id === script.id} className={draft?.id === script.id ? "active" : ""} disabled={loading || busy} onClick={() => selectScript(script)}>
                   <Braces size={13} />
                   <span>{script.name}</span>
                   {script.mcpEnabled ? <i title="已开放 MCP" aria-label="已开放 MCP">MCP</i> : null}
@@ -179,35 +197,35 @@ export default function CustomScriptDialog({
           {draft ? (
             <section className="custom-script-editor">
               <div className="custom-script-meta-fields">
-                <label><span>名称</span><input aria-label="脚本名称" maxLength={MAX_CUSTOM_SCRIPT_NAME_CHARACTERS} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
-                <label><span>说明</span><input aria-label="脚本说明" maxLength={MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS} value={draft.description} onChange={(event) => updateDraft({ description: event.target.value })} /></label>
+                <label><span>名称</span><input aria-label="脚本名称" disabled={loading || busy} maxLength={MAX_CUSTOM_SCRIPT_NAME_CHARACTERS} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
+                <label><span>说明</span><input aria-label="脚本说明" disabled={loading || busy} maxLength={MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS} value={draft.description} onChange={(event) => updateDraft({ description: event.target.value })} /></label>
               </div>
               <label className="custom-script-body">
                 <span>脚本</span>
-                <textarea aria-label="脚本正文" spellCheck={false} maxLength={MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS} value={draft.content} onChange={(event) => updateDraft({ content: event.target.value.replace(/\r\n?/g, "\n") })} />
+                <textarea aria-label="脚本正文" disabled={loading || busy} spellCheck={false} maxLength={MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS} value={draft.content} onChange={(event) => updateDraft({ content: event.target.value.replace(/\r\n?/g, "\n") })} />
               </label>
               <div className="custom-script-boundary">
                 <div className="custom-script-toggles">
-                  <label><input type="checkbox" checked={draft.allowAllSessions} onChange={(event) => updateDraft({ allowAllSessions: event.target.checked, allowedSessionIds: event.target.checked ? [] : activeId ? [activeId] : [] })} /><span>全部会话</span></label>
-                  <label><input type="checkbox" checked={draft.mcpEnabled} onChange={(event) => updateDraft({ mcpEnabled: event.target.checked })} /><span>开放给 MCP</span></label>
+                  <label><input type="checkbox" disabled={loading || busy} checked={draft.allowAllSessions} onChange={(event) => updateDraft({ allowAllSessions: event.target.checked, allowedSessionIds: event.target.checked ? [] : activeId ? [activeId] : [] })} /><span>全部会话</span></label>
+                  <label><input type="checkbox" disabled={loading || busy} checked={draft.mcpEnabled} onChange={(event) => updateDraft({ mcpEnabled: event.target.checked })} /><span>开放给 MCP</span></label>
                 </div>
                 {!draft.allowAllSessions ? (
                   <div className="custom-script-session-list" aria-label="脚本允许会话">
-                    {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" checked={draft.allowedSessionIds.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} /><span>{session.profile.name}</span></label>)}
+                    {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={loading || busy} checked={draft.allowedSessionIds.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} /><span>{session.profile.name}</span></label>)}
                   </div>
                 ) : null}
               </div>
               <footer className="custom-script-actions">
                 <div className="custom-script-run">
-                  <select aria-label="运行脚本的会话" value={runSessionId} disabled={!selectedScript || !runnableSessions.length || busy} onChange={(event) => setRunSessionId(event.target.value)}>
+                  <select aria-label="运行脚本的会话" value={runSessionId} disabled={!selectedScript || !runnableSessions.length || loading || busy} onChange={(event) => setRunSessionId(event.target.value)}>
                     {!runnableSessions.length ? <option value="">没有可运行会话</option> : null}
                     {runnableSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}
                   </select>
-                  <button type="button" title={hasUnsavedChanges ? "保存后运行" : "运行脚本"} aria-label="运行自定义脚本" disabled={!selectedScript || !runSessionId || busy || hasUnsavedChanges || !scriptAllowsSession(draft, runSessionId)} onClick={() => void runScript()}><Play size={14} /></button>
+                  <button type="button" title={hasUnsavedChanges ? "保存后运行" : "运行脚本"} aria-label="运行自定义脚本" disabled={!selectedScript || !runSessionId || loading || busy || hasUnsavedChanges || !scriptAllowsSession(draft, runSessionId)} onClick={() => void runScript()}><Play size={14} /></button>
                 </div>
                 <span role={error ? "alert" : undefined}>{error}</span>
-                <button type="button" className="danger" title="删除脚本" aria-label="删除自定义脚本" disabled={!selectedScript || busy} onClick={() => void deleteScript()}><Trash2 size={14} /></button>
-                <button type="button" className="primary" title="保存脚本" aria-label="保存自定义脚本" disabled={busy} onClick={() => void saveScript()}><Save size={14} /></button>
+                <button type="button" className="danger" title="删除脚本" aria-label="删除自定义脚本" disabled={!selectedScript || loading || busy} onClick={() => void deleteScript()}><Trash2 size={14} /></button>
+                <button type="button" className="primary" title="保存脚本" aria-label="保存自定义脚本" disabled={loading || busy} onClick={() => void saveScript()}><Save size={14} /></button>
               </footer>
             </section>
           ) : (

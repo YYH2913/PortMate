@@ -96,6 +96,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 同一功能代码状态已重新生成并验证 Linux x86_64 DEB、RPM 和 AppImage：三包分别为 15,787,990、15,786,414 和 91,908,600 字节，SHA-256 分别为 `dbd57a1aa5699c55ebf797c4034334bd3dd35f60132ef69fc4238b4718670b7e`、`b1f99ed621cb43a71314a27e533c92ef6a249eb5f556165bb8b2a3ba85989a0e` 和 `85a38a06bcca6027ea99a369e48f961c0b88ca91f488e5758864e28eb24c953f`。每个包均从含空格的隔离路径通过主程序、MCP sidecar、desktop entry、图标、许可证、生产 CSP、三类窗口 capability、权限/portable 链接、两次稳定 Store 重启、旧 app-data 原子迁移、双 Store 冲突 fail-closed、IPC 地址/凭据轮换、正常退出 endpoint 清理、sidecar HTTP readiness 和异常父进程退出回收；三份包内 sidecar 又分别通过 TypeScript/Python/Go/Rust/Ruby/Java/Kotlin/C#/Swift 全固定版本的 stdio/HTTP 矩阵。最终 AppImage 在 VMware/Wayland 的 XWayland 显示上完成三次 1440x920 真实窗口启动，首帧分别采样到 669、638、669 种颜色，自动 VMware 软件渲染回退、Store 哈希稳定、迁移和冲突拒绝均通过。本轮本机缺少系统级 `wmctrl` 且无交互 sudo，测试使用 `target/native-tools/` 内只读解包的 Ubuntu `wmctrl` 1.07-7ubuntu3 控制窗口；该方式不修改系统或源码。以上是当前本机包级与窗口证据，不替代干净 Ubuntu Native CI、发行仓库安装或签名发布记录。
 
+自定义脚本管理器现在提供显式刷新入口：并发保存、删除或运行版本冲突后可直接重新读取 Store，仍存在的当前脚本保持选中并加载其最新正文与 `updatedAt`；当前脚本已被删除时才回退到第一项。刷新在加载、保存/删除/运行期间以及草稿有未保存编辑时禁用，避免静默覆盖输入。Workspace UI 回归确认未保存保护、冲突后错误清理、同一脚本版本刷新、使用新版本成功删除，以及桌面/390x844 移动端按钮可达；生产构建、108 文件/591 项前端测试、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

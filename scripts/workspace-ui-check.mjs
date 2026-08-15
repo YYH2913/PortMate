@@ -3967,10 +3967,14 @@ Host staging
   await scriptBody.fill("systemctl status portmate\nwhoami");
   assert(await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
     "custom script manager can run a stale saved body while the editor has unsaved changes");
+  assert(await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isDisabled(),
+    "custom script refresh can silently discard unsaved editor changes");
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length === 1);
   assert(!await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
     "saved custom script did not become runnable");
+  assert(!await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isDisabled(),
+    "custom script refresh remained disabled after saving editor changes");
 
   await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
   await page.evaluate(() => { window.__injectConcurrentCustomScriptBeforeSave = true; });
@@ -4024,10 +4028,9 @@ Host staging
   const staleScriptRun = await page.evaluate((scriptId) => {
     const script = window.__customScripts.find((item) => item.id === scriptId);
     if (!script) throw new Error("custom script fixture disappeared");
-    const original = { content: script.content, updatedAt: script.updatedAt };
     script.content = "echo changed-in-another-window";
     script.updatedAt = new Date(Date.now() + 60_000).toISOString();
-    return { scriptId, original, eventCount: window.__events.length };
+    return { scriptId, eventCount: window.__events.length };
   }, scriptInvocation.call.args.request.scriptId);
   await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).click();
   const staleRunError = customScriptDialog.getByRole("alert");
@@ -4035,10 +4038,13 @@ Host staging
   assert((await staleRunError.textContent())?.includes("changed in another window")
     && await page.evaluate(() => window.__events.length) === staleScriptRun.eventCount,
   "desktop custom script execution accepted a body changed in another window");
-  await page.evaluate(({ scriptId, original }) => {
-    const script = window.__customScripts.find((item) => item.id === scriptId);
-    if (script) Object.assign(script, original);
-  }, staleScriptRun);
+  await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="脚本正文"]')?.value
+    === "echo changed-in-another-window");
+  assert(await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).inputValue()
+      === "Collect diagnostics"
+    && await customScriptDialog.getByRole("alert").count() === 0,
+  "custom script refresh did not preserve the selected script or clear its stale conflict error");
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 2);
   await customScriptDialog.getByRole("option", { name: /Concurrent window script/ }).click();
@@ -4599,6 +4605,7 @@ Host staging
     && mobileCustomScriptBounds.actionsReachable,
   `mobile custom script workspace exceeds the viewport: ${JSON.stringify(mobileCustomScriptBounds)}`);
   assert(await mobileCustomScripts.getByRole("textbox", { name: "脚本正文", exact: true }).isVisible()
+    && await mobileCustomScripts.getByRole("button", { name: "刷新自定义脚本", exact: true }).isVisible()
     && await mobileCustomScripts.getByRole("button", { name: "运行自定义脚本", exact: true }).isVisible()
     && await mobileCustomScripts.getByRole("button", { name: "保存自定义脚本", exact: true }).isVisible(),
   "mobile custom script editor has unreachable controls");

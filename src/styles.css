@@ -6947,7 +6947,7 @@ fieldset label {
 
 .custom-script-list > header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 28px;
+  grid-template-columns: minmax(0, 1fr) auto 28px 28px;
   align-items: center;
   gap: 8px;
   min-width: 0;
