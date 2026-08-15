@@ -132,6 +132,9 @@ export default function SessionSettingsDialog({
   }, [activeSection, allowedSections]);
 
   useEffect(() => {
+    writeGate.current.invalidateAll();
+    setWriteBusy(false);
+    void cleanupStagedSecrets();
     setActiveProtocol(protocolFromKind(draft.kind));
     setActiveSection(initialSection);
     setSurface(mode === "create" && initialSection === "会话" ? "quick" : "advanced");
@@ -159,6 +162,12 @@ export default function SessionSettingsDialog({
 
   function finishWriteOperation(token: number) {
     if (writeGate.current.finish("write", token)) setWriteBusy(false);
+  }
+
+  function registerStagedSecret(secretRef: string, token: number) {
+    if (!writeGate.current.isCurrent("write", token)) return false;
+    stagedSecretRefs.current.add(secretRef);
+    return true;
   }
 
   function changeProtocol(tab: ProtocolTab) {
@@ -282,7 +291,7 @@ export default function SessionSettingsDialog({
               onProxyPasswordUpdateChange={setProxyPasswordUpdate}
               writeBusy={writeBusy}
               onWriteStart={beginWriteOperation}
-              onSecretCreated={(secretRef) => stagedSecretRefs.current.add(secretRef)}
+              onSecretCreated={registerStagedSecret}
               onWriteFinish={finishWriteOperation}
             />
           </section>
@@ -791,7 +800,7 @@ function SessionSettingsContent({
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
   writeBusy: boolean;
   onWriteStart: () => number | null;
-  onSecretCreated: (secretRef: string) => void;
+  onSecretCreated: (secretRef: string, token: number) => boolean;
   onWriteFinish: (token: number) => void;
 }) {
   if (activeSection === "会话") {
@@ -1144,7 +1153,7 @@ function SshAdvancedFields({
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
   writeBusy: boolean;
   onWriteStart: () => number | null;
-  onSecretCreated: (secretRef: string) => void;
+  onSecretCreated: (secretRef: string, token: number) => boolean;
   onWriteFinish: (token: number) => void;
 }) {
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
@@ -1217,7 +1226,10 @@ function SshAdvancedFields({
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
           request: { secretRef: null, secret, storage: "portable" },
         });
-        onSecretCreated(response.secretRef);
+        if (!onSecretCreated(response.secretRef, writeToken)) {
+          await invokeBackend("delete_secret", { secretRef: response.secretRef });
+          return;
+        }
         const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
         updateJump(index, patch);
         setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: "" }));
@@ -1608,7 +1620,10 @@ function SshAdvancedFields({
         const response = await invokeBackend<{ secretRef: string }>("save_secret", {
           request: { secretRef: null, secret: vaultPrivateKey, storage: "portable" },
         });
-        onSecretCreated(response.secretRef);
+        if (!onSecretCreated(response.secretRef, writeToken)) {
+          await invokeBackend("delete_secret", { secretRef: response.secretRef });
+          return;
+        }
         updateIdentity({ source: "profile-vault", secretRef: response.secretRef, path: null });
         setVaultPrivateKey("");
         setVaultStatus("已保存到 Stronghold");

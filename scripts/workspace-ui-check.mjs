@@ -8376,6 +8376,60 @@ Host staging
     `deleted Session Settings save browser exceptions: ${JSON.stringify(deletedSettingsSaveErrors)}`);
   await deletedSettingsSavePage.close();
 
+  const deletedSettingsSecretPage = await context.newPage();
+  const deletedSettingsSecretErrors = [];
+  deletedSettingsSecretPage.on("pageerror", (error) => deletedSettingsSecretErrors.push(error.message));
+  await deletedSettingsSecretPage.goto(appUrl);
+  await deletedSettingsSecretPage.locator(".tree-session", { hasText: "Edge Router" }).click();
+  await deletedSettingsSecretPage.getByRole("button", { name: "会话", exact: true }).click();
+  await deletedSettingsSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
+  const deletedSettingsSecretDialog = deletedSettingsSecretPage.locator(".session-settings-dialog");
+  await deletedSettingsSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await deletedSettingsSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
+  await deletedSettingsSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true }).fill("deleted profile private key");
+  await deletedSettingsSecretPage.evaluate(() => {
+    window.__deferSecretWrites = true;
+    window.__pendingSecretWrites = [];
+  });
+  await deletedSettingsSecretDialog.locator("button", { hasText: "保存到 Stronghold" }).click();
+  await deletedSettingsSecretPage.waitForFunction(() => window.__pendingSecretWrites.length === 1);
+  await deletedSettingsSecretPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedSettingsSecretPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  const replacementDraftName = await deletedSettingsSecretDialog.getByLabel("名称:(N)", { exact: true }).inputValue();
+  await deletedSettingsSecretPage.evaluate(() => {
+    window.__deferSecretWrites = false;
+    window.__pendingSecretWrites.shift().resolve();
+  });
+  await deletedSettingsSecretPage.waitForFunction(() => (
+    Object.keys(window.__secrets).length === 0
+    && window.__invokeCalls.filter((call) => call.command === "delete_secret").length === 1
+  ));
+  await deletedSettingsSecretPage.waitForTimeout(100);
+  const deletedSettingsSecretState = await deletedSettingsSecretPage.evaluate(() => ({
+    profiles: window.__sessions.map((session) => session.profile.id),
+    retainedSecrets: Object.keys(window.__secrets),
+    secretSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_secret").length,
+    secretDeleteCalls: window.__invokeCalls.filter((call) => call.command === "delete_secret").length,
+    profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
+    pending: window.__pendingSecretWrites.length,
+  }));
+  assert(!deletedSettingsSecretState.profiles.includes("edge-router")
+    && deletedSettingsSecretState.retainedSecrets.length === 0
+    && deletedSettingsSecretState.secretSaveCalls === 1
+    && deletedSettingsSecretState.secretDeleteCalls === 1
+    && deletedSettingsSecretState.profileSaveCalls === 0
+    && deletedSettingsSecretState.pending === 0
+    && await deletedSettingsSecretDialog.getByLabel("名称:(N)", { exact: true }).inputValue() === replacementDraftName,
+  `a staged Secret response for a deleted Profile leaked or restored its draft: ${JSON.stringify(deletedSettingsSecretState)}`);
+  await deletedSettingsSecretDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await deletedSettingsSecretDialog.waitFor({ state: "detached" });
+  assert(deletedSettingsSecretErrors.length === 0,
+    `deleted Session Settings Secret browser exceptions: ${JSON.stringify(deletedSettingsSecretErrors)}`);
+  await deletedSettingsSecretPage.close();
+
   const deletedCredentialPromptPage = await context.newPage();
   const deletedCredentialPromptErrors = [];
   deletedCredentialPromptPage.on("pageerror", (error) => deletedCredentialPromptErrors.push(error.message));
