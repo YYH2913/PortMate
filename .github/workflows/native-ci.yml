@@ -190,10 +190,12 @@ jobs:
           for attempt in $(seq 1 40); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done;
           wmctrl -m;
           node scripts/ci-command-log.mjs target/native-ci/linux-desktop-smoke.log npm run test:linux-desktop-smoke'
-      - if: runner.os == 'Linux'
-        run: npm run test:libssh-gssapi-build
-      - if: runner.os == 'Linux'
-        run: npm run test:ssh-gssapi-compat
+      - name: Verify libssh GSSAPI build
+        if: runner.os == 'Linux'
+        run: node scripts/ci-command-log.mjs target/native-ci/libssh-gssapi-build.log npm run test:libssh-gssapi-build
+      - name: Verify SSH GSSAPI compatibility matrix
+        if: runner.os == 'Linux'
+        run: node scripts/ci-command-log.mjs target/native-ci/ssh-gssapi-compat.log npm run test:ssh-gssapi-compat
       - run: npm run test:mcp-typescript-client
       - run: npm run test:mcp-python-client
       - run: npm run test:mcp-go-client
@@ -202,8 +204,9 @@ jobs:
       - run: npm run test:mcp-java-client
       - run: npm run test:mcp-kotlin-client
       - run: npm run test:mcp-csharp-client
-      - if: runner.os != 'Windows'
-        run: npm run test:mcp-swift-client
+      - name: Verify MCP Swift SDK clients
+        if: runner.os != 'Windows'
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-swift-client.log npm run test:mcp-swift-client
       - name: Build native package bundles
         run: node scripts/ci-command-log.mjs target/native-ci/desktop-build.log npm run desktop:build
       - name: Smoke-test packaged Linux AppImage restart, migration, and conflict rejection

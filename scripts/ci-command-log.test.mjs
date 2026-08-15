@@ -66,6 +66,15 @@ describe("CI command logging", () => {
     expect(workflow).toContain(
       "target/native-ci/workspace-tests.log",
     );
+    expect(workflow).toContain(
+      "target/native-ci/libssh-gssapi-build.log npm run test:libssh-gssapi-build",
+    );
+    expect(workflow).toContain(
+      "target/native-ci/ssh-gssapi-compat.log npm run test:ssh-gssapi-compat",
+    );
+    expect(workflow).toContain(
+      "target/native-ci/mcp-swift-client.log npm run test:mcp-swift-client",
+    );
     expect(workflow).toContain("--test-threads=1");
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow.match(/dtolnay\/rust-toolchain@1\.97\.1/g)).toHaveLength(4);
