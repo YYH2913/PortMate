@@ -447,6 +447,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   };
   profileDeleteHandlerRef.current = (sessionId) => {
     if (!sessionId) return;
+    keyManagerProfileMutationGateRef.current.invalidate(sessionId);
     invalidateProfileShortcutOperation(sessionId);
     invalidateTerminalExportsForSession(sessionId);
     void refresh();
@@ -2192,6 +2193,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
+    keyManagerProfileMutationGateRef.current.invalidate(profileId);
     invalidateProfileShortcutOperation(profileId);
     invalidateTerminalExportsForSession(profileId);
     setDisconnectingSessionIds((current) => {

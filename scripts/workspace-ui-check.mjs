@@ -7718,6 +7718,43 @@ Host staging
     `Profile lifecycle browser exceptions: ${JSON.stringify(profileLifecycleErrors)}`);
   await profileLifecyclePage.close();
 
+  const deletedProfileMutationPage = await context.newPage();
+  const deletedProfileMutationErrors = [];
+  deletedProfileMutationPage.on("pageerror", (error) => deletedProfileMutationErrors.push(error.message));
+  await deletedProfileMutationPage.goto(appUrl);
+  await deletedProfileMutationPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await deletedProfileMutationPage.getByRole("button", { name: "工具", exact: true }).click();
+  await deletedProfileMutationPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const deletedProfileMutationManager = deletedProfileMutationPage.locator(".key-dialog");
+  await deletedProfileMutationManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
+  await deletedProfileMutationManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deleted Profile identity");
+  await deletedProfileMutationPage.evaluate(() => { window.__deferProfileMutations = true; });
+  await deletedProfileMutationManager.getByRole("button", { name: "保存字段", exact: true }).click();
+  await deletedProfileMutationPage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
+  await deletedProfileMutationPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await deletedProfileMutationPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedProfileMutationPage.evaluate(() => {
+    window.__deferProfileMutations = false;
+    const pending = window.__pendingProfileMutations.shift();
+    pending.resolve(pending.result);
+  });
+  await deletedProfileMutationPage.waitForTimeout(100);
+  const deletedProfileMutationState = await deletedProfileMutationPage.evaluate(() => ({
+    visibleProfiles: [...document.querySelectorAll(".tree-session")].map((item) => item.textContent),
+    status: document.querySelector(".key-dialog .utility-status")?.textContent ?? "",
+    pending: window.__pendingProfileMutations.length,
+  }));
+  assert(!deletedProfileMutationState.visibleProfiles.some((name) => name?.includes("Edge Router"))
+    && !deletedProfileMutationState.status.includes("Client identity 已更新")
+    && deletedProfileMutationState.pending === 0,
+  `a key-manager mutation response restored a deleted Profile: ${JSON.stringify(deletedProfileMutationState)}`);
+  assert(deletedProfileMutationErrors.length === 0,
+    `deleted Profile mutation browser exceptions: ${JSON.stringify(deletedProfileMutationErrors)}`);
+  await deletedProfileMutationPage.close();
+
   const privateKeyImportLifecyclePage = await context.newPage();
   const privateKeyImportLifecycleErrors = [];
   privateKeyImportLifecyclePage.on("pageerror", (error) => privateKeyImportLifecycleErrors.push(error.message));
