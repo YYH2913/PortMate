@@ -6775,13 +6775,28 @@ Host staging
   assert(await pendingDeleteAction.isDisabled(),
     "pending Profile deletion left the destructive action enabled");
   await page.mouse.click(1_300, 820);
-  await page.evaluate(() => {
+  const staleSerialControlBaseline = await page.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "serial_set_lines").length
+  ));
+  const staleSerialControlClicked = await page.evaluate(() => {
     window.confirm = window.__originalProfileDeleteConfirm;
     window.__deferSessionProfileDeletes = false;
     window.__pendingSessionProfileDeletes.shift().resolve();
+    const staleDtrButton = document.querySelector('.pane-serial-tools button[title="切换 DTR"]');
+    staleDtrButton?.click();
+    return Boolean(staleDtrButton);
   });
   const deletionNotice = page.locator(".notice-dialog", { hasText: "会话已删除" });
   await deletionNotice.waitFor();
+  const staleSerialControlCalls = await page.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "serial_set_lines").length
+  ));
+  assert(staleSerialControlClicked && staleSerialControlCalls === staleSerialControlBaseline,
+    `a stale serial control reached the backend after same-frame Profile deletion: ${JSON.stringify({
+      clicked: staleSerialControlClicked,
+      before: staleSerialControlBaseline,
+      after: staleSerialControlCalls,
+    })}`);
   const deletionPrompts = await page.evaluate(() => window.__profileDeletePrompts);
   assert(deletionPrompts.length === 1
     && deletionPrompts[0].includes("Bench UART")
@@ -9263,9 +9278,18 @@ Host staging
   await profileSyncTerminal.click({ button: "right", position: { x: 40, y: 40 } });
   await profileSyncPage.locator(".terminal-context-menu .context-menu-row", { hasText: /^导出终端文本$/ }).click();
   await profileSyncPage.waitForFunction(() => window.__pendingTerminalTextExports.length === 1);
-  await profileSyncPage.evaluate(() => {
+  await profileSyncTree.filter({ hasText: "Updated edge profile" }).click({ button: "right" });
+  const staleProfileSaveAction = profileSyncPage.getByRole("button", { name: /保存会话\(S\)/ });
+  await staleProfileSaveAction.waitFor();
+  const staleProfileSaveBaseline = await profileSyncPage.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "save_session_profile").length
+  ));
+  const staleProfileSaveClicked = await profileSyncPage.evaluate(() => {
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    const staleSaveButton = [...document.querySelectorAll('[aria-label="会话菜单"] button')]
+      .find((button) => button.textContent?.includes("保存会话(S)"));
+    staleSaveButton?.click();
     window.__emitTauriEvent("portmate-detached-pane-command", {
       action: "reattach",
       requestId: "deleted-profile-return-request",
@@ -9278,6 +9302,7 @@ Host staging
       color: "",
       keyMode: "remote",
     });
+    return Boolean(staleSaveButton);
   });
   await profileSyncTree.filter({ hasText: "Updated edge profile" }).waitFor({ state: "detached" });
   const deletedProfileReturnNotice = profileSyncPage.locator(".notice-dialog", { hasText: "原会话已不存在" });
@@ -9289,6 +9314,8 @@ Host staging
   )));
   const deletedProfileReturnState = await profileSyncPage.evaluate(() => ({
     tabs: [...document.querySelectorAll(".workspace-pane-tab-label")].map((label) => label.textContent?.trim()),
+    sessions: window.__sessions.map((session) => session.profile.id),
+    profileSaveCalls: window.__invokeCalls.filter((call) => call.command === "save_session_profile").length,
     acknowledgement: window.__invokeCalls.findLast((call) => (
       call.command === "plugin:event|emit_to"
         && call.args.event === "portmate-detached-pane-result"
@@ -9296,6 +9323,9 @@ Host staging
     ))?.args.payload,
   }));
   assert(!deletedProfileReturnState.tabs.some((label) => label?.includes("Updated edge profile"))
+    && !deletedProfileReturnState.sessions.includes("edge-router")
+    && staleProfileSaveClicked
+    && deletedProfileReturnState.profileSaveCalls === staleProfileSaveBaseline
     && deletedProfileReturnState.acknowledgement?.ok === false
     && deletedProfileReturnState.acknowledgement?.error?.includes("原会话已不存在"),
     `same-frame Profile deletion accepted a detached return for the deleted session: ${JSON.stringify(deletedProfileReturnState)}`);

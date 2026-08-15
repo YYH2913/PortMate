@@ -97,7 +97,7 @@ import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, Worksp
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
-import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
+import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
@@ -194,6 +194,7 @@ type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | nu
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
 type ClosedWorkspaceView = { view: WorkspaceView; paneId: string; index: number };
+type CurrentWorkspaceTarget = { pane: WorkspacePaneNode; view: WorkspaceView; session: SessionSummary };
 type ScreenLockState = {
   reason: ScreenLockReason;
   lockedAt: number;
@@ -710,7 +711,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function invalidateTerminalExportsForSession(sessionId: string) {
-    for (const pane of workspacePaneLeaves(workspaceRoot)) {
+    for (const pane of workspacePaneLeaves(workspaceRootRef.current)) {
       for (const view of pane.views) {
         if (view.sessionId === sessionId) invalidateTerminalExportOperation(view.id);
       }
@@ -1996,10 +1997,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const terminalHost = target?.closest<HTMLElement>(".terminal-host");
     const paneElement = terminalHost?.closest<HTMLElement>(".terminal-pane[data-pane-id]");
     const pane = paneElement?.dataset.paneId
-      ? findWorkspacePane(workspaceRoot, paneElement.dataset.paneId)
+      ? findWorkspacePane(workspaceRootRef.current, paneElement.dataset.paneId)
       : undefined;
     const view = pane ? workspacePaneActiveView(pane) : undefined;
-    const nextSessionId = sessionId ?? (activeId || sessions[0]?.profile.id || null);
+    const nextSessionId = sessionId ?? (activeIdRef.current || sessionsRef.current[0]?.profile.id || null);
     if (terminalHost && pane && view) {
       activateWorkspacePane(pane.id, view.id);
       setOpenMenu(null);
@@ -2025,7 +2026,27 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function contextSession(sessionId?: string | null) {
-    return sessions.find((session) => session.profile.id === (sessionId ?? contextMenu?.sessionId ?? activeId));
+    const targetId = sessionId ?? contextMenu?.sessionId ?? activeIdRef.current;
+    return sessionsRef.current.find((session) => session.profile.id === targetId);
+  }
+
+  function currentWorkspaceTarget(target?: {
+    paneId?: string | null;
+    viewId?: string | null;
+    sessionId?: string | null;
+  }): CurrentWorkspaceTarget | undefined {
+    const panes = workspacePaneLeaves(workspaceRootRef.current);
+    const pane = target?.paneId
+      ? panes.find((candidate) => candidate.id === target.paneId)
+      : target?.viewId
+        ? panes.find((candidate) => candidate.views.some((view) => view.id === target.viewId))
+        : panes.find((candidate) => candidate.id === activePaneIdRef.current);
+    const view = target?.viewId
+      ? pane?.views.find((candidate) => candidate.id === target.viewId)
+      : pane ? workspacePaneActiveView(pane) : undefined;
+    if (!pane || !view || (target?.sessionId && view.sessionId !== target.sessionId)) return undefined;
+    const session = sessionsRef.current.find((candidate) => candidate.profile.id === view.sessionId);
+    return session ? { pane, view, session } : undefined;
   }
 
   async function mutateSessionProfileFromContext(
@@ -2132,16 +2153,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     target?: { sessionId: string; viewId: string },
     destination: "default" | "choose" = "default",
   ) {
-    const viewId = target?.viewId ?? activeWorkspaceView?.id;
-    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
-    const session = sessions.find((candidate) => candidate.profile.id === sessionId);
+    const current = currentWorkspaceTarget(target);
     const title = destination === "choose"
       ? "导出终端文本到..."
       : source === "selection" ? "导出选中文本" : "导出终端文本";
-    if (!session || !viewId) {
-      setNotice({ title, message: "请先打开一个终端视图。" });
+    if (!current) {
+      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
+    const { session, view: { id: viewId } } = current;
     const token = beginTerminalExportOperation(viewId);
     if (token === null) return;
     const gate = terminalExportOperationGateRef.current;
@@ -2196,37 +2216,46 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     title: string,
     target?: { sessionId: string; viewId: string },
   ) {
-    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
-    const viewId = target?.viewId ?? activeWorkspaceView?.id;
-    if (!sessionId || !viewId) {
-      setNotice({ title, message: "请先打开一个终端视图。" });
+    const current = currentWorkspaceTarget(target);
+    if (!current) {
+      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
+    const commandTarget = {
+      paneId: current.pane.id,
+      sessionId: current.session.profile.id,
+      viewId: current.view.id,
+    };
     try {
       const { executeTerminalSelectionAction } = await import("./terminal-selection-event");
-      await executeTerminalSelectionAction({ sessionId, viewId, action });
+      if (!currentWorkspaceTarget(commandTarget)) return;
+      await executeTerminalSelectionAction({ sessionId: commandTarget.sessionId, viewId: commandTarget.viewId, action });
     } catch (error) {
-      setNotice({ title, message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ title, message: formatError(error) });
     }
   }
 
   async function searchTerminalOnline(target?: { sessionId: string; viewId: string }) {
-    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
-    const viewId = target?.viewId ?? activeWorkspaceView?.id;
-    const session = sessions.find((candidate) => candidate.profile.id === sessionId);
-    if (!session || !viewId) {
-      setNotice({ title: "在线搜索", message: "请先打开一个终端视图。" });
+    const current = currentWorkspaceTarget(target);
+    if (!current) {
+      if (!target) setNotice({ title: "在线搜索", message: "请先打开一个终端视图。" });
       return;
     }
+    const commandTarget = {
+      paneId: current.pane.id,
+      sessionId: current.session.profile.id,
+      viewId: current.view.id,
+    };
     try {
       const { executeTerminalOnlineSearch } = await import("./terminal-selection-event");
+      if (!currentWorkspaceTarget(commandTarget)) return;
       await executeTerminalOnlineSearch({
-        sessionId: session.profile.id,
-        viewId,
-        fallback: session.lastLine,
+        sessionId: commandTarget.sessionId,
+        viewId: commandTarget.viewId,
+        fallback: current.session.lastLine,
       });
     } catch (error) {
-      setNotice({ title: "在线搜索", message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ title: "在线搜索", message: formatError(error) });
     }
   }
 
@@ -2235,17 +2264,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     title: string,
     target?: { sessionId: string; viewId: string },
   ) {
-    const sessionId = target?.sessionId ?? activeWorkspaceView?.sessionId;
-    const viewId = target?.viewId ?? activeWorkspaceView?.id;
-    if (!sessionId || !viewId) {
-      setNotice({ title, message: "请先打开一个终端视图。" });
+    const current = currentWorkspaceTarget(target);
+    if (!current) {
+      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
       return;
     }
+    const commandTarget = {
+      paneId: current.pane.id,
+      sessionId: current.session.profile.id,
+      viewId: current.view.id,
+    };
     try {
       const { executeTerminalBufferAction } = await import("./terminal-buffer-event");
-      await executeTerminalBufferAction({ sessionId, viewId, action });
+      if (!currentWorkspaceTarget(commandTarget)) return;
+      await executeTerminalBufferAction({ sessionId: commandTarget.sessionId, viewId: commandTarget.viewId, action });
     } catch (error) {
-      setNotice({ title, message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ title, message: formatError(error) });
     }
   }
 
@@ -2424,9 +2458,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function closeSideSessionsFromContext(sessionId?: string | null) {
     const target = contextSession(sessionId);
     if (!target) return;
-    const index = sessions.findIndex((session) => session.profile.id === target.profile.id);
+    const currentSessions = sessionsRef.current;
+    const index = currentSessions.findIndex((session) => session.profile.id === target.profile.id);
     if (index < 0) return;
-    const rightIds = sessions.slice(index + 1).map((session) => session.profile.id);
+    const rightIds = currentSessions.slice(index + 1).map((session) => session.profile.id);
     void closeSessionsByIds(rightIds);
   }
 
@@ -2471,10 +2506,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (target) void disconnectSession(target.profile.id);
         return;
       case "close-all":
-        void closeSessionsByIds(sessions.map((session) => session.profile.id));
+        void closeSessionsByIds(sessionsRef.current.map((session) => session.profile.id));
         return;
       case "close-inactive":
-        void closeSessionsByIds(sessions.filter((session) => session.profile.id !== activeId).map((session) => session.profile.id));
+        void closeSessionsByIds(sessionsRef.current
+          .filter((session) => session.profile.id !== activeIdRef.current)
+          .map((session) => session.profile.id));
         return;
       case "close-side":
         closeSideSessionsFromContext(sessionId);
@@ -2495,19 +2532,29 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     state: Extract<NonNullable<ContextMenuState>, { kind: "terminal" }>,
   ) {
     setContextMenu(null);
-    activateWorkspacePane(state.paneId, state.viewId);
-    const target = { sessionId: state.sessionId, viewId: state.viewId };
+    const current = currentWorkspaceTarget(state);
+    if (!current) return;
+    activateWorkspacePane(current.pane.id, current.view.id);
+    const target = { sessionId: current.session.profile.id, viewId: current.view.id };
     switch (action) {
       case "copy":
         void runTerminalSelectionAction("copy", "复制", target);
         return;
       case "paste":
         void navigator.clipboard?.readText().then((text) => {
-          if (text) return routeTerminalInput(state.sessionId, text, "atomic");
-        }).catch((error) => setNotice({ title: "粘贴", message: formatError(error) }));
+          if (text && currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
+            return routeTerminalInput(target.sessionId, text, "atomic");
+          }
+        }).catch((error) => {
+          if (currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
+            setNotice({ title: "粘贴", message: formatError(error) });
+          }
+        });
         return;
       case "find":
-        window.requestAnimationFrame(() => requestTerminalSearch());
+        window.requestAnimationFrame(() => {
+          if (currentWorkspaceTarget({ ...target, paneId: current.pane.id })) requestTerminalSearch();
+        });
         return;
       case "search-online":
         void searchTerminalOnline(target);
@@ -2537,10 +2584,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void exportTerminalText("selection", target);
         return;
       case "triggers": {
-        const session = sessions.find((candidate) => candidate.profile.id === state.sessionId);
         openSessionProfileDialog(
-          session?.profile ?? createSessionDraft(),
-          session?.profile ?? null,
+          current.session.profile,
+          current.session.profile,
           "触发器",
         );
         return;
@@ -2600,7 +2646,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function activateWorkspacePane(paneId: string, viewId: string) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
+    const pane = findWorkspacePane(workspaceRootRef.current, paneId);
     const view = pane?.views.find((candidate) => candidate.id === viewId);
     if (!pane || !view) return;
     setWorkspaceRoot((current) => activateWorkspacePaneView(current, paneId, viewId));
@@ -2630,7 +2676,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function restoreWorkspaceLayout() {
     const restored = reconcileWorkspaceSnapshot(
       loadWorkspaceSnapshot(workspaceStorageKey),
-      sessions.map((session) => session.profile.id),
+      sessionsRef.current.map((session) => session.profile.id),
       { fallbackToFirst: !workspaceWindowId },
     );
     invalidateWorkspaceViewDetachOperations();
@@ -2882,10 +2928,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     paneId: string,
     viewId: string,
   ) {
-    const pane = findWorkspacePane(workspaceRoot, paneId);
-    const view = pane?.views.find((candidate) => candidate.id === viewId);
-    if (!pane || !view) return;
     setWorkspaceViewContextMenu(null);
+    const current = currentWorkspaceTarget({ paneId, viewId });
+    if (!current) return;
+    const { pane, view } = current;
     switch (action) {
       case "copy-name":
         copySessionNameFromContext(view.sessionId);
@@ -3133,11 +3179,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  async function detachWorkspacePane(paneId = activePaneId) {
-    const panes = workspacePaneLeaves(workspaceRoot);
-    const pane = panes.find((item) => item.id === paneId);
+  async function detachWorkspacePane(paneId?: string) {
+    const panes = workspacePaneLeaves(workspaceRootRef.current);
+    const pane = panes.find((item) => item.id === (paneId ?? activePaneIdRef.current));
     const activeView = pane ? workspacePaneActiveView(pane) : undefined;
-    const session = activeView ? sessions.find((item) => item.profile.id === activeView.sessionId) : undefined;
+    const session = activeView ? sessionsRef.current.find((item) => item.profile.id === activeView.sessionId) : undefined;
     if (!pane || !activeView || !session) return;
     if (panes.length <= 1 && pane.views.length <= 1) {
       setNotice({ title: "移到新窗口", message: "主窗口中至少需要保留一个窗格或视图。" });
@@ -3587,15 +3633,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function routeTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin = "interactive"): Promise<void> {
+    const currentSessions = sessionsRef.current;
+    if (!currentSessions.some((session) => session.profile.id === sessionId)) return Promise.resolve();
     const broadcastEnabled = syncInputRef.current;
     const settings = syncInputSettings;
-    const candidates = paneSessions.map((session) => ({
+    const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
+      .map((pane) => workspacePaneActiveView(pane).sessionId);
+    const currentPaneSessions = (paneSessionIds.length ? paneSessionIds : [activeIdRef.current])
+      .map((id) => currentSessions.find((session) => session.profile.id === id))
+      .filter((session): session is SessionSummary => Boolean(session));
+    const candidates = currentPaneSessions.map((session) => ({
       id: session.profile.id,
       kind: session.profile.kind,
       connected: session.runtime.status === "connected",
     }));
     if (!candidates.some((candidate) => candidate.id === sessionId)) {
-      const source = sessions.find((session) => session.profile.id === sessionId);
+      const source = currentSessions.find((session) => session.profile.id === sessionId);
       if (source) {
         candidates.unshift({
           id: source.profile.id,
@@ -3623,7 +3676,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
-        sessions.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
+        sessionsRef.current.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
       ));
       const details = [
         failedNames.length ? `${failedNames.length} 个目标发送失败：${failedNames.join(", ")}` : "",
@@ -3733,7 +3786,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const textPayload = sendMode === "text" ? sendText : "";
     const bytePayload = sendMode === "hex" ? parseHexBytes(sendText) : [];
     if (sendMode === "text" ? !textPayload : !bytePayload.length) return;
-    const targets = resolveSendTargets(sendTarget, activeId, sessions, paneSessions);
+    if (sendTarget === "active" && activeId !== activeIdRef.current) return;
+    const currentSessions = sessionsRef.current;
+    const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
+      .map((pane) => workspacePaneActiveView(pane).sessionId);
+    const currentPaneSessions = paneSessionIds
+      .map((id) => currentSessions.find((session) => session.profile.id === id))
+      .filter((session): session is SessionSummary => Boolean(session));
+    const targets = resolveSendTargets(sendTarget, activeIdRef.current, currentSessions, currentPaneSessions);
     if (!targets.length) {
       setNotice({ title: "发送", message: "没有可发送的目标会话。" });
       return;
@@ -3904,7 +3964,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
-    const session = sessions.find((item) => item.profile.id === sessionId);
+    const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session || session.profile.connection.kind !== "serial") return;
     const controlToken = beginSerialControl(sessionId);
     if (controlToken === null) return;
@@ -3925,7 +3985,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function sendSerialBreak(sessionId: string) {
-    const session = sessions.find((item) => item.profile.id === sessionId);
+    const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session || session.profile.connection.kind !== "serial") return;
     const controlToken = beginSerialControl(sessionId);
     if (controlToken === null) return;
