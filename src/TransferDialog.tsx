@@ -34,9 +34,11 @@ export default function TransferDialog({
   const [loadAddress, setLoadAddress] = useState("");
   const [loadBaudRate, setLoadBaudRate] = useState("");
   const [busy, setBusy] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState("");
   const startGateRef = useRef(new KeyedRequestGate<"start">());
+  const batchOperationGateRef = useRef(new KeyedRequestGate<"batch">());
   const transferOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
   const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
@@ -53,11 +55,14 @@ export default function TransferDialog({
 
   useEffect(() => {
     startGateRef.current.invalidateAll();
+    batchOperationGateRef.current.invalidateAll();
     transferOperationGateRef.current.invalidateAll();
     setBusy(false);
+    setBatchBusy(false);
     setBusyTransferIds(new Set());
     return () => {
       startGateRef.current.invalidateAll();
+      batchOperationGateRef.current.invalidateAll();
       transferOperationGateRef.current.invalidateAll();
     };
   }, [session.profile.id]);
@@ -94,7 +99,9 @@ export default function TransferDialog({
     }
   }
 
-  async function retryTransfer(task: TransferTask) {
+  async function retryTransfer(task: TransferTask, batchToken?: number) {
+    if (batchToken === undefined && batchOperationGateRef.current.isActive("batch")) return;
+    if (batchToken !== undefined && !batchOperationGateRef.current.isCurrent("batch", batchToken)) return;
     const token = beginTransferOperation(task.id);
     if (token === null) return;
     try {
@@ -109,7 +116,9 @@ export default function TransferDialog({
     }
   }
 
-  async function cancelTransfer(task: TransferTask) {
+  async function cancelTransfer(task: TransferTask, batchToken?: number) {
+    if (batchToken === undefined && batchOperationGateRef.current.isActive("batch")) return;
+    if (batchToken !== undefined && !batchOperationGateRef.current.isCurrent("batch", batchToken)) return;
     const token = beginTransferOperation(task.id);
     if (token === null) return;
     try {
@@ -140,11 +149,33 @@ export default function TransferDialog({
   }
 
   async function cancelRunningTransfers() {
-    for (const task of runningTransfers) await cancelTransfer(task);
+    if (runningTransfers.some((task) => transferOperationGateRef.current.isActive(task.id))) return;
+    const token = batchOperationGateRef.current.begin("batch");
+    if (token === null) return;
+    setBatchBusy(true);
+    try {
+      for (const task of runningTransfers) {
+        if (!batchOperationGateRef.current.isCurrent("batch", token)) return;
+        await cancelTransfer(task, token);
+      }
+    } finally {
+      if (batchOperationGateRef.current.finish("batch", token)) setBatchBusy(false);
+    }
   }
 
   async function retryFailedTransfers() {
-    for (const task of retryableTransfers) await retryTransfer(task);
+    if (retryableTransfers.some((task) => transferOperationGateRef.current.isActive(task.id))) return;
+    const token = batchOperationGateRef.current.begin("batch");
+    if (token === null) return;
+    setBatchBusy(true);
+    try {
+      for (const task of retryableTransfers) {
+        if (!batchOperationGateRef.current.isCurrent("batch", token)) return;
+        await retryTransfer(task, token);
+      }
+    } finally {
+      if (batchOperationGateRef.current.finish("batch", token)) setBatchBusy(false);
+    }
   }
 
   return (
@@ -198,14 +229,15 @@ export default function TransferDialog({
             <header>
               <strong>队列</strong>
               <div>
-                <button type="button" onClick={() => void retryFailedTransfers()} disabled={Boolean(busyTransferIds.size) || !retryableTransfers.length}>重试失败</button>
-                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={Boolean(busyTransferIds.size) || !runningTransfers.length}>取消运行中</button>
+                <button type="button" onClick={() => void retryFailedTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !retryableTransfers.length}>重试失败</button>
+                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !runningTransfers.length}>取消运行中</button>
               </div>
             </header>
             <TransferList
               transfers={sessionTransfers}
               dismissedTransferIds={dismissedTransferIds}
               busyTransferIds={busyTransferIds}
+              operationsLocked={batchBusy}
               onRetry={retryTransfer}
               onCancel={cancelTransfer}
               onDismiss={onDismissTransfer}

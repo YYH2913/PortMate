@@ -9,6 +9,7 @@ export default function TransferList({
   transfers,
   dismissedTransferIds,
   busyTransferIds = EMPTY_BUSY_TRANSFER_IDS,
+  operationsLocked = false,
   onRetry,
   onCancel,
   onDismiss,
@@ -16,6 +17,7 @@ export default function TransferList({
   transfers: readonly TransferTask[];
   dismissedTransferIds: ReadonlySet<string>;
   busyTransferIds?: ReadonlySet<string>;
+  operationsLocked?: boolean;
   onRetry: (task: TransferTask) => void;
   onCancel: (task: TransferTask) => void;
   onDismiss: (transferId: string) => void;
@@ -66,10 +68,10 @@ export default function TransferList({
               <span className="transfer-status"><StatusIcon size={14} /><span>{transferStatusLabel(task.status)}</span></span>
               <div className="transfer-row-actions">
                 {task.status === "running" ? (
-                  <button type="button" disabled={operationBusy} onClick={() => onCancel(task)}>取消</button>
+                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onCancel(task)}>取消</button>
                 ) : null}
                 {task.status === "failed" || task.status === "cancelled" ? (
-                  <button type="button" disabled={operationBusy} onClick={() => onRetry(task)}>重试</button>
+                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onRetry(task)}>重试</button>
                 ) : null}
                 {task.status === "failed" ? (
                   <button

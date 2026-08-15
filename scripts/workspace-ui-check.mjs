@@ -803,6 +803,7 @@ try {
         }
         if (command === "retry_transfer" || command === "cancel_transfer") {
           const existing = window.__transfers.find((task) => task.id === args.transferId);
+          const retrying = command === "retry_transfer";
           const task = {
             ...(existing ?? {
               id: args.transferId,
@@ -816,8 +817,18 @@ try {
               finishedAt: null,
               averageBytesPerSecond: null,
             }),
-            status: command === "retry_transfer" ? "queued" : "cancelled",
-            message: command === "retry_transfer" ? "queued for retry" : "cancelled",
+            ...(retrying ? {
+              id: `retry-${args.transferId}-${window.__invokeCalls.filter((call) => call.command === "retry_transfer").length}`,
+              bytesDone: 0,
+              status: "queued",
+              message: "queued for retry",
+              startedAt: null,
+              finishedAt: null,
+              averageBytesPerSecond: null,
+            } : {
+              status: "cancelled",
+              message: "cancelled",
+            }),
           };
           const complete = () => {
             const index = window.__transfers.findIndex((item) => item.id === task.id);
@@ -2144,6 +2155,51 @@ Host staging
   });
   const transferMutationNotice = page.locator(".notice-dialog");
   await transferMutationNotice.waitFor();
+  await transferMutationNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  const retryFailedTransfersButton = transferDialog.getByRole("button", { name: "重试失败", exact: true });
+  await page.waitForFunction(() => ![...document.querySelectorAll(".transfer-dialog button")]
+    .find((button) => button.textContent?.trim() === "重试失败")?.disabled);
+  const batchTransferCallBaseline = await page.evaluate(() => window.__invokeCalls.length);
+  await retryFailedTransfersButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTransferMutations.length === 1);
+  await page.waitForTimeout(50);
+  const firstBatchTransferState = await page.evaluate(() => ({
+    pending: window.__pendingTransferMutations.map((item) => ({
+      command: item.command,
+      transferId: item.args.transferId,
+    })),
+    rowActionsEnabled: [...document.querySelectorAll(".transfer-row-actions button")]
+      .filter((button) => button.textContent?.trim() === "重试" || button.textContent?.trim() === "取消")
+      .some((button) => !button.disabled),
+  }));
+  assert(JSON.stringify(firstBatchTransferState.pending) === JSON.stringify([
+    { command: "retry_transfer", transferId: "retry-transfer-a" },
+  ]) && !firstBatchTransferState.rowActionsEnabled && await retryFailedTransfersButton.isDisabled(),
+  `a duplicate transfer batch started later items concurrently: ${JSON.stringify(firstBatchTransferState)}`);
+  const expectedBatchTransferIds = [
+    "retry-transfer-a",
+    "retry-transfer-b",
+    "cancel-transfer-a",
+    "cancel-transfer-b",
+  ];
+  for (const transferId of expectedBatchTransferIds) {
+    await page.waitForFunction((expectedId) => window.__pendingTransferMutations.length === 1
+      && window.__pendingTransferMutations[0].command === "retry_transfer"
+      && window.__pendingTransferMutations[0].args.transferId === expectedId, transferId);
+    await page.evaluate(() => window.__pendingTransferMutations.shift().resolve());
+  }
+  await page.waitForFunction(() => document.querySelectorAll(".notice-dialog").length === 1
+    && ![...document.querySelectorAll(".transfer-dialog button")]
+      .find((button) => button.textContent?.trim() === "重试失败")?.disabled);
+  const batchTransferCalls = await page.evaluate((baseline) => window.__invokeCalls.slice(baseline)
+    .filter((call) => call.command === "retry_transfer")
+    .map((call) => call.args.transferId), batchTransferCallBaseline);
+  assert(JSON.stringify(batchTransferCalls) === JSON.stringify(expectedBatchTransferIds),
+    `transfer batch emitted duplicate or out-of-order retries: ${JSON.stringify(batchTransferCalls)}`);
   await transferMutationNotice.getByRole("button", { name: "确定", exact: true }).click();
 
   await transferDialog.locator(".dialog-field", { hasText: "来源:" }).locator("input").fill("/tmp/start-once.bin");
