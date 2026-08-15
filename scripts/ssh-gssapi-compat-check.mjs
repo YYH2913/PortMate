@@ -62,6 +62,7 @@ try {
     env: baseEnvironment,
     timeout: 600_000,
   });
+  prebuildRuntimeTest();
   for (const entry of selectedMatrix) {
     const image = `portmate-compat-gssapi-${entry.name}:local`;
     const dockerfile = entry.dockerfile ?? "tests/compat/gssapi-openssh.Dockerfile";
@@ -427,6 +428,20 @@ function runCase(name, server, kerberos, cases) {
     timeout: 600_000,
   });
   cases.push(name);
+}
+
+function prebuildRuntimeTest() {
+  run("cargo", [
+    "test",
+    "--locked",
+    "-p",
+    "portmate",
+    "--no-run",
+    "external_ssh_gssapi_runtime_matrix_case",
+  ], {
+    env: baseEnvironment,
+    timeout: 600_000,
+  });
 }
 
 function validateMatrixEntry(entry) {

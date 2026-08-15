@@ -44,5 +44,11 @@ describe("Rust command lock boundary", () => {
     expect(sshMatrix.match(/"test",\s*"--locked",\s*"-p"/g)).toHaveLength(4);
     expect(sshMatrix.match(/timeout: compatibilityTestTimeoutMs/g)).toHaveLength(4);
     expect(sshMatrix).toContain("const compatibilityTestTimeoutMs = 900_000;");
+
+    const gssapiMatrix = source("scripts/ssh-gssapi-compat-check.mjs");
+    const prebuildIndex = gssapiMatrix.indexOf("prebuildRuntimeTest();");
+    expect(gssapiMatrix).toContain('"--no-run"');
+    expect(prebuildIndex).toBeGreaterThanOrEqual(0);
+    expect(prebuildIndex).toBeLessThan(gssapiMatrix.indexOf("for (const entry of selectedMatrix)"));
   });
 });
