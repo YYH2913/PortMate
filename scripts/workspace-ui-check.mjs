@@ -3969,6 +3969,32 @@ Host staging
     "custom script manager can run a stale saved body while the editor has unsaved changes");
   assert(await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isDisabled(),
     "custom script refresh can silently discard unsaved editor changes");
+  await page.evaluate(() => {
+    window.__customScriptDiscardPrompts = [];
+    window.__originalCustomScriptConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__customScriptDiscardPrompts.push(String(message));
+      return false;
+    };
+  });
+  await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("option", { name: /Inspect service/ }).click();
+  const retainedCustomScriptDraft = await page.evaluate(() => ({
+    prompts: window.__customScriptDiscardPrompts,
+    dialogVisible: Boolean(document.querySelector(".custom-script-dialog")),
+    body: document.querySelector('[aria-label="脚本正文"]')?.value,
+  }));
+  assert(retainedCustomScriptDraft.dialogVisible
+    && retainedCustomScriptDraft.body === "systemctl status portmate\nwhoami"
+    && retainedCustomScriptDraft.prompts.length === 3
+    && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("关闭窗口"))
+    && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("新建脚本"))
+    && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("切换脚本")),
+  `custom script draft was discarded without confirmation: ${JSON.stringify(retainedCustomScriptDraft)}`);
+  await page.evaluate(() => {
+    window.confirm = window.__originalCustomScriptConfirm;
+  });
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length === 1);
   assert(!await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
@@ -4045,11 +4071,27 @@ Host staging
       === "Collect diagnostics"
     && await customScriptDialog.getByRole("alert").count() === 0,
   "custom script refresh did not preserve the selected script or clear its stale conflict error");
+  await page.evaluate(() => {
+    window.__customScriptDeletePrompts = [];
+    window.__originalCustomScriptConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__customScriptDeletePrompts.push(String(message));
+      return true;
+    };
+  });
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 2);
   await customScriptDialog.getByRole("option", { name: /Concurrent window script/ }).click();
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 1);
+  const customScriptDeletePrompts = await page.evaluate(() => {
+    window.confirm = window.__originalCustomScriptConfirm;
+    return window.__customScriptDeletePrompts;
+  });
+  assert(customScriptDeletePrompts.length === 2
+    && customScriptDeletePrompts[0].includes("Collect diagnostics")
+    && customScriptDeletePrompts[1].includes("Concurrent window script"),
+  `custom script deletion confirmation omitted its target: ${JSON.stringify(customScriptDeletePrompts)}`);
   await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
   await customScriptDialog.waitFor({ state: "detached" });
 

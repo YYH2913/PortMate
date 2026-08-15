@@ -58,17 +58,29 @@ export default function CustomScriptDialog({
 
   function selectScript(script: CustomScript) {
     if (loading || busy) return;
+    if (!confirmDiscardChanges("切换脚本")) return;
     setDraft(customScriptDraft(script));
     setError("");
   }
 
   function createScript() {
+    if (loading || busy) return;
     if (scripts.length >= MAX_CUSTOM_SCRIPTS) {
       setError(`自定义脚本最多保存 ${MAX_CUSTOM_SCRIPTS} 条。`);
       return;
     }
+    if (!confirmDiscardChanges("新建脚本")) return;
     setDraft(newCustomScriptDraft(activeId));
     setError("");
+  }
+
+  function confirmDiscardChanges(action: string): boolean {
+    return !hasUnsavedChanges || window.confirm(`当前脚本有未保存的更改，${action}将放弃这些内容。是否继续？`);
+  }
+
+  function closeDialog() {
+    if (loading || busy || !confirmDiscardChanges("关闭窗口")) return;
+    onClose();
   }
 
   function updateDraft(patch: Partial<SaveCustomScriptRequest>) {
@@ -127,6 +139,8 @@ export default function CustomScriptDialog({
 
   async function deleteScript() {
     if (!selectedScript || busy) return;
+    const unsavedWarning = hasUnsavedChanges ? "\n\n当前编辑器还有未保存的更改，也会一并丢弃。" : "";
+    if (!window.confirm(`删除自定义脚本“${selectedScript.name}”？${unsavedWarning}`)) return;
     setBusy(true);
     setError("");
     try {
@@ -165,12 +179,12 @@ export default function CustomScriptDialog({
   }
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
       <section className="wind-dialog custom-script-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-script-title">
         <header className="dialog-title">
           <Braces size={18} />
           <strong id="custom-script-title">自定义脚本</strong>
-          <button type="button" title="关闭" aria-label="关闭自定义脚本" onClick={onClose}><X size={20} /></button>
+          <button type="button" title={loading || busy ? "操作完成后关闭" : "关闭"} aria-label="关闭自定义脚本" disabled={loading || busy} onClick={closeDialog}><X size={20} /></button>
         </header>
         <div className="custom-script-content">
           <aside className="custom-script-list">

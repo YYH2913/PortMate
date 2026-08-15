@@ -50,6 +50,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   reviewed. Run requests now bind the displayed `updatedAt` version and fail before sending bytes.
 - Fixed custom-script conflict recovery by adding an explicit refresh action that preserves the
   selected script, loads its current version, and cannot discard unsaved editor changes.
+- Fixed custom-script drafts being discarded without confirmation when switching, creating, or
+  closing, and added target-specific confirmation before deleting a saved script.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
