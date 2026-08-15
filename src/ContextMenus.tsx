@@ -40,6 +40,7 @@ export function SessionContextMenu({
   state,
   active,
   connectionBusy = false,
+  profileBusy = false,
   syncInput,
   colors,
   onAction,
@@ -48,6 +49,7 @@ export function SessionContextMenu({
   state: { x: number; y: number; sessionId: string | null };
   active?: SessionSummary;
   connectionBusy?: boolean;
+  profileBusy?: boolean;
   syncInput: boolean;
   colors: readonly { label: string; value: string }[];
   onAction: (action: SessionContextAction, sessionId?: string | null) => void;
@@ -75,26 +77,26 @@ export function SessionContextMenu({
       </ContextSubmenu>
       <ContextMenuButton label={syncInput ? "关闭同步输入(S)" : "开启同步输入(S)"} checked={syncInput} onClick={() => onAction("sync-toggle", sessionId)} />
       <ContextMenuButton label="粘贴(P)" shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
-      <ContextMenuButton label="重命名会话(R)" disabled={disabled} onClick={() => onAction("rename", sessionId)} />
+      <ContextMenuButton label="重命名会话(R)" disabled={disabled || profileBusy} onClick={() => onAction("rename", sessionId)} />
       <ContextMenuButton label="复制会话(D)" shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="复制会话名称(N)" disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
       <ContextMenuButton label="复制会话 URL(U)" disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="重新连接会话(R)" shortcut="Return" disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
-      <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled} onClick={() => onAction("save", sessionId)} />
+      <ContextMenuButton label="保存会话(S)" shortcut="Ctrl+Shift+S" disabled={disabled || profileBusy} onClick={() => onAction("save", sessionId)} />
       <ContextMenuButton label="水平拆分视图(H)" shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
       <ContextMenuButton label="垂直拆分视图(V)" shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
-      <ContextMenuButton label="移动视图到分组(M)" disabled={disabled} onClick={() => onAction("move-group", sessionId)} />
+      <ContextMenuButton label="移动视图到分组(M)" disabled={disabled || profileBusy} onClick={() => onAction("move-group", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label="断开会话(C)" disabled={disconnectDisabled} onClick={() => onAction("close", sessionId)} />
       <ContextMenuButton label="断开所有会话(A)" disabled={!active} onClick={() => onAction("close-all", sessionId)} />
       <ContextMenuButton label="断开所有非活动会话(I)" disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
       <ContextMenuButton label="断开右侧会话(R)" disabled={!active} onClick={() => onAction("close-side", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label="会话设置...(S)" disabled={disabled} onClick={() => onAction("settings", sessionId)} />
+      <ContextMenuButton label="会话设置...(S)" disabled={disabled || profileBusy} onClick={() => onAction("settings", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label="删除会话 Profile" disabled={disabled} danger onClick={() => onAction("delete-profile", sessionId)} />
+      <ContextMenuButton label="删除会话 Profile" disabled={disabled || profileBusy} danger onClick={() => onAction("delete-profile", sessionId)} />
     </div>
   );
 }

@@ -673,9 +673,10 @@ try {
             return structuredClone(saved);
           };
           if (!window.__deferSessionProfileSaves) return complete();
+          const result = complete();
           return new Promise((resolve) => window.__pendingSessionProfileSaves.push({
             args: structuredClone(args),
-            resolve: () => resolve(complete()),
+            resolve: () => resolve(structuredClone(result)),
           }));
         }
         if (command === "save_secret") {
@@ -7502,6 +7503,79 @@ Host staging
   assert(sessionOperationErrors.length === 0,
     `Session Settings operation lifecycle browser exceptions: ${JSON.stringify(sessionOperationErrors)}`);
   await sessionOperationPage.close();
+
+  const profileShortcutPage = await context.newPage();
+  const profileShortcutErrors = [];
+  profileShortcutPage.on("pageerror", (error) => profileShortcutErrors.push(error.message));
+  await profileShortcutPage.goto(appUrl);
+  const profileShortcutTarget = profileShortcutPage.locator(
+    ".workspace-dock-content.panel-explorer .tree-session",
+    { hasText: "Edge Router" },
+  );
+  await profileShortcutTarget.waitFor();
+  await profileShortcutTarget.click();
+  const profileShortcutSaveBaseline = await profileShortcutPage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+    return window.__invokeCalls.filter((call) => call.command === "save_session_profile").length;
+  });
+  await profileShortcutTarget.click({ button: "right" });
+  const profileShortcutSave = profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" });
+  await profileShortcutSave.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await profileShortcutPage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  await profileShortcutTarget.click({ button: "right" });
+  const busyProfileMenu = profileShortcutPage.locator('.portmate-context-menu[aria-label="会话菜单"]');
+  for (const label of ["重命名会话(R)", "保存会话(S)", "移动视图到分组(M)", "会话设置...(S)", "删除会话 Profile"]) {
+    assert(await busyProfileMenu.locator(".context-menu-row", { hasText: label }).isDisabled(),
+      `pending Profile shortcut left ${label} actionable`);
+  }
+  await profileShortcutPage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  const profileShortcutSuccess = profileShortcutPage.locator(".notice-dialog", { hasText: "已保存 Edge Router" });
+  await profileShortcutSuccess.waitFor();
+  const profileShortcutSaveCalls = await profileShortcutPage.evaluate((baseline) => (
+    window.__invokeCalls.filter((call) => call.command === "save_session_profile").length - baseline
+  ), profileShortcutSaveBaseline);
+  assert(profileShortcutSaveCalls === 1,
+    `Profile context shortcut submitted duplicate saves: ${profileShortcutSaveCalls}`);
+  await profileShortcutSuccess.getByRole("button", { name: "确定", exact: true }).click();
+
+  await profileShortcutPage.evaluate(() => { window.__failNextProfileSave = true; });
+  await profileShortcutTarget.click({ button: "right" });
+  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" }).click();
+  const profileShortcutFailure = profileShortcutPage.locator(".notice-dialog", { hasText: "保存会话失败" });
+  await profileShortcutFailure.waitFor();
+  assert((await profileShortcutFailure.textContent())?.includes("simulated Profile save failure"),
+    "Profile shortcut failure hid the backend error");
+  await profileShortcutFailure.getByRole("button", { name: "确定", exact: true }).click();
+
+  await profileShortcutPage.evaluate(() => {
+    window.__deferSessionProfileSaves = true;
+    window.__pendingSessionProfileSaves = [];
+  });
+  await profileShortcutTarget.click({ button: "right" });
+  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" }).click();
+  await profileShortcutPage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
+  await profileShortcutPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+  });
+  await profileShortcutTarget.waitFor({ state: "detached" });
+  await profileShortcutPage.evaluate(() => {
+    window.__deferSessionProfileSaves = false;
+    window.__pendingSessionProfileSaves.shift().resolve();
+  });
+  await profileShortcutPage.waitForTimeout(100);
+  assert(await profileShortcutPage.locator(".tree-session", { hasText: "Edge Router" }).count() === 0,
+    "a Profile shortcut response that arrived after deletion restored the deleted Profile");
+  assert(profileShortcutErrors.length === 0,
+    `Profile shortcut lifecycle browser exceptions: ${JSON.stringify(profileShortcutErrors)}`);
+  await profileShortcutPage.close();
 
   const cancelledDraftSecretPage = await context.newPage();
   const cancelledDraftSecretErrors = [];

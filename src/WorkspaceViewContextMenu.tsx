@@ -37,6 +37,7 @@ export default function WorkspaceViewContextMenu({
   view,
   sessionStatus,
   connectionBusy = false,
+  profileBusy = false,
   label,
   colors,
   canDuplicate,
@@ -60,6 +61,7 @@ export default function WorkspaceViewContextMenu({
   view: WorkspaceView;
   sessionStatus: SessionStatus;
   connectionBusy?: boolean;
+  profileBusy?: boolean;
   label: string;
   colors: readonly { label: string; value: string }[];
   canDuplicate: boolean;
@@ -131,7 +133,7 @@ export default function WorkspaceViewContextMenu({
       <MenuButton label="复制会话 URL" onClick={() => onAction("copy-url")} />
       <Divider />
       <MenuButton label="重新连接会话" disabled={connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
-      <MenuButton label="保存会话配置" onClick={() => onAction("save")} />
+      <MenuButton label="保存会话配置" disabled={profileBusy} onClick={() => onAction("save")} />
       <MenuButton label="导出终端文本" onClick={() => onAction("export-buffer")} />
       <MenuButton label="导出终端文本到..." onClick={() => onAction("export-buffer-to")} />
       <MenuButton label="导出选中文本" onClick={() => onAction("export-selection")} />
@@ -162,7 +164,7 @@ export default function WorkspaceViewContextMenu({
       </ContextSubmenu>
       <MenuButton label="切换窗格缩放" disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
       <Divider />
-      <MenuButton label="会话设置..." onClick={() => onAction("settings")} />
+      <MenuButton label="会话设置..." disabled={profileBusy} onClick={() => onAction("settings")} />
     </div>
   );
 }

@@ -265,6 +265,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
   const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
+  const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
   const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -369,6 +370,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const hostKeyPromptOperationGateRef = useRef(new KeyedRequestGate<"scan" | "decision">());
   const keyManagerCredentialOperationGateRef = useRef(new KeyedRequestGate<"credentials">());
   const keyManagerProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
+  const profileShortcutOperationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
@@ -442,6 +444,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   };
   profileDeleteHandlerRef.current = (sessionId) => {
     if (!sessionId) return;
+    invalidateProfileShortcutOperation(sessionId);
     void refresh();
   };
 
@@ -561,6 +564,34 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const gate = keyManagerProfileMutationGateRef.current;
     if (!committed && gate.isCurrent(profileId, token)) void refreshSessionSummaries();
     gate.finish(profileId, token);
+  }
+
+  function beginProfileShortcutOperation(profileId: string) {
+    const token = profileShortcutOperationGateRef.current.begin(profileId);
+    if (token !== null) {
+      setProfileShortcutBusyIds((current) => new Set(current).add(profileId));
+    }
+    return token;
+  }
+
+  function finishProfileShortcutOperation(profileId: string, token: number) {
+    if (!profileShortcutOperationGateRef.current.finish(profileId, token)) return;
+    setProfileShortcutBusyIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
+  }
+
+  function invalidateProfileShortcutOperation(profileId: string) {
+    profileShortcutOperationGateRef.current.invalidate(profileId);
+    setProfileShortcutBusyIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
   }
 
   function beginKeyManagerCredentialOperation() {
@@ -1857,33 +1888,59 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return sessions.find((session) => session.profile.id === (sessionId ?? contextMenu?.sessionId ?? activeId));
   }
 
-  async function renameSessionFromContext(sessionId?: string | null) {
+  async function mutateSessionProfileFromContext(
+    sessionId: string | null | undefined,
+    title: string,
+    createProfile: (profile: SessionProfile) => SessionProfile | null,
+    activateWorkspace = true,
+    successMessage?: (saved: SessionSummary) => string,
+  ) {
     const session = contextSession(sessionId);
     if (!session) return;
-    const nextName = window.prompt("标签名称", session.profile.name);
-    if (!nextName?.trim()) return;
-    const saved = await saveProfile({ ...session.profile, name: nextName.trim() }, session.profile);
-    applySavedSession(saved);
+    const profileId = session.profile.id;
+    const token = beginProfileShortcutOperation(profileId);
+    if (token === null) return;
+    const gate = profileShortcutOperationGateRef.current;
+    try {
+      const profile = createProfile(session.profile);
+      if (!profile) return;
+      const saved = await saveProfile(profile, session.profile);
+      if (!gate.isCurrent(profileId, token)) return;
+      applySavedSession(saved, activateWorkspace);
+      if (successMessage) setNotice({ title, message: successMessage(saved) });
+    } catch (error) {
+      if (gate.isCurrent(profileId, token)) {
+        setNotice({ title: `${title}失败`, message: formatError(error) });
+      }
+    } finally {
+      finishProfileShortcutOperation(profileId, token);
+    }
+  }
+
+  async function renameSessionFromContext(sessionId?: string | null) {
+    await mutateSessionProfileFromContext(sessionId, "重命名会话", (profile) => {
+      const nextName = window.prompt("标签名称", profile.name);
+      return nextName?.trim() ? { ...profile, name: nextName.trim() } : null;
+    });
   }
 
   async function moveSessionToGroupFromContext(sessionId?: string | null) {
-    const session = contextSession(sessionId);
-    if (!session) return;
-    const nextGroup = window.prompt("移动到分组", session.profile.group || "Sessions");
-    if (nextGroup === null) return;
-    const saved = await saveProfile(
-      { ...session.profile, group: nextGroup.trim() || "Sessions" },
-      session.profile,
-    );
-    applySavedSession(saved);
+    await mutateSessionProfileFromContext(sessionId, "移动会话分组", (profile) => {
+      const nextGroup = window.prompt("移动到分组", profile.group || "Sessions");
+      return nextGroup === null
+        ? null
+        : { ...profile, group: nextGroup.trim() || "Sessions" };
+    });
   }
 
   async function saveSessionFromContext(sessionId?: string | null, activateWorkspace = true) {
-    const session = contextSession(sessionId);
-    if (!session) return;
-    const saved = await saveProfile(prepareSessionProfile(session.profile), session.profile);
-    applySavedSession(saved, activateWorkspace);
-    setNotice({ title: "保存会话", message: `已保存 ${saved.profile.name}` });
+    await mutateSessionProfileFromContext(
+      sessionId,
+      "保存会话",
+      prepareSessionProfile,
+      activateWorkspace,
+      (saved) => `已保存 ${saved.profile.name}`,
+    );
   }
 
   function duplicateSessionFromContext(sessionId?: string | null) {
@@ -2072,6 +2129,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
+    invalidateProfileShortcutOperation(profileId);
     setDisconnectingSessionIds((current) => {
       if (!current.has(profileId)) return current;
       const next = new Set(current);
@@ -3997,6 +4055,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             state={contextMenu}
             active={contextSession(contextMenu.sessionId)}
             connectionBusy={disconnectingSessionIds.has(contextMenu.sessionId ?? activeId)}
+            profileBusy={profileShortcutBusyIds.has(contextMenu.sessionId ?? activeId)}
             syncInput={syncInput}
             colors={tabColorChoices}
             onAction={handleContextMenuAction}
@@ -4024,6 +4083,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             view={workspaceContextView}
             sessionStatus={workspaceContextSession.runtime.status}
             connectionBusy={disconnectingSessionIds.has(workspaceContextSession.profile.id)}
+            profileBusy={profileShortcutBusyIds.has(workspaceContextSession.profile.id)}
             label={workspaceContextView.title || workspaceContextSession.profile.name}
             colors={tabColorChoices}
             canMerge={workspaceContextCanMerge}

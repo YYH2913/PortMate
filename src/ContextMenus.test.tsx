@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionSummary } from "./types";
 import { SessionContextMenu, TerminalContextMenu } from "./ContextMenus";
+import WorkspaceViewContextMenu from "./WorkspaceViewContextMenu";
+import type { WorkspaceView } from "./workspace-state";
 
 const originalWindow = globalThis.window;
 beforeAll(() => {
@@ -49,6 +51,59 @@ describe("session context menu", () => {
     expect(buttonMarkup(reconnecting, "断开会话(C)")).not.toContain("disabled");
   });
 
+  it("locks Profile mutation actions while a shortcut save is pending", () => {
+    const html = renderMenu(false, "connected", true);
+    for (const label of [
+      "重命名会话(R)",
+      "保存会话(S)",
+      "移动视图到分组(M)",
+      "会话设置...(S)",
+      "删除会话 Profile",
+    ]) {
+      expect(buttonMarkup(html, label)).toContain("disabled");
+    }
+    expect(buttonMarkup(html, "复制会话(D)")).not.toContain("disabled");
+  });
+
+  it("locks workspace-view Profile actions while a shortcut save is pending", () => {
+    const view = {
+      id: "view-a",
+      sessionId: "session-a",
+      title: "Primary",
+      color: "",
+      keyMode: "remote",
+    } as WorkspaceView;
+    const html = renderToStaticMarkup(
+      <WorkspaceViewContextMenu
+        state={{ x: 100, y: 100 }}
+        view={view}
+        sessionStatus="connected"
+        profileBusy
+        label="Primary"
+        colors={[]}
+        canDuplicate
+        canClose
+        canCloseOther={false}
+        canCloseRight={false}
+        canMove={false}
+        canMoveToNewGroup={false}
+        canDetach={false}
+        canClosePane={false}
+        canMerge={false}
+        canSwap={{ up: false, down: false, left: false, right: false }}
+        canZoom={false}
+        canReopen={false}
+        onColor={() => {}}
+        onDuplicate={() => {}}
+        onRename={() => {}}
+        onAction={() => {}}
+      />,
+    );
+    expect(buttonMarkup(html, "保存会话配置")).toContain("disabled");
+    expect(buttonMarkup(html, "会话设置...")).toContain("disabled");
+    expect(buttonMarkup(html, "复制会话名称")).not.toContain("disabled");
+  });
+
   it("exposes online search and both terminal text export destinations", () => {
     const html = renderToStaticMarkup(
       <TerminalContextMenu
@@ -62,7 +117,11 @@ describe("session context menu", () => {
   });
 });
 
-function renderMenu(syncInput: boolean, status: SessionSummary["runtime"]["status"] = "connected"): string {
+function renderMenu(
+  syncInput: boolean,
+  status: SessionSummary["runtime"]["status"] = "connected",
+  profileBusy = false,
+): string {
   const session = {
     profile: { id: "session-a", name: "Primary" },
     runtime: { status },
@@ -71,6 +130,7 @@ function renderMenu(syncInput: boolean, status: SessionSummary["runtime"]["statu
     <SessionContextMenu
       state={{ x: 100, y: 100, sessionId: session.profile.id }}
       active={session}
+      profileBusy={profileBusy}
       syncInput={syncInput}
       colors={[]}
       onAction={() => {}}
