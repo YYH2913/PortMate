@@ -479,6 +479,8 @@ try {
     window.__pendingSessionOpens = [];
     window.__deferSessionCloses = false;
     window.__pendingSessionCloses = [];
+    window.__deferSessionProfileDeletes = false;
+    window.__pendingSessionProfileDeletes = [];
     window.__deferDetachedOwnerCommands = false;
     window.__pendingDetachedOwnerCommands = [];
     window.__deferTerminalSends = false;
@@ -1555,33 +1557,40 @@ try {
         }
         if (command === "delete_session_profile") {
           const deletedProfileId = args.sessionId;
-          window.__sessions = window.__sessions.filter((session) => session.profile.id !== deletedProfileId);
-          window.__mcpGrants = window.__mcpGrants.map((grant) => {
-            if (!grant.allowedSessions.length || !grant.allowedSessions.includes(deletedProfileId)) return grant;
-            const allowedSessions = grant.allowedSessions.filter((sessionId) => sessionId !== deletedProfileId);
+          const complete = () => {
+            window.__sessions = window.__sessions.filter((session) => session.profile.id !== deletedProfileId);
+            window.__mcpGrants = window.__mcpGrants.map((grant) => {
+              if (!grant.allowedSessions.length || !grant.allowedSessions.includes(deletedProfileId)) return grant;
+              const allowedSessions = grant.allowedSessions.filter((sessionId) => sessionId !== deletedProfileId);
+              return {
+                ...grant,
+                allowedSessions,
+                revokedAt: allowedSessions.length ? grant.revokedAt : grant.revokedAt ?? new Date().toISOString(),
+              };
+            });
+            window.__customScripts = window.__customScripts.map((script) => {
+              if (script.allowAllSessions || !script.allowedSessionIds.includes(deletedProfileId)) return script;
+              const allowedSessionIds = script.allowedSessionIds.filter((sessionId) => sessionId !== deletedProfileId);
+              return {
+                ...script,
+                allowedSessionIds,
+                mcpEnabled: allowedSessionIds.length ? script.mcpEnabled : false,
+                updatedAt: new Date().toISOString(),
+              };
+            });
             return {
-              ...grant,
-              allowedSessions,
-              revokedAt: allowedSessions.length ? grant.revokedAt : grant.revokedAt ?? new Date().toISOString(),
+              deletedProfileId,
+              sessions: window.__sessions,
+              oneKeys: [],
+              hostKeys: { keys: [] },
+              grants: window.__mcpGrants,
             };
-          });
-          window.__customScripts = window.__customScripts.map((script) => {
-            if (script.allowAllSessions || !script.allowedSessionIds.includes(deletedProfileId)) return script;
-            const allowedSessionIds = script.allowedSessionIds.filter((sessionId) => sessionId !== deletedProfileId);
-            return {
-              ...script,
-              allowedSessionIds,
-              mcpEnabled: allowedSessionIds.length ? script.mcpEnabled : false,
-              updatedAt: new Date().toISOString(),
-            };
-          });
-          return {
-            deletedProfileId,
-            sessions: window.__sessions,
-            oneKeys: [],
-            hostKeys: { keys: [] },
-            grants: window.__mcpGrants,
           };
+          if (!window.__deferSessionProfileDeletes) return complete();
+          return new Promise((resolve) => window.__pendingSessionProfileDeletes.push({
+            deletedProfileId,
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "list_serial_ports") return ["/dev/ttyUSB0"];
         if (command === "plugin:event|emit_to" && args.event === "portmate-detached-pane-command"
@@ -6364,6 +6373,8 @@ Host staging
     window.__pendingTailLogs = [];
     window.__deferSessionLists = true;
     window.__pendingSessionLists = [];
+    window.__deferSessionProfileDeletes = true;
+    window.__pendingSessionProfileDeletes = [];
   });
   await deleteTarget.click();
   await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).waitFor();
@@ -6373,16 +6384,36 @@ Host staging
   const deleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
   await deleteAction.waitFor();
   await page.screenshot({ path: `${screenshotPrefix}-profile-delete.png`, fullPage: true });
-  let deletionPrompt = "";
-  page.once("dialog", async (dialog) => {
-    deletionPrompt = dialog.message();
-    await dialog.accept();
+  await page.evaluate(() => {
+    window.__profileDeletePrompts = [];
+    window.__originalProfileDeleteConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__profileDeletePrompts.push(String(message));
+      return true;
+    };
   });
-  await deleteAction.click();
+  await deleteAction.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingSessionProfileDeletes.length === 1);
+  await deleteTarget.click({ button: "right" });
+  const pendingDeleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
+  assert(await pendingDeleteAction.isDisabled(),
+    "pending Profile deletion left the destructive action enabled");
+  await page.mouse.click(1_300, 820);
+  await page.evaluate(() => {
+    window.confirm = window.__originalProfileDeleteConfirm;
+    window.__deferSessionProfileDeletes = false;
+    window.__pendingSessionProfileDeletes.shift().resolve();
+  });
   const deletionNotice = page.locator(".notice-dialog", { hasText: "会话已删除" });
   await deletionNotice.waitFor();
-  assert(deletionPrompt.includes("Bench UART") && deletionPrompt.includes("磁盘日志分片与安全审计保留"),
-    `profile deletion confirmation omitted its target or retention boundary: ${deletionPrompt}`);
+  const deletionPrompts = await page.evaluate(() => window.__profileDeletePrompts);
+  assert(deletionPrompts.length === 1
+    && deletionPrompts[0].includes("Bench UART")
+    && deletionPrompts[0].includes("磁盘日志分片与安全审计保留"),
+  `profile deletion was confirmed repeatedly or omitted its target/retention boundary: ${JSON.stringify(deletionPrompts)}`);
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).count() === 0,
     "deleted profile remained in the resource explorer");
   assert(await page.locator(".workspace-pane-tab", { hasText: "Bench UART" }).count() === 0,

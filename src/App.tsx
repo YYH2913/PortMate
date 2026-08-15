@@ -2258,19 +2258,31 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function deleteSessionFromContext(sessionId?: string | null) {
     const target = contextSession(sessionId);
     if (!target) return;
+    const profileId = target.profile.id;
+    const token = beginProfileShortcutOperation(profileId);
+    if (token === null) return;
     const confirmed = window.confirm(
       `删除会话 Profile “${target.profile.name}”？\n\n活动连接会先断开；内存历史、传输记录、Profile 级 Host Key 和会话绑定会删除。磁盘日志分片与安全审计保留。`,
     );
-    if (!confirmed) return;
+    if (!confirmed) {
+      finishProfileShortcutOperation(profileId, token);
+      return;
+    }
 
+    const gate = profileShortcutOperationGateRef.current;
     try {
       const response = isBackendAvailable()
-        ? await invokeBackend<DeleteSessionProfileResponse>("delete_session_profile", { sessionId: target.profile.id })
-        : deleteSessionProfileFromClientState(target.profile.id, { sessions, oneKeys, hostKeys, grants });
+        ? await invokeBackend<DeleteSessionProfileResponse>("delete_session_profile", { sessionId: profileId })
+        : deleteSessionProfileFromClientState(profileId, { sessions, oneKeys, hostKeys, grants });
+      if (!gate.isCurrent(profileId, token)) return;
       applyDeletedSessionProfile(response);
       setNotice({ title: "会话已删除", message: `已删除 ${target.profile.name}；磁盘日志仍可在日志管理器中查看或清理。` });
     } catch (error) {
-      setNotice({ title: "删除会话失败", message: formatError(error) });
+      if (gate.isCurrent(profileId, token)) {
+        setNotice({ title: "删除会话失败", message: formatError(error) });
+      }
+    } finally {
+      finishProfileShortcutOperation(profileId, token);
     }
   }
 
