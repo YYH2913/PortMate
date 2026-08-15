@@ -92,6 +92,8 @@ MCP 授权入口进一步拆分为四个单向职责：`mcp_authorization.rs` �
 
 桌面自定义脚本运行请求现与用户界面显示的 `updatedAt` 版本绑定：后端读取脚本正文时必须精确匹配该版本，另一窗口在审阅后修改正文、范围或 MCP 开关会在任何终端字节发出前拒绝旧请求；MCP 路径继续只使用服务端授权上下文捕获的版本，不接受客户端提供正文或版本。Workspace UI 回归会在对话框保持旧快照时直接改写后端脚本并确认运行失败且出站事件数不变。完整前端 108 文件/591 项、生产构建、Workspace UI、locked Rust workspace（主应用 460 passed、1 ignored、1 filtered，core 68、MCP 51 及其他 crate/integration/doc-test 无失败）、workspace all-targets Clippy `-D warnings`、Rustfmt、release-source、release-upgrade 和 diff whitespace gate 均通过。
 
+同一 HEAD `29f1135` 已重新生成包含三项自定义脚本并发/授权修复的未签名 Windows GNU x86_64 便携包：`target/release-artifacts/PortMate-0.1.1-windows-x86_64-portable.zip` 为 22,884,281 字节，SHA-256 为 `5b7d3cdbd2844994faa41a753d2c4301b213ee5a8f4af90ad44edfe579ccc9ad`。包内主程序为 63,529,343 字节的 PE32+ x86_64 GUI，SHA-256 为 `97099eb010b6eaac035ab8be104d1a7940316c0b626fac0905f1ba90971549bc`；MCP sidecar 为 9,760,496 字节的 PE32+ x86_64 console，SHA-256 为 `f8d7755cb9e4c43e492206cf9c29a707a554e9ac48e5371f68b282ddafe66854`。WebView2 loader、生产前端资源、Apache-2.0/OFL 许可证、固定 payload、逐项哈希和 ZIP 完整性均通过构建门禁，布局/PE 验证器另有 16 项正常与拒绝夹具通过。该记录证明当前源码的交叉构建和静态包边界，不替代真实 Windows 上的 WebView2 启动、Credential Manager、MSI/NSIS、签名或安装卸载 smoke。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
