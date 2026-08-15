@@ -7,9 +7,11 @@ describe("keyed request gate", () => {
     const first = gate.begin("session-a");
 
     expect(first).not.toBeNull();
+    expect(gate.isActive("session-a")).toBe(true);
     expect(gate.begin("session-a")).toBeNull();
     expect(gate.begin("session-b")).not.toBeNull();
     expect(gate.finish("session-a", first!)).toBe(true);
+    expect(gate.isActive("session-a")).toBe(false);
     expect(gate.begin("session-a")).not.toBeNull();
   });
 

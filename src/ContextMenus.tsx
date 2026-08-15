@@ -39,6 +39,7 @@ export type TerminalContextAction =
 export function SessionContextMenu({
   state,
   active,
+  connectionBusy = false,
   syncInput,
   colors,
   onAction,
@@ -46,6 +47,7 @@ export function SessionContextMenu({
 }: {
   state: { x: number; y: number; sessionId: string | null };
   active?: SessionSummary;
+  connectionBusy?: boolean;
   syncInput: boolean;
   colors: readonly { label: string; value: string }[];
   onAction: (action: SessionContextAction, sessionId?: string | null) => void;
@@ -56,8 +58,8 @@ export function SessionContextMenu({
   const sessionId = active?.profile.id ?? state.sessionId;
   const disabled = !active;
   const status = active?.runtime.status;
-  const reconnectDisabled = !status || status === "connecting" || status === "reconnecting";
-  const disconnectDisabled = !status || sessionConnectionAction(status) !== "disconnect";
+  const reconnectDisabled = connectionBusy || !status || status === "connecting" || status === "reconnecting";
+  const disconnectDisabled = connectionBusy || !status || sessionConnectionAction(status) !== "disconnect";
 
   return (
     <div className="portmate-context-menu" aria-label="会话菜单" tabIndex={-1} style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>

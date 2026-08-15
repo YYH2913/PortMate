@@ -469,6 +469,8 @@ try {
     window.__failSessionOpenFor = recoverSilentSshStartup ? "edge-router" : "";
     window.__deferSessionOpens = false;
     window.__pendingSessionOpens = [];
+    window.__deferSessionCloses = false;
+    window.__pendingSessionCloses = [];
     window.__sessionOpenErrors = {};
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
@@ -1449,8 +1451,15 @@ try {
               lastDisconnectReason: "user closed session",
             },
           };
-          window.__sessions[index] = session;
-          return structuredClone(session);
+          const complete = () => {
+            window.__sessions[index] = structuredClone(session);
+            return structuredClone(session);
+          };
+          if (!window.__deferSessionCloses) return complete();
+          return new Promise((resolve) => window.__pendingSessionCloses.push({
+            result: structuredClone(session),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "delete_session_profile") {
           const deletedProfileId = args.sessionId;
@@ -2459,7 +2468,10 @@ Host staging
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
 
   await page.evaluate(() => { window.__closeSessionError = true; });
-  await page.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  await page.getByRole("button", { name: "断开 Edge Router", exact: true }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
   const closeFailure = page.locator(".notice-dialog", { hasText: "断开会话失败" });
   await closeFailure.waitFor();
   assert((await closeFailure.textContent()).includes("simulated close failure"),
@@ -7106,6 +7118,8 @@ Host staging
   await connectionLifecyclePage.waitForTimeout(100);
   const reconnectLifecycleStart = await connectionLifecyclePage.evaluate(() => {
     window.__deferSessionOpens = true;
+    window.__deferSessionCloses = true;
+    window.__pendingSessionCloses = [];
     return window.__invokeCalls.length;
   });
   await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
@@ -7113,7 +7127,44 @@ Host staging
   await reconnectContextMenu.waitFor();
   const reconnectAction = reconnectContextMenu.locator("button", { hasText: "重新连接会话(R)" });
   assert(!await reconnectAction.isDisabled(), "connected session context menu disabled reconnect");
-  await reconnectAction.click();
+  await reconnectAction.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await connectionLifecyclePage.waitForFunction(() => window.__pendingSessionCloses.length === 1);
+  const pendingReconnectClose = await connectionLifecyclePage.evaluate((start) => ({
+    closes: window.__invokeCalls.slice(start).filter((call) => call.command === "close_session").length,
+    pending: window.__pendingSessionCloses.length,
+  }), reconnectLifecycleStart);
+  const pendingDisconnectButton = connectionLifecyclePage.getByRole("button", { name: "正在断开 Local Shell", exact: true });
+  assert(pendingReconnectClose.closes === 1
+    && pendingReconnectClose.pending === 1
+    && await pendingDisconnectButton.isDisabled()
+    && await pendingDisconnectButton.getAttribute("aria-busy") === "true",
+  `pending reconnect did not serialize or lock disconnect controls: ${JSON.stringify(pendingReconnectClose)}`);
+  await connectionLifecyclePage.getByRole("button", { name: "会话", exact: true }).click();
+  assert(await connectionLifecyclePage.getByRole("button", { name: "启动会话", exact: true }).isDisabled()
+    && await connectionLifecyclePage.getByRole("button", { name: "关闭会话", exact: true }).isDisabled(),
+  "top-level session actions remained enabled during a pending disconnect");
+  await connectionLifecyclePage.getByRole("button", { name: "会话", exact: true }).click();
+  await connectionLifecyclePage.locator(".menu-popover").waitFor({ state: "detached" });
+  await lifecycleSession.click({ button: "right" });
+  const pendingSessionMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
+  await pendingSessionMenu.waitFor();
+  assert(await pendingSessionMenu.locator("button", { hasText: "重新连接会话(R)" }).isDisabled()
+    && await pendingSessionMenu.locator("button", { hasText: "断开会话(C)" }).isDisabled(),
+  "session context actions remained enabled during a pending disconnect");
+  await connectionLifecyclePage.mouse.click(700, 400);
+  await lifecycleTab.click({ button: "right" });
+  const pendingViewMenu = connectionLifecyclePage.locator(".workspace-view-context-menu");
+  await pendingViewMenu.waitFor();
+  assert(await pendingViewMenu.getByRole("button", { name: "重新连接会话", exact: true }).isDisabled(),
+    "view reconnect remained enabled during a pending disconnect");
+  await connectionLifecyclePage.mouse.click(700, 400);
+  await connectionLifecyclePage.evaluate(() => {
+    window.__deferSessionCloses = false;
+    window.__pendingSessionCloses.shift().resolve();
+  });
   await connectionLifecyclePage.waitForFunction(() => window.__pendingSessionOpens.length === 1);
   const reconnectHealth = await connectionLifecyclePage
     .getByRole("button", { name: "断开 Local Shell", exact: true })

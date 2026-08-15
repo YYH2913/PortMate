@@ -19,6 +19,10 @@ export class KeyedRequestGate<Key> {
     return this.active.get(key) === token;
   }
 
+  isActive(key: Key): boolean {
+    return this.active.has(key);
+  }
+
   finish(key: Key, token: number): boolean {
     if (!this.isCurrent(key, token)) return false;
     this.active.delete(key);

@@ -132,6 +132,8 @@ MCP 写操作审批在弹窗和 App 调用边界分别按 approval ID 建立同�
 
 锁屏的 Portable Vault 准备、主密码验证和原锁定状态恢复补齐 App 级 operation generation 与遮罩同步 single-flight：同帧双击解锁只会调用一次 `unlock_portable_vault`，恢复原本 locked 的 Vault 完成前遮罩保持不可交互；跨窗口产生更新的锁屏代际时，旧解锁结果不能清除新遮罩，并会尽力重新锁定已被旧请求打开的 Vault。错误态重试也不能并发启动两次准备检查。Workspace UI 以延迟 Vault mutation 覆盖双击、按钮锁定、遮罩生命周期和最终 locked 状态。
 
+主工作区的断开/重连补齐每会话同步 close gate：同帧重复断开或重连只会产生一次 `close_session`，关闭在途时新的 connect 直接退让，pane 标题栏、会话菜单、视图菜单和顶层会话菜单的冲突入口同步禁用。Profile 删除会使未完成关闭失去状态/日志提交权，迟到响应不能把已删会话重新合并。Workspace UI 延迟关闭响应并覆盖双击重连、单次后端关闭、busy/disabled 状态和后续一次连接；失败断开同样以双击证明只上报一次错误。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

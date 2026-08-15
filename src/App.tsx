@@ -264,6 +264,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
   const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
+  const [disconnectingSessionIds, setDisconnectingSessionIds] = useState<Set<string>>(() => new Set());
   const [activeId, setActiveId] = useState(initialWorkspace.activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
@@ -360,6 +361,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const sessionsSignatureRef = useRef("");
   const sessionSummaryRefreshGateRef = useRef(new KeyedRequestGate<"summaries">());
   const connectionAttemptGateRef = useRef(new KeyedRequestGate<string>());
+  const connectionCloseGateRef = useRef(new KeyedRequestGate<string>());
   const startupHydrationGateRef = useRef(new KeyedRequestGate<StartupHydrationDomain>());
   const grantMutationGateRef = useRef(new KeyedRequestGate<"grants">());
   const hostKeyMutationGateRef = useRef(new KeyedRequestGate<"host-keys">());
@@ -588,6 +590,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function finishOneKeyMutation(token: number) {
     oneKeyMutationGateRef.current.finish("one-keys", token);
+  }
+
+  function beginSessionDisconnect(sessionId: string) {
+    const token = connectionCloseGateRef.current.begin(sessionId);
+    if (token !== null) {
+      setDisconnectingSessionIds((current) => new Set(current).add(sessionId));
+    }
+    return token;
+  }
+
+  function finishSessionDisconnect(sessionId: string, token: number) {
+    if (!connectionCloseGateRef.current.finish(sessionId, token)) return;
+    setDisconnectingSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
   }
 
   function commitScreenLock(next: ScreenLockState) {
@@ -2047,6 +2067,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }, remainingSessionIds, { fallbackToFirst: !workspaceWindowId });
 
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
+    connectionAttemptGateRef.current.invalidate(profileId);
+    connectionCloseGateRef.current.invalidate(profileId);
+    setDisconnectingSessionIds((current) => {
+      if (!current.has(profileId)) return current;
+      const next = new Set(current);
+      next.delete(profileId);
+      return next;
+    });
     setSessions(response.sessions);
     saveLocalSessionSummaries(response.sessions);
     updateOneKeys(response.oneKeys);
@@ -3073,6 +3101,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ) {
     const session = sessionOverride ?? sessions.find((item) => item.profile.id === sessionId);
     if (!session || session.runtime.status === "connecting" || session.runtime.status === "reconnecting") return;
+    if (connectionCloseGateRef.current.isActive(session.profile.id)) return;
     const attemptToken = connectionAttemptGateRef.current.begin(session.profile.id);
     if (attemptToken === null) return;
 
@@ -3250,23 +3279,28 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function disconnectSession(sessionId = activeId, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
-    connectionAttemptGateRef.current.invalidate(sessionId);
-    const credentialRequest = credentialResolverRef.current;
-    if (credentialRequest?.sessionId === sessionId) {
-      credentialResolverRef.current = null;
-      setCredentialPrompt(null);
-      credentialRequest.resolve(null);
-    }
-    const session = sessions.find((item) => item.profile.id === sessionId);
-    if (!session) return null;
-    if (isBackendAvailable() && session.runtime.status === "disconnected") return session;
-
+    const closeToken = beginSessionDisconnect(sessionId);
+    if (closeToken === null) return null;
+    const closeIsCurrent = () => connectionCloseGateRef.current.isCurrent(sessionId, closeToken);
     try {
+      connectionAttemptGateRef.current.invalidate(sessionId);
+      const credentialRequest = credentialResolverRef.current;
+      if (credentialRequest?.sessionId === sessionId) {
+        credentialResolverRef.current = null;
+        setCredentialPrompt(null);
+        credentialRequest.resolve(null);
+      }
+      const session = sessions.find((item) => item.profile.id === sessionId);
+      if (!session) return null;
+      if (isBackendAvailable() && session.runtime.status === "disconnected") return session;
+
       const saved = isBackendAvailable()
         ? await invokeBackend<SessionSummary>("close_session", { sessionId })
         : setSessionStatus(session, "disconnected", "user closed session");
+      if (!closeIsCurrent()) return null;
       const fallbackLog = [...(logs[sessionId] ?? []), createLocalSystemEvent(saved.profile, "PortMate: session disconnected")];
       const nextLog = await callBackend("tail_log", { sessionId, limit: 160 }, fallbackLog);
+      if (!closeIsCurrent()) return null;
 
       replaceSessionLog(sessionId, nextLog);
       if (activateWorkspace) activateSession(sessionId);
@@ -3278,9 +3312,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       });
       return saved;
     } catch (error) {
+      if (!closeIsCurrent()) return null;
       if (reportError) setNotice({ title: "断开会话失败", message: formatError(error) });
       void refreshSessionSummaries();
       return null;
+    } finally {
+      finishSessionDisconnect(sessionId, closeToken);
     }
   }
 
@@ -3768,7 +3805,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                   <div className="menu-popover">
                     {group.items.map((item) => {
                       const toggleState = menuToggleState(item);
-                      const disabled = menuItemDisabled(item, menuCapabilityContext);
+                      const disabled = menuItemDisabled(item, menuCapabilityContext)
+                        || (disconnectingSessionIds.has(activeId) && (item === "启动会话" || item === "关闭会话"));
                       return (
                         <button
                           type="button"
@@ -3872,6 +3910,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             mouseReporting={terminalPrefs.mouseReporting}
             copyOnSelect={terminalPrefs.mouseCopyOnSelect}
             blockSelection={blockSelection}
+            connectionBusyIds={disconnectingSessionIds}
             onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
             onOneKeyCompletion={completeOneKeyPrompt}
             onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
@@ -3916,6 +3955,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           <LazySessionContextMenu
             state={contextMenu}
             active={contextSession(contextMenu.sessionId)}
+            connectionBusy={disconnectingSessionIds.has(contextMenu.sessionId ?? activeId)}
             syncInput={syncInput}
             colors={tabColorChoices}
             onAction={handleContextMenuAction}
@@ -3942,6 +3982,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             state={workspaceViewContextMenu}
             view={workspaceContextView}
             sessionStatus={workspaceContextSession.runtime.status}
+            connectionBusy={disconnectingSessionIds.has(workspaceContextSession.profile.id)}
             label={workspaceContextView.title || workspaceContextSession.profile.name}
             colors={tabColorChoices}
             canMerge={workspaceContextCanMerge}
@@ -4746,6 +4787,7 @@ function TerminalPaneGrid({
   mouseReporting,
   copyOnSelect,
   blockSelection,
+  connectionBusyIds,
   onInput,
   onOneKeyCompletion,
   onKeyModeChange,
@@ -4775,6 +4817,7 @@ function TerminalPaneGrid({
   mouseReporting: boolean;
   copyOnSelect: boolean;
   blockSelection: boolean;
+  connectionBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4823,6 +4866,7 @@ function TerminalPaneGrid({
         mouseReporting={mouseReporting}
         copyOnSelect={copyOnSelect}
         blockSelection={blockSelection}
+        connectionBusyIds={connectionBusyIds}
         onInput={onInput}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
@@ -4858,6 +4902,7 @@ type TerminalWorkspaceNodeProps = {
   mouseReporting: boolean;
   copyOnSelect: boolean;
   blockSelection: boolean;
+  connectionBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -4891,7 +4936,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   const session = props.sessions.find((item) => item.profile.id === activeView.sessionId);
   const serialConnection = session?.profile.connection.kind === "serial" ? session.profile.connection : null;
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : null;
-  const connectionActionLabel = connectionAction === "disconnect" ? "断开" : "连接";
+  const connectionBusy = Boolean(session && props.connectionBusyIds.has(session.profile.id));
+  const connectionActionLabel = connectionBusy ? "正在断开" : connectionAction === "disconnect" ? "断开" : "连接";
   const connectionHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "";
   const groupViews = node.views.map((view) => ({
     view,
@@ -5092,6 +5138,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
             title={`${connectionActionLabel} ${session.profile.name}\n${connectionHealth}`}
             aria-label={`${connectionActionLabel} ${session.profile.name}`}
             aria-description={connectionHealth}
+            aria-busy={connectionBusy}
+            disabled={connectionBusy}
             onClick={(event) => {
               event.stopPropagation();
               if (connectionAction === "disconnect") props.onDisconnect(session.profile.id);

@@ -85,6 +85,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   prompt. Trust results now participate in the shared Host Key mutation ownership boundary.
 - Fixed same-frame screen-lock submissions starting duplicate Portable Vault unlocks. Unlock and
   restore-lock operations are now single-flight, and stale unlocks fail closed behind a newer lock.
+- Fixed duplicate disconnect and reconnect actions issuing multiple `close_session` requests for one
+  session. Pending closes now lock conflicting controls and cannot restore a deleted Profile.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
