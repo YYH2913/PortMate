@@ -158,11 +158,16 @@ jobs:
             xvfb
 
       - run: npm ci
-      - run: npm run test:dependency-audit
-      - run: npm run test:native-keyring-dependencies
-      - run: cargo fmt --all -- --check
-      - run: npm test
-      - run: npm run build
+      - name: Verify npm dependency policy
+        run: node scripts/ci-command-log.mjs target/native-ci/dependency-audit.log npm run test:dependency-audit
+      - name: Verify native keyring dependency boundary
+        run: node scripts/ci-command-log.mjs target/native-ci/native-keyring-dependencies.log npm run test:native-keyring-dependencies
+      - name: Verify Rust formatting
+        run: node scripts/ci-command-log.mjs target/native-ci/rustfmt.log cargo fmt --all -- --check
+      - name: Verify frontend and script tests
+        run: node scripts/ci-command-log.mjs target/native-ci/frontend-tests.log npm test
+      - name: Build frontend
+        run: node scripts/ci-command-log.mjs target/native-ci/frontend-build.log npm run build
       - name: Verify previous release app-data upgrade
         run: node scripts/ci-command-log.mjs target/native-ci/release-upgrade.log npm run test:release-upgrade
       - name: Verify portable vault fault matrix
@@ -173,7 +178,8 @@ jobs:
           cargo test --locked --workspace --
           --test-threads=1
           --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Verify workspace Clippy
+        run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Verify native keyring lifecycle and faults
         run: node scripts/ci-command-log.mjs target/native-ci/native-keyring.log npm run test:native-keyring
       - name: Smoke-test the native Linux WebKit window

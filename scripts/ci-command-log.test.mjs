@@ -75,6 +75,16 @@ describe("CI command logging", () => {
     expect(workflow).toContain(
       "target/native-ci/mcp-swift-client.log npm run test:mcp-swift-client",
     );
+    for (const invocation of [
+      "dependency-audit.log npm run test:dependency-audit",
+      "native-keyring-dependencies.log npm run test:native-keyring-dependencies",
+      "rustfmt.log cargo fmt --all -- --check",
+      "frontend-tests.log npm test",
+      "frontend-build.log npm run build",
+      "clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings",
+    ]) {
+      expect(workflow).toContain(`target/native-ci/${invocation}`);
+    }
     for (const client of [
       "typescript",
       "python",
