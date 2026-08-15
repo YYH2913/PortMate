@@ -7203,9 +7203,8 @@ Host staging
   assert(hostKeyPromptFinalState.trustCalls === 1 && hostKeyPromptFinalState.trustedKeys === 1,
     `Host Key prompt did not commit exactly one trust decision: ${JSON.stringify(hostKeyPromptFinalState)}`);
   const hostKeyNotice = hostKeyPromptPage.locator(".notice-dialog", { hasText: "Host key 已确认" });
-  if (await hostKeyNotice.count()) {
-    await hostKeyNotice.getByRole("button", { name: "确定", exact: true }).click();
-  }
+  await hostKeyNotice.waitFor();
+  await hostKeyNotice.getByRole("button", { name: "确定", exact: true }).click();
   const reconnectCredentialDialog = hostKeyPromptPage.locator(".credential-dialog");
   if (await reconnectCredentialDialog.count()) {
     await reconnectCredentialDialog.getByRole("button", { name: "取消", exact: true }).click();
@@ -7464,6 +7463,71 @@ Host staging
   assert(vaultLifecycleErrors.length === 0,
     `vault lifecycle browser exceptions: ${JSON.stringify(vaultLifecycleErrors)}`);
   await vaultLifecyclePage.close();
+
+  const screenLockVaultPage = await context.newPage();
+  const screenLockVaultErrors = [];
+  screenLockVaultPage.on("pageerror", (error) => screenLockVaultErrors.push(error.message));
+  await screenLockVaultPage.goto(appUrl);
+  await screenLockVaultPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  const screenLockVaultBaseline = await screenLockVaultPage.evaluate(() => {
+    window.__portableVault = { ...window.__portableVault, exists: true, unlocked: false };
+    window.__deferVaultMutations = false;
+    window.__pendingVaultMutations = [];
+    window.localStorage.removeItem("portmate.screenLock.v1");
+    return {
+      unlock: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length,
+      lock: window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length,
+    };
+  });
+  await screenLockVaultPage.keyboard.press("Control+Alt+L");
+  const screenLockVaultOverlay = screenLockVaultPage.locator(".screen-lock-overlay");
+  const screenLockPassword = screenLockVaultOverlay.getByLabel("Portable Vault 主密码", { exact: true });
+  await screenLockPassword.waitFor();
+  await screenLockPassword.fill("correct horse battery staple");
+  await screenLockVaultPage.evaluate(() => { window.__deferVaultMutations = true; });
+  const screenLockUnlock = screenLockVaultOverlay.locator("button.screen-lock-primary");
+  await screenLockUnlock.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await screenLockVaultPage.waitForFunction(() => window.__pendingVaultMutations.length === 1);
+  const screenLockPendingUnlock = await screenLockVaultPage.evaluate((baseline) => ({
+    unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length - baseline.unlock,
+    lockCalls: window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length - baseline.lock,
+    pending: window.__pendingVaultMutations.length,
+  }), screenLockVaultBaseline);
+  assert(screenLockPendingUnlock.unlockCalls === 1
+    && screenLockPendingUnlock.lockCalls === 0
+    && screenLockPendingUnlock.pending === 1
+    && await screenLockUnlock.isDisabled(),
+  `screen lock submitted duplicate Vault unlocks: ${JSON.stringify(screenLockPendingUnlock)}`);
+  await screenLockVaultPage.evaluate(() => window.__pendingVaultMutations.shift().resolve());
+  await screenLockVaultPage.waitForFunction((baseline) => window.__pendingVaultMutations.length === 1
+    && window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length - baseline === 1,
+  screenLockVaultBaseline.lock);
+  assert(await screenLockVaultOverlay.count() === 1 && await screenLockUnlock.isDisabled(),
+    "screen lock cleared before restoring the original locked Vault state");
+  await screenLockVaultPage.evaluate(() => {
+    window.__deferVaultMutations = false;
+    window.__pendingVaultMutations.shift().resolve();
+  });
+  await screenLockVaultOverlay.waitFor({ state: "detached" });
+  const screenLockVaultFinal = await screenLockVaultPage.evaluate((baseline) => ({
+    unlocked: window.__portableVault.unlocked,
+    unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length - baseline.unlock,
+    lockCalls: window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length - baseline.lock,
+    marker: window.localStorage.getItem("portmate.screenLock.v1"),
+    pending: window.__pendingVaultMutations.length,
+  }), screenLockVaultBaseline);
+  assert(!screenLockVaultFinal.unlocked
+    && screenLockVaultFinal.unlockCalls === 1
+    && screenLockVaultFinal.lockCalls === 1
+    && screenLockVaultFinal.marker === null
+    && screenLockVaultFinal.pending === 0,
+  `screen lock Vault lifecycle did not converge exactly once: ${JSON.stringify(screenLockVaultFinal)}`);
+  assert(screenLockVaultErrors.length === 0,
+    `screen lock Vault browser exceptions: ${JSON.stringify(screenLockVaultErrors)}`);
+  await screenLockVaultPage.close();
 
   const profileRecoveryPage = await context.newPage();
   const profileRecoveryErrors = [];

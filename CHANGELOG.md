@@ -83,6 +83,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   Approval responses are now single-flight by request ID and expiry waits for an in-flight decision.
 - Fixed duplicate SSH Host Key trust decisions and stale scan responses replacing a newer security
   prompt. Trust results now participate in the shared Host Key mutation ownership boundary.
+- Fixed same-frame screen-lock submissions starting duplicate Portable Vault unlocks. Unlock and
+  restore-lock operations are now single-flight, and stale unlocks fail closed behind a newer lock.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

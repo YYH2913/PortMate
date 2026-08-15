@@ -372,6 +372,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCaptureActionTokensRef = useRef(new Map<string, number>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
+  const screenLockOperationGateRef = useRef(new KeyedRequestGate<"prepare" | "unlock">());
   const detachedCommandHandlerRef = useRef<(command: DetachedPaneCommand) => void>(() => {});
   const profileUpdateHandlerRef = useRef<(summary: SessionSummary) => void>(() => {});
   const profileDeleteHandlerRef = useRef<(sessionId: string) => void>(() => {});
@@ -595,6 +596,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function clearScreenLock() {
+    screenLockOperationGateRef.current.invalidateAll();
     try {
       window.localStorage.removeItem(SCREEN_LOCK_STORAGE_KEY);
     } catch {
@@ -604,52 +606,64 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     commitScreenLock(null);
   }
 
-  async function prepareScreenLock(state: NonNullable<ScreenLockState>) {
+  async function prepareScreenLock(state: NonNullable<ScreenLockState>, replaceExisting = false) {
+    const gate = screenLockOperationGateRef.current;
+    gate.invalidate("unlock");
+    const token = replaceExisting ? gate.replace("prepare") : gate.begin("prepare");
+    if (token === null) return;
+    const isCurrent = () => (
+      gate.isCurrent("prepare", token)
+        && screenLockRef.current?.lockedAt === state.lockedAt
+    );
     const preparing = { ...state, mode: "preparing" as const, message: "" };
     let restoreVaultLocked = state.restoreVaultLocked;
     commitScreenLock(preparing);
-    if (!isBackendAvailable()) {
-      if (screenLockRef.current?.lockedAt === state.lockedAt) {
-        commitScreenLock({
-          ...preparing,
-          mode: "confirm",
-          message: "浏览器预览未连接桌面凭据库",
-        });
-      }
-      return;
-    }
     try {
-      const vault = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
-      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
-      if (!vault.exists) {
-        clearScreenLockVaultRestoreState();
-        commitScreenLock({
-          ...preparing,
-          mode: "confirm",
-          message: "尚未配置 Portable Vault 主密码",
-        });
+      if (!isBackendAvailable()) {
+        if (isCurrent()) {
+          commitScreenLock({
+            ...preparing,
+            mode: "confirm",
+            message: "浏览器预览未连接桌面凭据库",
+          });
+        }
         return;
       }
-      if (restoreVaultLocked === null) restoreVaultLocked = !vault.unlocked;
-      saveScreenLockVaultRestoreState(restoreVaultLocked);
-      if (vault.unlocked) {
-        await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+      try {
+        const vault = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
+        if (!isCurrent()) return;
+        if (!vault.exists) {
+          clearScreenLockVaultRestoreState();
+          commitScreenLock({
+            ...preparing,
+            mode: "confirm",
+            message: "尚未配置 Portable Vault 主密码",
+          });
+          return;
+        }
+        if (restoreVaultLocked === null) restoreVaultLocked = !vault.unlocked;
+        saveScreenLockVaultRestoreState(restoreVaultLocked);
+        if (vault.unlocked) {
+          await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+        }
+        if (!isCurrent()) return;
+        commitScreenLock({
+          ...preparing,
+          mode: "vault",
+          restoreVaultLocked,
+          message: "Portable Vault 已锁定",
+        });
+      } catch {
+        if (!isCurrent()) return;
+        commitScreenLock({
+          ...preparing,
+          mode: "error",
+          restoreVaultLocked,
+          message: "无法确认 Portable Vault 状态",
+        });
       }
-      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
-      commitScreenLock({
-        ...preparing,
-        mode: "vault",
-        restoreVaultLocked,
-        message: "Portable Vault 已锁定",
-      });
-    } catch {
-      if (screenLockRef.current?.lockedAt !== state.lockedAt) return;
-      commitScreenLock({
-        ...preparing,
-        mode: "error",
-        restoreVaultLocked,
-        message: "无法确认 Portable Vault 状态",
-      });
+    } finally {
+      gate.finish("prepare", token);
     }
   }
 
@@ -675,41 +689,60 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setWorkspaceViewContextMenu(null);
     window.getSelection()?.removeAllRanges();
     commitScreenLock(next);
-    void prepareScreenLock(next);
+    void prepareScreenLock(next, true);
   }
 
   async function unlockScreen(password = "") {
+    const gate = screenLockOperationGateRef.current;
+    const token = gate.begin("unlock");
+    if (token === null) return;
     const current = screenLockRef.current;
-    if (!current) return;
-    if (current.mode === "confirm") {
-      clearScreenLock();
-      return;
-    }
-    if (current.mode !== "vault" || !password) {
-      throw new Error("请输入 Portable Vault 主密码");
-    }
-    let unlocked: PortableVaultStatus;
     try {
-      unlocked = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
-        request: { password },
-      });
-    } catch {
-      throw new Error("主密码验证失败");
-    }
-    if (!unlocked.unlocked) throw new Error("Portable Vault 未解锁");
-    if (current.restoreVaultLocked) {
-      try {
-        await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
-      } catch {
-        throw new Error("凭据锁定状态恢复失败，请重试");
+      if (!current) return;
+      if (current.mode === "confirm") {
+        clearScreenLock();
+        return;
       }
+      if (current.mode !== "vault" || !password) {
+        throw new Error("请输入 Portable Vault 主密码");
+      }
+      let unlocked: PortableVaultStatus;
+      try {
+        unlocked = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
+          request: { password },
+        });
+      } catch {
+        throw new Error("主密码验证失败");
+      }
+      if (!unlocked.unlocked) throw new Error("Portable Vault 未解锁");
+      if (!gate.isCurrent("unlock", token) || screenLockRef.current?.lockedAt !== current.lockedAt) {
+        if (screenLockRef.current) {
+          try {
+            await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          } catch {
+            // A newer lock generation owns the visible recovery state; remain fail-closed when possible.
+          }
+        }
+        return;
+      }
+      if (current.restoreVaultLocked) {
+        try {
+          await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+        } catch {
+          throw new Error("凭据锁定状态恢复失败，请重试");
+        }
+      }
+      if (gate.isCurrent("unlock", token) && screenLockRef.current?.lockedAt === current.lockedAt) {
+        clearScreenLock();
+      }
+    } finally {
+      gate.finish("unlock", token);
     }
-    if (screenLockRef.current?.lockedAt === current.lockedAt) clearScreenLock();
   }
 
   function retryPrepareScreenLock() {
     const current = screenLockRef.current;
-    if (current) void prepareScreenLock(current);
+    if (current?.mode === "error") void prepareScreenLock(current);
   }
 
   useEffect(() => {
@@ -730,7 +763,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       } catch {
         // The opaque first render remains locked even if persistence is unavailable.
       }
-      void prepareScreenLock(current);
+      void prepareScreenLock(current, true);
     }
   }, []);
 
@@ -746,7 +779,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (current?.lockedAt === next.lockedAt) return;
       clearScreenLockVaultRestoreState();
       commitScreenLock(next);
-      void prepareScreenLock(next);
+      void prepareScreenLock(next, true);
     };
     const handleStorage = (event: StorageEvent) => {
       if (event.key === SCREEN_LOCK_STORAGE_KEY || event.key === null) refreshScreenLock();
@@ -4172,6 +4205,7 @@ function ScreenLockOverlay({
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const submitPendingRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const primaryRef = useRef<HTMLInputElement | HTMLButtonElement | null>(null);
 
@@ -4183,7 +4217,8 @@ function ScreenLockOverlay({
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (busy || state.mode === "preparing" || state.mode === "error") return;
+    if (submitPendingRef.current || busy || state.mode === "preparing" || state.mode === "error") return;
+    submitPendingRef.current = true;
     setBusy(true);
     setError("");
     try {
@@ -4193,6 +4228,7 @@ function ScreenLockOverlay({
       setError(formatError(unlockError));
       window.requestAnimationFrame(() => primaryRef.current?.focus({ preventScroll: true }));
     } finally {
+      submitPendingRef.current = false;
       setBusy(false);
     }
   }

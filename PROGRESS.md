@@ -130,6 +130,8 @@ MCP 写操作审批在弹窗和 App 调用边界分别按 approval ID 建立同�
 
 连接失败后的 SSH Host Key 安全提示补齐全局 prompt operation gate：新的扫描会使旧扫描和旧决策失去 UI 所有权，关闭、删除 Profile 或转入验证设置会隔离迟到响应；信任决策同步 single-flight，同帧双击不会重复写入或启动两次重连。信任完成后的 Host Key 列表还通过既有全局 mutation token 提交，不能用旧列表覆盖更新的密钥管理操作。Workspace UI 通过真实连接失败入口延迟扫描和信任写入，覆盖双击仅一次、全部冲突按钮锁定和单份 Host Key 落库。
 
+锁屏的 Portable Vault 准备、主密码验证和原锁定状态恢复补齐 App 级 operation generation 与遮罩同步 single-flight：同帧双击解锁只会调用一次 `unlock_portable_vault`，恢复原本 locked 的 Vault 完成前遮罩保持不可交互；跨窗口产生更新的锁屏代际时，旧解锁结果不能清除新遮罩，并会尽力重新锁定已被旧请求打开的 Vault。错误态重试也不能并发启动两次准备检查。Workspace UI 以延迟 Vault mutation 覆盖双击、按钮锁定、遮罩生命周期和最终 locked 状态。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
