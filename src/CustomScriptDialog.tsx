@@ -124,7 +124,7 @@ export default function CustomScriptDialog({
   }
 
   async function saveScript() {
-    if (!draft || busy) return;
+    if (!draft || busy || operationGate.current.isActive("operation")) return;
     const normalized = normalizeCustomScriptDraft(draft);
     const validation = validateCustomScriptDraft(normalized);
     if (validation) {
@@ -151,7 +151,7 @@ export default function CustomScriptDialog({
   }
 
   async function deleteScript() {
-    if (!selectedScript || busy) return;
+    if (!selectedScript || busy || operationGate.current.isActive("operation")) return;
     const unsavedWarning = hasUnsavedChanges ? "\n\n当前编辑器还有未保存的更改，也会一并丢弃。" : "";
     if (!window.confirm(`删除自定义脚本“${selectedScript.name}”？${unsavedWarning}`)) return;
     const gate = operationGate.current;
@@ -175,7 +175,8 @@ export default function CustomScriptDialog({
   }
 
   async function runScript() {
-    if (!selectedScript || !runSessionId || busy || hasUnsavedChanges) return;
+    if (!selectedScript || !runSessionId || busy || hasUnsavedChanges
+      || operationGate.current.isActive("operation")) return;
     const gate = operationGate.current;
     const token = gate.begin("operation");
     if (token === null) return;
