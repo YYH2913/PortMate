@@ -2463,6 +2463,16 @@ Host staging
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => (
     request.command === "refresh_sysmon" && request.args.sessionId === "edge-router"
   )));
+  const sysmonAppletToggle = page.getByRole("button", { name: "启动 Sysmon 监控", exact: true });
+  await sysmonAppletToggle.click();
+  await page.waitForFunction(() => window.__pendingSysmon.filter((request) => (
+    request.command === "refresh_sysmon" && request.args.sessionId === "edge-router"
+  )).length >= 2);
+  const sysmonAppletStop = page.getByRole("button", { name: "停止 Sysmon 监控", exact: true });
+  await sysmonAppletStop.click();
+  await page.waitForFunction(() => !document.querySelector(".sysmon-applet-toggle svg")?.classList.contains("loading"));
+  assert(await page.getByRole("button", { name: "启动 Sysmon 监控", exact: true }).count() === 1,
+    "stopping a pending Sysmon sample left the status applet busy");
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => (
     request.command === "refresh_sysmon" && request.args.sessionId === "bench-uart"

@@ -33,7 +33,11 @@ export default function SysmonSidebar({
   }, [session?.profile.id]);
 
   useEffect(() => {
-    if (!enabled || !session || !canSample) return;
+    if (!enabled || !session || !canSample) {
+      gate.current.invalidateAll();
+      setBusy(false);
+      return;
+    }
     void refresh();
     const timer = window.setInterval(() => void refresh(), 10_000);
     return () => {

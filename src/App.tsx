@@ -5576,6 +5576,7 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
     if (!canWatch) {
       setWatching(false);
       setSnapshot(null);
+      setBusy(false);
       setError("");
     }
   }, [canWatch]);
@@ -5615,6 +5616,7 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
     if (watching) {
       setWatching(false);
       setSnapshot(null);
+      setBusy(false);
       setError("");
       return;
     }
