@@ -75,6 +75,20 @@ describe("CI command logging", () => {
     expect(workflow).toContain(
       "target/native-ci/mcp-swift-client.log npm run test:mcp-swift-client",
     );
+    for (const client of [
+      "typescript",
+      "python",
+      "go",
+      "rust",
+      "ruby",
+      "java",
+      "kotlin",
+      "csharp",
+    ]) {
+      expect(workflow).toContain(
+        `target/native-ci/mcp-${client}-client.log npm run test:mcp-${client}-client`,
+      );
+    }
     expect(workflow).toContain("--test-threads=1");
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow.match(/dtolnay\/rust-toolchain@1\.97\.1/g)).toHaveLength(4);

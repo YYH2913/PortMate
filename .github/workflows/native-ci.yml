@@ -197,14 +197,22 @@ jobs:
       - name: Verify SSH GSSAPI compatibility matrix
         if: runner.os == 'Linux'
         run: node scripts/ci-command-log.mjs target/native-ci/ssh-gssapi-compat.log npm run test:ssh-gssapi-compat
-      - run: npm run test:mcp-typescript-client
-      - run: npm run test:mcp-python-client
-      - run: npm run test:mcp-go-client
-      - run: npm run test:mcp-rust-client
-      - run: npm run test:mcp-ruby-client
-      - run: npm run test:mcp-java-client
-      - run: npm run test:mcp-kotlin-client
-      - run: npm run test:mcp-csharp-client
+      - name: Verify MCP TypeScript SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-typescript-client.log npm run test:mcp-typescript-client
+      - name: Verify MCP Python SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-python-client.log npm run test:mcp-python-client
+      - name: Verify MCP Go SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-go-client.log npm run test:mcp-go-client
+      - name: Verify MCP Rust SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-rust-client.log npm run test:mcp-rust-client
+      - name: Verify MCP Ruby SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-ruby-client.log npm run test:mcp-ruby-client
+      - name: Verify MCP Java SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-java-client.log npm run test:mcp-java-client
+      - name: Verify MCP Kotlin SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-kotlin-client.log npm run test:mcp-kotlin-client
+      - name: Verify MCP C# SDK clients
+        run: node scripts/ci-command-log.mjs target/native-ci/mcp-csharp-client.log npm run test:mcp-csharp-client
       - name: Verify MCP Swift SDK clients
         if: runner.os != 'Windows'
         run: node scripts/ci-command-log.mjs target/native-ci/mcp-swift-client.log npm run test:mcp-swift-client
