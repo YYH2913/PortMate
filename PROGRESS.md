@@ -114,6 +114,8 @@ MCP 管理器补齐授权与 HTTP 配置的草稿边界：授权脏状态按 sco
 
 Tmux 工具补齐请求并发和 watcher 所有权边界：刷新、attach、pane 同步及 session/window/pane 变更共享同步操作 gate，同一帧重复事件只能进入一次后端；control-mode 按 target 独立 gate，`lab` 与 `build` 可并行而同一 target 不可重复开停，请求期间禁止关闭窗口以避免未完成 watcher 失去结果上下文。`stop_tmux_control` 新增可选 `runtimeId` 条件，显式停止和窗口清理只能取消实际持有的 runtime；旧 runtime 已被替换时后端保留新 watcher 并返回 active，界面更新到新 ID、拒绝伪报停止并要求重试。Tmux Workflow 以延迟 attach/control/sync/mutation 覆盖双触发、不同 target 并发、关闭保护、旧 runtime 条件停止和迟到状态刷新；后端单测覆盖 runtime ID 匹配/不匹配，旧的无条件调用保持兼容。
 
+日志管理器补齐写操作单次提交和窗口代际边界：归档分片、导出会话包和删除分片共用同步 write gate，同一帧双触发只能进入一次后端，任一写操作在途时其他两个冲突动作不可启动；删除确认也在 gate 内完成，不会因双击重复弹窗。关闭旧管理器会使归档、导出和删除 token 全部失效，迟到结果不能再写入归档/会话包结果、错误或全局通知，也不能干扰后来打开的替代窗口。Workspace UI 以延迟后端覆盖归档/导出/删除双触发、跨操作锁定、删除单次确认和关闭后释放旧归档响应。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

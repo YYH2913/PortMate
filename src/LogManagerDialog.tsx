@@ -46,11 +46,13 @@ export default function LogManagerDialog({
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveResult, setArchiveResult] = useState<ArchiveLogShardsResult | null>(null);
   const requestGate = useRef(new KeyedRequestGate<"shards" | "preview" | "search">());
+  const mutationGate = useRef(new KeyedRequestGate<"write">());
 
   const filtered = filterLogShards(shards, query, format);
   const selectedPaths = new Set(selected);
   const totalBytes = shards.reduce((sum, shard) => sum + shard.size, 0);
   const bundleAttachmentSelection = summarizeBundleAttachmentSelection(shards, selected);
+  const operationBusy = busy || archiveBusy || bundleBusy;
 
   async function refreshShards() {
     const token = requestGate.current.begin("shards");
@@ -75,7 +77,10 @@ export default function LogManagerDialog({
 
   useEffect(() => {
     void refreshShards();
-    return () => requestGate.current.invalidateAll();
+    return () => {
+      requestGate.current.invalidateAll();
+      mutationGate.current.invalidateAll();
+    };
   }, []);
 
   useEffect(() => {
@@ -103,27 +108,41 @@ export default function LogManagerDialog({
     if (!selected.length) return;
     const selectedSet = new Set(selected);
     const bytes = shards.filter((shard) => selectedSet.has(shard.path)).reduce((sum, shard) => sum + shard.size, 0);
-    if (!window.confirm(`删除 ${selected.length} 个日志分片（${formatBytes(bytes)}）?`)) return;
+    const mutationToken = mutationGate.current.begin("write");
+    if (mutationToken === null) return;
+    if (!window.confirm(`删除 ${selected.length} 个日志分片（${formatBytes(bytes)}）?`)) {
+      mutationGate.current.finish("write", mutationToken);
+      return;
+    }
     const token = requestGate.current.begin("shards");
-    if (token === null) return;
+    if (token === null) {
+      mutationGate.current.finish("write", mutationToken);
+      return;
+    }
     requestGate.current.invalidate("preview");
     requestGate.current.invalidate("search");
     setBusy(true);
     setError("");
     try {
       const result = await invokeBackend<DeleteLogShardsResult>("delete_log_shards", { paths: selected });
-      if (!requestGate.current.isCurrent("shards", token)) return;
+      if (!isCurrentMutation(mutationToken) || !requestGate.current.isCurrent("shards", token)) return;
       setSelected([]);
       setPreview(null);
       setSearchResult(null);
       setActiveSearchMatch(null);
       onNotice(`已删除 ${result.deleted} 个分片，释放 ${formatBytes(result.bytesDeleted)}`);
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
-      if (requestGate.current.isCurrent("shards", token)) setShards(next);
+      if (isCurrentMutation(mutationToken) && requestGate.current.isCurrent("shards", token)) setShards(next);
     } catch (error) {
-      if (requestGate.current.isCurrent("shards", token)) setError(formatLogError(error));
+      if (isCurrentMutation(mutationToken) && requestGate.current.isCurrent("shards", token)) {
+        setError(formatLogError(error));
+      }
     } finally {
-      if (requestGate.current.finish("shards", token)) setBusy(false);
+      const current = isCurrentMutation(mutationToken)
+        && requestGate.current.isCurrent("shards", token);
+      requestGate.current.finish("shards", token);
+      mutationGate.current.finish("write", mutationToken);
+      if (current) setBusy(false);
     }
   }
 
@@ -133,6 +152,8 @@ export default function LogManagerDialog({
 
   async function exportBundle() {
     if (!bundleSessionId) return;
+    const token = mutationGate.current.begin("write");
+    if (token === null) return;
     setBundleBusy(true);
     setBundleResult(null);
     setError("");
@@ -145,18 +166,21 @@ export default function LogManagerDialog({
           attachmentPaths: bundleAttachments ? selected : [],
         },
       });
+      if (!isCurrentMutation(token)) return;
       setBundleResult(result);
       const warning = result.warnings.length ? ` · ${result.warnings.join(" · ")}` : "";
       onNotice(`会话包已导出：${result.path}${warning}`);
     } catch (error) {
-      setError(formatLogError(error));
+      if (isCurrentMutation(token)) setError(formatLogError(error));
     } finally {
-      setBundleBusy(false);
+      if (mutationGate.current.finish("write", token)) setBundleBusy(false);
     }
   }
 
   async function archiveSelected() {
     if (!selected.length) return;
+    const token = mutationGate.current.begin("write");
+    if (token === null) return;
     setArchiveBusy(true);
     setArchiveResult(null);
     setError("");
@@ -164,13 +188,18 @@ export default function LogManagerDialog({
       const result = await invokeBackend<ArchiveLogShardsResult>("archive_log_shards", {
         request: { paths: selected },
       });
+      if (!isCurrentMutation(token)) return;
       setArchiveResult(result);
       onNotice(`已归档 ${result.shards} 个日志分片：${result.path}`);
     } catch (error) {
-      setError(formatLogError(error));
+      if (isCurrentMutation(token)) setError(formatLogError(error));
     } finally {
-      setArchiveBusy(false);
+      if (mutationGate.current.finish("write", token)) setArchiveBusy(false);
     }
+  }
+
+  function isCurrentMutation(token: number) {
+    return mutationGate.current.isCurrent("write", token);
   }
 
   async function searchShardContent() {
@@ -229,8 +258,8 @@ export default function LogManagerDialog({
             </select>
             <div className="log-manager-toolbar-actions">
               <button type="button" title="刷新日志分片" aria-label="刷新日志分片" onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
-              <button type="button" title="归档选中分片" aria-label="归档选中分片" onClick={() => void archiveSelected()} disabled={archiveBusy || !selected.length}><Archive size={15} /></button>
-              <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={busy || !selected.length}><Trash2 size={15} /></button>
+              <button type="button" title="归档选中分片" aria-label="归档选中分片" onClick={() => void archiveSelected()} disabled={operationBusy || !selected.length}><Archive size={15} /></button>
+              <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={operationBusy || !selected.length}><Trash2 size={15} /></button>
             </div>
           </div>
           <div className="log-manager-selection">
@@ -278,7 +307,7 @@ export default function LogManagerDialog({
                 disabled={bundleRedacted || !bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits}
                 onChange={(event) => setBundleAttachments(event.target.checked)}
               />附件 {bundleAttachmentSelection.count} · {formatBytes(bundleAttachmentSelection.bytes)}</label>
-              <button type="button" onClick={() => void exportBundle()} disabled={bundleBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? "导出中" : "导出会话包"}</button>
+              <button type="button" onClick={() => void exportBundle()} disabled={operationBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? "导出中" : "导出会话包"}</button>
             </div>
             {bundleResult ? (
               <div className="log-bundle-result">

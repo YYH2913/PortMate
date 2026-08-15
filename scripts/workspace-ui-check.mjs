@@ -497,6 +497,8 @@ try {
     ];
     window.__deferLogPreviews = false;
     window.__pendingLogPreviews = [];
+    window.__deferLogMutations = false;
+    window.__pendingLogMutations = [];
     window.__deferMcpHttpConfig = false;
     window.__pendingMcpHttpConfig = [];
     window.__deferMcpHttpMutations = false;
@@ -807,6 +809,50 @@ try {
           return new Promise((resolve) => {
             window.__pendingLogPreviews.push({ args: structuredClone(args), resolve });
           });
+        }
+        if (command === "archive_log_shards" || command === "export_session_bundle_archive" || command === "delete_log_shards") {
+          const result = command === "archive_log_shards"
+            ? {
+              path: "/tmp/portmate-logs.tar.gz",
+              checksumPath: "/tmp/portmate-logs.tar.gz.sha256",
+              sha256: "a".repeat(64),
+              size: 40,
+              shards: args.request.paths.length,
+              sourceBytes: 80,
+            }
+            : command === "export_session_bundle_archive"
+              ? {
+                path: "/tmp/portmate-session.tar.gz",
+                checksumPath: "/tmp/portmate-session.tar.gz.sha256",
+                signaturePath: "/tmp/portmate-session.tar.gz.sig",
+                sha256: "b".repeat(64),
+                signatureAlgorithm: "Ed25519",
+                signingPublicKey: "c".repeat(64),
+                size: 64,
+                files: 4,
+                rawLogSegments: 0,
+                attachments: args.request.attachmentPaths.length,
+                redacted: args.request.redactSecrets,
+                warnings: [],
+              }
+              : {
+                deleted: args.paths.length,
+                bytesDeleted: window.__logShards
+                  .filter((shard) => args.paths.includes(shard.path))
+                  .reduce((total, shard) => total + shard.size, 0),
+              };
+          const complete = () => {
+            if (command === "delete_log_shards") {
+              window.__logShards = window.__logShards.filter((shard) => !args.paths.includes(shard.path));
+            }
+            return structuredClone(result);
+          };
+          if (!window.__deferLogMutations) return complete();
+          return new Promise((resolve) => window.__pendingLogMutations.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(complete()),
+          }));
         }
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
@@ -4416,6 +4462,115 @@ Host staging
   await page.waitForTimeout(100);
   assert(await logManager.locator(".log-preview > header strong").textContent() === "logs/b.jsonl",
     "a stale log preview response replaced the latest selected shard");
+
+  await logManager.getByRole("checkbox", { name: "选择 logs/a.txt", exact: true }).check();
+  await page.evaluate(() => {
+    window.__deferLogMutations = true;
+    window.__pendingLogMutations = [];
+  });
+  const archiveLogsButton = logManager.getByRole("button", { name: "归档选中分片", exact: true });
+  await archiveLogsButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingLogMutations.length === 1);
+  const pendingArchiveRequests = await page.evaluate(() => window.__pendingLogMutations.map((pending) => ({
+    command: pending.command,
+    paths: pending.args.request?.paths,
+  })));
+  assert(JSON.stringify(pendingArchiveRequests) === JSON.stringify([
+    { command: "archive_log_shards", paths: ["logs/a.txt"] },
+  ]), `log archive was submitted more than once: ${JSON.stringify(pendingArchiveRequests)}`);
+  assert(await archiveLogsButton.isDisabled()
+    && await logManager.getByRole("button", { name: "删除选中分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "导出中", exact: true }).count() === 0
+    && await logManager.getByRole("button", { name: "导出会话包", exact: true }).isDisabled(),
+  "a pending log archive did not lock conflicting write operations");
+  await logManager.getByRole("button", { name: "关闭", exact: true }).last().click();
+  await logManager.waitFor({ state: "detached" });
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  await page.getByRole("button", { name: "日志管理", exact: true }).click();
+  await logManager.waitFor();
+  await logManager.getByRole("button", { name: /logs\/a\.txt/ }).waitFor();
+  await page.evaluate(() => {
+    window.__deferLogMutations = false;
+    window.__pendingLogMutations.shift().resolve();
+    window.__pendingLogMutations = [];
+  });
+  await page.waitForTimeout(100);
+  assert(await logManager.count() === 1
+    && await logManager.locator(".log-archive-result").count() === 0
+    && await page.locator(".notice-dialog").count() === 0,
+  "a late log archive response mutated or obscured the replacement dialog");
+
+  await logManager.getByRole("checkbox", { name: "选择 logs/a.txt", exact: true }).check();
+  await page.evaluate(() => {
+    window.__deferLogMutations = true;
+    window.__pendingLogMutations = [];
+  });
+  const exportLogBundleButton = logManager.getByRole("button", { name: "导出会话包", exact: true });
+  await exportLogBundleButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingLogMutations.length === 1);
+  assert(await logManager.getByRole("button", { name: "导出中", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "归档选中分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "删除选中分片", exact: true }).isDisabled(),
+  "a pending session bundle did not lock conflicting log writes");
+  const pendingBundleRequests = await page.evaluate(() => window.__pendingLogMutations.map((pending) => pending.command));
+  assert(JSON.stringify(pendingBundleRequests) === JSON.stringify(["export_session_bundle_archive"]),
+    `session bundle export was submitted more than once: ${JSON.stringify(pendingBundleRequests)}`);
+  await page.evaluate(() => {
+    window.__deferLogMutations = false;
+    window.__pendingLogMutations.shift().resolve();
+    window.__pendingLogMutations = [];
+  });
+  await logManager.locator(".log-bundle-result", { hasText: "/tmp/portmate-session.tar.gz" }).waitFor();
+  const bundleNotice = page.locator(".notice-dialog", { hasText: "会话包已导出" });
+  await bundleNotice.waitFor();
+  await bundleNotice.getByRole("button", { name: "确定", exact: true }).click();
+
+  await page.evaluate(() => {
+    window.__deferLogMutations = true;
+    window.__pendingLogMutations = [];
+    window.__logDeletePrompts = [];
+    window.__originalLogConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__logDeletePrompts.push(String(message));
+      return true;
+    };
+  });
+  const deleteLogsButton = logManager.getByRole("button", { name: "删除选中分片", exact: true });
+  await deleteLogsButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingLogMutations.length === 1);
+  const pendingDeleteRequests = await page.evaluate(() => ({
+    commands: window.__pendingLogMutations.map((pending) => pending.command),
+    prompts: window.__logDeletePrompts,
+  }));
+  assert(JSON.stringify(pendingDeleteRequests.commands) === JSON.stringify(["delete_log_shards"])
+    && pendingDeleteRequests.prompts.length === 1
+    && pendingDeleteRequests.prompts[0].includes("1 个日志分片"),
+  `log deletion was confirmed or submitted more than once: ${JSON.stringify(pendingDeleteRequests)}`);
+  assert(await deleteLogsButton.isDisabled()
+    && await logManager.getByRole("button", { name: "归档选中分片", exact: true }).isDisabled()
+    && await logManager.getByRole("button", { name: "导出会话包", exact: true }).isDisabled(),
+  "a pending log deletion did not lock conflicting write operations");
+  await page.evaluate(() => {
+    window.__deferLogMutations = false;
+    window.__pendingLogMutations.shift().resolve();
+    window.__pendingLogMutations = [];
+    window.confirm = window.__originalLogConfirm;
+  });
+  await logManager.getByRole("button", { name: /logs\/a\.txt/ }).waitFor({ state: "detached" });
+  assert(await logManager.getByRole("button", { name: /logs\/a\.txt/ }).count() === 0,
+    "deleted log shard remained visible after the authoritative refresh");
+  const deleteLogsNotice = page.locator(".notice-dialog", { hasText: "已删除 1 个分片" });
+  await deleteLogsNotice.waitFor();
+  await deleteLogsNotice.getByRole("button", { name: "确定", exact: true }).click();
   await logManager.getByRole("button", { name: "关闭", exact: true }).last().click();
   await logManager.waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();

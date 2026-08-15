@@ -67,6 +67,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   are isolated by task ID, and responses from a closed dialog cannot update or close its replacement.
 - Fixed duplicate Tmux attach, control-mode, pane synchronization, and layout/session mutations.
   Control watcher cleanup is now bound to its runtime ID and cannot stop a newer replacement.
+- Fixed duplicate and conflicting log archive, session bundle export, and shard deletion actions.
+  Closing the log manager now isolates late write results from a replacement dialog.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 
