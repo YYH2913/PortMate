@@ -89,6 +89,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   session. Pending closes now lock conflicting controls and cannot restore a deleted Profile.
 - Fixed same-frame OneKey save, delete, or send actions entering the backend more than once. OneKey
   operations now acquire a synchronous dialog gate before React's pending state is rendered.
+- Fixed the Sender panel dispatching text or Hex twice when its button and keyboard shortcut fired
+  in the same frame. A synchronous send gate now owns the complete configured send batch.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

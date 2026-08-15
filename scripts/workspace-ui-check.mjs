@@ -471,6 +471,8 @@ try {
     window.__pendingSessionOpens = [];
     window.__deferSessionCloses = false;
     window.__pendingSessionCloses = [];
+    window.__deferTerminalSends = false;
+    window.__pendingTerminalSends = [];
     window.__sessionOpenErrors = {};
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
@@ -1401,6 +1403,10 @@ try {
             size: 384,
             records: args.request.recordIds.length,
           };
+        }
+        if (command === "send_text" || command === "send_bytes") {
+          if (!window.__deferTerminalSends) return null;
+          return new Promise((resolve) => window.__pendingTerminalSends.push({ command, args, resolve }));
         }
         if (command === "open_session" || command === "open_session_with_one_key") {
           const sessionId = command === "open_session" ? args.request.sessionId : args.sessionId;
@@ -3458,7 +3464,29 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
   await sender.getByRole("button", { name: "发送", exact: true }).click();
   await sender.getByRole("textbox", { name: "send text", exact: true }).fill("uname -a");
-  await sender.getByRole("button", { name: "发送", exact: true }).click();
+  const senderLifecycleStart = await page.evaluate(() => {
+    window.__deferTerminalSends = true;
+    window.__pendingTerminalSends = [];
+    return window.__invokeCalls.filter((call) => call.command === "send_text").length;
+  });
+  const senderSendButton = sender.getByRole("button", { name: "发送", exact: true });
+  await senderSendButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  const pendingSenderLifecycle = await page.evaluate((start) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "send_text").length - start,
+    pending: window.__pendingTerminalSends.length,
+  }), senderLifecycleStart);
+  assert(pendingSenderLifecycle.calls === 1
+    && pendingSenderLifecycle.pending === 1
+    && await senderSendButton.isDisabled(),
+  `sender did not serialize or lock a same-frame send: ${JSON.stringify(pendingSenderLifecycle)}`);
+  await page.evaluate(() => {
+    window.__deferTerminalSends = false;
+    window.__pendingTerminalSends.shift().resolve(null);
+  });
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");
   const recordedCommandHistory = await page.evaluate(() => ({

@@ -136,6 +136,8 @@ MCP 写操作审批在弹窗和 App 调用边界分别按 approval ID 建立同�
 
 OneKey 保存、删除和发送补齐弹窗级同步 operation gate，入口在 React `busy` 状态提交渲染前即取得所有权；同一帧重复事件不再创建两条新 OneKey、重复删除或重复发送凭据。关闭后后台 mutation 与重新打开窗口的既有 generation 隔离保持不变。Workspace UI 对延迟新建保存和已保存用户名发送分别执行同帧双触发，并锁定单次 `save_one_key`、单个 pending 请求、编辑冻结状态和单次 `send_one_key`。
 
+主工作区发送面板补齐覆盖完整批次的同步 send gate，发送按钮与 `Ctrl+Enter` 在 React `sendBusy` 渲染前同帧触发时只允许一个调用进入；文本、Hex、次数、间隔和目标仍在批次开始时形成稳定快照。Workspace UI 延迟 `send_text` 响应并以同帧双击锁定单次后端调用、单个 pending 请求、发送按钮禁用和成功后一次命令历史记录。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

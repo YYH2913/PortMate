@@ -372,6 +372,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
   const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
   const serialCaptureActionTokensRef = useRef(new Map<string, number>());
+  const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
   const screenLockOperationGateRef = useRef(new KeyedRequestGate<"prepare" | "unlock">());
@@ -3451,6 +3452,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setNotice({ title: "发送", message: "没有可发送的目标会话。" });
       return;
     }
+    const sendToken = sendOperationGateRef.current.begin("send");
+    if (sendToken === null) return;
     setSendBusy(true);
     try {
       for (let index = 0; index < Math.max(1, sendCount); index += 1) {
@@ -3471,7 +3474,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     } catch (error) {
       setNotice({ title: "发送失败", message: formatError(error) });
     } finally {
-      setSendBusy(false);
+      if (sendOperationGateRef.current.finish("send", sendToken)) setSendBusy(false);
     }
   }
 
