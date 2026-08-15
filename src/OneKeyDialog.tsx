@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { KeyRound, Plus, Save, Send, Trash2, UserRound, X } from "lucide-react";
 import { invokeBackend } from "./api";
+import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   oneKeyIdentityCandidates,
   oneKeyIdentitySelectionKey,
@@ -98,6 +99,7 @@ export default function OneKeyDialog({
   const [busy, setBusy] = useState<"save" | "delete" | "send" | null>(null);
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
   const mountedRef = useRef(true);
+  const operationGateRef = useRef(new KeyedRequestGate<"operation">());
   const active = sessions.find((session) => session.profile.id === activeId);
   const compatibleSessions = useMemo(
     () => sessions.filter((session) => draft.kind === "account" || session.profile.kind === "ssh" || session.profile.kind === "tmux"),
@@ -209,6 +211,8 @@ export default function OneKeyDialog({
       identityUpdate: oneKeyIdentityUpdate(draft.kind, draft.currentIdentity, draft.identitySelection),
       sessionIds: draft.sessionIds,
     };
+    const operationToken = operationGateRef.current.begin("operation");
+    if (operationToken === null) return;
     const mutationToken = onMutationStart();
     setBusy("save");
     setFeedback(null);
@@ -227,14 +231,19 @@ export default function OneKeyDialog({
       if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
       onMutationFinish(mutationToken);
-      if (mountedRef.current) setBusy(null);
+      if (operationGateRef.current.finish("operation", operationToken) && mountedRef.current) setBusy(null);
     }
   }
 
   async function remove() {
     if (!draft.id || busy !== null) return;
+    const operationToken = operationGateRef.current.begin("operation");
+    if (operationToken === null) return;
     const unsavedWarning = hasUnsavedChanges ? "\n\n当前编辑器还有未保存的更改，也会一并丢弃。" : "";
-    if (!window.confirm(`删除 OneKey “${draft.label}”？${unsavedWarning}`)) return;
+    if (!window.confirm(`删除 OneKey “${draft.label}”？${unsavedWarning}`)) {
+      operationGateRef.current.finish("operation", operationToken);
+      return;
+    }
     const mutationToken = onMutationStart();
     setBusy("delete");
     setFeedback(null);
@@ -251,12 +260,14 @@ export default function OneKeyDialog({
       if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
       onMutationFinish(mutationToken);
-      if (mountedRef.current) setBusy(null);
+      if (operationGateRef.current.finish("operation", operationToken) && mountedRef.current) setBusy(null);
     }
   }
 
   async function sendField(field: "username" | "password" | "passphrase") {
     if (!draft.id || !active || busy !== null || hasUnsavedChanges) return;
+    const operationToken = operationGateRef.current.begin("operation");
+    if (operationToken === null) return;
     setBusy("send");
     setFeedback(null);
     try {
@@ -269,7 +280,7 @@ export default function OneKeyDialog({
     } catch (error) {
       if (mountedRef.current) setFeedback({ kind: "error", text: String(error) });
     } finally {
-      if (mountedRef.current) setBusy(null);
+      if (operationGateRef.current.finish("operation", operationToken) && mountedRef.current) setBusy(null);
     }
   }
 

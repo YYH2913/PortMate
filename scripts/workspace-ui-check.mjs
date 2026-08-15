@@ -6374,11 +6374,20 @@ Host staging
   await firstOneKeyDialog.locator(".one-key-sessions label", { hasText: "Edge Router" }).click();
   await firstOneKeyDialog.locator(".one-key-sessions > header span", { hasText: "1" }).waitFor();
   await oneKeyLifecyclePage.evaluate(() => { window.__deferOneKeyMutations = true; });
-  await firstOneKeyDialog.locator('button[title="保存 OneKey"]').click();
+  await firstOneKeyDialog.locator('button[title="保存 OneKey"]').evaluate((button) => {
+    button.click();
+    button.click();
+  });
   await oneKeyLifecyclePage.waitForFunction(() => window.__pendingOneKeyMutations.length === 1);
-  assert(await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").isDisabled()
+  const pendingOneKeySave = await oneKeyLifecyclePage.evaluate(() => ({
+    pending: window.__pendingOneKeyMutations.length,
+    saves: window.__invokeCalls.filter((call) => call.command === "save_one_key").length,
+  }));
+  assert(pendingOneKeySave.pending === 1
+    && pendingOneKeySave.saves === 1
+    && await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").isDisabled()
     && await firstOneKeyDialog.getByRole("button", { name: "添加 OneKey", exact: true }).isDisabled(),
-  "OneKey editor remained mutable while a save request was pending");
+  `OneKey save was duplicated or the editor remained mutable: ${JSON.stringify(pendingOneKeySave)}`);
   await oneKeyLifecyclePage.evaluate(() => {
     window.__oneKeyClosePrompts = [];
     window.__originalOneKeyConfirm = window.confirm;
@@ -6432,6 +6441,19 @@ Host staging
   const sendSavedOneKeyUsername = secondOneKeyDialog.getByRole("button", { name: "用户名", exact: true });
   assert(!await sendSavedOneKeyUsername.isDisabled(),
     "saved OneKey username was not available to the connected bound session");
+  const oneKeySendStart = await oneKeyLifecyclePage.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "send_one_key").length
+  ));
+  await sendSavedOneKeyUsername.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await secondOneKeyDialog.getByText("用户名已发送。", { exact: true }).waitFor();
+  const oneKeySendCalls = await oneKeyLifecyclePage.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "send_one_key").length
+  ));
+  assert(oneKeySendCalls === oneKeySendStart + 1,
+    `OneKey username was sent more than once from a same-frame action: ${oneKeySendCalls - oneKeySendStart}`);
   const secondOneKeyUsername = secondOneKeyDialog.locator(".one-key-fields label", { hasText: "用户名" }).locator("input");
   await secondOneKeyUsername.fill("unsaved-second-user");
   assert(await sendSavedOneKeyUsername.isDisabled(),

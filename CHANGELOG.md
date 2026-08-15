@@ -87,6 +87,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   restore-lock operations are now single-flight, and stale unlocks fail closed behind a newer lock.
 - Fixed duplicate disconnect and reconnect actions issuing multiple `close_session` requests for one
   session. Pending closes now lock conflicting controls and cannot restore a deleted Profile.
+- Fixed same-frame OneKey save, delete, or send actions entering the backend more than once. OneKey
+  operations now acquire a synchronous dialog gate before React's pending state is rendered.
 - Fixed native CI portability for Windows OpenSSL/NASM, macOS temporary paths and filesystem
   fixtures, SSH teardown, and current MCP SDK versions.
 

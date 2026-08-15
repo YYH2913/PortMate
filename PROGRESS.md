@@ -134,6 +134,8 @@ MCP 写操作审批在弹窗和 App 调用边界分别按 approval ID 建立同�
 
 主工作区的断开/重连补齐每会话同步 close gate：同帧重复断开或重连只会产生一次 `close_session`，关闭在途时新的 connect 直接退让，pane 标题栏、会话菜单、视图菜单和顶层会话菜单的冲突入口同步禁用。Profile 删除会使未完成关闭失去状态/日志提交权，迟到响应不能把已删会话重新合并。Workspace UI 延迟关闭响应并覆盖双击重连、单次后端关闭、busy/disabled 状态和后续一次连接；失败断开同样以双击证明只上报一次错误。
 
+OneKey 保存、删除和发送补齐弹窗级同步 operation gate，入口在 React `busy` 状态提交渲染前即取得所有权；同一帧重复事件不再创建两条新 OneKey、重复删除或重复发送凭据。关闭后后台 mutation 与重新打开窗口的既有 generation 隔离保持不变。Workspace UI 对延迟新建保存和已保存用户名发送分别执行同帧双触发，并锁定单次 `save_one_key`、单个 pending 请求、编辑冻结状态和单次 `send_one_key`。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
