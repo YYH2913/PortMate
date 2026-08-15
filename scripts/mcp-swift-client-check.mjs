@@ -83,6 +83,14 @@ for (const entry of matrix.sdks) {
     "--product",
     "McpSwiftClientCheck",
   );
+  if (entry.swiftLanguageMode) {
+    buildArguments.push(
+      "-Xswiftc",
+      "-swift-version",
+      "-Xswiftc",
+      entry.swiftLanguageMode,
+    );
+  }
   await runSwiftBuildWithRecovery({
     scratch,
     cache,
@@ -174,6 +182,8 @@ function validateMatrix(value) {
       typeof entry !== "object"
       || !versionPattern.test(entry.version)
       || !/^\d{4}-\d{2}-\d{2}$/.test(entry.protocolVersion)
+      || (entry.swiftLanguageMode !== undefined
+        && !new Set(["5", "6"]).has(entry.swiftLanguageMode))
     ))
   ) {
     throw new Error("scripts/mcp-swift-client-versions.json must pin exact Swift, SDK, protocol, and archive versions");

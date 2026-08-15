@@ -60,9 +60,18 @@ describe("MCP client dependency locks", () => {
 
   it("keeps Swift resolution locked and dependency checkout serial", () => {
     const source = script("mcp-swift-client-check.mjs");
+    const swiftMatrix = JSON.parse(readFileSync(
+      join(projectRoot, "scripts", "mcp-swift-client-versions.json"),
+      "utf8",
+    ));
     expect(source).toContain('"--disable-automatic-resolution"');
     expect(source).toContain('"--disable-prefetching"');
     expect(source).toContain('environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1"');
+    expect(source).toContain('"-swift-version"');
+    expect(swiftMatrix.sdks.find(({ version }) => version === "0.11.0")?.swiftLanguageMode)
+      .toBe("5");
+    expect(swiftMatrix.sdks.find(({ version }) => version === "0.12.1"))
+      .not.toHaveProperty("swiftLanguageMode");
   });
 
   it("pins every external Ruby dependency used by the SDK matrix", () => {

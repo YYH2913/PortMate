@@ -11,7 +11,8 @@
   "sdks": [
     {
       "version": "0.11.0",
-      "protocolVersion": "2025-06-18"
+      "protocolVersion": "2025-06-18",
+      "swiftLanguageMode": "5"
     },
     {
       "version": "0.12.1",
