@@ -373,7 +373,6 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             "runtime-current",
             b"STALE-CONTROL",
             "stale-test",
-            None,
             true,
         )
         .is_none());

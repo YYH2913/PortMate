@@ -378,3 +378,49 @@ fn modem_byte_wait_fails_when_session_starts_reconnecting() {
         let _ = fs::remove_dir_all(root);
     });
 }
+
+#[test]
+fn modem_reader_drains_queued_bytes_before_observing_disconnect() {
+    tauri::async_runtime::block_on(async {
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: 9,
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root =
+            std::env::temp_dir().join(format!("portmate-modem-final-byte-{}", Uuid::new_v4()));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .open_session(&profile.id)
+            .unwrap();
+        let (tap, receiver) = broadcast::channel(8);
+        let mut reader = ModemByteReader::new(receiver, Arc::new(AtomicBool::new(false)))
+            .watch_connection(Arc::clone(&state.store), profile.id.clone());
+        tap.send(vec![MODEM_ACK]).unwrap();
+        state
+            .store
+            .lock()
+            .unwrap()
+            .set_runtime_status_with_reason(
+                &profile.id,
+                SessionStatus::Disconnected,
+                Some("peer closed after final ACK".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            reader.next_byte(Duration::from_millis(50)).await.unwrap(),
+            MODEM_ACK
+        );
+        let error = reader
+            .next_byte(Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(error.contains("modem session disconnected"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    });
+}

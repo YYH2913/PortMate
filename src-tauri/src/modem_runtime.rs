@@ -91,13 +91,8 @@ impl ModemRuntimeBinding {
         bytes: &[u8],
     ) -> Result<(), String> {
         self.ensure_current()?;
-        write_runtime_bytes_for_runtime(
-            state,
-            &self.session_id,
-            bytes,
-            Some(&self.runtime_id),
-        )
-        .await
+        write_runtime_bytes_for_runtime(state, &self.session_id, bytes, Some(&self.runtime_id))
+            .await
     }
 }
 
@@ -144,12 +139,7 @@ impl ModemConnectionWatch {
         if let (Some(runtimes), Some(runtime_id), Some(runtime_kind)) =
             (&self.runtimes, &self.runtime_id, self.runtime_kind)
         {
-            ensure_modem_runtime_current(
-                runtimes,
-                &self.session_id,
-                runtime_id,
-                runtime_kind,
-            )?;
+            ensure_modem_runtime_current(runtimes, &self.session_id, runtime_id, runtime_kind)?;
         }
         Ok(())
     }
@@ -203,8 +193,7 @@ pub(super) fn runtime_modem_binding(
             )
         });
     }
-    let target = target
-        .ok_or_else(|| "需要先连接会话才能执行 X/Y/ZModem 传输".to_string())?;
+    let target = target.ok_or_else(|| "需要先连接会话才能执行 X/Y/ZModem 传输".to_string())?;
     if target.3 {
         return Err("Modem 来源连接已关闭或正在重连".to_string());
     }
@@ -230,7 +219,6 @@ pub(super) async fn transfer_modem_binding(
     session_id: &str,
     progress: &TransferProgressContext,
 ) -> Result<ModemRuntimeBinding, String> {
-    progress.check_cancelled()?;
     let binding = runtime_modem_binding(state, session_id)?;
     let cancellation = state
         .transfer_cancellations
@@ -343,9 +331,8 @@ impl ModemByteReader {
             receiver,
             marker,
             cancel,
-            connection.map(|(store, session_id)| {
-                ModemConnectionWatch::store_only(store, session_id)
-            }),
+            connection
+                .map(|(store, session_id)| ModemConnectionWatch::store_only(store, session_id)),
         )
         .await
     }
@@ -356,13 +343,7 @@ impl ModemByteReader {
         cancel: Arc<AtomicBool>,
         binding: &ModemRuntimeBinding,
     ) -> Result<Self, String> {
-        Self::after_marker_with_watch(
-            receiver,
-            marker,
-            cancel,
-            Some(binding.watch.clone()),
-        )
-        .await
+        Self::after_marker_with_watch(receiver, marker, cancel, Some(binding.watch.clone())).await
     }
 
     async fn after_marker_with_watch(
@@ -378,39 +359,52 @@ impl ModemByteReader {
             if cancel.load(Ordering::SeqCst) {
                 return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
             }
-            if let Some(connection) = &connection {
-                connection.ensure_current()?;
-            }
             let remaining = REMOTE_MODEM_READY_TIMEOUT.saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err("remote modem readiness marker timed out".to_string());
             }
-            match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv())
-                .await
-            {
-                Ok(Ok(bytes)) => {
-                    buffered.extend_from_slice(&bytes);
-                    if let Some(offset) = buffered
-                        .windows(marker.len())
-                        .position(|window| window == marker)
-                    {
-                        return Ok(Self {
-                            receiver,
-                            pending: buffered[offset + marker.len()..].iter().copied().collect(),
-                            cancel,
-                            connection,
-                        });
-                    }
-                    if buffered.len() > 64 * 1024 {
-                        let keep = marker.len().saturating_sub(1);
-                        buffered.drain(..buffered.len().saturating_sub(keep));
-                    }
-                }
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(broadcast::error::RecvError::Closed)) => {
+            let bytes = match receiver.try_recv() {
+                Ok(bytes) => Some(bytes),
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => {
                     return Err("remote modem readiness stream closed".to_string())
                 }
-                Err(_) => {}
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    if let Some(connection) = &connection {
+                        connection.ensure_current()?;
+                    }
+                    match tokio::time::timeout(
+                        remaining.min(MODEM_CANCEL_POLL_INTERVAL),
+                        receiver.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(bytes)) => Some(bytes),
+                        Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                        Ok(Err(broadcast::error::RecvError::Closed)) => {
+                            return Err("remote modem readiness stream closed".to_string())
+                        }
+                        Err(_) => None,
+                    }
+                }
+            };
+            if let Some(bytes) = bytes {
+                buffered.extend_from_slice(&bytes);
+                if let Some(offset) = buffered
+                    .windows(marker.len())
+                    .position(|window| window == marker)
+                {
+                    return Ok(Self {
+                        receiver,
+                        pending: buffered[offset + marker.len()..].iter().copied().collect(),
+                        cancel,
+                        connection,
+                    });
+                }
+                if buffered.len() > 64 * 1024 {
+                    let keep = marker.len().saturating_sub(1);
+                    buffered.drain(..buffered.len().saturating_sub(keep));
+                }
             }
         }
     }
@@ -418,10 +412,25 @@ impl ModemByteReader {
     pub(super) async fn next_byte(&mut self, timeout: Duration) -> Result<u8, String> {
         let started = Instant::now();
         loop {
-            self.check_interrupted()?;
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
             if let Some(byte) = self.pending.pop_front() {
                 return Ok(byte);
             }
+            match self.receiver.try_recv() {
+                Ok(bytes) => {
+                    self.pending.extend(bytes);
+                    continue;
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    self.check_interrupted()?;
+                    return Err("modem byte stream closed".to_string());
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {}
+            }
+            self.check_interrupted()?;
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err("modem byte timeout".to_string());
@@ -459,14 +468,28 @@ impl ModemByteReader {
         timeout: Duration,
         max_len: usize,
     ) -> Result<Vec<u8>, String> {
-        self.check_interrupted()?;
-        if !self.pending.is_empty() {
-            let take = self.pending.len().min(max_len);
-            return Ok(self.pending.drain(..take).collect());
-        }
-
         let started = Instant::now();
         loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+            }
+            if !self.pending.is_empty() {
+                let take = self.pending.len().min(max_len);
+                return Ok(self.pending.drain(..take).collect());
+            }
+            match self.receiver.try_recv() {
+                Ok(bytes) if bytes.len() <= max_len => return Ok(bytes),
+                Ok(bytes) => {
+                    self.pending.extend(bytes[max_len..].iter().copied());
+                    return Ok(bytes[..max_len].to_vec());
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    self.check_interrupted()?;
+                    return Err("modem byte stream closed".to_string());
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {}
+            }
             self.check_interrupted()?;
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {

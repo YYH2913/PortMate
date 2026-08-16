@@ -648,6 +648,8 @@ Reader 产生的非字节事件也已绑定来源 runtime：SSH exit status/sign
 
 TCP/Telnet、Serial 和 Shell reader 的结束状态现使用统一的 `runtime registry -> Store` generation guard：重连/断开决策、状态、原因、system event 和持久化完成前 replacement 无法插入，之后清空串口 writer、移除 runtime 或启动重连时仍按精确 runtime ID 复核。旧 reader 不再能在新连接安装后把 Store 覆盖为 `Disconnected`/`Reconnecting`，Store 锁失败时也只清理仍由它拥有的 runtime。并发回归同时证明提交期间 registry 与 Store 均被 guard 持有；runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered、显式 transport 模块 Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+Modem 协议 tap 和 outbound control/capture 现同样通过精确 runtime generation 验收：SSH/Shell/TCP/Serial 的旧 reader 不再向旧 Modem worker 发布 replacement 后的残留字节，旧 Modem writer 也不会把 control event 或串口 outbound frame 记到新连接。已通过 generation 验收并排队的末尾 ACK/marker 会先于随后到达的断线状态被协议 reader 消费，修复 TCP 对端发送 EOT ACK 后立即关闭时传输误报失败；取消发生在任务进入 Running 与绑定 runtime 之间时也会可靠发送 CAN。新增末尾 ACK、取消竞态及 stale/current outbound capture 回归；Modem 相关 22 项并连续重复关键 runtime 3 轮，完整主应用 479 passed/1 ignored/1 filtered、release-source 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

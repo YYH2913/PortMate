@@ -97,10 +97,10 @@ fn serial_capture_and_event_reject_stale_runtime_input_together() {
         "current".to_string(),
         || record_serial_capture(&capture, EventDirection::Inbound, b"current"),
     );
-    let capture = capture.lock().unwrap();
-    assert_eq!(capture.frames.len(), 1);
-    assert_eq!(capture.frames[0].bytes, b"current");
-    drop(capture);
+    let capture_guard = capture.lock().unwrap();
+    assert_eq!(capture_guard.frames.len(), 1);
+    assert_eq!(capture_guard.frames[0].bytes, b"current");
+    drop(capture_guard);
     assert!(state
         .store
         .lock()
@@ -108,6 +108,50 @@ fn serial_capture_and_event_reject_stale_runtime_input_together() {
         .events
         .iter()
         .any(|event| event.text.as_deref() == Some("current")));
+
+    assert!(
+        record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+            &io,
+            &profile.id,
+            Some("serial-stale"),
+            b"stale-outbound",
+            "modem-test-stale",
+            false,
+            || record_serial_capture(&capture, EventDirection::Outbound, b"stale-outbound"),
+        )
+        .is_none()
+    );
+    assert_eq!(capture.lock().unwrap().frames.len(), 1);
+    assert!(!state.store.lock().unwrap().events.iter().any(|event| {
+        event
+            .annotations
+            .get("origin")
+            .is_some_and(|origin| origin == "modem-test-stale")
+    }));
+
+    assert!(
+        record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+            &io,
+            &profile.id,
+            Some("serial-current"),
+            b"current-outbound",
+            "modem-test-current",
+            false,
+            || record_serial_capture(&capture, EventDirection::Outbound, b"current-outbound"),
+        )
+        .is_some()
+    );
+    let capture_guard = capture.lock().unwrap();
+    assert_eq!(capture_guard.frames.len(), 2);
+    assert_eq!(capture_guard.frames[1].bytes, b"current-outbound");
+    assert_eq!(capture_guard.frames[1].direction, EventDirection::Outbound);
+    drop(capture_guard);
+    assert!(state.store.lock().unwrap().events.iter().any(|event| {
+        event
+            .annotations
+            .get("origin")
+            .is_some_and(|origin| origin == "modem-test-current")
+    }));
 
     state.serial.lock().unwrap().remove(&profile.id);
     let _ = fs::remove_dir_all(root);

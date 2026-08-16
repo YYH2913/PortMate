@@ -145,15 +145,8 @@ pub(super) async fn run_command_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
-    run_command_inner_with_annotations(
-        io,
-        session_id,
-        text,
-        actor,
-        audit_action,
-        BTreeMap::new(),
-    )
-    .await
+    run_command_inner_with_annotations(io, session_id, text, actor, audit_action, BTreeMap::new())
+        .await
 }
 
 pub(super) async fn run_command_inner_with_annotations(
@@ -479,32 +472,60 @@ pub(super) fn record_outbound_control_event_for_runtime(
     runtime_id: &str,
     wire_bytes: &[u8],
     origin: &str,
-    related_event_id: Option<&str>,
     persist_store: bool,
 ) -> Option<SessionEvent> {
-    match with_current_session_runtime_generation(
-        &io.runtimes,
+    record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+        io,
         session_id,
-        runtime_id,
-        || {
-            record_outbound_control_event(
-                io,
-                session_id,
-                wire_bytes,
-                origin,
-                related_event_id,
-                persist_store,
-            )
+        Some(runtime_id),
+        wire_bytes,
+        origin,
+        persist_store,
+        || {},
+    )
+}
+
+pub(super) fn record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: Option<&str>,
+    wire_bytes: &[u8],
+    origin: &str,
+    persist_store: bool,
+    accepted_side_effect: impl FnOnce(),
+) -> Option<SessionEvent> {
+    let accepted = match runtime_id {
+        Some(runtime_id) => match with_current_session_runtime_generation(
+            &io.runtimes,
+            session_id,
+            runtime_id,
+            accepted_side_effect,
+        ) {
+            Ok(Some(())) => true,
+            Ok(None) => false,
+            Err(error) => {
+                eprintln!(
+                    "PortMate: runtime registry unavailable; dropping outbound control event for {session_id}: {error}"
+                );
+                false
+            }
         },
-    ) {
-        Ok(event) => event,
-        Err(error) => {
-            eprintln!(
-                "PortMate: runtime registry unavailable; dropping outbound control event for {session_id}: {error}"
-            );
-            None
+        None => {
+            accepted_side_effect();
+            true
         }
+    };
+    if !accepted {
+        return None;
     }
+    Some(record_outbound_control_event(
+        io,
+        session_id,
+        wire_bytes,
+        origin,
+        None,
+        persist_store,
+    ))
 }
 
 fn fallback_outbound_control_event(

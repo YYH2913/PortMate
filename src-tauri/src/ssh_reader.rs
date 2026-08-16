@@ -62,33 +62,37 @@ pub(super) fn read_ssh_channel(
             }
             match message {
                 SshBackendMessage::Data(bytes) => {
-                    let _ = tap.send(bytes.clone());
-                    record_channel_bytes(
+                    let accepted = record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
+                        || {
+                            let _ = tap.send(bytes.clone());
+                        },
                     );
-                    has_unpersisted_stream = true;
+                    has_unpersisted_stream |= accepted;
                 }
                 SshBackendMessage::ExtendedData { data: bytes, ext } => {
-                    let _ = tap.send(bytes.clone());
                     let stream = if ext == 1 {
                         EventStream::Stderr
                     } else {
                         EventStream::Stdout
                     };
-                    record_channel_bytes(
+                    let accepted = record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
                         stream,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
+                        || {
+                            let _ = tap.send(bytes.clone());
+                        },
                     );
-                    has_unpersisted_stream = true;
+                    has_unpersisted_stream |= accepted;
                 }
                 SshBackendMessage::ExitStatus(exit_status) => {
                     record_runtime_system_event(

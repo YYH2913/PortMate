@@ -278,16 +278,18 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 }
                 Ok(size) => {
                     let bytes = buffer[..size].to_vec();
-                    let _ = tap.send(bytes.clone());
-                    record_channel_bytes(
+                    let accepted = record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
+                        || {
+                            let _ = tap.send(bytes.clone());
+                        },
                     );
-                    has_unpersisted_stream = true;
+                    has_unpersisted_stream |= accepted;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => {

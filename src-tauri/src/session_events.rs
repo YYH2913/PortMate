@@ -27,6 +27,7 @@ pub(super) fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) 
     }
 }
 
+#[cfg(test)]
 pub(super) fn record_channel_bytes(
     io: &SessionIo,
     session_id: &str,
@@ -54,11 +55,11 @@ pub(super) fn record_channel_bytes_with_accepted_side_effect(
     raw_bytes: &[u8],
     text: String,
     accepted_side_effect: impl FnOnce(),
-) {
+) -> bool {
     let Some(source_runtime_id) = source_runtime_id else {
         accepted_side_effect();
         record_accepted_channel_bytes(io, session_id, None, stream, raw_bytes, text);
-        return;
+        return true;
     };
     match with_current_session_runtime_generation(
         &io.runtimes,
@@ -76,11 +77,13 @@ pub(super) fn record_channel_bytes_with_accepted_side_effect(
             );
         },
     ) {
-        Ok(Some(())) | Ok(None) => {}
+        Ok(Some(())) => true,
+        Ok(None) => false,
         Err(error) => {
             eprintln!(
                 "PortMate: runtime registry unavailable; dropping channel bytes for {session_id}: {error}"
             );
+            false
         }
     }
 }

@@ -162,16 +162,21 @@ pub(super) fn read_tcp_stream(
                     } else {
                         (buffer[..size].to_vec(), Vec::new())
                     };
-                    record_channel_bytes(
+                    let has_protocol_bytes = !bytes.is_empty();
+                    let accepted = record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
                         &buffer[..size],
                         String::from_utf8_lossy(&bytes).to_string(),
+                        || {
+                            if has_protocol_bytes {
+                                let _ = tap.send(bytes.clone());
+                            }
+                        },
                     );
-                    if !bytes.is_empty() {
-                        let _ = tap.send(bytes.clone());
+                    if accepted && has_protocol_bytes {
                         has_unpersisted_stream = true;
                     }
                     for reply in replies {
@@ -198,7 +203,6 @@ pub(super) fn read_tcp_stream(
                             &runtime_id,
                             &reply,
                             "telnet-negotiation",
-                            None,
                             true,
                         );
                     }
@@ -232,16 +236,18 @@ pub(super) fn read_tcp_stream(
         if let Some(negotiator) = telnet.as_mut() {
             let bytes = negotiator.finish();
             if !bytes.is_empty() {
-                let _ = tap.send(bytes.clone());
-                record_channel_bytes(
+                let accepted = record_channel_bytes_with_accepted_side_effect(
                     &io,
                     &session_id,
                     Some(&runtime_id),
                     EventStream::Stdout,
                     &[],
                     String::from_utf8_lossy(&bytes).to_string(),
+                    || {
+                        let _ = tap.send(bytes.clone());
+                    },
                 );
-                has_unpersisted_stream = true;
+                has_unpersisted_stream |= accepted;
             }
         }
 

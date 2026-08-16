@@ -225,7 +225,15 @@ pub(super) async fn write_runtime_bytes_for_runtime(
             .data(wire_bytes.as_slice())
             .await
             .map_err(|error| format!("SSH modem 写入失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
+        record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+            &io,
+            session_id,
+            expected_runtime_id,
+            &wire_bytes,
+            "modem",
+            false,
+            || {},
+        );
         return Ok(());
     }
 
@@ -246,7 +254,15 @@ pub(super) async fn write_runtime_bytes_for_runtime(
         writer
             .flush()
             .map_err(|error| format!("Shell modem 刷新失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
+        record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+            &io,
+            session_id,
+            expected_runtime_id,
+            &wire_bytes,
+            "modem",
+            false,
+            || {},
+        );
         return Ok(());
     }
 
@@ -265,7 +281,15 @@ pub(super) async fn write_runtime_bytes_for_runtime(
             .write_all(&wire_bytes)
             .await
             .map_err(|error| format!("TCP/Telnet modem 写入失败: {error}"))?;
-        record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
+        record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+            &io,
+            session_id,
+            expected_runtime_id,
+            &wire_bytes,
+            "modem",
+            false,
+            || {},
+        );
         return Ok(());
     }
 
@@ -292,8 +316,15 @@ pub(super) async fn write_runtime_bytes_for_runtime(
             writer
                 .flush()
                 .map_err(|error| format!("串口 modem 刷新失败: {error}"))?;
-            record_serial_capture(&capture, EventDirection::Outbound, &wire_bytes);
-            record_outbound_control_event(&io, session_id, &wire_bytes, "modem", None, false);
+            record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
+                &io,
+                session_id,
+                expected_runtime_id,
+                &wire_bytes,
+                "modem",
+                false,
+                || record_serial_capture(&capture, EventDirection::Outbound, &wire_bytes),
+            );
             return Ok(());
         }
         Some((None, _)) => return Err("串口正在重连，无法执行 modem 写入".to_string()),
