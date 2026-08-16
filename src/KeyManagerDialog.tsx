@@ -137,7 +137,7 @@ export default function KeyManagerDialog({
   credentialOperationBusy: boolean;
   credentialSyncRevision: number;
   onCredentialOperationStart: () => number | null;
-  onCredentialOperationFinish: (token: number) => void;
+  onCredentialOperationFinish: (token: number, changed?: boolean) => void;
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
@@ -191,6 +191,7 @@ export default function KeyManagerDialog({
   const [migrationRecoveryWarnings, setMigrationRecoveryWarnings] = useState<string[]>([]);
   const [migrationDiagnosticBusy, setMigrationDiagnosticBusy] = useState(false);
   const [migrationDiagnosticResult, setMigrationDiagnosticResult] = useState<ProfileSecretMigrationDiagnosticExportResult | null>(null);
+  const migrationPreviewOperationTokenRef = useRef<number | null>(null);
   const [keyScopeFilter, setKeyScopeFilter] = useState<TrustedHostKey["scope"] | "all">("all");
   const [keyProfileFilter, setKeyProfileFilter] = useState("all");
   const [selectedHostKeyIds, setSelectedHostKeyIds] = useState<string[]>([]);
@@ -238,6 +239,7 @@ export default function KeyManagerDialog({
     ? clientIdentityItems.filter((item) => item.identity.secretRef === editingClientIdentityItem.identity.secretRef).length
     : 0;
   const selectedAgentKeys = agentKeys.filter((identity) => selectedAgentKeyIds.includes(identityStableKey(identity)));
+  const credentialProfilesKey = JSON.stringify(credentialSessions.map((session) => session.profile));
   const vaultOperationBusy = credentialOperationBusy || portableVaultBusy || migrationBusy !== null || migrationRecoveryBusy || migrationDiagnosticBusy;
   const credentialMutationsFrozen = migrationRecoveryChecking || Boolean(migrationRecovery) || Boolean(migrationRecoveryStatusError);
   const credentialMutationControlsDisabled = clientKeyMutationBusy || vaultOperationBusy || credentialMutationsFrozen;
@@ -278,11 +280,14 @@ export default function KeyManagerDialog({
     if (!sshSessions.some((session) => session.profile.id === profileId)) {
       setProfileId(sshSessions[0]?.profile.id ?? "");
     }
+  }, [profileId, sessions]);
+
+  useEffect(() => {
     if (migrationScopeProfileId !== "all" && !credentialSessions.some((session) => session.profile.id === migrationScopeProfileId)) {
       setMigrationScopeProfileId("all");
-      setMigrationPreviewState(null);
     }
-  }, [profileId, sessions, migrationScopeProfileId]);
+    invalidateMigrationState();
+  }, [credentialProfilesKey]);
 
   useEffect(() => {
     refreshGate.current.invalidate("host-scan");
@@ -319,7 +324,7 @@ export default function KeyManagerDialog({
   useEffect(() => {
     if (portableVault && !portableVault.unlocked) {
       clearPortableVaultRotation();
-      setMigrationPreviewState(null);
+      invalidateMigrationPreview();
     }
   }, [portableVault?.unlocked]);
 
@@ -329,8 +334,18 @@ export default function KeyManagerDialog({
     setPortableVaultConfirmPassword("");
   }
 
-  function invalidateMigrationState() {
+  function invalidateMigrationPreview() {
+    const operationToken = migrationPreviewOperationTokenRef.current;
+    if (operationToken !== null) {
+      migrationPreviewOperationTokenRef.current = null;
+      onCredentialOperationFinish(operationToken, false);
+    }
     setMigrationPreviewState(null);
+    setMigrationBusy((current) => current === "preview" ? null : current);
+  }
+
+  function invalidateMigrationState() {
+    invalidateMigrationPreview();
     setMigrationResult(null);
     setMigrationError("");
   }
@@ -522,24 +537,31 @@ export default function KeyManagerDialog({
 
   async function previewProfileSecretMigration() {
     if (!portableVault?.unlocked || migrationRequiresRestart || migrationRecovery || !isBackendAvailable()) return;
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
+    migrationPreviewOperationTokenRef.current = operationToken;
     setMigrationBusy("preview");
     setMigrationError("");
     setMigrationResult(null);
     try {
       const request = currentMigrationRequest();
       const preview = await invokeBackend<ProfileSecretMigrationPreview>("preview_profile_secret_migration", { request });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || migrationPreviewOperationTokenRef.current !== operationToken) return;
       setMigrationPreviewState({ request, preview });
       setMigrationRequiresRestart(false);
     } catch (error) {
-      if (mountedRef.current) {
+      if (mountedRef.current && migrationPreviewOperationTokenRef.current === operationToken) {
         const message = formatError(error);
         setMigrationPreviewState(null);
         setMigrationRequiresRestart(isProfileSecretMigrationRestartRequired(message));
         setMigrationError(profileSecretMigrationErrorMessage(message));
       }
     } finally {
-      if (mountedRef.current) setMigrationBusy(null);
+      if (migrationPreviewOperationTokenRef.current === operationToken) {
+        migrationPreviewOperationTokenRef.current = null;
+        onCredentialOperationFinish(operationToken, false);
+        if (mountedRef.current) setMigrationBusy(null);
+      }
     }
   }
 
@@ -660,6 +682,8 @@ export default function KeyManagerDialog({
 
   async function exportPendingProfileSecretMigrationDiagnostics() {
     if (migrationRecoveryChecking || (!migrationRecovery && !migrationRecoveryStatusError) || !isBackendAvailable()) return;
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
     setMigrationDiagnosticBusy(true);
     setMigrationDiagnosticResult(null);
     setMigrationRecoveryError("");
@@ -671,6 +695,7 @@ export default function KeyManagerDialog({
     } catch (error) {
       if (mountedRef.current) setMigrationRecoveryError(formatError(error));
     } finally {
+      onCredentialOperationFinish(operationToken, false);
       if (mountedRef.current) setMigrationDiagnosticBusy(false);
     }
   }
@@ -1689,7 +1714,7 @@ export default function KeyManagerDialog({
                         : <button type="button" onClick={() => void recoverPendingProfileSecretMigration()} disabled={migrationRecoveryChecking || !canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy || migrationRequiresRestart)}><RefreshCw size={14} />{migrationRecoveryBusy ? "核对中" : "核对并恢复"}</button>}
                   </>
                 ) : null}
-                {migrationRecovery || migrationRecoveryStatusError ? <button type="button" onClick={() => void exportPendingProfileSecretMigrationDiagnostics()} disabled={migrationRecoveryChecking || vaultOperationBusy}><FileText size={14} />{migrationDiagnosticBusy ? "导出中" : "导出诊断"}</button> : null}
+                {migrationRecovery || migrationRecoveryStatusError ? <button className="portable-vault-migration-diagnostic-button" type="button" onClick={() => void exportPendingProfileSecretMigrationDiagnostics()} disabled={migrationRecoveryChecking || vaultOperationBusy}><FileText size={14} />{migrationDiagnosticBusy ? "导出中" : "导出诊断"}</button> : null}
                 {migrationDiagnosticResult ? <p className="portable-vault-migration-diagnostic-result" title={migrationDiagnosticResult.path}>诊断已导出：{migrationDiagnosticResult.path} · {formatBytes(migrationDiagnosticResult.size)} · SHA-256 {migrationDiagnosticResult.sha256.slice(0, 16)}...</p> : null}
                 {migrationDiagnosticResult ? <button type="button" onClick={() => void navigator.clipboard?.writeText(`${migrationDiagnosticResult.path}\n${migrationDiagnosticResult.checksumPath}\nSHA-256 ${migrationDiagnosticResult.sha256}`).catch(() => {})}><Copy size={14} />复制导出信息</button> : null}
                 {migrationRecoveryWarnings.map((warning) => <p className="portable-vault-migration-recovery-warning" key={warning}>{warning}</p>)}

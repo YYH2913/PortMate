@@ -431,6 +431,11 @@ try {
     window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
+    window.__migrationRecovery = null;
+    window.__deferMigrationPreviews = false;
+    window.__pendingMigrationPreviews = [];
+    window.__deferMigrationDiagnostics = false;
+    window.__pendingMigrationDiagnostics = [];
     window.__mcpGrants = structuredClone(initialMcpGrants);
     window.__customScripts = structuredClone(initialCustomScripts);
     window.__customScriptSequence = 0;
@@ -1391,7 +1396,41 @@ try {
             },
           }));
         }
-        if (command === "get_profile_secret_migration_recovery") return null;
+        if (command === "get_profile_secret_migration_recovery") return structuredClone(window.__migrationRecovery);
+        if (command === "preview_profile_secret_migration") {
+          const result = {
+            planToken: `preview-${window.__invokeCalls.filter((call) => call.command === command).length}`,
+            targetStorage: args.request.targetStorage,
+            selectedProfileCount: args.request.profileIds.length,
+            affectedProfileCount: args.request.profileIds.length,
+            eligibleReferenceCount: args.request.profileIds.length,
+            eligibleSecretCount: args.request.profileIds.length,
+            retainedSharedSecretCount: 0,
+            retainedInFlightSecretCount: 0,
+            alreadyTargetReferenceCount: 0,
+            excludedReservedReferenceCount: 0,
+          };
+          if (!window.__deferMigrationPreviews) return structuredClone(result);
+          return new Promise((resolve) => window.__pendingMigrationPreviews.push({
+            args: structuredClone(args),
+            resolve: () => resolve(structuredClone(result)),
+          }));
+        }
+        if (command === "export_profile_secret_migration_diagnostics") {
+          const result = {
+            path: "/tmp/portmate-migration-diagnostic.json",
+            checksumPath: "/tmp/portmate-migration-diagnostic.json.sha256",
+            sha256: "a".repeat(64),
+            size: 512,
+            migrationId: window.__migrationRecovery?.migrationId ?? null,
+            journalValid: true,
+            warnings: [],
+          };
+          if (!window.__deferMigrationDiagnostics) return structuredClone(result);
+          return new Promise((resolve) => window.__pendingMigrationDiagnostics.push({
+            resolve: () => resolve(structuredClone(result)),
+          }));
+        }
         if (command === "import_known_hosts") {
           const [alias = `host-${window.__hostKeySequence + 1}`, algorithm = "ssh-ed25519", publicKeyBase64 = "AAAA"] = args.request.contents.trim().split(/\s+/);
           const id = `host-key-${++window.__hostKeySequence}`;
@@ -8138,6 +8177,104 @@ Host staging
   assert(privateKeyImportLifecycleErrors.length === 0,
     `private-key import lifecycle browser exceptions: ${JSON.stringify(privateKeyImportLifecycleErrors)}`);
   await privateKeyImportLifecyclePage.close();
+
+  const migrationOperationPage = await context.newPage();
+  const migrationOperationErrors = [];
+  migrationOperationPage.on("pageerror", (error) => migrationOperationErrors.push(error.message));
+  await migrationOperationPage.goto(appUrl);
+  await migrationOperationPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
+  await migrationOperationPage.getByRole("button", { name: "工具", exact: true }).click();
+  await migrationOperationPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const migrationManager = migrationOperationPage.locator(".key-dialog");
+  await migrationManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("migration test vault");
+  await migrationManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await migrationManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
+  await migrationManager.locator("details.portable-vault-migration").evaluate((details) => { details.open = true; });
+  const migrationPreviewButton = migrationManager.locator(".portable-vault-migration-preview-button");
+  const migrationPreviewBaseline = await migrationOperationPage.evaluate(() => {
+    window.__deferMigrationPreviews = true;
+    return window.__invokeCalls.filter((call) => call.command === "preview_profile_secret_migration").length;
+  });
+  await migrationPreviewButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await migrationOperationPage.waitForFunction(() => window.__pendingMigrationPreviews.length === 1);
+  const pendingMigrationPreviewState = await migrationOperationPage.evaluate((baseline) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "preview_profile_secret_migration").length - baseline,
+    pending: window.__pendingMigrationPreviews.length,
+    profileIds: window.__pendingMigrationPreviews[0]?.args.request.profileIds ?? [],
+  }), migrationPreviewBaseline);
+  assert(pendingMigrationPreviewState.calls === 1
+    && pendingMigrationPreviewState.pending === 1
+    && JSON.stringify(pendingMigrationPreviewState.profileIds) === JSON.stringify(["edge-router"])
+    && await migrationPreviewButton.isDisabled(),
+  `migration preview submitted duplicate reads: ${JSON.stringify(pendingMigrationPreviewState)}`);
+  await migrationOperationPage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "edge-router");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.connection.passwordSecretRef = "stronghold:concurrent-password";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await migrationManager.getByRole("button", { name: "锁定 portable vault", exact: true }).waitFor({ state: "visible" });
+  assert(await migrationManager.getByRole("button", { name: "锁定 portable vault", exact: true }).isEnabled(),
+    "a stale migration preview kept the credential operation gate locked after its Profile credentials changed");
+  await migrationOperationPage.evaluate(() => {
+    window.__pendingMigrationPreviews.shift().resolve();
+  });
+  await migrationOperationPage.waitForTimeout(100);
+  assert(await migrationManager.locator(".portable-vault-migration-preview").count() === 0,
+    "a late migration preview restored a plan for an obsolete Profile credential snapshot");
+
+  await migrationManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  await migrationManager.waitFor({ state: "detached" });
+  await migrationOperationPage.evaluate(() => {
+    const now = new Date().toISOString();
+    window.__migrationRecovery = {
+      migrationId: "89b35790-6b62-4ca1-a81f-678c30bf8428",
+      state: "source-cleanup-pending",
+      disposition: "committed",
+      targetStorage: "portable",
+      cleanupSource: true,
+      profileCount: 1,
+      secretCount: 1,
+      requiresPortableVaultUnlock: false,
+      canRecover: true,
+      message: "Pending source cleanup",
+      createdAt: now,
+      updatedAt: now,
+    };
+    window.__deferMigrationDiagnostics = true;
+  });
+  await migrationOperationPage.getByRole("button", { name: "工具", exact: true }).click();
+  await migrationOperationPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  const diagnosticManager = migrationOperationPage.locator(".key-dialog");
+  const diagnosticButton = diagnosticManager.locator(".portable-vault-migration-diagnostic-button");
+  await diagnosticButton.waitFor();
+  const diagnosticBaseline = await migrationOperationPage.evaluate(() => (
+    window.__invokeCalls.filter((call) => call.command === "export_profile_secret_migration_diagnostics").length
+  ));
+  await diagnosticButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await migrationOperationPage.waitForFunction(() => window.__pendingMigrationDiagnostics.length === 1);
+  const pendingDiagnosticState = await migrationOperationPage.evaluate((baseline) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "export_profile_secret_migration_diagnostics").length - baseline,
+    pending: window.__pendingMigrationDiagnostics.length,
+  }), diagnosticBaseline);
+  assert(pendingDiagnosticState.calls === 1
+    && pendingDiagnosticState.pending === 1
+    && await diagnosticButton.isDisabled(),
+  `migration diagnostics submitted duplicate exports: ${JSON.stringify(pendingDiagnosticState)}`);
+  await migrationOperationPage.evaluate(() => window.__pendingMigrationDiagnostics.shift().resolve());
+  await diagnosticManager.locator(".portable-vault-migration-diagnostic-result").waitFor();
+  assert((await diagnosticManager.locator(".portable-vault-migration-diagnostic-result").textContent()).includes("portmate-migration-diagnostic.json"),
+    "migration diagnostic result did not recover after the guarded export completed");
+  assert(migrationOperationErrors.length === 0,
+    `migration operation browser exceptions: ${JSON.stringify(migrationOperationErrors)}`);
+  await migrationOperationPage.close();
 
   const partialCredentialPage = await context.newPage();
   const partialCredentialErrors = [];

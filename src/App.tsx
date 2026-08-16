@@ -746,10 +746,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return token;
   }
 
-  function finishKeyManagerCredentialOperation(token: number) {
+  function finishKeyManagerCredentialOperation(token: number, changed = true) {
     if (!keyManagerCredentialOperationGateRef.current.finish("credentials", token)) return;
     setKeyManagerCredentialOperationToken((current) => current === token ? null : current);
-    setKeyManagerCredentialSyncRevision((current) => current + 1);
+    if (changed) setKeyManagerCredentialSyncRevision((current) => current + 1);
   }
 
   function updateOneKeys(next: OneKeySummary[]) {

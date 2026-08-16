@@ -178,6 +178,8 @@ macOS Telnet TLS 测试身份不再依赖 OpenSSL 3 的版本相关 PKCS#12 默�
 
 串口分析器窗口创建现按 session 使用同步 single-flight gate，并在异步动态加载后、原生窗口创建后、几何恢复结束且窗口显示前，以及创建 Promise 交接后连续复核当前 Profile 仍存在且仍为 Serial。Profile 在最长 8 秒创建期间被删除或改变协议时，隐藏子窗口会被补偿销毁；同帧重复点击只产生一次原生创建，不会留下只显示“会话不可用”的孤立窗口。补偿销毁失败会明确通知而不静默泄漏。窗口几何 helper 新增显示前所有权钩子，单测验证异步放置期间失效时不会调用 `show()`；Workspace UI 以延迟 `create_webview_window`、同帧双触发和 Profile 删除事件验证一次创建、一次销毁、零迟到提示。完整前端现为 114 文件/626 项，生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
 
+密钥管理器的凭据迁移预检和恢复诊断导出现接入 App 级凭据 single-flight gate；同帧重复点击只会产生一次 IPC，读取型操作完成时不会误增凭据变更 revision。迁移范围、Vault 锁定状态或任一受支持 Profile 配置/凭据引用变化会立即释放旧预检的 UI 所有权并清除计划，迟到响应不能恢复已删除 Profile 或旧 Secret 引用的计数。Workspace UI 以延迟预检、同帧双触发、等待期间并发更新同一 Profile 的密码引用和延迟诊断双触发验证一次调用、立即冻结、gate 释放及迟到结果隔离；完整前端 114 文件/626 项、生产构建和 Workspace UI 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
