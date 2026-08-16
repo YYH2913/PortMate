@@ -593,6 +593,201 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
 }
 
 #[test]
+fn stale_mcp_transfer_authorization_is_rejected_at_each_commit_point() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-transfer-commit-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let client_id = "stale-transfer-client";
+        let running = TransferTask {
+            id: "stale-transfer-running".to_string(),
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Xmodem,
+            source: root.join("running.bin").display().to_string(),
+            destination: "load:loadx".to_string(),
+            bytes_total: 100,
+            bytes_done: 1,
+            status: TransferStatus::Running,
+            message: Some("running".to_string()),
+            started_at: Some(Utc::now()),
+            finished_at: None,
+            average_bytes_per_second: None,
+        };
+        let failed = TransferTask {
+            id: "stale-transfer-failed".to_string(),
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Xmodem,
+            source: root.join("failed.bin").display().to_string(),
+            destination: "load:loadx".to_string(),
+            bytes_total: 100,
+            bytes_done: 1,
+            status: TransferStatus::Failed,
+            message: Some("failed".to_string()),
+            started_at: Some(Utc::now()),
+            finished_at: Some(Utc::now()),
+            average_bytes_per_second: None,
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut store = state.store.lock().unwrap();
+            store.record_transfer(running.clone());
+            store.record_transfer(failed.clone());
+            store.grants.push(McpGrant {
+                client_id: client_id.to_string(),
+                name: "Stale transfer client".to_string(),
+                scopes: vec![McpScope::Transfer],
+                allowed_sessions: vec![profile.id.clone()],
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            });
+        }
+        state.transfer_cancellations.lock().unwrap().insert(
+            running.id.clone(),
+            Arc::new(TransferCancellation::with_flag(Arc::clone(&cancelled))),
+        );
+
+        let upload_id = Uuid::new_v4().to_string();
+        let upload_dir = root
+            .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+            .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+            .join(&upload_id);
+        fs::create_dir_all(&upload_dir).unwrap();
+        let upload_payload = b"original resumable MCP upload";
+        let upload_metadata = McpContentUploadMetadata {
+            version: MCP_CONTENT_UPLOAD_METADATA_VERSION,
+            upload_id: upload_id.clone(),
+            client_id: client_id.to_string(),
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Xmodem,
+            file_name: "uploaded.bin".to_string(),
+            size_bytes: upload_payload.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(upload_payload)),
+            destination: "load:loadx".to_string(),
+            created_at_unix_seconds: 1,
+        };
+        fs::write(
+            upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE),
+            serde_json::to_vec(&upload_metadata).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE),
+            upload_payload,
+        )
+        .unwrap();
+
+        let execution = McpWriteExecutionContext::Generic;
+        let authorization =
+            McpWriteAuthorizationContext::new(McpScope::Transfer, profile.id.clone(), false);
+        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+
+        let requests = [
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: client_id.to_string(),
+                trusted_write: false,
+                command: "start_transfer".to_string(),
+                args: serde_json::json!({
+                    "sessionId": profile.id,
+                    "protocol": "xmodem",
+                    "source": root.join("direct.bin").display().to_string(),
+                    "destination": "load:loadx",
+                }),
+            },
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: client_id.to_string(),
+                trusted_write: false,
+                command: "start_content_transfer".to_string(),
+                args: serde_json::json!({
+                    "sessionId": profile.id,
+                    "protocol": "xmodem",
+                    "fileName": "inline.bin",
+                    "contentBase64": BASE64_STANDARD.encode(b"inline content must be rolled back"),
+                    "destination": "load:loadx",
+                }),
+            },
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: client_id.to_string(),
+                trusted_write: false,
+                command: "start_content_upload_transfer".to_string(),
+                args: serde_json::json!({ "uploadId": upload_id }),
+            },
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: client_id.to_string(),
+                trusted_write: false,
+                command: "cancel_transfer".to_string(),
+                args: serde_json::json!({ "transferId": running.id }),
+            },
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: client_id.to_string(),
+                trusted_write: false,
+                command: "retry_transfer".to_string(),
+                args: serde_json::json!({ "transferId": failed.id }),
+            },
+        ];
+        for request in requests {
+            let command = request.command.clone();
+            let error = execute_ipc_request_with_context(
+                state.clone(),
+                request,
+                &execution,
+                &authorization,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.contains("grant changed"),
+                "{command} returned an unexpected error: {error}"
+            );
+        }
+
+        assert!(!cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            state.transfer_task_slots.available_permits(),
+            MAX_ACTIVE_TRANSFER_TASKS
+        );
+        assert_eq!(state.transfer_cancellations.lock().unwrap().len(), 1);
+        assert!(state
+            .mcp_content_transfer_staging
+            .lock()
+            .unwrap()
+            .is_empty());
+        let store = state.store.lock().unwrap();
+        assert_eq!(store.transfers.len(), 2);
+        assert_eq!(
+            store.transfer_by_id(&running.id).unwrap().status,
+            TransferStatus::Running
+        );
+        assert_eq!(
+            store.transfer_by_id(&failed.id).unwrap().status,
+            TransferStatus::Failed
+        );
+        assert!(store.events.is_empty());
+        drop(store);
+
+        assert_eq!(
+            fs::read(upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE)).unwrap(),
+            upload_payload
+        );
+        assert!(upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE).is_file());
+        let non_upload_entries = fs::read_dir(root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() != MCP_CONTENT_UPLOADS_DIRECTORY)
+            .count();
+        assert_eq!(non_upload_entries, 0);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
     tauri::async_runtime::block_on(async {
         for (index, command) in [

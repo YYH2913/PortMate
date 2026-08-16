@@ -118,6 +118,46 @@ fn transfer_runner_saturation_rejects_before_queue_side_effects() {
 }
 
 #[test]
+fn transfer_commit_validation_failure_has_no_queue_side_effects() {
+    tauri::async_runtime::block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-transfer-validation-failure-{}",
+            Uuid::new_v4()
+        ));
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+
+        let error = start_transfer_inner_with_validation(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id,
+                protocol: TransferProtocol::Xmodem,
+                source: root.join("firmware.bin").display().to_string(),
+                destination: "load:loadx".to_string(),
+            },
+            Some(Box::new(|| Err("stale authorization".to_string()))),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, "stale authorization");
+        assert!(state.store.lock().unwrap().transfers.is_empty());
+        assert!(state.store.lock().unwrap().events.is_empty());
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+        assert!(state
+            .mcp_content_transfer_staging
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            state.transfer_task_slots.available_permits(),
+            MAX_ACTIVE_TRANSFER_TASKS
+        );
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn cancelling_queued_transfer_releases_runner_without_entering_lane() {
     tauri::async_runtime::block_on(async {
         let root = std::env::temp_dir().join(format!(

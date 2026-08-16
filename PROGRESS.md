@@ -658,6 +658,8 @@ MCP `stop_tunnel` 现把首次授权快照带入 tunnel lifecycle lane，并在�
 
 MCP `open_session` 现把首次授权快照带入 session lifecycle lane，并在取得 lane 后、写入 `Connecting`、启动本地进程或建立网络/串口连接前重新校验 grant。授权在排队期间被撤销、删除、缩小或到期时会 fail-closed；回归占住同一 session lane 后撤销 grant，确认 Shell runtime 未创建、会话保持 `Disconnected`、零连接事件、open slot 完整释放且最终审计为 `failed`。桌面和 OneKey 打开路径继续使用原生命周期行为；MCP 专项 47 passed/1 ignored、session 专项 48 项、完整主应用 485 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+MCP `start_transfer`、内联/分块内容传输、`cancel_transfer` 和 `retry_transfer` 现把首次授权快照带到 transfer 的实际提交点，在注册 cancellation/staging、写入 `Queued` 或修改既有任务前重新校验 grant。授权在内容解码、分块上传复制或其他预检期间被撤销、删除、缩小或到期时会 fail-closed；已复制的任务暂存会清理，原始 resumable upload 保留供重新授权后重试，runner permit 完整归还，既有运行/失败任务不被取消或重试。回归逐条覆盖五条命令并断言零新任务、零事件和零暂存泄漏；MCP 专项 48 passed/1 ignored、transfer 相关 54 项、完整主应用 487 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

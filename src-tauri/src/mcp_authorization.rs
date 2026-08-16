@@ -8,7 +8,7 @@ pub(super) struct McpWriteAuthorizationContext {
 }
 
 impl McpWriteAuthorizationContext {
-    fn new(scope: McpScope, session_id: String, trusted_bootstrap: bool) -> Self {
+    pub(super) fn new(scope: McpScope, session_id: String, trusted_bootstrap: bool) -> Self {
         Self {
             scope,
             session_id,

@@ -269,6 +269,17 @@ pub(crate) fn cancel_transfer_inner(
     state: &AppState,
     transfer_id: &str,
 ) -> Result<TransferTask, String> {
+    cancel_transfer_inner_with_validation(state, transfer_id, None)
+}
+
+pub(crate) fn cancel_transfer_inner_with_validation(
+    state: &AppState,
+    transfer_id: &str,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TransferTask, String> {
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     let cancel = state
         .transfer_cancellations
         .lock()

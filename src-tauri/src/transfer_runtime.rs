@@ -66,6 +66,14 @@ pub(super) async fn retry_transfer_inner(
     state: &AppState,
     transfer_id: &str,
 ) -> Result<TransferTask, String> {
+    retry_transfer_inner_with_validation(state, transfer_id, None).await
+}
+
+pub(super) async fn retry_transfer_inner_with_validation(
+    state: &AppState,
+    transfer_id: &str,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TransferTask, String> {
     let previous = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store
@@ -86,7 +94,7 @@ pub(super) async fn retry_transfer_inner(
                 .to_string(),
         );
     }
-    start_transfer_inner(
+    start_transfer_inner_with_validation(
         state,
         StartTransferRequest {
             session_id: previous.session_id,
@@ -94,6 +102,7 @@ pub(super) async fn retry_transfer_inner(
             source: previous.source,
             destination: previous.destination,
         },
+        commit_validation,
     )
     .await
 }
@@ -102,15 +111,24 @@ pub(super) async fn start_transfer_inner(
     state: &AppState,
     request: StartTransferRequest,
 ) -> Result<TransferTask, String> {
-    start_transfer_inner_with_context(state, request, None, None).await
+    start_transfer_inner_with_context(state, request, None, None, None).await
+}
+
+pub(super) async fn start_transfer_inner_with_validation(
+    state: &AppState,
+    request: StartTransferRequest,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TransferTask, String> {
+    start_transfer_inner_with_context(state, request, None, None, commit_validation).await
 }
 
 pub(super) async fn start_transfer_inner_with_staging(
     state: &AppState,
     request: StartTransferRequest,
     staging_path: Option<PathBuf>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<TransferTask, String> {
-    start_transfer_inner_with_context(state, request, staging_path, None).await
+    start_transfer_inner_with_context(state, request, staging_path, None, commit_validation).await
 }
 
 pub(super) async fn start_transfer_inner_for_ssh_runtime(
@@ -118,7 +136,14 @@ pub(super) async fn start_transfer_inner_for_ssh_runtime(
     request: StartTransferRequest,
     expected_ssh_runtime_id: &str,
 ) -> Result<TransferTask, String> {
-    start_transfer_inner_with_context(state, request, None, Some(expected_ssh_runtime_id)).await
+    start_transfer_inner_with_context(
+        state,
+        request,
+        None,
+        Some(expected_ssh_runtime_id),
+        None,
+    )
+    .await
 }
 
 async fn start_transfer_inner_with_context(
@@ -126,6 +151,7 @@ async fn start_transfer_inner_with_context(
     request: StartTransferRequest,
     staging_path: Option<PathBuf>,
     required_ssh_runtime_id: Option<&str>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<TransferTask, String> {
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -139,6 +165,9 @@ async fn start_transfer_inner_with_context(
     let task_permit = Arc::clone(&state.transfer_task_slots)
         .try_acquire_owned()
         .map_err(|_| format!("transfer runner limit reached ({MAX_ACTIVE_TRANSFER_TASKS})"))?;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
 
     let task = TransferTask {
         id: Uuid::new_v4().to_string(),

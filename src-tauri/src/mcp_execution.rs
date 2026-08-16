@@ -296,7 +296,14 @@ async fn execute_ipc_request_inner(
         "start_transfer" => {
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
-            let task = start_transfer_inner(&state, transfer).await?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let task =
+                start_transfer_inner_with_validation(&state, transfer, Some(validation)).await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "start_content_transfer" => {
@@ -304,6 +311,12 @@ async fn execute_ipc_request_inner(
                 request.args.clone(),
             )
             .map_err(|error| format!("invalid content transfer request: {error}"))?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
             let (source, staging_path) = stage_mcp_content_transfer(&state, &content_request)?;
             let transfer = StartTransferRequest {
                 session_id: content_request.session_id,
@@ -311,8 +324,13 @@ async fn execute_ipc_request_inner(
                 source,
                 destination: content_request.destination,
             };
-            match start_transfer_inner_with_staging(&state, transfer, Some(staging_path.clone()))
-                .await
+            match start_transfer_inner_with_staging(
+                &state,
+                transfer,
+                Some(staging_path.clone()),
+                Some(validation),
+            )
+            .await
             {
                 Ok(task) => serde_json::to_value(redact_transfer_task(task))
                     .map_err(|error| error.to_string()),
@@ -331,6 +349,12 @@ async fn execute_ipc_request_inner(
                 request.args.clone(),
             )
             .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
             let metadata = load_mcp_content_upload_metadata(
                 &state,
                 &request.client_id,
@@ -349,8 +373,13 @@ async fn execute_ipc_request_inner(
                 source,
                 destination: metadata.destination,
             };
-            match start_transfer_inner_with_staging(&state, transfer, Some(staging_path.clone()))
-                .await
+            match start_transfer_inner_with_staging(
+                &state,
+                transfer,
+                Some(staging_path.clone()),
+                Some(validation),
+            )
+            .await
             {
                 Ok(task) => serde_json::to_value(redact_transfer_task(task))
                     .map_err(|error| error.to_string()),
@@ -362,12 +391,30 @@ async fn execute_ipc_request_inner(
         }
         "cancel_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
-            let task = cancel_transfer_inner(&state, &transfer_id)?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let task =
+                cancel_transfer_inner_with_validation(&state, &transfer_id, Some(validation))?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
-            let task = retry_transfer_inner(&state, &transfer_id).await?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let task = retry_transfer_inner_with_validation(
+                &state,
+                &transfer_id,
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
