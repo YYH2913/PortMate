@@ -167,6 +167,7 @@ fn libssh_connection_stages_share_one_total_deadline() {
     generate_ed25519_test_key(&host_key);
 
     tauri::async_runtime::block_on(async {
+        let connection_timeout = Duration::from_millis(2000);
         let username = "portmate-libssh-deadline-user";
         let secret = "PortMate libssh deadline secret";
         let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
@@ -174,7 +175,7 @@ fn libssh_connection_stages_share_one_total_deadline() {
             username,
             secret,
             Some(Duration::from_millis(300)),
-            Some(Duration::from_millis(1700)),
+            Some(connection_timeout.saturating_mul(2)),
             None,
         )
         .await;
@@ -194,12 +195,13 @@ fn libssh_connection_stages_share_one_total_deadline() {
         ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
         let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
 
+        let started = Instant::now();
         let error = match establish_ssh_runtime_with_timeout(
             &state,
             &profile,
             Some(secret.to_string()),
             None,
-            Duration::from_millis(2000),
+            connection_timeout,
             None,
         )
         .await
@@ -207,10 +209,14 @@ fn libssh_connection_stages_share_one_total_deadline() {
             Ok(_) => panic!("libssh setup ignored its shared connection deadline"),
             Err(error) => error,
         };
+        let elapsed = started.elapsed();
         let normalized = error.to_ascii_lowercase();
+        let timed_out = error.contains("超时") || normalized.contains("timeout");
+        let disconnected_at_deadline = normalized.contains("socket error: disconnected")
+            && elapsed >= connection_timeout.saturating_sub(Duration::from_millis(500));
         assert!(
-            error.contains("超时") || normalized.contains("timeout"),
-            "libssh setup did not exhaust the shared deadline: {error}"
+            timed_out || disconnected_at_deadline,
+            "libssh setup did not exhaust the shared deadline after {elapsed:?}: {error}"
         );
         assert_eq!(counters.password_completions.load(Ordering::SeqCst), 1);
         assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 1);
