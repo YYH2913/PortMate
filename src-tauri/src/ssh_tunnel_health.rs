@@ -52,6 +52,8 @@ pub(super) async fn check_remote_tunnel_health(
     state: &AppState,
     tunnel_id: &str,
 ) -> Result<RemoteTunnelHealth, String> {
+    let lifecycle_lane = tunnel_lifecycle_lane(state, tunnel_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
     let runtime = {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
         tunnels
@@ -67,6 +69,7 @@ pub(super) async fn check_remote_tunnel_health(
     }
 
     let result = probe_remote_tunnel_health(state, &runtime).await;
+    ensure_tunnel_runtime_current(state, tunnel_id, &runtime)?;
     match &result {
         Ok(RemoteTunnelHealth::Healthy) => {
             if runtime
@@ -103,11 +106,32 @@ pub(super) async fn check_remote_tunnel_health(
     result
 }
 
+pub(super) fn ensure_tunnel_runtime_current(
+    state: &AppState,
+    tunnel_id: &str,
+    expected: &TunnelRuntime,
+) -> Result<(), String> {
+    let owner = expected.owner();
+    let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+    if tunnels.get(tunnel_id).is_some_and(|runtime| {
+        owner.owns(runtime) && !runtime.closed.load(Ordering::SeqCst)
+    }) {
+        Ok(())
+    } else {
+        Err(format!(
+            "tunnel runtime changed during health check: {tunnel_id}"
+        ))
+    }
+}
+
 pub(super) async fn probe_remote_tunnel_health(
     state: &AppState,
     runtime: &TunnelRuntime,
 ) -> Result<RemoteTunnelHealth, String> {
     let _auxiliary_slot = acquire_ssh_auxiliary_slot(state)?;
+    if runtime.closed.load(Ordering::SeqCst) {
+        return Err("tunnel closed before listener probe".to_string());
+    }
     let (handle, remote_forwards) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -164,6 +188,9 @@ pub(super) async fn probe_remote_tunnel_health(
     } else {
         probe
     };
+    if runtime.closed.load(Ordering::SeqCst) {
+        return Err("tunnel closed during listener probe".to_string());
+    }
     match probe {
         RemoteListenerProbe::Listening => Ok(if routing_restored {
             RemoteTunnelHealth::Restored
@@ -195,6 +222,9 @@ pub(super) async fn probe_remote_tunnel_health(
                     "listener restore returned unexpected port {returned_port} for {}",
                     runtime.spec.bind_port
                 ));
+            }
+            if runtime.closed.load(Ordering::SeqCst) {
+                return Err("tunnel closed during listener restore".to_string());
             }
             Ok(RemoteTunnelHealth::Restored)
         }

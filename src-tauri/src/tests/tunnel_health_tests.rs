@@ -146,3 +146,50 @@ fn remote_tunnel_health_recovery_preserves_non_health_errors() {
         Some("remote tunnel target connect failed")
     );
 }
+
+#[test]
+fn tunnel_health_rejects_a_superseding_generation_on_the_same_ssh_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = test_ssh_profile();
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let spec = TunnelSpec {
+        id: "health-generation".to_string(),
+        label: "health generation".to_string(),
+        mode: TunnelMode::Remote,
+        bind_host: "127.0.0.1".to_string(),
+        bind_port: 10_022,
+        target_host: "127.0.0.1".to_string(),
+        target_port: 22,
+        route_rules: Vec::new(),
+        enabled: true,
+    };
+    let expected = TunnelRuntime {
+        session_id: profile.id.clone(),
+        ssh_runtime_id: "shared-ssh-runtime".to_string(),
+        spec: spec.clone(),
+        metrics: Arc::new(TunnelMetrics::default()),
+        closed: Arc::new(AtomicBool::new(false)),
+        listener_worker: TunnelListenerWorker::completed(),
+    };
+    state
+        .tunnels
+        .lock()
+        .unwrap()
+        .insert(spec.id.clone(), expected.clone());
+    ensure_tunnel_runtime_current(&state, &spec.id, &expected).unwrap();
+
+    state.tunnels.lock().unwrap().insert(
+        spec.id.clone(),
+        TunnelRuntime {
+            session_id: profile.id,
+            ssh_runtime_id: "shared-ssh-runtime".to_string(),
+            spec: spec.clone(),
+            metrics: Arc::new(TunnelMetrics::default()),
+            closed: Arc::new(AtomicBool::new(false)),
+            listener_worker: TunnelListenerWorker::completed(),
+        },
+    );
+
+    let error = ensure_tunnel_runtime_current(&state, &spec.id, &expected).unwrap_err();
+    assert!(error.contains("changed during health check"), "{error}");
+}

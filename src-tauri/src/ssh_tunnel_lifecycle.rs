@@ -1,5 +1,34 @@
 use super::*;
 
+type TunnelLifecycleLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
+
+static TUNNEL_LIFECYCLE_LANES: OnceLock<TunnelLifecycleLanes> = OnceLock::new();
+
+pub(super) fn tunnel_lifecycle_lane(
+    state: &AppState,
+    tunnel_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    tunnel_lifecycle_lane_for_path(&state.store_path, tunnel_id)
+}
+
+pub(super) fn tunnel_lifecycle_lane_for_path(
+    store_path: &Path,
+    tunnel_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let key = (store_path.to_path_buf(), tunnel_id.to_string());
+    let mut lanes = TUNNEL_LIFECYCLE_LANES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "tunnel lifecycle lane registry poisoned".to_string())?;
+    lanes.retain(|_, lane| lane.strong_count() > 0);
+    if let Some(lane) = lanes.get(&key).and_then(Weak::upgrade) {
+        return Ok(lane);
+    }
+    let lane = Arc::new(tokio::sync::Mutex::new(()));
+    lanes.insert(key, Arc::downgrade(&lane));
+    Ok(lane)
+}
+
 pub(super) fn list_tunnels_inner(
     state: &AppState,
     session_id: Option<&str>,
@@ -28,10 +57,10 @@ pub(super) fn list_tunnels_inner(
 pub(super) fn fail_tunnel_runtime_if_owned(
     tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     tunnel_id: &str,
-    ssh_runtime_id: &str,
+    owner: &TunnelRuntimeOwner,
     error: &str,
 ) -> Result<Option<TunnelRuntime>, String> {
-    let runtime = remove_tunnel_runtime_if_owned(tunnels, tunnel_id, ssh_runtime_id)?;
+    let runtime = remove_tunnel_runtime_if_owned(tunnels, tunnel_id, owner)?;
     if let Some(runtime) = &runtime {
         runtime.metrics.record_error(error);
         runtime.request_shutdown();
@@ -42,14 +71,14 @@ pub(super) fn fail_tunnel_runtime_if_owned(
 pub(super) fn remove_tunnel_runtime_if_owned(
     tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     tunnel_id: &str,
-    ssh_runtime_id: &str,
+    owner: &TunnelRuntimeOwner,
 ) -> Result<Option<TunnelRuntime>, String> {
     let mut tunnels = tunnels
         .lock()
         .map_err(|lock_error| lock_error.to_string())?;
     if tunnels
         .get(tunnel_id)
-        .is_none_or(|runtime| runtime.ssh_runtime_id != ssh_runtime_id)
+        .is_none_or(|runtime| !owner.owns(runtime))
     {
         return Ok(None);
     }
@@ -103,15 +132,17 @@ pub(super) async fn stop_tunnel_inner(
     state: &AppState,
     tunnel_id: &str,
 ) -> Result<TunnelStatus, String> {
-    let expected_runtime_id = {
+    let lifecycle_lane = tunnel_lifecycle_lane(state, tunnel_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    let expected_owner = {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
         tunnels
             .get(tunnel_id)
-            .map(|runtime| runtime.ssh_runtime_id.clone())
+            .map(TunnelRuntime::owner)
             .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?
     };
     let (runtime, warnings) =
-        stop_tunnel_runtime_effects(state, tunnel_id, &expected_runtime_id).await?;
+        stop_tunnel_runtime_effects(state, tunnel_id, &expected_owner).await?;
 
     let mut stopped = runtime.spec.clone();
     stopped.enabled = false;
@@ -138,9 +169,9 @@ pub(super) async fn stop_tunnel_inner(
 pub(super) async fn stop_tunnel_runtime_effects(
     state: &AppState,
     tunnel_id: &str,
-    ssh_runtime_id: &str,
+    owner: &TunnelRuntimeOwner,
 ) -> Result<(TunnelRuntime, Vec<String>), String> {
-    let runtime = remove_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, ssh_runtime_id)?
+    let runtime = remove_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, owner)?
         .ok_or_else(|| format!("tunnel runtime was superseded: {tunnel_id}"))?;
     runtime.request_shutdown();
     let mut warnings = Vec::new();

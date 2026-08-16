@@ -636,6 +636,8 @@ Tmux 查询、mutation 和 pane sync 现绑定取得辅助 SSH handle 时的精�
 
 远端文件命令和 SFTP/SCP 传输现绑定精确 SSH runtime：辅助 lease 保存 session/runtime 身份，文件列表、属性、创建、删除、移动、重命名、chmod、外部拖放和双栏批次均在操作前后复核当前 Connected runtime，重连换代后不再把旧设备结果显示为当前结果。批次规划取得的 runtime 会约束每个子传输，普通队列在入队或实际开跑时绑定 runtime；等待期间换代会在远端 I/O 前失败，传输完成状态则在同一 SSH registry + Store 锁边界复核并提交，不能把旧连接结果记为新连接上的 Completed。新增无副作用拒绝、旧 lease 失效和完成提交回归，完整主应用 473 passed/1 ignored/1 filtered（含真实 OpenSSH SFTP/SCP/断线恢复综合回归）、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+Tunnel start、stop、重连恢复和远端 health 现按 Store+tunnel ID 共用异步 lifecycle lane，服务端 remote-forward 的创建、取消和缺失监听恢复不会再与同 ID 重建交错。每个 Tunnel runtime 另以 SSH runtime ID 和专属 `closed` Arc 身份组成 generation owner；旧 listener、失败清理或健康响应即使发生在同一个父 SSH runtime 上，也不能删除、更新或记录新 generation 的状态。新增同 key lane、同 SSH runtime generation 替换及旧健康结果拒绝回归，15 项 tunnel 专项、真实 OpenSSH SFTP/SCP/三模式 tunnel 综合端到端、完整主应用 475 passed/1 ignored/1 filtered、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

@@ -6,7 +6,7 @@ pub(super) async fn start_tunnel_runtime(
     mut tunnel: TunnelSpec,
     relabel_assigned_port: bool,
     expected_runtime_id: Option<&str>,
-) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, String), String> {
+) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, TunnelRuntimeOwner), String> {
     validate_tunnels(std::slice::from_ref(&tunnel))?;
     let (
         handle,
@@ -79,6 +79,10 @@ pub(super) async fn start_tunnel_runtime(
         }
         let metrics = Arc::new(TunnelMetrics::default());
         let closed = Arc::new(AtomicBool::new(false));
+        let owner = TunnelRuntimeOwner {
+            ssh_runtime_id: ssh_runtime_id.clone(),
+            closed: Arc::clone(&closed),
+        };
         let install_result = (|| {
             let connections = state.ssh.lock().map_err(|error| error.to_string())?;
             if connections
@@ -148,7 +152,7 @@ pub(super) async fn start_tunnel_runtime(
             }
         }
         spawn_remote_tunnel_health_monitor(state.clone(), tunnel.id.clone(), Arc::clone(&closed));
-        return Ok((tunnel, None, ssh_runtime_id));
+        return Ok((tunnel, None, owner));
     }
 
     let listener = TcpListener::bind((tunnel.bind_host.clone(), tunnel.bind_port))
@@ -177,6 +181,10 @@ pub(super) async fn start_tunnel_runtime(
     let closed = Arc::new(AtomicBool::new(false));
     let (listener_worker, listener_completion) = TunnelListenerWorker::running();
     let metrics = Arc::new(TunnelMetrics::default());
+    let owner = TunnelRuntimeOwner {
+        ssh_runtime_id: ssh_runtime_id.clone(),
+        closed: Arc::clone(&closed),
+    };
     let connection_slots = Arc::clone(&state.tunnel_connection_slots);
     {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
@@ -212,7 +220,7 @@ pub(super) async fn start_tunnel_runtime(
     let store_path = state.store_path.clone();
     let tunnel_registry = Arc::clone(&state.tunnels);
     let tunnel_for_task = tunnel.clone();
-    let ssh_runtime_id_for_task = ssh_runtime_id.clone();
+    let owner_for_task = owner.clone();
     tauri::async_runtime::spawn(async move {
         let _listener_completion = listener_completion;
         loop {
@@ -290,7 +298,7 @@ pub(super) async fn start_tunnel_runtime(
                     let removed = match fail_tunnel_runtime_if_owned(
                         &tunnel_registry,
                         &tunnel_for_task.id,
-                        &ssh_runtime_id_for_task,
+                        &owner_for_task,
                         &message,
                     ) {
                         Ok(Some(_)) => true,
@@ -325,7 +333,7 @@ pub(super) async fn start_tunnel_runtime(
         }
     });
 
-    Ok((tunnel, Some(local_addr), ssh_runtime_id))
+    Ok((tunnel, Some(local_addr), owner))
 }
 
 pub(super) fn ensure_tunnel_runtime_slot(

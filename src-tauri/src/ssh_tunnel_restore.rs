@@ -40,13 +40,22 @@ pub(super) async fn restore_enabled_tunnels(
             break;
         }
         let tunnel_id = tunnel.id.clone();
+        let lifecycle_lane = match tunnel_lifecycle_lane(state, &tunnel_id) {
+            Ok(lane) => lane,
+            Err(error) => {
+                failed += 1;
+                record_tunnel_restore_failure(state, session_id, Some(&tunnel_id), &error);
+                continue;
+            }
+        };
+        let _lifecycle_guard = lifecycle_lane.lock().await;
         match start_tunnel_runtime(state, session_id, tunnel, false, Some(runtime_id)).await {
-            Ok((tunnel, local_addr, _)) => {
+            Ok((tunnel, local_addr, owner)) => {
                 if !ssh_runtime_connected(state, session_id, runtime_id) {
                     let _ = fail_tunnel_runtime_if_owned(
                         &state.tunnels,
                         &tunnel_id,
-                        runtime_id,
+                        &owner,
                         "SSH reconnect superseded while restoring tunnel",
                     );
                     break;

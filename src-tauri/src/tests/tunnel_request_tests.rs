@@ -353,19 +353,28 @@ fn tunnel_metrics_snapshot_tracks_connections_bytes_and_errors() {
             listener_worker: TunnelListenerWorker::completed(),
         },
     )])));
+    let stale_owner = TunnelRuntimeOwner {
+        ssh_runtime_id: "runtime-new".to_string(),
+        closed: Arc::new(AtomicBool::new(false)),
+    };
     assert!(fail_tunnel_runtime_if_owned(
         &tunnels,
         &spec.id,
-        "runtime-old",
+        &stale_owner,
         "stale listener failed"
     )
     .unwrap()
     .is_none());
     assert_eq!(tunnels.lock().unwrap().len(), 1);
     assert!(!failed_closed.load(Ordering::SeqCst));
-    let failed = fail_tunnel_runtime_if_owned(&tunnels, &spec.id, "runtime-new", "listener failed")
-        .unwrap()
-        .unwrap();
+    let current_owner = TunnelRuntimeOwner {
+        ssh_runtime_id: "runtime-new".to_string(),
+        closed: Arc::clone(&failed_closed),
+    };
+    let failed =
+        fail_tunnel_runtime_if_owned(&tunnels, &spec.id, &current_owner, "listener failed")
+            .unwrap()
+            .unwrap();
     assert!(tunnels.lock().unwrap().is_empty());
     assert!(failed_closed.load(Ordering::SeqCst));
     assert_eq!(

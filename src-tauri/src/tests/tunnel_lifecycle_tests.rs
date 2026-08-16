@@ -37,7 +37,11 @@ fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
             },
         );
 
-        let error = commit_started_tunnel(&state, &profile.id, tunnel, None, "ssh-runtime-1")
+        let owner = TunnelRuntimeOwner {
+            ssh_runtime_id: "ssh-runtime-1".to_string(),
+            closed: Arc::clone(&closed),
+        };
+        let error = commit_started_tunnel(&state, &profile.id, tunnel, None, &owner)
             .await
             .unwrap_err();
 
@@ -54,6 +58,19 @@ fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
 
         let _ = fs::remove_dir_all(root);
     });
+}
+
+#[test]
+fn tunnel_lifecycle_lane_is_shared_only_by_the_same_store_and_tunnel() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = test_ssh_profile();
+    let state = test_app_state(profile, root.path().join("store.sqlite3"));
+    let same = tunnel_lifecycle_lane(&state, "tunnel-a").unwrap();
+    let same_again = tunnel_lifecycle_lane(&state, "tunnel-a").unwrap();
+    let other = tunnel_lifecycle_lane(&state, "tunnel-b").unwrap();
+
+    assert!(Arc::ptr_eq(&same, &same_again));
+    assert!(!Arc::ptr_eq(&same, &other));
 }
 
 #[test]

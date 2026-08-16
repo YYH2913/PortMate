@@ -74,10 +74,30 @@ pub(super) struct TunnelRuntime {
     pub(super) listener_worker: TunnelListenerWorker,
 }
 
+#[derive(Clone)]
+pub(super) struct TunnelRuntimeOwner {
+    pub(super) ssh_runtime_id: String,
+    pub(super) closed: Arc<AtomicBool>,
+}
+
 impl TunnelRuntime {
+    pub(super) fn owner(&self) -> TunnelRuntimeOwner {
+        TunnelRuntimeOwner {
+            ssh_runtime_id: self.ssh_runtime_id.clone(),
+            closed: Arc::clone(&self.closed),
+        }
+    }
+
     pub(super) fn request_shutdown(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.listener_worker.request_shutdown();
+    }
+}
+
+impl TunnelRuntimeOwner {
+    pub(super) fn owns(&self, runtime: &TunnelRuntime) -> bool {
+        runtime.ssh_runtime_id == self.ssh_runtime_id
+            && Arc::ptr_eq(&runtime.closed, &self.closed)
     }
 }
 
@@ -254,7 +274,9 @@ pub(super) async fn create_tunnel_inner(
         enabled: true,
     };
     validate_tunnels(std::slice::from_ref(&tunnel))?;
-    let (tunnel, local_addr, ssh_runtime_id) = start_tunnel_runtime(
+    let lifecycle_lane = tunnel_lifecycle_lane(state, &tunnel.id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    let (tunnel, local_addr, owner) = start_tunnel_runtime(
         state,
         &request.session_id,
         tunnel,
@@ -262,14 +284,7 @@ pub(super) async fn create_tunnel_inner(
         None,
     )
     .await?;
-    commit_started_tunnel(
-        state,
-        &request.session_id,
-        tunnel,
-        local_addr,
-        &ssh_runtime_id,
-    )
-    .await
+    commit_started_tunnel(state, &request.session_id, tunnel, local_addr, &owner).await
 }
 
 pub(super) fn ensure_tunnel_creation_capacity(
@@ -297,12 +312,12 @@ pub(super) async fn commit_started_tunnel(
     session_id: &str,
     tunnel: TunnelSpec,
     local_addr: Option<std::net::SocketAddr>,
-    ssh_runtime_id: &str,
+    owner: &TunnelRuntimeOwner,
 ) -> Result<TunnelSpec, String> {
     if let Err(commit_error) =
         persist_tunnel_to_profile_and_log(state, session_id, &tunnel, local_addr)
     {
-        let cleanup = stop_tunnel_runtime_effects(state, &tunnel.id, ssh_runtime_id).await;
+        let cleanup = stop_tunnel_runtime_effects(state, &tunnel.id, owner).await;
         return Err(match cleanup {
             Ok((_, warnings)) if warnings.is_empty() => format!(
                 "tunnel Store commit failed and the uncommitted runtime was closed: {commit_error}"
