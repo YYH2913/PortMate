@@ -156,6 +156,73 @@ fn libssh_mixed_auth_falls_back_to_keyboard_interactive() {
 
 #[cfg(unix)]
 #[test]
+fn libssh_connection_stages_share_one_total_deadline() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh setup deadline test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-libssh-deadline-user";
+        let secret = "PortMate libssh deadline secret";
+        let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+            &host_key,
+            username,
+            secret,
+            Some(Duration::from_millis(300)),
+            Some(Duration::from_millis(500)),
+            None,
+        )
+        .await;
+        let mut profile = test_ssh_profile();
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.endpoint.host = "127.0.0.1".to_string();
+        ssh.endpoint.port = port;
+        ssh.username = username.to_string();
+        ssh.reconnect = false;
+        ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+        ssh.identity_policy.auth_order = vec![AuthMethod::Password, AuthMethod::GssapiWithMic];
+        ssh.identity_policy.identities_only = true;
+        ssh.identity_refs.clear();
+        ssh.agent_policy.enabled = false;
+        ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+
+        let error = match establish_ssh_runtime_with_timeout(
+            &state,
+            &profile,
+            Some(secret.to_string()),
+            None,
+            Duration::from_millis(600),
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("libssh setup ignored its shared connection deadline"),
+            Err(error) => error,
+        };
+        let normalized = error.to_ascii_lowercase();
+        assert!(
+            error.contains("超时") || normalized.contains("timeout"),
+            "libssh setup did not exhaust the shared deadline: {error}"
+        );
+        assert_eq!(counters.password_completions.load(Ordering::SeqCst), 1);
+        assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 1);
+        assert!(!state.ssh.lock().unwrap().contains_key(&profile.id));
+
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
     let _runtime_guard = shared_runtime_test_guard();
     let Some(sshd_path) = openssh_test_server_path() else {

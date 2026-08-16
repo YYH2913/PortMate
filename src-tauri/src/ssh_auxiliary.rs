@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const SFTP_REQUEST_TIMEOUT_SECONDS: u64 = 20;
+pub(super) const SFTP_REQUEST_TIMEOUT_SECONDS: u64 = SSH_RUNTIME_OPERATION_TIMEOUT.as_secs();
 pub(super) const MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS: usize = 256;
 pub(super) const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 

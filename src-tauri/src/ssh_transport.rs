@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const SSH_RUNTIME_OPERATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(super) struct SshConnectRequest<'a> {
     pub(super) config: Arc<client::Config>,

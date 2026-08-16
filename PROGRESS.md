@@ -684,6 +684,8 @@ Local/Dynamic tunnel 的 `direct-tcpip` 打开现把 backend mutex 等待和服�
 
 TCP/Telnet runtime 的替换、手动关闭、连接状态提交失败回滚和未安装自动重连清理现统一使用 1 秒有界 socket shutdown；writer 正被背压写入或其他任务占用时，不再无限阻塞 session lifecycle lane、后续连接或错误收敛。runtime 会先标记关闭并从 registry 移除，超时仅记录清理诊断，Store 仍能提交本地已断开事实。回归持有 writer mutex 并确认关闭在 deadline 后完成、runtime 被移除且状态为 Disconnected；transport runtime 12 项、完整主应用 497 passed/1 ignored、Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+libssh 的 Jump/代理与目标连接、认证和 terminal channel setup 现从入口共享同一个连接 deadline，每阶段同时把 libssh 内部协议 timeout 调整为总预算剩余时间，不再把 20 秒配置逐阶段重置成最坏约 60 秒。libssh 因内部 deadline 返回的 `TryAgain` 会归一化为具体 terminal setup 超时；shell 完整建立后再恢复独立的 20 秒运行期 I/O timeout，慢 Jump/代理建连不会把很短的剩余预算永久带入后续 SFTP、exec 和 tunnel。延迟 russh 服务端回归确认密码认证完成后 terminal 请求只能消费剩余预算；libssh transport 8 项、完整主应用 498 passed/1 ignored、Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

@@ -1,5 +1,20 @@
 use super::*;
 
+fn libssh_terminal_setup_error(
+    action: &str,
+    error: libssh_rs::Error,
+    connect_timeout: Duration,
+) -> String {
+    if matches!(error, libssh_rs::Error::TryAgain) {
+        format!(
+            "libssh 终端 setup 超时（{} ms，{action}）",
+            connect_timeout.as_millis()
+        )
+    } else {
+        format!("libssh {action}失败: {error}")
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn establish_libssh_gssapi_runtime(
     state: &AppState,
@@ -16,6 +31,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
+    let setup_started = Instant::now();
     let agent_socket_path = agent_socket_path
         .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from));
     #[cfg(unix)]
@@ -38,7 +54,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
     let closed = Arc::new(AtomicBool::new(false));
-    let (proxy_stream, jump_sessions, mut transport_bridge_finished, remaining_connect_timeout) =
+    let (proxy_stream, jump_sessions, mut transport_bridge_finished) =
         if !ssh.jumps.is_empty() {
             let connected_target = connect_ssh_target(
                 SshConnectRequest {
@@ -80,16 +96,10 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                         return Err(error);
                     }
                 };
-            (
-                Some(stream),
-                jump_sessions,
-                Some(bridge_finished),
-                connect_timeout,
-            )
+            (Some(stream), jump_sessions, Some(bridge_finished))
         } else if ssh.proxy.enabled {
-            let connect_started = Instant::now();
             let stream = tokio::time::timeout(
-                connect_timeout,
+                connect_timeout.saturating_sub(setup_started.elapsed()),
                 connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
             )
             .await
@@ -106,15 +116,11 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             let stream = stream
                 .into_std()
                 .map_err(|error| format!("libssh SSH 接管代理 socket 失败: {error}"))?;
-            (
-                Some(stream),
-                Vec::new(),
-                None,
-                connect_timeout.saturating_sub(connect_started.elapsed()),
-            )
+            (Some(stream), Vec::new(), None)
         } else {
-            (None, Vec::new(), None, connect_timeout)
+            (None, Vec::new(), None)
         };
+    let remaining_connect_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
     if remaining_connect_timeout.is_zero() {
         cleanup_failed_libssh_runtime(
             None,
@@ -377,10 +383,28 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let identity_refs = ssh.identity_refs.clone();
     let (offer_agent_before, offer_agent_after) =
         libssh_agent_offer_positions(ssh, agent_socket_available);
+    let remaining_auth_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
+    if remaining_auth_timeout.is_zero() {
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "authentication deadline",
+        )
+        .await;
+        return Err(format!(
+            "libssh SSH 认证超时（{} ms）",
+            connect_timeout.as_millis()
+        ));
+    }
     let auth_session = session.clone();
     let auth = match tokio::time::timeout(
-        connect_timeout,
+        remaining_auth_timeout,
         tokio::task::spawn_blocking(move || {
+            auth_session
+                .set_option(libssh_rs::SshOption::Timeout(remaining_auth_timeout))
+                .map_err(|error| format!("libssh 设置认证超时失败: {error}"))?;
             authenticate_libssh_with_order(
                 &auth_session,
                 &auth_order,
@@ -475,18 +499,42 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let cols = u32::from(profile.terminal.cols);
     let rows = u32::from(profile.terminal.rows);
     let attach_tmux = matches!(profile.connection, ConnectionConfig::Tmux(_));
+    let remaining_terminal_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
+    if remaining_terminal_timeout.is_zero() {
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "terminal setup deadline",
+        )
+        .await;
+        return Err(format!(
+            "libssh 终端 setup 超时（{} ms）",
+            connect_timeout.as_millis()
+        ));
+    }
     let channel = tokio::time::timeout(
-        connect_timeout,
+        remaining_terminal_timeout,
         tokio::task::spawn_blocking(move || {
+            terminal_session
+                .set_option(libssh_rs::SshOption::Timeout(remaining_terminal_timeout))
+                .map_err(|error| format!("libssh 设置终端 setup 超时失败: {error}"))?;
             let channel = terminal_session
                 .new_channel()
-                .map_err(|error| format!("libssh 创建终端 channel 失败: {error}"))?;
+                .map_err(|error| {
+                    libssh_terminal_setup_error("创建终端 channel", error, connect_timeout)
+                })?;
             channel
                 .open_session()
-                .map_err(|error| format!("libssh 打开终端 channel 失败: {error}"))?;
+                .map_err(|error| {
+                    libssh_terminal_setup_error("打开终端 channel", error, connect_timeout)
+                })?;
             channel
                 .request_pty(&term, cols, rows)
-                .map_err(|error| format!("libssh 请求 PTY 失败: {error}"))?;
+                .map_err(|error| {
+                    libssh_terminal_setup_error("请求 PTY", error, connect_timeout)
+                })?;
             for (name, value) in [
                 ("COLORTERM", "truecolor"),
                 ("CLICOLOR", "1"),
@@ -500,11 +548,19 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 terminal_session.enable_accept_agent_forward(true);
                 channel
                     .request_auth_agent()
-                    .map_err(|error| format!("libssh 请求 agent forwarding 失败: {error}"))?;
+                    .map_err(|error| {
+                        libssh_terminal_setup_error(
+                            "请求 agent forwarding",
+                            error,
+                            connect_timeout,
+                        )
+                    })?;
             }
             channel
                 .request_shell()
-                .map_err(|error| format!("libssh 请求 shell 失败: {error}"))?;
+                .map_err(|error| {
+                    libssh_terminal_setup_error("请求 shell", error, connect_timeout)
+                })?;
             if attach_tmux {
                 let mut stdin = channel.stdin();
                 stdin
@@ -514,6 +570,11 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                     .flush()
                     .map_err(|error| format!("libssh Tmux attach 刷新失败: {error}"))?;
             }
+            terminal_session
+                .set_option(libssh_rs::SshOption::Timeout(
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                ))
+                .map_err(|error| format!("libssh 设置运行期 I/O 超时失败: {error}"))?;
             Ok::<_, String>(channel)
         }),
     )
