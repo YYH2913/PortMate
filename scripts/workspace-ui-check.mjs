@@ -9144,6 +9144,51 @@ Host staging
     `empty Profile compensation browser exceptions: ${JSON.stringify(emptyProfileRecoveryErrors)}`);
   await emptyProfileRecoveryPage.close();
 
+  const serialLaunchPage = await context.newPage();
+  const serialLaunchErrors = [];
+  serialLaunchPage.on("pageerror", (error) => serialLaunchErrors.push(error.message));
+  await serialLaunchPage.goto(appUrl);
+  await serialLaunchPage.locator(".tree-session", { hasText: "Bench UART" }).click();
+  await serialLaunchPage.getByRole("button", { name: "工具", exact: true }).click();
+  const serialAnalyzerAction = serialLaunchPage.getByRole("button", { name: "串口分析器", exact: true });
+  await serialAnalyzerAction.waitFor();
+  const serialLaunchBaseline = await serialLaunchPage.evaluate(() => {
+    window.__deferChildWindowCreates = true;
+    return {
+      creates: window.__invokeCalls.filter((call) => call.command === "plugin:webview|create_webview_window").length,
+      destroys: window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length,
+    };
+  });
+  await serialAnalyzerAction.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await serialLaunchPage.waitForFunction(() => window.__pendingChildWindowCreates.length === 1);
+  await serialLaunchPage.evaluate(() => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "bench-uart");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "bench-uart");
+    window.__pendingChildWindowCreates.shift().resolve();
+  });
+  await serialLaunchPage.waitForFunction(({ destroys }) => (
+    window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length === destroys + 1
+  ), serialLaunchBaseline);
+  const serialLaunchState = await serialLaunchPage.evaluate((baseline) => ({
+    creates: window.__invokeCalls.filter((call) => call.command === "plugin:webview|create_webview_window").length - baseline.creates,
+    destroys: window.__invokeCalls.filter((call) => call.command === "plugin:window|destroy").length - baseline.destroys,
+    sessions: window.__sessions.map((session) => session.profile.id),
+    pending: window.__pendingChildWindowCreates.length,
+    notices: document.querySelectorAll(".notice-dialog").length,
+  }), serialLaunchBaseline);
+  assert(serialLaunchState.creates === 1
+    && serialLaunchState.destroys === 1
+    && !serialLaunchState.sessions.includes("bench-uart")
+    && serialLaunchState.pending === 0
+    && serialLaunchState.notices === 0,
+  `a duplicate or deleted serial-analyzer launch leaked a child window: ${JSON.stringify(serialLaunchState)}`);
+  assert(serialLaunchErrors.length === 0,
+    `serial-analyzer launch lifecycle browser exceptions: ${JSON.stringify(serialLaunchErrors)}`);
+  await serialLaunchPage.close();
+
   const workspaceWindowPage = await context.newPage();
   const workspaceWindowErrors = [];
   workspaceWindowPage.on("pageerror", (error) => workspaceWindowErrors.push(error.message));

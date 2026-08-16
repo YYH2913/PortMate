@@ -394,6 +394,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
   const detachedWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
+  const serialAnalyzerWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
   const pendingProfileDeletionRef = useRef(new Map<string, { token: number; profileName: string }>());
   const resolvedMcpApprovalsRef = useRef(new Set<string>());
   const pendingMcpApprovalsRef = useRef(new Set<string>());
@@ -2394,6 +2395,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return next;
     });
     serialControlOperationGateRef.current.invalidate(profileId);
+    serialAnalyzerWindowOperationGateRef.current.invalidate(profileId);
     setSerialControlBusyIds((current) => {
       if (!current.has(profileId)) return current;
       const next = new Set(current);
@@ -3337,18 +3339,35 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function openSerialAnalyzer(session: SessionSummary) {
     const currentSession = sessionsRef.current.find((candidate) => candidate.profile.id === session.profile.id);
     if (!currentSession || currentSession.profile.connection.kind !== "serial") return;
+    const sessionId = currentSession.profile.id;
+    const gate = serialAnalyzerWindowOperationGateRef.current;
+    const token = gate.begin(sessionId);
+    if (token === null) return;
+    const isCurrent = () => gate.isCurrent(sessionId, token)
+      && sessionsRef.current.some((candidate) => (
+        candidate.profile.id === sessionId && candidate.profile.connection.kind === "serial"
+      ));
     const request: SerialAnalyzerRequest = {
       windowId: createWorkspaceNodeId("pane").replace(/^pane-/, "serial-analyzer-").replace(/[^A-Za-z0-9_-]/g, "-"),
       ownerWindowId,
-      sessionId: currentSession.profile.id,
+      sessionId,
     };
     try {
       const { openSerialAnalyzerWindow } = await import("./serial-analyzer-window");
       const latestSession = sessionsRef.current.find((candidate) => candidate.profile.id === request.sessionId);
-      if (!latestSession || latestSession.profile.connection.kind !== "serial") return;
-      await openSerialAnalyzerWindow(request, latestSession.profile.name);
+      if (!isCurrent() || !latestSession || latestSession.profile.connection.kind !== "serial") return;
+      const controller = await openSerialAnalyzerWindow(request, latestSession.profile.name, isCurrent);
+      if (!isCurrent()) {
+        try {
+          await controller.close();
+        } catch (error) {
+          setNotice({ title: "关闭失效的串口分析器失败", message: formatError(error) });
+        }
+      }
     } catch (error) {
-      setNotice({ title: "打开串口分析器失败", message: formatError(error) });
+      if (isCurrent()) setNotice({ title: "打开串口分析器失败", message: formatError(error) });
+    } finally {
+      gate.finish(sessionId, token);
     }
   }
 

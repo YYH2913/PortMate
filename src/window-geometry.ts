@@ -18,6 +18,7 @@ export interface ChildWindowGeometryOptions {
   height: number;
   minWidth: number;
   minHeight: number;
+  beforeShow?: () => void;
 }
 
 let childWindowCascadeIndex = 0;
@@ -51,6 +52,7 @@ export async function placeAndTrackChildWindow(
       // The native window remains centered if the saved display is no longer available.
     }
   }
+  options.beforeShow?.();
   await child.show();
   if (!storage || !options.storageKey) return;
   const dispose = await trackChildWindowGeometry(child, storage, options.storageKey, constraints);

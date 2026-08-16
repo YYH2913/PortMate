@@ -165,6 +165,43 @@ describe("child window geometry", () => {
       minHeight: 800,
     })).toEqual({ x: 1_024, y: 768, width: 1_600, height: 1_000 });
   });
+
+  it("rechecks ownership after asynchronous placement and before showing a child", async () => {
+    vi.stubGlobal("window", {
+      get localStorage() {
+        throw new DOMException("storage unavailable", "SecurityError");
+      },
+    });
+    const monitors = deferred<never[]>();
+    tauriWindow.availableMonitors.mockReturnValue(monitors.promise);
+    tauriWindow.getCurrentWindow.mockReturnValue({
+      outerPosition: vi.fn().mockResolvedValue({ x: 100, y: 80 }),
+      scaleFactor: vi.fn().mockResolvedValue(1),
+    });
+    const child = {
+      scaleFactor: vi.fn().mockResolvedValue(1),
+      setSize: vi.fn().mockResolvedValue(undefined),
+      setPosition: vi.fn().mockResolvedValue(undefined),
+      show: vi.fn().mockResolvedValue(undefined),
+    } as unknown as WebviewWindow;
+    let current = true;
+    const placement = placeAndTrackChildWindow(child, {
+      storageKey: null,
+      width: 960,
+      height: 680,
+      minWidth: 640,
+      minHeight: 400,
+      beforeShow: () => {
+        if (!current) throw new Error("stale child launch");
+      },
+    });
+
+    current = false;
+    monitors.resolve([]);
+
+    await expect(placement).rejects.toThrow("stale child launch");
+    expect(child.show).not.toHaveBeenCalled();
+  });
 });
 
 function deferred<T>() {

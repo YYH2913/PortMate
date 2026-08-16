@@ -176,6 +176,8 @@ SSH Host Key 安全提示现与 Session/workspace 一样使用同步最新值边
 
 macOS Telnet TLS 测试身份不再依赖 OpenSSL 3 的版本相关 PKCS#12 默认值：测试夹具把私钥和证书保护算法固定为 SHA-1 + 3DES，并把 MAC 固定为 SHA-1，避免 Security.framework 把 AES/PBES2 归档拒绝为 `Unknown format in import`。生产 TLS 配置和证书验证策略不变。专项 TLS 拒绝/显式允许端到端测试、locked Rust workspace 单线程测试、Rustfmt、workspace all-targets Clippy `-D warnings` 和 diff whitespace gate 均通过；真实 Security.framework 导入仍须 macOS Native runner 复验。
 
+串口分析器窗口创建现按 session 使用同步 single-flight gate，并在异步动态加载后、原生窗口创建后、几何恢复结束且窗口显示前，以及创建 Promise 交接后连续复核当前 Profile 仍存在且仍为 Serial。Profile 在最长 8 秒创建期间被删除或改变协议时，隐藏子窗口会被补偿销毁；同帧重复点击只产生一次原生创建，不会留下只显示“会话不可用”的孤立窗口。补偿销毁失败会明确通知而不静默泄漏。窗口几何 helper 新增显示前所有权钩子，单测验证异步放置期间失效时不会调用 `show()`；Workspace UI 以延迟 `create_webview_window`、同帧双触发和 Profile 删除事件验证一次创建、一次销毁、零迟到提示。完整前端现为 114 文件/626 项，生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
