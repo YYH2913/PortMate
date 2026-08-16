@@ -234,23 +234,19 @@ pub(super) async fn cancel_remote_tunnel_forward(
     route_owner: &Arc<TunnelMetrics>,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-    let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
-        let handle = handle.lock().await;
-        handle
-            .cancel_remote_forward(tunnel.bind_host.clone(), tunnel.bind_port)
-            .await
-    })
-    .await;
-    match cancel {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => warnings.push(format!(
-            "remote SSH tunnel cancel failed {}:{}: {error}",
+    if let Err(error) = cancel_remote_tunnel_forward_with_timeout(
+        &handle,
+        tunnel.bind_host.clone(),
+        tunnel.bind_port,
+        REMOTE_TUNNEL_HEALTH_TIMEOUT,
+        &format!(
+            "remote SSH tunnel cancel {}:{}",
             tunnel.bind_host, tunnel.bind_port
-        )),
-        Err(_) => warnings.push(format!(
-            "remote SSH tunnel cancel timed out {}:{}",
-            tunnel.bind_host, tunnel.bind_port
-        )),
+        ),
+    )
+    .await
+    {
+        warnings.push(error);
     }
     match remote_forwards.lock() {
         Ok(mut forwards) => {
@@ -259,6 +255,46 @@ pub(super) async fn cancel_remote_tunnel_forward(
         Err(error) => warnings.push(format!("remote forward route cleanup failed: {error}")),
     }
     warnings
+}
+
+pub(super) async fn cancel_remote_tunnel_forward_with_timeout(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+    bind_host: String,
+    bind_port: u16,
+    timeout: Duration,
+    label: &str,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
+        .await
+        .map_err(|_| {
+            format!(
+                "{label} handle lock timed out after {} ms",
+                timeout.as_millis()
+            )
+        })?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
+    match bounded_connection_step(handle.cancel_remote_forward(bind_host, bind_port), remaining).await {
+        Ok(()) => Ok(()),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            // A timed-out global cancel can still be accepted after its reply waiter is dropped.
+            let cleanup_warning = request_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate remote tunnel cancel request timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+            Err(format!(
+                "{label} timed out after {} ms{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
 }
 
 pub(super) fn ensure_remote_forward_route_slot(

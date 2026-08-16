@@ -672,6 +672,8 @@ Remote-forward 路由现以 tunnel ID 加 `TunnelMetrics` 实例共同标识运�
 
 Remote-forward 的初次 `tcpip-forward` 请求和健康恢复现共享总 deadline：SSH handle 锁获取与服务端回复共同计入预算，避免锁竞争或对端静默导致 tunnel lifecycle 无限等待。若全局请求已发出却未在期限内收到回复，后端连接会按既有 direct-tcpip 超时策略主动断开，防止服务端稍后接受请求而本地遗漏 route/runtime 安装；真实 russh 夹具注入延迟回复，确认请求在 20 ms deadline 后失败并触发安全收敛。定向回归、完整主应用 495 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Remote-forward 的 `cancel-tcpip-forward` 现与创建请求使用相同的总 deadline 语义：handle 锁获取和服务端 cancel 回复共用预算；若取消请求已发出却超时，则主动断开后端，防止服务端稍后接受取消而本地继续复用状态不确定的 SSH session。停止与回滚仍只按 `TunnelMetrics` generation 删除自身 route，锁等待超时或取消失败会以 warning 收敛。真实 russh 夹具在服务端 cancel 回复前注入 100 ms 延迟，确认 20 ms deadline 失败、服务端确实收到请求且后端进入安全 teardown；定向回归、完整主应用 495 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

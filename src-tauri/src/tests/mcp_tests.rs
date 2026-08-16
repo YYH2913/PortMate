@@ -1679,6 +1679,61 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
         counters
             .remote_forward_delay_millis
             .store(0, Ordering::SeqCst);
+
+        let cancel_handler = PortMateSshHandler {
+            profile_id: profile.id.clone(),
+            host: "127.0.0.1".to_string(),
+            port,
+            alias: None,
+            policy: portmate_core::HostKeyPolicy {
+                mode: HostKeyMode::TrustOnFirstUse,
+                alias: None,
+                trust_scope: HostKeyScope::Profile,
+                allow_rotation: false,
+                check_ip: false,
+            },
+            host_keys: state.store.lock().unwrap().host_keys.clone(),
+            one_time_host_key_ids: Vec::new(),
+            observed_key: Arc::new(Mutex::new(None)),
+            host_key_error: Arc::new(Mutex::new(None)),
+            remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let mut cancel_ssh = client::connect(
+            Arc::new(client::Config::default()),
+            ("127.0.0.1", port),
+            cancel_handler,
+        )
+        .await
+        .unwrap();
+        assert!(cancel_ssh
+            .authenticate_password(username, secret)
+            .await
+            .unwrap()
+            .success());
+        let cancel_handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+            cancel_ssh,
+        )));
+        let cancellation_count = counters.remote_forward_cancellations.load(Ordering::SeqCst);
+        counters
+            .remote_forward_cancel_delay_millis
+            .store(100, Ordering::SeqCst);
+        let cancel_error = cancel_remote_tunnel_forward_with_timeout(
+            &cancel_handle,
+            "127.0.0.1".to_string(),
+            41_926,
+            Duration::from_millis(20),
+            "test remote forward cancel",
+        )
+        .await
+        .unwrap_err();
+        assert!(cancel_error.contains("timed out"), "{cancel_error}");
+        assert_eq!(
+            counters.remote_forward_cancellations.load(Ordering::SeqCst),
+            cancellation_count + 1
+        );
+        counters
+            .remote_forward_cancel_delay_millis
+            .store(0, Ordering::SeqCst);
         server_task.abort();
     });
 }
