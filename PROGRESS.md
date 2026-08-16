@@ -692,6 +692,8 @@ libssh 运行期 keepalive、健康 SFTP probe、SFTP setup、exec、direct-tcpi
 
 SSH 终端 data/EOF/close/resize 现把外层 writer/channel mutex 等待与 russh/libssh 协议操作纳入同一个总 deadline，普通输入和窗口变化使用 10 秒上限；vendored `libssh-rs` channel 会在取得共享 session mutex 后按绝对 deadline 重新计算并安装剩余 timeout，操作结束恢复 20 秒运行期预算，超时等待不会留下继续抢锁的 Tokio waiter。进一步审查发现，libssh 的未安装重连 runtime、连接提交失败回滚和通用超时补救曾可能在 terminal channel 或 detached blocking worker 尚存时调用 `ssh_disconnect`，造成后续 `ssh_channel_free` 的 native 崩溃；未安装 runtime 清理入口现强制先接收并释放 reader/完成通知，所有已建立 libssh runtime 与 setup 失败路径则改由最后一个 channel/SFTP/worker 释放共享 `SessionHolder` 后关闭 socket，russh 仍保留有界主动 disconnect。真实延迟 libssh 回归覆盖 writer 锁超时后恢复、活动 terminal channel 上的超时清理策略和未安装 runtime 的 channel-before-session 析构顺序；SSH transport 矩阵连续通过，vendored libssh-rs 23 项加 2 项 doc-test、完整主应用 503 passed/1 ignored 均通过。
 
+libssh SFTP 的目录枚举、canonicalize、stat/lstat、open、mkdir/rmdir、unlink、rename、setstat 以及远端文件 read/read_exact/write/flush/seek/shutdown 现把 Tokio SFTP session/file mutex 等待与底层协议操作纳入同一个 20 秒总 deadline；vendored `libssh-rs` 为 `Sftp` 提供取得内部 session mutex 后复核绝对 deadline 的 timeout 控制，每个远端文件保留所属 SFTP session gate，统一按 session→file 顺序串行设置 timeout、执行 FFI 和恢复运行期预算，避免并发文件覆盖全局 libssh timeout。目录枚举、read_exact 和 write_all 的每次部分操作都会重新复核同一绝对 deadline，外层取消不会留下通过多轮调用继续运行或无限排队的 worker；远端文件 shutdown 保持重复调用幂等，并在最终 flush/handle 析构期间沿用剩余预算。真实 libssh SFTP 回归占用 session mutex，确认 30 ms 精确超时、释放后同一 session 立即恢复，随后完整通过 exclusive create、重复 shutdown、上传、下载、远端复制、目录、属性与 seek；vendored libssh-rs 23 项加 2 项 doc-test、SSH transport 11 项、完整主应用 503 passed/1 ignored、Rustfmt 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

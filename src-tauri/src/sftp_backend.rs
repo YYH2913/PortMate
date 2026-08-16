@@ -9,6 +9,57 @@ pub(super) use metadata::{SftpBackendDirEntry, SftpBackendMetadata};
 
 const MAX_SFTP_DIRECTORY_ENTRIES: usize = super::file_metadata::MAX_FILE_DIRECTORY_ENTRIES;
 
+fn run_libssh_sftp_operation<T>(
+    session: &libssh_rs::Sftp,
+    deadline: Instant,
+    label: &str,
+    operation: impl FnOnce(&libssh_rs::Sftp, Instant) -> Result<T, String>,
+) -> Result<T, String> {
+    session
+        .set_session_timeout_until(deadline)
+        .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
+    let result = operation(session, deadline);
+    let restored = session
+        .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
+        .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
+    match (result, restored) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+    }
+}
+
+pub(super) async fn run_libssh_sftp_operation_with_timeout<T, F>(
+    session: Arc<tokio::sync::Mutex<libssh_rs::Sftp>>,
+    timeout: Duration,
+    label: &str,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&libssh_rs::Sftp, Instant) -> Result<T, String> + Send + 'static,
+{
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{label} deadline is outside the supported range"))?;
+    let session = tokio::time::timeout(timeout, session.lock_owned())
+        .await
+        .map_err(|_| format!("{label} SFTP lock timed out after {} ms", timeout.as_millis()))?;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
+    let worker_label = label.to_string();
+    let worker = tokio::task::spawn_blocking(move || {
+        run_libssh_sftp_operation(&session, deadline, &worker_label, operation)
+    });
+    tokio::time::timeout(remaining, worker)
+        .await
+        .map_err(|_| format!("{label} timed out after {} ms", timeout.as_millis()))?
+        .map_err(|error| format!("{label} worker failed: {error}"))?
+}
+
 pub(super) enum SftpBackendSession {
     Russh(SftpSession),
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Sftp>>),
@@ -46,18 +97,37 @@ impl SftpBackendSession {
                 .collect(),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .read_dir_bounded(&path, MAX_SFTP_DIRECTORY_ENTRIES)
-                        .map_err(|error| error.to_string())?
-                        .into_iter()
-                        .map(SftpBackendDirEntry::from_libssh)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map(|entries| entries.into_iter().flatten().collect::<Vec<_>>())
-                })
-                .await
-                .map_err(|error| format!("libssh SFTP read_dir worker failed: {error}"))??
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP read_dir",
+                    move |session, deadline| {
+                        let directory = session.open_dir(&path).map_err(|error| error.to_string())?;
+                        let mut entries = Vec::new();
+                        let mut raw_entry_count = 0_usize;
+                        loop {
+                            session
+                                .set_session_timeout_until(deadline)
+                                .map_err(|error| error.to_string())?;
+                            let Some(metadata) = directory.read_dir() else {
+                                break;
+                            };
+                            if raw_entry_count >= MAX_SFTP_DIRECTORY_ENTRIES {
+                                return Err(format!(
+                                    "SFTP directory entry count exceeds {MAX_SFTP_DIRECTORY_ENTRIES}"
+                                ));
+                            }
+                            raw_entry_count += 1;
+                            if let Some(entry) = SftpBackendDirEntry::from_libssh(
+                                metadata.map_err(|error| error.to_string())?,
+                            )? {
+                                entries.push(entry);
+                            }
+                        }
+                        Ok(entries)
+                    },
+                )
+                .await?
             }
         };
         Ok(entries.into_iter())
@@ -72,14 +142,13 @@ impl SftpBackendSession {
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
                 let path = path.to_string();
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .canonicalize(&path)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP canonicalize",
+                    move |session, _| session.canonicalize(&path).map_err(|error| error.to_string()),
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP canonicalize worker failed: {error}"))?
             }
         }
     }
@@ -101,15 +170,18 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .metadata(&path)
-                        .map(SftpBackendMetadata::from_libssh)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP stat",
+                    move |session, _| {
+                        session
+                            .metadata(&path)
+                            .map(SftpBackendMetadata::from_libssh)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP stat worker failed: {error}"))?
             }
         }
     }
@@ -126,15 +198,18 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .symlink_metadata(&path)
-                        .map(SftpBackendMetadata::from_libssh)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP lstat",
+                    move |session, _| {
+                        session
+                            .symlink_metadata(&path)
+                            .map(SftpBackendMetadata::from_libssh)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP lstat worker failed: {error}"))?
             }
         }
     }
@@ -170,15 +245,19 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .open(&path, libssh_open_flags(flags), 0o600)
-                        .map(SftpBackendFile::from_libssh)
-                        .map_err(|error| error.to_string())
-                })
+                let file_session = Arc::clone(&session);
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP open",
+                    move |session, _| {
+                        session
+                            .open(&path, libssh_open_flags(flags), 0o600)
+                            .map(|file| SftpBackendFile::from_libssh(file, file_session))
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP open worker failed: {error}"))?
             }
         }
     }
@@ -191,14 +270,17 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .create_dir(&path, 0o755)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP mkdir",
+                    move |session, _| {
+                        session
+                            .create_dir(&path, 0o755)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP mkdir worker failed: {error}"))?
             }
         }
     }
@@ -211,14 +293,13 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .remove_dir(&path)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP rmdir",
+                    move |session, _| session.remove_dir(&path).map_err(|error| error.to_string()),
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP rmdir worker failed: {error}"))?
             }
         }
     }
@@ -231,14 +312,13 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .remove_file(&path)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP unlink",
+                    move |session, _| session.remove_file(&path).map_err(|error| error.to_string()),
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP unlink worker failed: {error}"))?
             }
         }
     }
@@ -251,14 +331,17 @@ impl SftpBackendSession {
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = Arc::clone(session);
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .rename(&old_path, &new_path)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP rename",
+                    move |session, _| {
+                        session
+                            .rename(&old_path, &new_path)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP rename worker failed: {error}"))?
             }
         }
     }
@@ -284,14 +367,17 @@ impl SftpBackendSession {
                     permissions: metadata.permissions,
                     atime_mtime: None,
                 };
-                tokio::task::spawn_blocking(move || {
-                    session
-                        .blocking_lock()
-                        .set_metadata(&path, &attributes)
-                        .map_err(|error| error.to_string())
-                })
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP setstat",
+                    move |session, _| {
+                        session
+                            .set_metadata(&path, &attributes)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh SFTP setstat worker failed: {error}"))?
             }
             (Self::Russh(_), SftpBackendMetadataRaw::Libssh) => {
                 Err("SFTP metadata backend mismatch".to_string())

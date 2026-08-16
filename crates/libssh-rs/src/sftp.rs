@@ -4,7 +4,7 @@ use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 const FSYNC_EXTENSION_NAME: &[u8] = b"fsync@openssh.com\0";
 const FSYNC_EXTENSION_VERSION: &[u8] = b"1\0";
@@ -77,6 +77,20 @@ impl Sftp {
 
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::sftp_session) {
         (self.inner.sess.lock().unwrap(), self.inner.sftp_inner)
+    }
+
+    /// Set the owning session's connection timeout.
+    pub fn set_session_timeout(&self, timeout: Duration) -> SshResult<()> {
+        let (session, _) = self.lock_session();
+        session.set_timeout(timeout)
+    }
+
+    /// Set the owning session's timeout from an absolute deadline.
+    ///
+    /// The remaining duration is computed after the session mutex is acquired.
+    pub fn set_session_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
+        let (session, _) = self.lock_session();
+        session.set_timeout_until(deadline)
     }
 
     pub(crate) fn init(&self) -> SshResult<()> {

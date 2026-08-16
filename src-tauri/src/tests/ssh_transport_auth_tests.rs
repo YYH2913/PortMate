@@ -372,6 +372,25 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
 
         let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
         let sftp = auxiliary.sftp().await.unwrap();
+        let libssh_sftp = match &*sftp {
+            SftpBackendSession::Libssh(session) => Arc::clone(session),
+            SftpBackendSession::Russh(_) => panic!("expected libssh SFTP backend"),
+        };
+        let sftp_guard = libssh_sftp.lock().await;
+        let error = run_libssh_sftp_operation_with_timeout(
+            Arc::clone(&libssh_sftp),
+            Duration::from_millis(30),
+            "libssh SFTP lock test",
+            |session, _| session.canonicalize(".").map_err(|error| error.to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "libssh SFTP lock test SFTP lock timed out after 30 ms"
+        );
+        drop(sftp_guard);
+        assert!(!sftp.canonicalize(".").await.unwrap().is_empty());
         sftp_create_dir_all(&sftp, &remote_root).await.unwrap();
         let mut exclusive_file = sftp
             .open_with_flags(
@@ -380,6 +399,7 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
             )
             .await
             .unwrap();
+        exclusive_file.shutdown().await.unwrap();
         exclusive_file.shutdown().await.unwrap();
         assert!(sftp
             .open_with_flags(
@@ -435,10 +455,7 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
                 .collect::<HashSet<_>>(),
             HashSet::from(["uploaded.bin", "copied.bin"])
         );
-        let SftpBackendSession::Libssh(session) = &*sftp else {
-            panic!("expected libssh SFTP backend");
-        };
-        let session = Arc::clone(session);
+        let session = Arc::clone(&libssh_sftp);
         let bounded_root = remote_root.clone();
         let error = tokio::task::spawn_blocking(move || {
             match session.blocking_lock().read_dir_bounded(&bounded_root, 1) {
