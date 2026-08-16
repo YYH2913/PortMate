@@ -356,6 +356,23 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             b"STALE",
             "STALE".to_string(),
         );
+        assert!(!record_runtime_system_event(
+            &io,
+            &profile.id,
+            "runtime-current",
+            "PortMate: STALE-SYSTEM".to_string(),
+            "stale test system event",
+        ));
+        assert!(record_outbound_control_event_for_runtime(
+            &io,
+            &profile.id,
+            "runtime-current",
+            b"STALE-CONTROL",
+            "stale-test",
+            None,
+            true,
+        )
+        .is_none());
         let store = state.store.lock().unwrap();
         assert!(store.timeline.is_empty());
         assert!(!store.events.iter().any(|event| {
@@ -364,6 +381,12 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
         assert!(!store
             .screen(&profile.id)
             .is_some_and(|screen| screen.contains("STALE")));
+        assert!(!store.events.iter().any(|event| {
+            event
+                .annotations
+                .get("origin")
+                .is_some_and(|origin| origin == "stale-test")
+        }));
         drop(store);
         for extension in ["raw", "txt", "jsonl"] {
             let path = log_shard_path(&store_path, &profile, extension).unwrap();

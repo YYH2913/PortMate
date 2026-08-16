@@ -644,6 +644,8 @@ SSH/Shell/TCP/Serial reader 的入站事件现先取得精确 runtime generation
 
 串口分析器的共享 capture buffer 写入已并入相同的入站 runtime generation guard：旧串口 reader 的收尾字节仍可留在其专属 protocol tap 供旧传输取消/收敛，但不会在重连后污染新设备的文本/Hex 分析帧。新增无物理串口 runtime 夹具同时断言 stale generation 不产生 capture frame 或 Store event、当前 generation 原子产生两者；串口专项 13 项、runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered 均通过。
 
+Reader 产生的非字节事件也已绑定来源 runtime：SSH exit status/signal、TCP/Telnet read failure、Telnet negotiation reply failure 只有在对应 generation 仍为当前连接时才写入 Store/system log，Telnet 自动协商回复的 outbound control event 同样在 registry guard 内完成 raw shard、Store、terminal publication 和持久化。旧连接在 replacement 后不能再把控制状态或协议回复记到新设备；回归直接覆盖 stale system/control event 的 Store、screen、raw/text/JSONL 拒绝，runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

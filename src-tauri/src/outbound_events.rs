@@ -473,6 +473,40 @@ pub(super) fn record_outbound_control_event(
     event
 }
 
+pub(super) fn record_outbound_control_event_for_runtime(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    wire_bytes: &[u8],
+    origin: &str,
+    related_event_id: Option<&str>,
+    persist_store: bool,
+) -> Option<SessionEvent> {
+    match with_current_session_runtime_generation(
+        &io.runtimes,
+        session_id,
+        runtime_id,
+        || {
+            record_outbound_control_event(
+                io,
+                session_id,
+                wire_bytes,
+                origin,
+                related_event_id,
+                persist_store,
+            )
+        },
+    ) {
+        Ok(event) => event,
+        Err(error) => {
+            eprintln!(
+                "PortMate: runtime registry unavailable; dropping outbound control event for {session_id}: {error}"
+            );
+            None
+        }
+    }
+}
+
 fn fallback_outbound_control_event(
     session_id: &str,
     bytes_ref: Option<String>,

@@ -178,27 +178,19 @@ pub(super) fn read_tcp_stream(
                             let reason =
                                 format!("{label} Telnet negotiation reply failed: {error}");
                             disconnect_reason = Some(reason.clone());
-                            if let Ok(mut store) = io.store.lock() {
-                                store.record_system_event(
-                                    &session_id,
-                                    format!("PortMate: {reason}"),
-                                );
-                                disconnect_reason_recorded = true;
-                                if let Err(error) = persist_applied_store(
-                                    &store,
-                                    &io.store_path,
-                                    "Telnet negotiation failure event",
-                                ) {
-                                    eprintln!(
-                                        "PortMate: failed to persist Telnet negotiation error: {error}"
-                                    );
-                                }
-                            }
+                            disconnect_reason_recorded = record_runtime_system_event(
+                                &io,
+                                &session_id,
+                                &runtime_id,
+                                format!("PortMate: {reason}"),
+                                "Telnet negotiation failure event",
+                            );
                             break 'read_loop;
                         }
-                        record_outbound_control_event(
+                        record_outbound_control_event_for_runtime(
                             &io,
                             &session_id,
+                            &runtime_id,
                             &reply,
                             "telnet-negotiation",
                             None,
@@ -212,17 +204,13 @@ pub(super) fn read_tcp_stream(
                 Err(error) => {
                     let reason = format!("{label} read failed: {error}");
                     disconnect_reason = Some(reason.clone());
-                    if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(&session_id, format!("PortMate: {reason}"));
-                        disconnect_reason_recorded = true;
-                        if let Err(error) = persist_applied_store(
-                            &store,
-                            &io.store_path,
-                            "TCP/Telnet read failure event",
-                        ) {
-                            eprintln!("PortMate: failed to persist {label} read error: {error}");
-                        }
-                    }
+                    disconnect_reason_recorded = record_runtime_system_event(
+                        &io,
+                        &session_id,
+                        &runtime_id,
+                        format!("PortMate: {reason}"),
+                        "TCP/Telnet read failure event",
+                    );
                     break;
                 }
             }

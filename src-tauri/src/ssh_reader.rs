@@ -91,38 +91,28 @@ pub(super) fn read_ssh_channel(
                     has_unpersisted_stream = true;
                 }
                 SshBackendMessage::ExitStatus(exit_status) => {
-                    if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!(
-                                "PortMate: SSH remote process exited with status {exit_status}"
-                            ),
-                        );
-                        if let Err(error) =
-                            persist_applied_store(&store, &io.store_path, "SSH exit status event")
-                        {
-                            eprintln!("PortMate: failed to persist SSH exit status: {error}");
-                        }
-                    }
+                    record_runtime_system_event(
+                        &io,
+                        &session_id,
+                        &runtime_id,
+                        format!("PortMate: SSH remote process exited with status {exit_status}"),
+                        "SSH exit status event",
+                    );
                 }
                 SshBackendMessage::ExitSignal {
                     signal_name,
                     error_message,
                     ..
                 } => {
-                    if let Ok(mut store) = io.store.lock() {
-                        store.record_system_event(
-                            &session_id,
-                            format!(
-                                "PortMate: SSH remote process exited by signal {signal_name} {error_message}"
-                            ),
-                        );
-                        if let Err(error) =
-                            persist_applied_store(&store, &io.store_path, "SSH exit signal event")
-                        {
-                            eprintln!("PortMate: failed to persist SSH exit signal: {error}");
-                        }
-                    }
+                    record_runtime_system_event(
+                        &io,
+                        &session_id,
+                        &runtime_id,
+                        format!(
+                            "PortMate: SSH remote process exited by signal {signal_name} {error_message}"
+                        ),
+                        "SSH exit signal event",
+                    );
                 }
                 SshBackendMessage::Error(_) | SshBackendMessage::Eof | SshBackendMessage::Close => {
                     break
