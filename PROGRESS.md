@@ -678,6 +678,8 @@ SSH 会话关闭、自动重连中未安装 runtime 的回收、连接提交失�
 
 远端隧道取消的有界 helper 现保持既有稳定诊断前缀，并把目标地址作为独立上下文附加到锁等待、协议失败和协议超时错误；OpenSSH 综合矩阵不再因 `failed` 与地址词序变化丢失预期故障状态。真实 OpenSSH SFTP/SCP/三模式 tunnel 综合端到端及延迟取消故障回归均通过。
 
+libssh runtime 在连接、Host Key 状态/验证/持久化、凭据读取、认证、agent proxy、forwarding 校验、终端 setup 和 profile snapshot 任一阶段失败时，现统一标记关闭并执行有界 libssh disconnect、Jump transport bridge 等待及上游 russh Jump Host 断开；失败清理不再无限等待，也不会在错误返回后遗留仍运行的桥接链。同步 Host Key mutex 的 guard 会在异步清理前明确释放，保持建立 future 可跨线程调度；成功路径仍完整移交 bridge receiver 和 Jump sessions。真实两级 OpenSSH Jump Host、libssh 认证矩阵、完整主应用 495 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

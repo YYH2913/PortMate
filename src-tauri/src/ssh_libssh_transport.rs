@@ -38,7 +38,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
     let closed = Arc::new(AtomicBool::new(false));
-    let (proxy_stream, jump_sessions, transport_bridge_finished, remaining_connect_timeout) =
+    let (proxy_stream, jump_sessions, mut transport_bridge_finished, remaining_connect_timeout) =
         if !ssh.jumps.is_empty() {
             let connected_target = connect_ssh_target(
                 SshConnectRequest {
@@ -69,7 +69,17 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 return Err("libssh Jump Host returned an unexpected target session".to_string());
             };
             let (stream, bridge_finished) =
-                start_russh_jump_transport_bridge(channel, Arc::clone(&closed)).await?;
+                match start_russh_jump_transport_bridge(channel, Arc::clone(&closed)).await {
+                    Ok(bridge) => bridge,
+                    Err(error) => {
+                        disconnect_jump_sessions(
+                            jump_sessions,
+                            "PortMate libssh jump transport bridge setup failed",
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
             (
                 Some(stream),
                 jump_sessions,
@@ -106,6 +116,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             (None, Vec::new(), None, connect_timeout)
         };
     if remaining_connect_timeout.is_zero() {
+        cleanup_failed_libssh_runtime(
+            None,
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "connect deadline",
+        )
+        .await;
         return Err(format!(
             "libssh SSH 连接超时（{} ms）",
             connect_timeout.as_millis()
@@ -118,13 +136,27 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         .or_else(|| agent_socket_path.clone());
     #[cfg(not(unix))]
     let identity_agent_path = agent_socket_path.clone();
-    let identity_agent = identity_agent_path
+    let identity_agent = match identity_agent_path
         .map(|path| {
             path.into_os_string()
                 .into_string()
                 .map_err(|_| "libssh SSH agent socket path is not valid UTF-8".to_string())
         })
-        .transpose()?;
+        .transpose()
+    {
+        Ok(identity_agent) => identity_agent,
+        Err(error) => {
+            cleanup_failed_libssh_runtime(
+                None,
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "agent socket validation",
+            )
+            .await;
+            return Err(error);
+        }
+    };
     let agent_socket_available = identity_agent.is_some();
     let connected = tokio::time::timeout(
         remaining_connect_timeout,
@@ -184,12 +216,67 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             Ok::<_, String>((session, observation))
         }),
     )
-    .await
-    .map_err(|_| format!("libssh 连接超时（{} ms）", connect_timeout.as_millis()))?
-    .map_err(|error| format!("libssh 连接 worker 失败: {error}"))??;
-    let (session, observation) = connected;
+    .await;
+    let (session, observation) = match connected {
+        Ok(Ok(Ok(connected))) => connected,
+        Ok(Ok(Err(error))) => {
+            cleanup_failed_libssh_runtime(
+                None,
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "connection",
+            )
+            .await;
+            return Err(error);
+        }
+        Ok(Err(error)) => {
+            cleanup_failed_libssh_runtime(
+                None,
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "connection worker",
+            )
+            .await;
+            return Err(format!("libssh 连接 worker 失败: {error}"));
+        }
+        Err(_) => {
+            cleanup_failed_libssh_runtime(
+                None,
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "connection timeout",
+            )
+            .await;
+            return Err(format!(
+                "libssh 连接超时（{} ms）",
+                connect_timeout.as_millis()
+            ));
+        }
+    };
 
-    *observed_key.lock().map_err(|error| error.to_string())? = Some(observation.clone());
+    let observation_error = {
+        match observed_key.lock() {
+            Ok(mut observed_key) => {
+                *observed_key = Some(observation.clone());
+                None
+            }
+            Err(error) => Some(error.to_string()),
+        }
+    };
+    if let Some(error) = observation_error {
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "host key observation",
+        )
+        .await;
+        return Err(error);
+    }
     let one_time_host_key_ids = one_time_host_keys
         .iter()
         .map(|key| key.id.clone())
@@ -201,11 +288,35 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         &one_time_host_key_ids,
         &observation,
     );
-    *host_key_error.lock().map_err(|error| error.to_string())? =
-        verification.as_ref().err().cloned();
+    let verification_state_error = {
+        match host_key_error.lock() {
+            Ok(mut host_key_error) => {
+                *host_key_error = verification.as_ref().err().cloned();
+                None
+            }
+            Err(error) => Some(error.to_string()),
+        }
+    };
+    if let Some(error) = verification_state_error {
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "host key verification state",
+        )
+        .await;
+        return Err(error);
+    }
     if let Err(error) = verification {
-        let session = session.clone();
-        let _ = tokio::task::spawn_blocking(move || session.disconnect()).await;
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "host key verification",
+        )
+        .await;
         return Err(error);
     }
 
@@ -217,8 +328,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         match read_optional_secret_ref(ssh.password_secret_ref.as_deref(), "SSH password") {
             Ok(password) => password,
             Err(error) => {
-                let cleanup = session.clone();
-                let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+                cleanup_failed_libssh_runtime(
+                    Some(&session),
+                    &jump_sessions,
+                    &mut transport_bridge_finished,
+                    closed.as_ref(),
+                    "password lookup",
+                )
+                .await;
                 return Err(error);
             }
         }
@@ -239,8 +356,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         ) {
             Ok(passphrase) => passphrase,
             Err(error) => {
-                let cleanup = session.clone();
-                let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+                cleanup_failed_libssh_runtime(
+                    Some(&session),
+                    &jump_sessions,
+                    &mut transport_bridge_finished,
+                    closed.as_ref(),
+                    "passphrase lookup",
+                )
+                .await;
                 return Err(error);
             }
         }
@@ -281,16 +404,28 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     #[cfg(unix)]
     if let Some(proxy) = filtered_agent_proxy.take() {
         if let Err(error) = proxy.stop().await {
-            let cleanup = session.clone();
-            let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "agent proxy shutdown",
+            )
+            .await;
             return Err(error);
         }
     }
     let auth_method = match auth {
         Ok(method) => method,
         Err(error) => {
-            let cleanup = session.clone();
-            let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "authentication",
+            )
+            .await;
             return Err(error);
         }
     };
@@ -305,18 +440,33 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         &observed_key,
         &one_time_host_keys,
     ) {
-        let cleanup = session.clone();
-        let _ = tokio::task::spawn_blocking(move || cleanup.disconnect()).await;
+        cleanup_failed_libssh_runtime(
+            Some(&session),
+            &jump_sessions,
+            &mut transport_bridge_finished,
+            closed.as_ref(),
+            "host key persistence",
+        )
+        .await;
         return Err(error);
     }
 
     let terminal_session = session.clone();
     let agent_forward_socket = if ssh.agent_policy.forwarding {
-        Some(
-            agent_socket_path
-                .clone()
-                .ok_or_else(|| "SSH agent forwarding requires an SSH agent socket".to_string())?,
-        )
+        match agent_socket_path.clone() {
+            Some(agent_socket_path) => Some(agent_socket_path),
+            None => {
+                cleanup_failed_libssh_runtime(
+                    Some(&session),
+                    &jump_sessions,
+                    &mut transport_bridge_finished,
+                    closed.as_ref(),
+                    "agent forwarding validation",
+                )
+                .await;
+                return Err("SSH agent forwarding requires an SSH agent socket".to_string());
+            }
+        }
     } else {
         None
     };
@@ -367,16 +517,62 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             Ok::<_, String>(channel)
         }),
     )
-    .await
-    .map_err(|_| {
-        format!(
-            "libssh 终端 setup 超时（{} ms）",
-            connect_timeout.as_millis()
-        )
-    })?
-    .map_err(|error| format!("libssh 终端 worker 失败: {error}"))??;
+    .await;
+    let channel = match channel {
+        Ok(Ok(Ok(channel))) => channel,
+        Ok(Ok(Err(error))) => {
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "terminal setup",
+            )
+            .await;
+            return Err(error);
+        }
+        Ok(Err(error)) => {
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "terminal worker",
+            )
+            .await;
+            return Err(format!("libssh 终端 worker 失败: {error}"));
+        }
+        Err(_) => {
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "terminal setup timeout",
+            )
+            .await;
+            return Err(format!(
+                "libssh 终端 setup 超时（{} ms）",
+                connect_timeout.as_millis()
+            ));
+        }
+    };
 
     let runtime_id = Uuid::new_v4().to_string();
+    let profile_snapshot = match ssh_health::ssh_health_profile_snapshot(profile) {
+        Ok(profile_snapshot) => profile_snapshot,
+        Err(error) => {
+            cleanup_failed_libssh_runtime(
+                Some(&session),
+                &jump_sessions,
+                &mut transport_bridge_finished,
+                closed.as_ref(),
+                "profile snapshot",
+            )
+            .await;
+            return Err(error);
+        }
+    };
     let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split();
     let (tap, _) = broadcast::channel(1024);
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
@@ -389,7 +585,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id,
-            profile_snapshot: ssh_health::ssh_health_profile_snapshot(profile)?,
+            profile_snapshot,
             backend: SshBackendKind::Libssh,
             auth_method,
             handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_libssh(
@@ -417,4 +613,37 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         terminal_channel_open,
         reader_finished: reader_finished_sender,
     })
+}
+
+async fn cleanup_failed_libssh_runtime(
+    session: Option<&libssh_rs::Session>,
+    jump_sessions: &[client::Handle<PortMateSshHandler>],
+    transport_bridge_finished: &mut Option<tokio::sync::oneshot::Receiver<()>>,
+    closed: &AtomicBool,
+    context: &str,
+) {
+    closed.store(true, Ordering::SeqCst);
+    if let Some(session) = session {
+        if let Some(warning) = request_libssh_disconnect_with_timeout(session.clone()).await {
+            eprintln!("PortMate: libssh {context} cleanup warning: {warning}");
+        }
+    }
+    if let Some(finished) = transport_bridge_finished.take() {
+        if tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, finished)
+            .await
+            .is_err()
+        {
+            eprintln!(
+                "PortMate: libssh {context} transport bridge cleanup timed out after {} ms",
+                SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+            );
+        }
+    }
+    for jump_session in jump_sessions {
+        if let Some(warning) =
+            request_ssh_disconnect_with_timeout(jump_session, "PortMate libssh setup failed").await
+        {
+            eprintln!("PortMate: libssh {context} jump cleanup warning: {warning}");
+        }
+    }
 }

@@ -104,6 +104,24 @@ pub(super) async fn request_backend_disconnect_with_timeout<H: client::Handler>(
     }
 }
 
+pub(super) async fn request_libssh_disconnect_with_timeout(
+    session: libssh_rs::Session,
+) -> Option<String> {
+    match tokio::time::timeout(
+        SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT,
+        tokio::task::spawn_blocking(move || session.disconnect()),
+    )
+    .await
+    {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("libssh disconnect worker failed: {error}")),
+        Err(_) => Some(format!(
+            "libssh disconnect worker timed out after {} ms",
+            SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+        )),
+    }
+}
+
 pub(super) async fn request_shared_ssh_disconnect_with_timeout<H: client::Handler>(
     handle: &Arc<tokio::sync::Mutex<client::Handle<H>>>,
     disconnect_description: &str,
