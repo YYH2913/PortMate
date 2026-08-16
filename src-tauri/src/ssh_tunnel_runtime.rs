@@ -281,6 +281,9 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                     let store = Arc::clone(&store);
                     let store_path = store_path.clone();
                     let session_id = session_id.clone();
+                    let tunnel_registry = Arc::clone(&tunnel_registry);
+                    let tunnel_id = tunnel_for_task.id.clone();
+                    let owner = owner_for_task.clone();
                     tauri::async_runtime::spawn(async move {
                         let _permit = permit;
                         metrics.connection_opened();
@@ -311,20 +314,18 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                             Err(error) => {
                                 metrics.record_error(&error);
                                 metrics.connection_closed();
-                                if let Ok(mut store) = store.lock() {
-                                    store.record_system_event(
-                                        &session_id,
-                                        format!("PortMate: SSH tunnel client failed: {error}"),
+                                if let Err(record_error) = record_tunnel_client_failure_if_owned(
+                                    &tunnel_registry,
+                                    &store,
+                                    &store_path,
+                                    &tunnel_id,
+                                    &owner,
+                                    &session_id,
+                                    &error,
+                                ) {
+                                    eprintln!(
+                                        "PortMate: failed to record tunnel client error: {record_error}"
                                     );
-                                    if let Err(error) = persist_applied_store(
-                                        &store,
-                                        &store_path,
-                                        "tunnel client failure event",
-                                    ) {
-                                        eprintln!(
-                                            "PortMate: failed to persist tunnel client error: {error}"
-                                        );
-                                    }
                                 }
                             }
                         }
@@ -371,6 +372,36 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     });
 
     Ok((tunnel, Some(local_addr), owner))
+}
+
+pub(super) fn record_tunnel_client_failure_if_owned(
+    tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    store: &Arc<Mutex<SessionStore>>,
+    store_path: &Path,
+    tunnel_id: &str,
+    owner: &TunnelRuntimeOwner,
+    session_id: &str,
+    error: &str,
+) -> Result<bool, String> {
+    let mut store = store.lock().map_err(|error| error.to_string())?;
+    let current = tunnels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(tunnel_id)
+        .is_some_and(|runtime| owner.owns(runtime) && runtime.session_id == session_id);
+    if !current {
+        return Ok(false);
+    }
+    store.record_system_event(
+        session_id,
+        format!("PortMate: SSH tunnel client failed: {error}"),
+    );
+    if let Err(error) =
+        persist_applied_store(&store, store_path, "tunnel client failure event")
+    {
+        eprintln!("PortMate: failed to persist tunnel client error: {error}");
+    }
+    Ok(true)
 }
 
 pub(super) fn ensure_tunnel_runtime_slot(

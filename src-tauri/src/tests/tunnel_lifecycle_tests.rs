@@ -165,3 +165,101 @@ fn runtime_cleanup_never_removes_a_superseding_entry() {
     );
     assert!(registry.lock().unwrap().is_empty());
 }
+
+#[test]
+fn tunnel_client_failure_events_require_the_exact_runtime_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = test_ssh_profile();
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let spec = TunnelSpec {
+        id: "client-failure-generation".to_string(),
+        label: "client failure generation".to_string(),
+        mode: TunnelMode::Local,
+        bind_host: "127.0.0.1".to_string(),
+        bind_port: 10_022,
+        target_host: "127.0.0.1".to_string(),
+        target_port: 22,
+        route_rules: Vec::new(),
+        enabled: true,
+    };
+    let first = TunnelRuntime {
+        session_id: profile.id.clone(),
+        ssh_runtime_id: "shared-ssh-runtime".to_string(),
+        spec: spec.clone(),
+        metrics: Arc::new(TunnelMetrics::default()),
+        closed: Arc::new(AtomicBool::new(false)),
+        listener_worker: TunnelListenerWorker::completed(),
+    };
+    let first_owner = first.owner();
+    state
+        .tunnels
+        .lock()
+        .unwrap()
+        .insert(spec.id.clone(), first);
+
+    assert!(record_tunnel_client_failure_if_owned(
+        &state.tunnels,
+        &state.store,
+        &state.store_path,
+        &spec.id,
+        &first_owner,
+        &profile.id,
+        "first generation failure",
+    )
+    .unwrap());
+
+    let replacement = TunnelRuntime {
+        session_id: profile.id.clone(),
+        ssh_runtime_id: "shared-ssh-runtime".to_string(),
+        spec: spec.clone(),
+        metrics: Arc::new(TunnelMetrics::default()),
+        closed: Arc::new(AtomicBool::new(false)),
+        listener_worker: TunnelListenerWorker::completed(),
+    };
+    let replacement_owner = replacement.owner();
+    state
+        .tunnels
+        .lock()
+        .unwrap()
+        .insert(spec.id.clone(), replacement);
+    assert!(!record_tunnel_client_failure_if_owned(
+        &state.tunnels,
+        &state.store,
+        &state.store_path,
+        &spec.id,
+        &first_owner,
+        &profile.id,
+        "stale generation failure",
+    )
+    .unwrap());
+    assert!(record_tunnel_client_failure_if_owned(
+        &state.tunnels,
+        &state.store,
+        &state.store_path,
+        &spec.id,
+        &replacement_owner,
+        &profile.id,
+        "replacement generation failure",
+    )
+    .unwrap());
+
+    let events = state.store.lock().unwrap().events.clone();
+    assert!(events.iter().any(|event| {
+        event
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("first generation failure"))
+    }));
+    assert!(events.iter().any(|event| {
+        event
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("replacement generation failure"))
+    }));
+    assert!(!events.iter().any(|event| {
+        event
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("stale generation failure"))
+    }));
+}
