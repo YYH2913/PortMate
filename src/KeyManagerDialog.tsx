@@ -197,6 +197,7 @@ export default function KeyManagerDialog({
   const [editingKeyId, setEditingKeyId] = useState("");
   const [editDraft, setEditDraft] = useState<HostKeyEditDraft | null>(null);
   const [hostKeyMutationBusy, setHostKeyMutationBusy] = useState(false);
+  const hostKeyMutationGate = useRef(new KeyedRequestGate<"write">());
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
   const [hostKeyScanBusy, setHostKeyScanBusy] = useState(false);
   const [hostKeyScanError, setHostKeyScanError] = useState("");
@@ -260,6 +261,7 @@ export default function KeyManagerDialog({
     return () => {
       mountedRef.current = false;
       refreshGate.current.invalidateAll();
+      hostKeyMutationGate.current.invalidateAll();
       privateKeyFileReadGate.current.invalidateAll();
       privateKeyFileReadActive.current = false;
     };
@@ -342,6 +344,18 @@ export default function KeyManagerDialog({
   function finishClientKeyMutation(token: number) {
     if (clientKeyMutationGate.current.finish("profile-write", token) && mountedRef.current) {
       setClientKeyMutationBusy(false);
+    }
+  }
+
+  function beginHostKeyWrite() {
+    const token = hostKeyMutationGate.current.begin("write");
+    if (token !== null) setHostKeyMutationBusy(true);
+    return token;
+  }
+
+  function finishHostKeyWrite(token: number) {
+    if (hostKeyMutationGate.current.finish("write", token) && mountedRef.current) {
+      setHostKeyMutationBusy(false);
     }
   }
 
@@ -663,10 +677,11 @@ export default function KeyManagerDialog({
 
   async function importKnownHostsText() {
     if (hostKeyMutationBusy || !profileId || !knownHostsText.trim()) return;
+    const writeToken = beginHostKeyWrite();
+    if (writeToken === null) return;
     const mutationToken = onHostKeyMutationStart();
     const pendingProfileId = profileId;
     const pendingContents = knownHostsText;
-    setHostKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -681,7 +696,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onHostKeyMutationFinish(mutationToken);
-      if (mountedRef.current) setHostKeyMutationBusy(false);
+      finishHostKeyWrite(writeToken);
     }
   }
 
@@ -724,8 +739,9 @@ export default function KeyManagerDialog({
 
   async function trustHostKeyScan(decision: "append-to-profile" | "append-to-project" | "replace-for-profile") {
     if (hostKeyMutationBusy || !selectedProfile || !hostKeyScan) return;
+    const writeToken = beginHostKeyWrite();
+    if (writeToken === null) return;
     const mutationToken = onHostKeyMutationStart();
-    setHostKeyMutationBusy(true);
     refreshGate.current.invalidate("host-scan");
     setHostKeyScanBusy(true);
     setHostKeyScanError("");
@@ -750,8 +766,8 @@ export default function KeyManagerDialog({
       onHostKeyMutationFinish(mutationToken);
       if (mountedRef.current) {
         setHostKeyScanBusy(false);
-        setHostKeyMutationBusy(false);
       }
+      finishHostKeyWrite(writeToken);
     }
   }
 
@@ -759,12 +775,16 @@ export default function KeyManagerDialog({
     if (hostKeyMutationBusy) return;
     const key = hostKeys.keys.find((item) => item.id === keyId);
     if (!key) return;
+    const writeToken = beginHostKeyWrite();
+    if (writeToken === null) return;
     const unsavedWarning = editingKeyId === keyId && hostKeyDraftDirty
       ? "\n\n当前 Host Key 编辑器还有未保存的更改，也会一并丢弃。"
       : "";
-    if (!window.confirm(`删除 Host Key ${key.alias}:${key.port}（${key.fingerprintSha256}）？${unsavedWarning}`)) return;
+    if (!window.confirm(`删除 Host Key ${key.alias}:${key.port}（${key.fingerprintSha256}）？${unsavedWarning}`)) {
+      finishHostKeyWrite(writeToken);
+      return;
+    }
     const mutationToken = onHostKeyMutationStart();
-    setHostKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -780,19 +800,23 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onHostKeyMutationFinish(mutationToken);
-      if (mountedRef.current) setHostKeyMutationBusy(false);
+      finishHostKeyWrite(writeToken);
     }
   }
 
   async function deleteSelectedHostKeys() {
     if (hostKeyMutationBusy || !selectedHostKeyIds.length) return;
     const pendingKeyIds = [...selectedHostKeyIds];
+    const writeToken = beginHostKeyWrite();
+    if (writeToken === null) return;
     const unsavedWarning = editingKeyId && pendingKeyIds.includes(editingKeyId) && hostKeyDraftDirty
       ? "\n\n当前 Host Key 编辑器还有未保存的更改，也会一并丢弃。"
       : "";
-    if (!window.confirm(`删除选中的 ${pendingKeyIds.length} 个 Host Key？${unsavedWarning}`)) return;
+    if (!window.confirm(`删除选中的 ${pendingKeyIds.length} 个 Host Key？${unsavedWarning}`)) {
+      finishHostKeyWrite(writeToken);
+      return;
+    }
     const mutationToken = onHostKeyMutationStart();
-    setHostKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -807,7 +831,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onHostKeyMutationFinish(mutationToken);
-      if (mountedRef.current) setHostKeyMutationBusy(false);
+      finishHostKeyWrite(writeToken);
     }
   }
 
@@ -846,9 +870,10 @@ export default function KeyManagerDialog({
 
   async function saveEditedHostKey() {
     if (!editDraft || hostKeyMutationBusy) return;
+    const writeToken = beginHostKeyWrite();
+    if (writeToken === null) return;
     const pendingDraft = editDraft;
     const mutationToken = onHostKeyMutationStart();
-    setHostKeyMutationBusy(true);
     setError("");
     setStatus("");
     try {
@@ -873,7 +898,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) setError(formatError(error));
     } finally {
       onHostKeyMutationFinish(mutationToken);
-      if (mountedRef.current) setHostKeyMutationBusy(false);
+      finishHostKeyWrite(writeToken);
     }
   }
 

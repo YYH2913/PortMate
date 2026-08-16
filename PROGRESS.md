@@ -172,6 +172,8 @@ Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和�
 
 SSH Host Key 安全提示现与 Session/workspace 一样使用同步最新值边界：Profile 删除会在 React DOM 提交前立即失效当前 prompt、扫描和决策，旧“信任并重连”按钮不能再调用 `trust_scanned_host_key`，旧“打开验证设置”按钮也不能为已删除 Profile 打开设置。扫描在凭据暂存后、后端返回后和错误回写前都会重新确认 Profile 仍存在，迟到结果不能恢复弹窗；决策入口也会在后端调用前复核权威 Session。Workspace UI 在删除事件和两个旧按钮点击的同一 JavaScript task 内验证零信任写入、零凭据重开和零设置弹窗；完整前端 114 文件/625 项、生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
 
+密钥管理器的 Host Key 导入、扫描信任、单项/批量删除和字段编辑保存现共用弹窗级同步 write gate；同一 React render 内的重复点击会在确认或 IPC 调用前被拒绝，不再依赖尚未提交到 DOM 的 `hostKeyMutationBusy`。App 级 latest-wins token 继续隔离跨窗口迟到列表，弹窗 gate 只负责单次写入所有权，关闭窗口会使旧 UI 操作失效而不覆盖其他窗口。Workspace UI 对延迟 `known_hosts` 导入和扫描信任分别执行同帧双触发，验证各自只有一个 pending 请求、一次后端调用和立即锁定的控件；完整前端 114 文件/625 项、生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

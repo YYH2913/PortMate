@@ -7621,9 +7621,24 @@ Host staging
   const firstKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
   await firstKeyManager.waitFor();
   await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("first.example ssh-ed25519 AAAAFIRST");
-  await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = true; });
-  await firstKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
+  const firstHostKeyImportBaseline = await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferHostKeyMutations = true;
+    return window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length;
+  });
+  const firstHostKeyImport = firstKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true });
+  await firstHostKeyImport.evaluate((button) => {
+    button.click();
+    button.click();
+  });
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
+  const firstHostKeyImportState = await hostKeyLifecyclePage.evaluate((baseline) => ({
+    pending: window.__pendingHostKeyMutations.length,
+    calls: window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length - baseline,
+  }), firstHostKeyImportBaseline);
+  assert(firstHostKeyImportState.pending === 1
+    && firstHostKeyImportState.calls === 1
+    && await firstHostKeyImport.isDisabled(),
+  `known_hosts import submitted duplicate writes: ${JSON.stringify(firstHostKeyImportState)}`);
   assert(await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").isDisabled(),
     "known_hosts editor remained mutable while an import was pending");
   await hostKeyLifecyclePage.evaluate(() => {
@@ -7748,7 +7763,29 @@ Host staging
     && (await hostKeyScanResult.textContent()).includes("SHA256:scan-first")
     && (await thirdKeyManager.locator(".host-key-scan-panel > header").textContent()).includes("10.0.0.1:2222"),
   "unknown Host Key scan did not expose the target and observed fingerprint");
-  await hostKeyScanResult.getByRole("button", { name: "加入 Profile", exact: true }).click();
+  const firstHostKeyTrust = hostKeyScanResult.getByRole("button", { name: "加入 Profile", exact: true });
+  const firstHostKeyTrustBaseline = await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+    return window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length;
+  });
+  await firstHostKeyTrust.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const firstHostKeyTrustState = await hostKeyLifecyclePage.evaluate((baseline) => ({
+    pending: window.__pendingSessionValidation.length,
+    calls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - baseline,
+  }), firstHostKeyTrustBaseline);
+  assert(firstHostKeyTrustState.pending === 1
+    && firstHostKeyTrustState.calls === 1
+    && await firstHostKeyTrust.isDisabled(),
+  `Host Key scan trust submitted duplicate writes: ${JSON.stringify(firstHostKeyTrustState)}`);
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation.shift().resolve();
+  });
   await thirdKeyManager.locator(".key-row", { hasText: "edge-router:2222" }).waitFor();
   await hostKeyLifecyclePage.evaluate(() => { window.__hostKeyScanMode = "mismatch"; });
   await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).click();
