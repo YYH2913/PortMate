@@ -1,7 +1,12 @@
 #[test]
 fn security_command_types_keep_stable_json_contracts() {
+    let profile = test_ssh_profile();
     let decision = serde_json::to_value(HostKeyDecisionRequest {
         profile_id: "ssh-1".to_string(),
+        expected_profile: Some(SessionProfile {
+            id: "ssh-1".to_string(),
+            ..profile
+        }),
         observation: HostKeyObservation {
             host: "router.example".to_string(),
             port: 22,
@@ -13,8 +18,17 @@ fn security_command_types_keep_stable_json_contracts() {
     })
     .unwrap();
     assert_eq!(decision["profileId"], "ssh-1");
+    assert_eq!(decision["expectedProfile"]["id"], "ssh-1");
     assert_eq!(decision["observation"]["publicKeyBase64"], "YWJj");
     assert_eq!(decision["decision"], "trust-once");
+
+    let legacy_decision: HostKeyDecisionRequest = serde_json::from_value(serde_json::json!({
+        "profileId": "ssh-1",
+        "observation": decision["observation"].clone(),
+        "decision": "trust-once"
+    }))
+    .unwrap();
+    assert!(legacy_decision.expected_profile.is_none());
 
     let delete: ClientIdentityDeleteRequest = serde_json::from_value(serde_json::json!({
         "profileId": "ssh-1",
@@ -40,15 +54,15 @@ fn temporary_host_key_trust_matches_without_persisting() {
         public_key_base64: "YWJj".to_string(),
     };
 
-    let key = temporary_trusted_host_key(&store, &profile_id, &observation).unwrap();
+    let policy = match &store.profile(&profile_id).unwrap().connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy.clone(),
+        _ => panic!("expected SSH profile"),
+    };
+    let key = temporary_trusted_host_key_for_policy(&profile_id, &policy, &observation).unwrap();
     assert!(store.host_keys.keys.is_empty());
 
     let mut host_keys = store.host_keys.clone();
     host_keys.keys.push(key);
-    let policy = match store.profile(&profile_id).unwrap().connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-        _ => panic!("expected SSH profile"),
-    };
     assert!(matches!(
         host_keys
             .evaluate(&profile_id, &policy, &observation)
@@ -87,9 +101,14 @@ fn persistent_host_key_decisions_add_and_replace_profile_mirrors() {
         public_key_base64: "YWJj".to_string(),
     };
 
-    let first = apply_persistent_host_key_decision(
+    let policy = match &store.profile(&profile_id).unwrap().connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy.clone(),
+        _ => panic!("expected SSH profile"),
+    };
+    let first = apply_persistent_host_key_decision_with_policy(
         &mut store,
         &profile_id,
+        &policy,
         &first_observation,
         HostKeyDecision::AppendToProfile,
     )
@@ -104,9 +123,10 @@ fn persistent_host_key_decisions_add_and_replace_profile_mirrors() {
 
     let mut replacement_observation = first_observation;
     replacement_observation.public_key_base64 = "ZGVm".to_string();
-    let replacement = apply_persistent_host_key_decision(
+    let replacement = apply_persistent_host_key_decision_with_policy(
         &mut store,
         &profile_id,
+        &policy,
         &replacement_observation,
         HostKeyDecision::ReplaceForProfile,
     )

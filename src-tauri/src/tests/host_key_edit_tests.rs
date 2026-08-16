@@ -204,3 +204,50 @@ fn scanned_host_key_trust_is_bound_to_the_current_ssh_connection_snapshot() {
         .unwrap_err();
     assert!(error.contains("Profile 已删除"), "{error}");
 }
+
+#[test]
+fn legacy_host_key_decisions_require_the_same_scanned_profile_snapshot() {
+    let scanned = normalize_session_profile(test_ssh_profile());
+    let ssh = ssh_connection(&scanned).unwrap();
+    let observation = HostKeyObservation {
+        host: ssh.endpoint.host.clone(),
+        port: ssh.endpoint.port,
+        alias: ssh.host_key_policy.alias.clone(),
+        algorithm: "ssh-ed25519".to_string(),
+        public_key_base64: "YWJj".to_string(),
+    };
+    let mut store = SessionStore::default();
+    store.upsert_profile(scanned.clone());
+
+    let missing = validate_host_key_decision_profile_snapshot(
+        &store,
+        &scanned.id,
+        None,
+        &observation,
+    )
+    .unwrap_err();
+    assert!(missing.contains("缺少预期 Profile 快照"), "{missing}");
+
+    let mut wrong_id = scanned.clone();
+    wrong_id.id = "other-profile".to_string();
+    let mismatched = validate_host_key_decision_profile_snapshot(
+        &store,
+        &scanned.id,
+        Some(&wrong_id),
+        &observation,
+    )
+    .unwrap_err();
+    assert!(mismatched.contains("Profile 标识"), "{mismatched}");
+
+    let mut changed = scanned.clone();
+    ssh_connection_mut(&mut changed).unwrap().endpoint.host = "changed.example".to_string();
+    store.upsert_profile(changed);
+    let stale = validate_host_key_decision_profile_snapshot(
+        &store,
+        &scanned.id,
+        Some(&scanned),
+        &observation,
+    )
+    .unwrap_err();
+    assert!(stale.contains("扫描后变化"), "{stale}");
+}

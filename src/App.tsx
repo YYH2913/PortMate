@@ -38,6 +38,7 @@ import { waitForChildWindowReady } from "./child-window-launch";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { addDismissedTransferId } from "./transfer-visibility";
+import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import { menuGroups, menuItemDisabled } from "./menu-capabilities";
@@ -512,6 +513,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
   profileUpdateHandlerRef.current = (summary) => {
     if (!summary?.profile?.id) return;
+    const prompt = hostKeyPromptRef.current;
+    if (prompt?.profile.id === summary.profile.id
+      && !hostKeyProfileSnapshotMatches(prompt.profile, prepareSessionProfile(summary.profile))) {
+      closeHostKeyPrompt();
+    }
     applySavedSessionState(summary, false);
   };
   profileDeleteHandlerRef.current = (payload) => {
@@ -3634,26 +3640,41 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
-    const profileExists = () => sessionsRef.current.some((session) => session.profile.id === profile.id);
-    if (!profileExists()) return;
+    const scannedProfile = prepareSessionProfile(profile);
+    const profileIsCurrent = () => {
+      const current = sessionsRef.current.find((session) => session.profile.id === scannedProfile.id);
+      return Boolean(current
+        && hostKeyProfileSnapshotMatches(scannedProfile, prepareSessionProfile(current.profile)));
+    };
+    if (!profileIsCurrent()) return;
     const gate = hostKeyPromptOperationGateRef.current;
     gate.invalidate("decision");
     const token = gate.replace("scan");
-    setHostKeyPrompt({ profile, message, scan: null, scanError: null, busy: true });
+    setHostKeyPrompt({ profile: scannedProfile, message, scan: null, scanError: null, busy: true });
     try {
       const credentialHandle = credentials
-        ? await stageConnectionCredentials(invokeBackend, profile.id, credentials)
+        ? await stageConnectionCredentials(invokeBackend, scannedProfile.id, credentials)
         : null;
-      if (!gate.isCurrent("scan", token) || !profileExists()) return;
+      if (!gate.isCurrent("scan", token)) return;
+      if (!profileIsCurrent()) {
+        closeHostKeyPrompt();
+        return;
+      }
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
-        request: { profile: prepareSessionProfile(profile), credentialHandle },
+        request: { profile: scannedProfile, credentialHandle },
       });
-      if (gate.isCurrent("scan", token) && profileExists()) {
-        setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
+      if (!gate.isCurrent("scan", token)) return;
+      if (profileIsCurrent()) {
+        setHostKeyPrompt({ profile: scannedProfile, message, scan, scanError: null, busy: false });
+      } else {
+        closeHostKeyPrompt();
       }
     } catch (error) {
-      if (gate.isCurrent("scan", token) && profileExists()) {
-        setHostKeyPrompt({ profile, message, scan: null, scanError: formatError(error), busy: false });
+      if (!gate.isCurrent("scan", token)) return;
+      if (profileIsCurrent()) {
+        setHostKeyPrompt({ profile: scannedProfile, message, scan: null, scanError: formatError(error), busy: false });
+      } else {
+        closeHostKeyPrompt();
       }
     } finally {
       gate.finish("scan", token);
@@ -3663,7 +3684,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function applyHostKeyPromptDecision(decision: HostKeyDecisionValue, reconnect: boolean) {
     const prompt = hostKeyPromptRef.current;
     if (!prompt?.scan) return;
-    if (!sessionsRef.current.some((session) => session.profile.id === prompt.profile.id)) {
+    const current = sessionsRef.current.find((session) => session.profile.id === prompt.profile.id);
+    if (!current
+      || !hostKeyProfileSnapshotMatches(prompt.profile, prepareSessionProfile(current.profile))) {
       closeHostKeyPrompt();
       return;
     }
@@ -3704,9 +3727,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function openHostKeySettingsFromPrompt() {
     const prompt = hostKeyPromptRef.current;
     if (!prompt) return;
+    const current = sessionsRef.current.find((session) => session.profile.id === prompt.profile.id);
     closeHostKeyPrompt();
-    if (!sessionsRef.current.some((session) => session.profile.id === prompt.profile.id)) return;
-    openSessionProfileDialog(prompt.profile, prompt.profile, "验证");
+    if (!current
+      || !hostKeyProfileSnapshotMatches(prompt.profile, prepareSessionProfile(current.profile))) return;
+    openSessionProfileDialog(current.profile, current.profile, "验证");
   }
 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {

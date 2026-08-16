@@ -186,6 +186,8 @@ SSH 连接凭据弹窗现为每次请求分配单调 request ID，提交/取消�
 
 密钥管理器的 `known_hosts` 导出现使用弹窗级同步 read gate，同一 React render 内重复点击只会启动一次 IPC；Host Key Store 发生导入、删除、编辑或信任更新时会立即使在途导出和已显示文本失效，关闭弹窗后的迟到响应也不能写回新实例。Workspace UI 以同帧双击、挂起导出、并发导入新 Host Key 和释放旧响应的完整时序验证单次调用、立即禁用、Store 更新后解锁及零 stale textarea；前端 114 文件/626 项、生产构建、release-source 和完整 Workspace UI 均通过。
 
+普通 SSH 连接失败后的 Host Key 确认提示也已绑定规范化连接快照：扫描、Profile update、决策提交和打开验证设置都会对照当前端点、代理、Jump Host、认证及 Host Key 策略，Profile 同 ID 但连接配置变化时立即撤销旧提示和在途操作；仅持久 Host Key 镜像变化不会误撤销。仍保留用于兼容的 `apply_host_key_decision` 后端命令现要求显式 `expectedProfile`，并在一次性或持久信任前复用服务端扫描快照及 observation 目标/Jump Host 校验，缺失快照、ID 不一致或 Store 配置变化均 fail-closed。Workspace UI 在 Profile update 与旧确认按钮点击的同一 task 内验证零 `trust_scanned_host_key` 写入、零旧设置/凭据弹窗；Host Key 专项 15 项、前端 115 文件/628 项、主应用完整库回归 463 passed/1 ignored/1 filtered、生产构建、Workspace UI、Rustfmt、all-targets Clippy `-D warnings` 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

@@ -266,29 +266,6 @@ pub(super) fn touch_observed_host_key(
     Ok(touched)
 }
 
-pub(super) fn apply_persistent_host_key_decision(
-    store: &mut SessionStore,
-    profile_id: &str,
-    observation: &HostKeyObservation,
-    decision: HostKeyDecision,
-) -> Result<Option<TrustedHostKey>, String> {
-    let policy = match store
-        .profile(profile_id)
-        .ok_or_else(|| format!("unknown session: {profile_id}"))?
-        .connection
-    {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
-    };
-    apply_persistent_host_key_decision_with_policy(
-        store,
-        profile_id,
-        &policy,
-        observation,
-        decision,
-    )
-}
-
 pub(super) fn apply_persistent_host_key_decision_with_policy(
     store: &mut SessionStore,
     profile_id: &str,

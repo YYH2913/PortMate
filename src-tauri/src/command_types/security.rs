@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct HostKeyDecisionRequest {
     pub profile_id: String,
+    #[serde(default)]
+    pub expected_profile: Option<SessionProfile>,
     pub observation: HostKeyObservation,
     pub decision: HostKeyDecision,
 }

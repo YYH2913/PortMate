@@ -21,22 +21,49 @@ pub(crate) fn apply_host_key_decision(
     state: State<'_, AppState>,
     request: HostKeyDecisionRequest,
 ) -> Result<Option<portmate_core::TrustedHostKey>, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let policy = validate_host_key_decision_profile_snapshot(
+        &store,
+        &request.profile_id,
+        request.expected_profile.as_ref(),
+        &request.observation,
+    )?;
     if request.decision == HostKeyDecision::TrustOnce {
-        let trusted =
-            temporary_trusted_host_key(&store, &request.profile_id, &request.observation)?;
+        let trusted = temporary_trusted_host_key_for_policy(
+            &request.profile_id,
+            &policy,
+            &request.observation,
+        )?;
         drop(store);
         remember_one_time_host_key(state.inner(), &request.profile_id, trusted.clone())?;
         return Ok(Some(trusted));
     }
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        apply_persistent_host_key_decision(
+        apply_persistent_host_key_decision_with_policy(
             next_store,
             &request.profile_id,
+            &policy,
             &request.observation,
             request.decision,
         )
     })
+}
+
+pub(super) fn validate_host_key_decision_profile_snapshot(
+    store: &SessionStore,
+    profile_id: &str,
+    expected_profile: Option<&SessionProfile>,
+    observation: &HostKeyObservation,
+) -> Result<portmate_core::HostKeyPolicy, String> {
+    let expected_profile = expected_profile.ok_or_else(|| {
+        "Host Key 信任请求缺少预期 Profile 快照，请重新扫描".to_string()
+    })?;
+    let expected_profile = normalize_session_profile(expected_profile.clone());
+    if expected_profile.id != profile_id {
+        return Err("Host Key 信任请求的 Profile 标识与预期快照不匹配，请重新扫描".to_string());
+    }
+    validate_scanned_host_key_profile_snapshot(store, &expected_profile, observation)
 }
 
 #[tauri::command]

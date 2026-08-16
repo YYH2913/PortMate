@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn temporary_trusted_host_key(
-    store: &SessionStore,
-    profile_id: &str,
-    observation: &HostKeyObservation,
-) -> Result<portmate_core::TrustedHostKey, String> {
-    let profile = store
-        .profile(profile_id)
-        .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-    let policy = match profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.host_key_policy,
-        _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
-    };
-    temporary_trusted_host_key_for_policy(profile_id, &policy, observation)
-}
-
 pub(super) fn temporary_trusted_host_key_for_policy(
     profile_id: &str,
     policy: &portmate_core::HostKeyPolicy,

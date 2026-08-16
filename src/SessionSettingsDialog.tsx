@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { invokeBackend } from "./api";
+import { hostKeyProfileRequestKey } from "./host-key-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import ShellArgumentsEditor from "./ShellArgumentsEditor";
@@ -381,17 +382,6 @@ function protocolLabel(protocol: ProtocolTab) {
 
 function protocolSettingsSection(protocol: ProtocolTab) {
   return protocol === "Serial" ? "串口" : protocol;
-}
-
-function hostKeyProfileRequestKey(profile: SessionProfile) {
-  if (profile.connection.kind !== "ssh" && profile.connection.kind !== "tmux") {
-    return `${profile.id}:${profile.connection.kind}`;
-  }
-  return JSON.stringify({
-    id: profile.id,
-    kind: profile.kind,
-    connection: { ...profile.connection, trustedHostKeys: [] },
-  });
 }
 
 function QuickField({

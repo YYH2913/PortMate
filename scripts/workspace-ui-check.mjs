@@ -8683,6 +8683,51 @@ Host staging
     `Host Key prompt lifecycle browser exceptions: ${JSON.stringify(hostKeyPromptErrors)}`);
   await hostKeyPromptPage.close();
 
+  const changedHostKeyDecisionPage = await context.newPage();
+  const changedHostKeyDecisionErrors = [];
+  changedHostKeyDecisionPage.on("pageerror", (error) => changedHostKeyDecisionErrors.push(error.message));
+  await changedHostKeyDecisionPage.goto(appUrl);
+  await changedHostKeyDecisionPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const changedHostKeyConnect = changedHostKeyDecisionPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await changedHostKeyDecisionPage.evaluate(() => {
+    window.__sessionOpenErrors["edge-router"] = "SSH Host Key 已变化: simulated mismatch";
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+  });
+  await changedHostKeyConnect.click();
+  await changedHostKeyDecisionPage.locator(".credential-dialog").getByRole("button", { name: "连接", exact: true }).click();
+  await changedHostKeyDecisionPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const changedHostKeyDialog = changedHostKeyDecisionPage.locator(".hostkey-dialog");
+  await changedHostKeyDialog.waitFor();
+  await changedHostKeyDecisionPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  const changedHostKeyDecision = changedHostKeyDialog.getByRole("button", { name: "加入 Profile 并重连", exact: true });
+  await changedHostKeyDecision.waitFor();
+  const changedHostKeyTrustBaseline = await changedHostKeyDecisionPage.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "trust_scanned_host_key").length);
+  await changedHostKeyDecision.evaluate((button) => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "edge-router");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.connection.endpoint.host = "10.0.0.99";
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", structuredClone(updated));
+    button.click();
+  });
+  await changedHostKeyDialog.waitFor({ state: "detached" });
+  const changedHostKeyDecisionState = await changedHostKeyDecisionPage.evaluate((baseline) => ({
+    endpoint: window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.endpoint.host,
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - baseline,
+    credentialDialogs: document.querySelectorAll(".credential-dialog").length,
+    settingsDialogs: document.querySelectorAll(".session-settings-dialog").length,
+  }), changedHostKeyTrustBaseline);
+  assert(changedHostKeyDecisionState.endpoint === "10.0.0.99"
+    && changedHostKeyDecisionState.trustCalls === 0
+    && changedHostKeyDecisionState.credentialDialogs === 0
+    && changedHostKeyDecisionState.settingsDialogs === 0,
+  `a stale Host Key decision survived an SSH Profile change: ${JSON.stringify(changedHostKeyDecisionState)}`);
+  assert(changedHostKeyDecisionErrors.length === 0,
+    `changed Host Key decision browser exceptions: ${JSON.stringify(changedHostKeyDecisionErrors)}`);
+  await changedHostKeyDecisionPage.close();
+
   const deletedHostKeyDecisionPage = await context.newPage();
   const deletedHostKeyDecisionErrors = [];
   deletedHostKeyDecisionPage.on("pageerror", (error) => deletedHostKeyDecisionErrors.push(error.message));
