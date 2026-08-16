@@ -26,6 +26,16 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     expected_runtime_id: Option<&str>,
     commit_validation: Option<CommitValidation>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, TunnelRuntimeOwner), String> {
+    if tunnel.egress == TunnelEgress::PortmateHost {
+        return start_portmate_host_tunnel_runtime_with_validation(
+            state,
+            session_id,
+            tunnel,
+            relabel_assigned_port,
+            commit_validation,
+        )
+        .await;
+    }
     validate_tunnels(std::slice::from_ref(&tunnel))?;
     let (
         handle,
@@ -98,7 +108,8 @@ pub(super) async fn start_tunnel_runtime_with_validation(
             }
             tunnel.bind_port = returned_port;
             if relabel_assigned_port {
-                tunnel.label = tunnel_label(
+                tunnel.label = tunnel_label_for_egress(
+                    tunnel.egress,
                     tunnel.mode,
                     &tunnel.bind_host,
                     tunnel.bind_port,
@@ -203,7 +214,8 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     if tunnel.bind_port == 0 {
         tunnel.bind_port = local_addr.port();
         if relabel_assigned_port {
-            tunnel.label = tunnel_label(
+            tunnel.label = tunnel_label_for_egress(
+                tunnel.egress,
                 tunnel.mode,
                 &tunnel.bind_host,
                 tunnel.bind_port,
@@ -394,17 +406,21 @@ pub(super) fn record_tunnel_client_failure_if_owned(
     error: &str,
 ) -> Result<bool, String> {
     let mut store = store.lock().map_err(|error| error.to_string())?;
-    let current = tunnels
+    let kind = tunnels
         .lock()
         .map_err(|error| error.to_string())?
         .get(tunnel_id)
-        .is_some_and(|runtime| owner.owns(runtime) && runtime.session_id == session_id);
-    if !current {
+        .filter(|runtime| owner.owns(runtime) && runtime.session_id == session_id)
+        .map(|runtime| match runtime.spec.egress {
+            TunnelEgress::Ssh => "SSH tunnel",
+            TunnelEgress::PortmateHost => "PortMate host proxy",
+        });
+    let Some(kind) = kind else {
         return Ok(false);
-    }
+    };
     store.record_system_event(
         session_id,
-        format!("PortMate: SSH tunnel client failed: {error}"),
+        format!("PortMate: {kind} client failed: {error}"),
     );
     if let Err(error) =
         persist_applied_store(&store, store_path, "tunnel client failure event")

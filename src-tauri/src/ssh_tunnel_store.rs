@@ -23,12 +23,33 @@ pub(super) fn tunnel_label(
     label.chars().take(MAX_TUNNEL_LABEL_CHARACTERS).collect()
 }
 
+pub(super) fn tunnel_label_for_egress(
+    egress: TunnelEgress,
+    mode: TunnelMode,
+    bind_host: &str,
+    bind_port: u16,
+    target_host: &str,
+    target_port: u16,
+) -> String {
+    let label = tunnel_label(mode, bind_host, bind_port, target_host, target_port);
+    match egress {
+        TunnelEgress::Ssh => label,
+        TunnelEgress::PortmateHost => format!("PortMate host {label}"),
+    }
+    .chars()
+    .take(MAX_TUNNEL_LABEL_CHARACTERS)
+    .collect()
+}
+
 pub(super) fn persist_tunnel_to_profile_and_log(
     state: &AppState,
     session_id: &str,
     tunnel: &TunnelSpec,
     local_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), String> {
+    if tunnel.egress == TunnelEgress::PortmateHost {
+        return record_portmate_host_proxy_started(state, session_id, tunnel, local_addr);
+    }
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
         let mut profile = next_store
@@ -71,6 +92,39 @@ pub(super) fn persist_tunnel_to_profile_and_log(
     })
 }
 
+fn record_portmate_host_proxy_started(
+    state: &AppState,
+    session_id: &str,
+    tunnel: &TunnelSpec,
+    local_addr: Option<std::net::SocketAddr>,
+) -> Result<(), String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+        if next_store.profile(session_id).is_none() {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        let listen = local_addr
+            .map(|address| address.to_string())
+            .unwrap_or_else(|| format!("{}:{}", tunnel.bind_host, tunnel.bind_port));
+        let target = if tunnel.mode == TunnelMode::Dynamic {
+            format!("{} allowed route rule(s)", tunnel.route_rules.len())
+        } else {
+            format!("{}:{}", tunnel.target_host, tunnel.target_port)
+        };
+        let event_ids = next_store
+            .record_system_event_tracked(
+                session_id,
+                format!(
+                    "PortMate: host {:?} proxy listening on {listen} -> {target}",
+                    tunnel.mode
+                ),
+            )
+            .into_iter()
+            .collect();
+        Ok(((), event_ids))
+    })
+}
+
 pub(super) fn persist_stopped_tunnel_to_profile_and_log(
     state: &AppState,
     session_id: &str,
@@ -80,10 +134,16 @@ pub(super) fn persist_stopped_tunnel_to_profile_and_log(
     mark_tunnel_stopped_in_store(&mut store, session_id, stopped);
     store.record_system_event(
         session_id,
-        format!(
-            "PortMate: SSH {:?} tunnel stopped on {}:{}",
-            stopped.mode, stopped.bind_host, stopped.bind_port
-        ),
+        match stopped.egress {
+            TunnelEgress::Ssh => format!(
+                "PortMate: SSH {:?} tunnel stopped on {}:{}",
+                stopped.mode, stopped.bind_host, stopped.bind_port
+            ),
+            TunnelEgress::PortmateHost => format!(
+                "PortMate: host {:?} proxy stopped on {}:{}",
+                stopped.mode, stopped.bind_host, stopped.bind_port
+            ),
+        },
     );
     persist_applied_store(&store, &state.store_path, "stopped tunnel state")
 }

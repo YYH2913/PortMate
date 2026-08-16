@@ -302,6 +302,7 @@ function isTunnelSpec(value: unknown): boolean {
   if (tunnel === null
     || !isBoundedTunnelText(tunnel.id, MAX_TUNNEL_ID_CHARACTERS, false, false)
     || !isBoundedTunnelText(tunnel.label, MAX_TUNNEL_LABEL_CHARACTERS, false, false)
+    || (tunnel.egress !== undefined && tunnel.egress !== "ssh")
     || !includes(["local", "remote", "dynamic"] as const, tunnel.mode)
     || !isTunnelPort(tunnel.bindPort, true)
     || !isBoolean(tunnel.enabled)) return false;

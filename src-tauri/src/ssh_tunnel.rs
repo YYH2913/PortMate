@@ -135,14 +135,20 @@ impl TunnelMetrics {
     }
 
     pub(super) fn add_tcp_to_ssh_bytes(&self, bytes: usize) {
-        self.tcp_to_ssh_bytes
-            .fetch_add(bytes as u64, Ordering::SeqCst);
+        self.add_tcp_to_ssh_bytes_u64(bytes as u64);
+    }
+
+    pub(super) fn add_tcp_to_ssh_bytes_u64(&self, bytes: u64) {
+        self.tcp_to_ssh_bytes.fetch_add(bytes, Ordering::SeqCst);
         self.touch();
     }
 
     pub(super) fn add_ssh_to_tcp_bytes(&self, bytes: usize) {
-        self.ssh_to_tcp_bytes
-            .fetch_add(bytes as u64, Ordering::SeqCst);
+        self.add_ssh_to_tcp_bytes_u64(bytes as u64);
+    }
+
+    pub(super) fn add_ssh_to_tcp_bytes_u64(&self, bytes: u64) {
+        self.ssh_to_tcp_bytes.fetch_add(bytes, Ordering::SeqCst);
         self.touch();
     }
 
@@ -261,11 +267,12 @@ pub(super) async fn create_tunnel_inner_with_validation(
     commit_validation: Option<CommitValidation>,
 ) -> Result<TunnelSpec, String> {
     let request = normalize_tunnel_request(request)?;
-    ensure_tunnel_creation_capacity(state, &request.session_id)?;
+    ensure_tunnel_creation_capacity(state, &request.session_id, request.egress)?;
     let tunnel = TunnelSpec {
         id: Uuid::new_v4().to_string(),
         label: request.label.clone().unwrap_or_else(|| {
-            tunnel_label(
+            tunnel_label_for_egress(
+                request.egress,
                 request.mode,
                 &request.bind_host,
                 request.bind_port,
@@ -273,6 +280,7 @@ pub(super) async fn create_tunnel_inner_with_validation(
                 request.target_port,
             )
         }),
+        egress: request.egress,
         mode: request.mode,
         bind_host: request.bind_host.clone(),
         bind_port: request.bind_port,
@@ -299,11 +307,31 @@ pub(super) async fn create_tunnel_inner_with_validation(
 pub(super) fn ensure_tunnel_creation_capacity(
     state: &AppState,
     session_id: &str,
+    egress: TunnelEgress,
 ) -> Result<(), String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     let profile = store
         .profile(session_id)
         .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    if egress == TunnelEgress::PortmateHost {
+        drop(store);
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        if tunnels
+            .values()
+            .filter(|runtime| {
+                runtime.session_id == session_id
+                    && runtime.spec.egress == TunnelEgress::PortmateHost
+                    && !runtime.closed.load(Ordering::SeqCst)
+            })
+            .count()
+            >= MAX_TUNNELS_PER_PROFILE
+        {
+            return Err(format!(
+                "enabled PortMate host proxy count has reached {MAX_TUNNELS_PER_PROFILE}"
+            ));
+        }
+        return Ok(());
+    }
     let tunnels = match profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.tunnels,
         _ => return Err("tunnels require an SSH or Tmux session".to_string()),

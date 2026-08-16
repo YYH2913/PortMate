@@ -316,15 +316,18 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "create_tunnel",
             "Create Forward Or Proxy",
-            "Create a route-specific SSH forward (`local` or `remote`) or a dynamic SOCKS5 proxy (`dynamic`) on an authorized SSH/Tmux session. Dynamic proxies may restrict targets with exact domains, `*.example.com` suffixes, IP addresses, or IPv4/IPv6 CIDRs and optional ports.",
+            "Create a route-specific forward or proxy. `egress: ssh` uses an authorized SSH/Tmux session. `egress: portmate-host` exposes TCP routes reachable from the host running PortMate and supports fixed `local` forwarding or a route-restricted `dynamic` SOCKS5 proxy. Non-loopback listeners require `allowRemoteBind: true`.",
             json!({
                 "type":"object",
                 "required":["sessionId","mode","bindHost","bindPort"],
+                "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "egress":{"type":"string","enum":["ssh","portmate-host"],"default":"ssh"},
                     "mode":{"type":"string","enum":["local","remote","dynamic"]},
                     "bindHost":{"type":"string","maxLength":255},
                     "bindPort":{"type":"integer","minimum":0,"maximum":65535},
+                    "allowRemoteBind":{"type":"boolean","default":false},
                     "targetHost":{"type":"string","maxLength":255,"default":""},
                     "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
                     "routeRules":{
@@ -365,6 +368,24 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                                 "routeRules":{"type":"array","maxItems":0}
                             }
                         }
+                    },
+                    {
+                        "if":{"properties":{"egress":{"const":"portmate-host"}},"required":["egress"]},
+                        "then":{"properties":{"mode":{"enum":["local","dynamic"]}}},
+                        "else":{"properties":{"allowRemoteBind":{"const":false}}}
+                    },
+                    {
+                        "if":{
+                            "properties":{
+                                "egress":{"const":"portmate-host"},
+                                "mode":{"const":"dynamic"}
+                            },
+                            "required":["egress","mode"]
+                        },
+                        "then":{
+                            "required":["routeRules"],
+                            "properties":{"routeRules":{"type":"array","minItems":1,"maxItems":64}}
+                        }
                     }
                 ]
             }),
@@ -373,7 +394,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_tunnels",
             "List Forwards And Proxies",
-            "List active SSH forwards and dynamic SOCKS5 proxies for an authorized session.",
+            "List active SSH and PortMate-host forwards and SOCKS5 proxies for an authorized session.",
             session_schema(),
             true,
         ),
@@ -647,6 +668,11 @@ mod tests {
         );
         assert_eq!(schema["properties"]["bindPort"]["minimum"], 0);
         assert_eq!(schema["properties"]["bindPort"]["maximum"], 65_535);
+        assert_eq!(
+            schema["properties"]["egress"]["enum"],
+            json!(["ssh", "portmate-host"])
+        );
+        assert_eq!(schema["properties"]["allowRemoteBind"]["default"], false);
 
         let clauses = schema["allOf"].as_array().expect("route schema clauses");
         let target_clause = &clauses[1];
@@ -674,6 +700,20 @@ mod tests {
         assert_eq!(
             target_clause["else"]["properties"]["targetPort"]["minimum"],
             1
+        );
+        let host_egress_clause = &clauses[2];
+        assert_eq!(
+            host_egress_clause["then"]["properties"]["mode"]["enum"],
+            json!(["local", "dynamic"])
+        );
+        let host_dynamic_clause = &clauses[3];
+        assert_eq!(
+            host_dynamic_clause["then"]["properties"]["routeRules"]["minItems"],
+            1
+        );
+        assert_eq!(
+            host_dynamic_clause["then"]["required"],
+            json!(["routeRules"])
         );
     }
 

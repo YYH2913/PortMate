@@ -15,6 +15,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
         spec: TunnelSpec {
             id: id.to_string(),
             label: id.to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
@@ -68,6 +69,7 @@ fn ssh_channel_failure_removes_only_its_tunnel_runtimes() {
             .snapshot(TunnelSpec {
                 id: "first".to_string(),
                 label: String::new(),
+                egress: TunnelEgress::Ssh,
                 mode: TunnelMode::Local,
                 bind_host: String::new(),
                 bind_port: 0,
@@ -115,6 +117,7 @@ fn stopping_tunnel_marks_profile_tunnel_disabled() {
     let tunnel = TunnelSpec {
         id: "tunnel-1".to_string(),
         label: "127.0.0.1:10022 -> 127.0.0.1:22".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 10022,

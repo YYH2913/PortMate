@@ -92,6 +92,7 @@ export default function TunnelDialog({
       const tunnel = await invokeBackend<TunnelSpec>("create_tunnel", {
         request: {
           sessionId: session.profile.id,
+          egress: "ssh",
           mode,
           bindHost,
           bindPort: normalizedBindPort,
@@ -267,9 +268,9 @@ export default function TunnelDialog({
                   <div key={tunnel.spec.id} className={`tunnel-row ${tunnel.lastError ? "degraded" : ""}`}>
                     <div>
                       <strong>{tunnel.spec.label}</strong>
-                      <small>{tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? dynamicRouteSummary(tunnel.spec.routeRules) : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
+                      <small>{tunnel.spec.egress === "portmate-host" ? "PortMate host" : "SSH"} · {tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? dynamicRouteSummary(tunnel.spec.routeRules) : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
                       <small>
-                        active {tunnel.activeConnections} · total {tunnel.totalConnections} · TCP→SSH {formatBytes(tunnel.tcpToSshBytes)} · SSH→TCP {formatBytes(tunnel.sshToTcpBytes)}
+                        active {tunnel.activeConnections} · total {tunnel.totalConnections} · {tunnel.spec.egress === "portmate-host" ? "client→target" : "TCP→SSH"} {formatBytes(tunnel.tcpToSshBytes)} · {tunnel.spec.egress === "portmate-host" ? "target→client" : "SSH→TCP"} {formatBytes(tunnel.sshToTcpBytes)}
                       </small>
                       {tunnel.lastError ? <small className="tunnel-error">{tunnel.lastError}</small> : null}
                     </div>

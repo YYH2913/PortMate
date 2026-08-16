@@ -125,6 +125,45 @@ pub(super) fn mcp_audit_details(
             details.insert("scriptId".to_string(), script_id.to_string());
         }
     }
+    if request.command == "create_tunnel" {
+        for (argument, detail) in [
+            ("egress", "egress"),
+            ("mode", "mode"),
+            ("bindHost", "bindHost"),
+            ("targetHost", "targetHost"),
+        ] {
+            if let Some(value) = request
+                .args
+                .get(argument)
+                .and_then(serde_json::Value::as_str)
+            {
+                details.insert(detail.to_string(), value.to_string());
+            }
+        }
+        for (argument, detail) in [("bindPort", "bindPort"), ("targetPort", "targetPort")] {
+            if let Some(value) = request
+                .args
+                .get(argument)
+                .and_then(serde_json::Value::as_u64)
+            {
+                details.insert(detail.to_string(), value.to_string());
+            }
+        }
+        if let Some(value) = request
+            .args
+            .get("allowRemoteBind")
+            .and_then(serde_json::Value::as_bool)
+        {
+            details.insert("allowRemoteBind".to_string(), value.to_string());
+        }
+        if let Some(value) = request
+            .args
+            .get("routeRules")
+            .and_then(serde_json::Value::as_array)
+        {
+            details.insert("routeRuleCount".to_string(), value.len().to_string());
+        }
+    }
     details
 }
 

@@ -7,12 +7,14 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
         state,
         CreateTunnelRequest {
             session_id: session_id.to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: echo_address.port(),
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: None,
         },
     )
@@ -99,6 +101,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
         state,
         CreateTunnelRequest {
             session_id: session_id.to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Dynamic,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
@@ -108,6 +111,7 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
                 host: "127.0.0.1".to_string(),
                 port: Some(dynamic_echo_address.port()),
             }],
+            allow_remote_bind: false,
             label: None,
         },
     )
@@ -268,12 +272,14 @@ async fn assert_libssh_local_and_dynamic_tunnels(state: &AppState, session_id: &
         state,
         CreateTunnelRequest {
             session_id: session_id.to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Remote,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: remote_echo_address.port(),
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: None,
         },
     )

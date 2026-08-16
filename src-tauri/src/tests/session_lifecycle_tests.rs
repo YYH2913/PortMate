@@ -585,6 +585,7 @@ fn session_close_stops_tunnel_listeners_before_returning() {
                 spec: TunnelSpec {
                     id: "session-close-tunnel".to_string(),
                     label: "session close listener".to_string(),
+                    egress: TunnelEgress::Ssh,
                     mode: TunnelMode::Local,
                     bind_host: address.ip().to_string(),
                     bind_port: address.port(),

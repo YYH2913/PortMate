@@ -132,6 +132,7 @@ fn ssh_auxiliary_saturation_blocks_remote_entry_points_without_side_effects() {
                 spec: TunnelSpec {
                     id: "saturated-health-check".to_string(),
                     label: "saturated health check".to_string(),
+                    egress: TunnelEgress::Ssh,
                     mode: TunnelMode::Remote,
                     bind_host: "127.0.0.1".to_string(),
                     bind_port: 10_022,

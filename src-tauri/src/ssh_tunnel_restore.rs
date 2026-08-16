@@ -14,7 +14,7 @@ pub(super) fn enabled_tunnel_specs(
     };
     Ok(normalize_tunnels(tunnels)
         .into_iter()
-        .filter(|tunnel| tunnel.enabled)
+        .filter(|tunnel| tunnel.enabled && tunnel.egress == TunnelEgress::Ssh)
         .collect())
 }
 

@@ -29,6 +29,8 @@ pub struct JumpHop {
 pub struct TunnelSpec {
     pub id: String,
     pub label: String,
+    #[serde(default)]
+    pub egress: TunnelEgress,
     pub mode: TunnelMode,
     pub bind_host: String,
     pub bind_port: u16,
@@ -37,6 +39,14 @@ pub struct TunnelSpec {
     #[serde(default)]
     pub route_rules: Vec<TunnelRouteRule>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TunnelEgress {
+    #[default]
+    Ssh,
+    PortmateHost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

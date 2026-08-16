@@ -245,6 +245,7 @@ fn openssh_disconnect_cleans_tunnel_listener_when_store_is_poisoned() {
                 spec: TunnelSpec {
                     id: "poisoned-store-tunnel".to_string(),
                     label: "poisoned Store listener".to_string(),
+                    egress: TunnelEgress::Ssh,
                     mode: TunnelMode::Local,
                     bind_host: address.ip().to_string(),
                     bind_port: address.port(),

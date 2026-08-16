@@ -235,6 +235,7 @@ export interface OneKeyMutationResponse {
 export interface TunnelSpec {
   id: string;
   label: string;
+  egress?: "ssh" | "portmate-host";
   mode: "local" | "remote" | "dynamic";
   bindHost: string;
   bindPort: number;

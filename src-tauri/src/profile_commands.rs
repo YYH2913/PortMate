@@ -2,7 +2,19 @@ use super::*;
 
 pub(super) fn validate_profile_tunnels(profile: &SessionProfile) -> Result<(), String> {
     match &profile.connection {
-        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => validate_tunnels(&ssh.tunnels),
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            if ssh
+                .tunnels
+                .iter()
+                .any(|tunnel| tunnel.egress != TunnelEgress::Ssh)
+            {
+                return Err(
+                    "PortMate host proxies are runtime-only and cannot be saved in a session profile"
+                        .to_string(),
+                );
+            }
+            validate_tunnels(&ssh.tunnels)
+        }
         _ => Ok(()),
     }
 }

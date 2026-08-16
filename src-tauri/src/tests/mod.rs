@@ -79,6 +79,8 @@ mod file_batch_tests;
 mod file_operation_tests;
 #[path = "host_key_tests.rs"]
 mod host_key_tests;
+#[path = "host_proxy_tests.rs"]
+mod host_proxy_tests;
 #[path = "identity_tests.rs"]
 mod identity_tests;
 #[path = "mcp_approval_tests.rs"]

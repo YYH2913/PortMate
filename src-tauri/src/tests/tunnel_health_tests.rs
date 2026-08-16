@@ -77,6 +77,7 @@ fn remote_forward_route_cleanup_requires_the_exact_runtime_generation() {
     let spec = TunnelSpec {
         id: "shared-route-id".to_string(),
         label: "Shared route".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Remote,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 41_923,
@@ -228,6 +229,7 @@ fn remote_tunnel_health_recovery_preserves_non_health_errors() {
         .snapshot(TunnelSpec {
             id: "remote".to_string(),
             label: "remote".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Remote,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_022,
@@ -246,6 +248,7 @@ fn remote_tunnel_health_recovery_preserves_non_health_errors() {
             .snapshot(TunnelSpec {
                 id: "remote".to_string(),
                 label: "remote".to_string(),
+                egress: TunnelEgress::Ssh,
                 mode: TunnelMode::Remote,
                 bind_host: "127.0.0.1".to_string(),
                 bind_port: 10_022,
@@ -268,6 +271,7 @@ fn tunnel_health_rejects_a_superseding_generation_on_the_same_ssh_runtime() {
     let spec = TunnelSpec {
         id: "health-generation".to_string(),
         label: "health generation".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Remote,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 10_022,

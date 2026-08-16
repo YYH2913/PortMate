@@ -1,4 +1,4 @@
-use crate::models::{TunnelMode, TunnelRouteRule, TunnelSpec};
+use crate::models::{TunnelEgress, TunnelMode, TunnelRouteRule, TunnelSpec};
 use ipnet::IpNet;
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -69,12 +69,20 @@ fn validate_tunnel(tunnel: &TunnelSpec) -> Result<(), String> {
         &tunnel.bind_host,
         tunnel.mode == TunnelMode::Remote,
     )?;
+    if tunnel.egress == TunnelEgress::PortmateHost && tunnel.mode == TunnelMode::Remote {
+        return Err("PortMate host egress does not support remote SSH forwarding".to_string());
+    }
     match tunnel.mode {
         TunnelMode::Dynamic => {
             if !tunnel.target_host.is_empty() || tunnel.target_port != 0 {
                 return Err("dynamic tunnel must not have a target".to_string());
             }
             validate_tunnel_route_rules(&tunnel.route_rules)?;
+            if tunnel.egress == TunnelEgress::PortmateHost && tunnel.route_rules.is_empty() {
+                return Err(
+                    "PortMate host SOCKS5 proxies require at least one route rule".to_string(),
+                );
+            }
         }
         TunnelMode::Local | TunnelMode::Remote => {
             if !tunnel.route_rules.is_empty() {
@@ -248,6 +256,7 @@ mod tests {
         TunnelSpec {
             id: id.into(),
             label: "Tunnel".to_string(),
+            egress: TunnelEgress::Ssh,
             mode,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_022,

@@ -191,11 +191,11 @@ The JSON is empty until a Token is explicitly generated or rotated. Treat copied
 | `read-sessions` | Read authorized sessions and runtime state |
 | `read-logs` | Read and search logs for authorized sessions |
 | `read-transfers` | List and inspect redacted transfer status |
-| `read-tunnels` | List active SSH forwards and SOCKS5 proxies |
+| `read-tunnels` | List active SSH and PortMate-host forwards and SOCKS5 proxies |
 | `read-scripts` | List MCP-enabled script summaries for authorized sessions; script bodies are omitted |
 | `write-input` | Send text, keys, or commands to a terminal |
 | `transfer` | Start, cancel, and retry file-transfer tasks; also implies `read-transfers` |
-| `tunnel` | Create and stop SSH forwards or SOCKS5 proxies; also implies `read-tunnels` |
+| `tunnel` | Create and stop SSH or PortMate-host forwards and SOCKS5 proxies; also implies `read-tunnels` |
 | `manage-sessions` | Open or close sessions |
 | `run-scripts` | Run saved MCP-enabled scripts in authorized sessions; also implies `read-scripts` |
 
@@ -280,7 +280,7 @@ Both workflows stage content in the desktop application's private data directory
 
 ### Route-Specific Forwarding And Proxy
 
-`create_tunnel` creates a route only inside one connected, authorized SSH or Tmux session. It does not modify the operating system routing table. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.
+`create_tunnel` supports two explicit egress boundaries. The default `egress: "ssh"` creates a route inside one connected, authorized SSH or Tmux session. `egress: "portmate-host"` connects from the machine running PortMate, exposing TCP services and routes that machine can reach. The `sessionId` still selects the MCP grant and audit boundary; a host-egress proxy does not require that session to be connected. Neither mode modifies the operating system routing table. `list_tunnels` returns current listener metrics, and `stop_tunnel` stops one route by its backend-issued tunnel ID.
 
 Local forwarding sends one local listener to a fixed target through SSH:
 
@@ -314,6 +314,40 @@ Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` fo
 ```
 
 Binding a local listener to a non-loopback address exposes it to that interface. Keep per-write confirmation enabled unless the client and route policy are fully trusted.
+
+To expose a fixed route reachable from the PortMate host, set `egress` explicitly. Host egress supports `local` and `dynamic`, but not SSH remote forwarding:
+
+```json
+{
+  "sessionId": "edge-router",
+  "egress": "portmate-host",
+  "mode": "local",
+  "bindHost": "127.0.0.1",
+  "bindPort": 0,
+  "targetHost": "192.168.33.222",
+  "targetPort": 443,
+  "allowRemoteBind": false,
+  "label": "PortMate host route"
+}
+```
+
+For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host-egress proxies are runtime-only: they stop through `stop_tunnel`, when their authorization session closes, or when PortMate exits, and are never restored automatically from a saved profile.
+
+```json
+{
+  "sessionId": "edge-router",
+  "egress": "portmate-host",
+  "mode": "dynamic",
+  "bindHost": "0.0.0.0",
+  "bindPort": 1080,
+  "routeRules": [
+    { "host": "192.168.33.0/24", "port": null },
+    { "host": "service.internal", "port": 443 }
+  ],
+  "allowRemoteBind": true,
+  "label": "Host network SOCKS5"
+}
+```
 
 ## Build
 

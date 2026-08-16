@@ -280,6 +280,7 @@ pub(super) async fn handle_dynamic_tunnel_client(
     let spec = TunnelSpec {
         id: "dynamic-client".to_string(),
         label: format!("SOCKS5 -> {target_host}:{target_port}"),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Dynamic,
         bind_host: String::new(),
         bind_port: 0,

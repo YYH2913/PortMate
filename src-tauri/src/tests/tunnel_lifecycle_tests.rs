@@ -16,6 +16,7 @@ fn tunnel_start_commit_failure_closes_runtime_and_rolls_back_store() {
         let tunnel = TunnelSpec {
             id: "uncommitted-tunnel".to_string(),
             label: "uncommitted tunnel".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_022,
@@ -86,6 +87,7 @@ fn tunnel_stop_persistence_failure_keeps_local_stop_truth() {
         let tunnel = TunnelSpec {
             id: "stopped-tunnel".to_string(),
             label: "stopped tunnel".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_023,
@@ -174,6 +176,7 @@ fn tunnel_client_failure_events_require_the_exact_runtime_generation() {
     let spec = TunnelSpec {
         id: "client-failure-generation".to_string(),
         label: "client failure generation".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 10_022,
@@ -272,6 +275,7 @@ fn stale_listener_failure_cannot_disable_a_replacement_tunnel() {
         let spec = TunnelSpec {
             id: "listener-failure-generation".to_string(),
             label: "listener failure generation".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_022,

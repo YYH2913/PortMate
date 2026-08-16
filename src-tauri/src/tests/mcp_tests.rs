@@ -1225,6 +1225,7 @@ fn mcp_stop_tunnel_authorizes_runtime_owner_and_tunnel_reads_are_scoped() {
         let tunnel = TunnelSpec {
             id: "owned-tunnel".to_string(),
             label: "token=route-label-secret".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Dynamic,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_080,
@@ -1323,6 +1324,7 @@ fn queued_mcp_stop_tunnel_revalidates_its_grant_before_stopping() {
         let tunnel = TunnelSpec {
             id: "queued-stop-tunnel".to_string(),
             label: "Queued stop tunnel".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Dynamic,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 10_081,
@@ -1479,6 +1481,7 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
         let occupied_spec = TunnelSpec {
             id: "occupied-remote-route".to_string(),
             label: "Occupied remote route".to_string(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Remote,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 41_922,
@@ -1508,12 +1511,14 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
             &state,
             CreateTunnelRequest {
                 session_id: profile.id.clone(),
+                egress: TunnelEgress::Ssh,
                 mode: TunnelMode::Remote,
                 bind_host: occupied_spec.bind_host.clone(),
                 bind_port: occupied_spec.bind_port,
                 target_host: "127.0.0.1".to_string(),
                 target_port: 9,
                 route_rules: Vec::new(),
+                allow_remote_bind: false,
                 label: None,
             },
         )
@@ -1594,12 +1599,14 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
             &state,
             CreateTunnelRequest {
                 session_id: profile.id.clone(),
+                egress: TunnelEgress::Ssh,
                 mode: TunnelMode::Remote,
                 bind_host: "127.0.0.1".to_string(),
                 bind_port: 0,
                 target_host: "127.0.0.1".to_string(),
                 target_port: 9,
                 route_rules: Vec::new(),
+                allow_remote_bind: false,
                 label: None,
             },
         )

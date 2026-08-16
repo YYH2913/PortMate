@@ -12,12 +12,14 @@ pub(super) async fn exercise_openssh_local_and_dynamic_tunnels(
         state,
         CreateTunnelRequest {
             session_id: profile.id.clone(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: echo_address.port(),
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: None,
         },
     )
@@ -100,12 +102,14 @@ pub(super) async fn exercise_openssh_local_and_dynamic_tunnels(
         state,
         CreateTunnelRequest {
             session_id: profile.id.clone(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Dynamic,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: String::new(),
             target_port: 0,
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: None,
         },
     )
@@ -214,12 +218,14 @@ pub(super) async fn exercise_openssh_remote_tunnel(state: &AppState, profile: &S
         state,
         CreateTunnelRequest {
             session_id: profile.id.clone(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Remote,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: remote_echo_address.port(),
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: None,
         },
     )
@@ -424,12 +430,14 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
         state,
         CreateTunnelRequest {
             session_id: profile.id.clone(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Local,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: port,
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: Some("reconnect tunnel".to_string()),
         },
     )
@@ -439,12 +447,14 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
         state,
         CreateTunnelRequest {
             session_id: profile.id.clone(),
+            egress: TunnelEgress::Ssh,
             mode: TunnelMode::Remote,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 0,
             target_host: "127.0.0.1".to_string(),
             target_port: port,
             route_rules: Vec::new(),
+            allow_remote_bind: false,
             label: Some("reconnect remote tunnel".to_string()),
         },
     )
@@ -455,6 +465,7 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
     let conflict_tunnel = TunnelSpec {
         id: "reconnect-conflict".to_string(),
         label: "occupied reconnect tunnel".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: "127.0.0.1".to_string(),
         bind_port: conflict_port,

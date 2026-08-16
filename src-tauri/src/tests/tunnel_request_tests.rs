@@ -2,12 +2,14 @@
 fn tunnel_requests_are_normalized_and_validate_targets_early() {
     let local = normalize_tunnel_request(CreateTunnelRequest {
         session_id: " ssh-session-1 ".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: " 127.0.0.1 ".to_string(),
         bind_port: 0,
         target_host: " device.internal ".to_string(),
         target_port: 22,
         route_rules: Vec::new(),
+        allow_remote_bind: false,
         label: Some("  ".to_string()),
     })
     .unwrap();
@@ -134,6 +136,59 @@ fn tunnel_requests_are_normalized_and_validate_targets_early() {
     .unwrap_err();
     assert!(whitespace_host.contains("bind host must not contain whitespace"));
 
+    let host_proxy = normalize_tunnel_request(CreateTunnelRequest {
+        session_id: "shell-session".to_string(),
+        egress: TunnelEgress::PortmateHost,
+        mode: TunnelMode::Dynamic,
+        bind_host: "localhost".to_string(),
+        bind_port: 0,
+        target_host: String::new(),
+        target_port: 0,
+        route_rules: vec![portmate_core::TunnelRouteRule {
+            host: "10.0.0.0/8".to_string(),
+            port: None,
+        }],
+        allow_remote_bind: false,
+        label: None,
+    })
+    .unwrap();
+    assert_eq!(host_proxy.egress, TunnelEgress::PortmateHost);
+
+    for (request, expected) in [
+        (
+            CreateTunnelRequest {
+                mode: TunnelMode::Remote,
+                route_rules: Vec::new(),
+                ..host_proxy.clone()
+            },
+            "supports local TCP and dynamic SOCKS5",
+        ),
+        (
+            CreateTunnelRequest {
+                route_rules: Vec::new(),
+                ..host_proxy.clone()
+            },
+            "require at least one route rule",
+        ),
+        (
+            CreateTunnelRequest {
+                bind_host: "0.0.0.0".to_string(),
+                ..host_proxy.clone()
+            },
+            "unless allowRemoteBind is true",
+        ),
+    ] {
+        let error = normalize_tunnel_request(request).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    let remote_listener = normalize_tunnel_request(CreateTunnelRequest {
+        bind_host: "0.0.0.0".to_string(),
+        allow_remote_bind: true,
+        ..host_proxy
+    })
+    .unwrap();
+    assert!(remote_listener.allow_remote_bind);
+
     assert_eq!(
         tunnel_label(
             TunnelMode::Local,
@@ -183,6 +238,7 @@ fn tunnel_connection_slots_bound_and_release_concurrency() {
                     spec: TunnelSpec {
                         id,
                         label: "Tunnel".to_string(),
+                        egress: TunnelEgress::Ssh,
                         mode: TunnelMode::Local,
                         bind_host: "127.0.0.1".to_string(),
                         bind_port: 10_022,
@@ -215,6 +271,7 @@ fn profile_tunnel_bounds_reclaim_disabled_entries_without_overwriting_enabled_on
     let tunnel = |id: String, enabled: bool| TunnelSpec {
         id: id.clone(),
         label: id,
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 10_000,
@@ -253,8 +310,26 @@ fn profile_tunnel_bounds_reclaim_disabled_entries_without_overwriting_enabled_on
         .unwrap_err()
         .contains("duplicate id"));
 
+    let mut host_egress_profile = profile.clone();
+    let ConnectionConfig::Ssh(ssh) = &mut host_egress_profile.connection else {
+        panic!("expected SSH profile");
+    };
+    ssh.tunnels[0].egress = TunnelEgress::PortmateHost;
+    assert!(validate_profile_tunnels(&host_egress_profile)
+        .unwrap_err()
+        .contains("runtime-only"));
+    let normalized_host_egress = normalize_session_profile(host_egress_profile);
+    let ConnectionConfig::Ssh(ssh) = normalized_host_egress.connection else {
+        panic!("expected SSH profile");
+    };
+    assert_eq!(ssh.tunnels.len(), MAX_TUNNELS_PER_PROFILE - 1);
+    assert!(ssh
+        .tunnels
+        .iter()
+        .all(|tunnel| tunnel.egress == TunnelEgress::Ssh));
+
     let state = test_app_state(profile, root.join("portmate-store.sqlite3"));
-    ensure_tunnel_creation_capacity(&state, &session_id).unwrap();
+    ensure_tunnel_creation_capacity(&state, &session_id, TunnelEgress::Ssh).unwrap();
     let replacement = tunnel("replacement".to_string(), true);
     persist_tunnel_to_profile_and_log(&state, &session_id, &replacement, None).unwrap();
     let saved = state.store.lock().unwrap().profile(&session_id).unwrap();
@@ -265,7 +340,7 @@ fn profile_tunnel_bounds_reclaim_disabled_entries_without_overwriting_enabled_on
     assert!(ssh.tunnels.iter().all(|tunnel| tunnel.enabled));
     assert!(ssh.tunnels.iter().any(|tunnel| tunnel.id == "replacement"));
     assert!(!ssh.tunnels.iter().any(|tunnel| tunnel.id == "disabled-old"));
-    assert!(ensure_tunnel_creation_capacity(&state, &session_id)
+    assert!(ensure_tunnel_creation_capacity(&state, &session_id, TunnelEgress::Ssh)
         .unwrap_err()
         .contains("has reached"));
     assert!(persist_tunnel_to_profile_and_log(
@@ -305,6 +380,7 @@ fn tunnel_metrics_snapshot_tracks_connections_bytes_and_errors() {
     let spec = TunnelSpec {
         id: "tunnel-1".to_string(),
         label: "127.0.0.1:10022 -> 127.0.0.1:22".to_string(),
+        egress: TunnelEgress::Ssh,
         mode: TunnelMode::Local,
         bind_host: "127.0.0.1".to_string(),
         bind_port: 10022,

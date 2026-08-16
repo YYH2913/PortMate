@@ -1,5 +1,5 @@
 use portmate_core::{
-    TransferProtocol, TransferTask, TunnelMode, TunnelRouteRule, TunnelSpec,
+    TransferProtocol, TransferTask, TunnelEgress, TunnelMode, TunnelRouteRule, TunnelSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +74,8 @@ pub struct ExternalDropResult {
 #[serde(rename_all = "camelCase")]
 pub struct CreateTunnelRequest {
     pub session_id: String,
+    #[serde(default)]
+    pub egress: TunnelEgress,
     pub mode: TunnelMode,
     pub bind_host: String,
     pub bind_port: u16,
@@ -83,6 +85,8 @@ pub struct CreateTunnelRequest {
     pub target_port: u16,
     #[serde(default)]
     pub route_rules: Vec<TunnelRouteRule>,
+    #[serde(default)]
+    pub allow_remote_bind: bool,
     pub label: Option<String>,
 }
 

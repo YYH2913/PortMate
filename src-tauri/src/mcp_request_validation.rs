@@ -9,15 +9,18 @@ pub(super) enum McpWriteExecutionContext {
         updated_at: DateTime<Utc>,
         approval_target: McpApprovalTarget,
     },
+    Tunnel {
+        approval_target: McpApprovalTarget,
+    },
 }
 
 impl McpWriteExecutionContext {
     pub(super) fn approval_target(&self) -> Option<McpApprovalTarget> {
         match self {
             Self::Generic => None,
-            Self::CustomScript {
-                approval_target, ..
-            } => Some(approval_target.clone()),
+            Self::CustomScript { approval_target, .. } | Self::Tunnel { approval_target } => {
+                Some(approval_target.clone())
+            }
         }
     }
 
@@ -75,6 +78,52 @@ pub(super) fn capture_mcp_write_execution_context(
     state: &AppState,
     request: &IpcRequest,
 ) -> Result<McpWriteExecutionContext, String> {
+    if request.command == "create_tunnel" {
+        let tunnel = normalize_tunnel_request(
+            serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+                .map_err(|error| format!("invalid tunnel request: {error}"))?,
+        )?;
+        if tunnel.egress == TunnelEgress::PortmateHost {
+            let route = if tunnel.mode == TunnelMode::Dynamic {
+                let mut routes = tunnel
+                    .route_rules
+                    .iter()
+                    .take(2)
+                    .map(|rule| match rule.port {
+                        Some(port) => format!("{}:{port}", bounded_approval_host(&rule.host)),
+                        None => bounded_approval_host(&rule.host),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if tunnel.route_rules.len() > 2 {
+                    routes.push_str(&format!(" +{} more", tunnel.route_rules.len() - 2));
+                }
+                routes
+            } else {
+                format!("{}:{}", tunnel.target_host, tunnel.target_port)
+            };
+            let proxy_kind = match tunnel.mode {
+                TunnelMode::Local => "TCP",
+                TunnelMode::Dynamic => "SOCKS5",
+                TunnelMode::Remote => unreachable!("host egress remote mode was validated"),
+            };
+            return Ok(McpWriteExecutionContext::Tunnel {
+                approval_target: McpApprovalTarget {
+                    kind: "portmate-host-proxy".to_string(),
+                    id: format!("{}:{}", tunnel.bind_host, tunnel.bind_port),
+                    label: format!(
+                        "PortMate host {proxy_kind} proxy to {route}{}",
+                        if tunnel.allow_remote_bind {
+                            " (remote listener allowed)"
+                        } else {
+                            ""
+                        }
+                    ),
+                },
+            });
+        }
+        return Ok(McpWriteExecutionContext::Generic);
+    }
     if request.command != "run_custom_script" {
         return Ok(McpWriteExecutionContext::Generic);
     }
@@ -91,6 +140,18 @@ pub(super) fn capture_mcp_write_execution_context(
             label: script.name,
         },
     })
+}
+
+fn bounded_approval_host(host: &str) -> String {
+    const MAX_APPROVAL_HOST_CHARACTERS: usize = 80;
+    let mut value = host
+        .chars()
+        .take(MAX_APPROVAL_HOST_CHARACTERS)
+        .collect::<String>();
+    if host.chars().count() > MAX_APPROVAL_HOST_CHARACTERS {
+        value.push_str("...");
+    }
+    value
 }
 
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {

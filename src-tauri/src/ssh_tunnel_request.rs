@@ -52,6 +52,34 @@ pub(super) fn normalize_tunnel_request(
     } else if !request.route_rules.is_empty() {
         return Err("tunnel route rules are only supported by dynamic mode".to_string());
     }
+    match request.egress {
+        TunnelEgress::Ssh => {
+            if request.allow_remote_bind {
+                return Err(
+                    "allowRemoteBind is only valid for PortMate host egress".to_string(),
+                );
+            }
+        }
+        TunnelEgress::PortmateHost => {
+            if request.mode == TunnelMode::Remote {
+                return Err(
+                    "PortMate host egress supports local TCP and dynamic SOCKS5 modes only"
+                        .to_string(),
+                );
+            }
+            if request.mode == TunnelMode::Dynamic && request.route_rules.is_empty() {
+                return Err(
+                    "PortMate host SOCKS5 proxies require at least one route rule".to_string(),
+                );
+            }
+            if !request.allow_remote_bind && !is_loopback_tunnel_bind_host(&request.bind_host) {
+                return Err(
+                    "PortMate host egress requires a loopback bind host unless allowRemoteBind is true"
+                        .to_string(),
+                );
+            }
+        }
+    }
     validate_tunnel_request_text(
         "session id",
         &request.session_id,
@@ -82,6 +110,13 @@ pub(super) fn normalize_tunnel_request(
         )?;
     }
     Ok(request)
+}
+
+fn is_loopback_tunnel_bind_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 pub(super) fn validate_tunnel_request_text(

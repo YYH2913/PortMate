@@ -153,6 +153,8 @@ pub(super) fn normalize_session_profile(mut profile: SessionProfile) -> SessionP
             ssh.normalize_health_settings();
             ssh.proxy.normalize();
             ssh.tunnels = normalize_tunnels(std::mem::take(&mut ssh.tunnels));
+            ssh.tunnels
+                .retain(|tunnel| tunnel.egress == TunnelEgress::Ssh);
             let alias = ssh
                 .host_key_policy
                 .alias

@@ -191,11 +191,11 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | `read-sessions` | 读取已授权会话及运行状态 |
 | `read-logs` | 读取和搜索已授权会话日志 |
 | `read-transfers` | 列出并查看已脱敏的传输状态 |
-| `read-tunnels` | 列出活动的 SSH 转发和 SOCKS5 代理 |
+| `read-tunnels` | 列出活动的 SSH 与 PortMate 主机转发和 SOCKS5 代理 |
 | `read-scripts` | 列出已授权会话可见且开放给 MCP 的脚本摘要，不返回正文 |
 | `write-input` | 向终端发送文本、按键或命令 |
 | `transfer` | 启动、取消和重试文件传输，并隐含 `read-transfers` |
-| `tunnel` | 创建和停止 SSH 转发或 SOCKS5 代理，并隐含 `read-tunnels` |
+| `tunnel` | 创建和停止 SSH 或 PortMate 主机转发和 SOCKS5 代理，并隐含 `read-tunnels` |
 | `manage-sessions` | 打开或关闭会话 |
 | `run-scripts` | 在已授权会话运行已保存且开放给 MCP 的脚本，并隐含 `read-scripts` |
 
@@ -280,7 +280,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 ### 指定路由转发与代理
 
-`create_tunnel` 只在一个已连接且已授权的 SSH/Tmux 会话内创建指定路由。它不会修改操作系统路由表。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。
+`create_tunnel` 提供两个明确的出站边界。默认的 `egress: "ssh"` 在一个已连接且已授权的 SSH/Tmux 会话内创建路由；`egress: "portmate-host"` 则由运行 PortMate 的主机直接连接目标，暴露该主机可达的 TCP 服务或网段。`sessionId` 仍用于选择 MCP 授权与审计边界，主机出站代理不要求该会话已连接。两种模式都不会修改操作系统路由表。`list_tunnels` 返回当前监听与流量指标，`stop_tunnel` 使用后端生成的 tunnel ID 停止单条路由。
 
 本地转发把一个本地监听端口经 SSH 送到固定目标：
 
@@ -314,6 +314,40 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 ```
 
 把本地监听绑定到非回环地址会向对应网络接口开放代理或转发。在完全信任 MCP 客户端和路由策略之前，应保留写操作逐次确认。
+
+要暴露 PortMate 主机可达的固定路由，需要显式设置 `egress`。主机出站支持 `local` 和 `dynamic`，不支持 SSH 服务端远程转发：
+
+```json
+{
+  "sessionId": "edge-router",
+  "egress": "portmate-host",
+  "mode": "local",
+  "bindHost": "127.0.0.1",
+  "bindPort": 0,
+  "targetHost": "192.168.33.222",
+  "targetPort": 443,
+  "allowRemoteBind": false,
+  "label": "PortMate host route"
+}
+```
+
+使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机出站代理只在当前运行期有效：调用 `stop_tunnel`、关闭其授权会话或退出 PortMate 时会停止，并且不会从已保存的会话配置中静默自动恢复。
+
+```json
+{
+  "sessionId": "edge-router",
+  "egress": "portmate-host",
+  "mode": "dynamic",
+  "bindHost": "0.0.0.0",
+  "bindPort": 1080,
+  "routeRules": [
+    { "host": "192.168.33.0/24", "port": null },
+    { "host": "service.internal", "port": 443 }
+  ],
+  "allowRemoteBind": true,
+  "label": "Host network SOCKS5"
+}
+```
 
 ## 构建
 

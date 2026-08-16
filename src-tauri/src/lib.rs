@@ -19,12 +19,13 @@ use portmate_core::{
     OneKeyCredential, OneKeyIdentity, OneKeyKind, ProxyConfig, SessionEvent, SessionKind,
     SessionProfile, SessionStatus, SessionStore, SessionSummary, SshConnection, SysmonDisk,
     SysmonNetworkInterface, SysmonProcess, SysmonSnapshot, TcpConnection, TimelineMark,
-    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelMode,
-    TunnelSpec, CUSTOM_SCRIPT_EVENT_TEXT, MAX_COMMAND_HISTORY_ENTRIES, MAX_CUSTOM_SCRIPTS,
-    MAX_MCP_CONTENT_UPLOAD_BYTES, MAX_TUNNELS_PER_PROFILE, MAX_TUNNEL_HOST_CHARACTERS,
-    MAX_TUNNEL_LABEL_CHARACTERS, MAX_TUNNEL_ROUTE_RULES, MCP_CONTENT_UPLOADS_DIRECTORY,
-    MCP_CONTENT_UPLOAD_METADATA_FILE, MCP_CONTENT_UPLOAD_METADATA_VERSION,
-    MCP_CONTENT_UPLOAD_PAYLOAD_FILE, MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
+    TransferProtocol, TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelEgress,
+    TunnelMode, TunnelSpec, CUSTOM_SCRIPT_EVENT_TEXT, MAX_COMMAND_HISTORY_ENTRIES,
+    MAX_CUSTOM_SCRIPTS, MAX_MCP_CONTENT_UPLOAD_BYTES, MAX_TUNNELS_PER_PROFILE,
+    MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS, MAX_TUNNEL_ROUTE_RULES,
+    MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_METADATA_FILE,
+    MCP_CONTENT_UPLOAD_METADATA_VERSION, MCP_CONTENT_UPLOAD_PAYLOAD_FILE,
+    MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
 };
 use rusqlite::{params, Connection as SqliteConnection};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
