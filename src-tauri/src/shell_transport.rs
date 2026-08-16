@@ -319,25 +319,9 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
         )
         .unwrap_or_else(|| format!("shell closed ({program})"));
 
-        let removed_current = {
-            let mut connections = match io.runtimes.shell.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-            {
-                connections.remove(&session_id);
-                true
-            } else {
-                false
-            }
-        };
-
-        if removed_current {
-            clear_active_command(&io, &session_id);
-            if let Ok(mut store) = io.store.lock() {
+        let accepted =
+            match with_current_session_runtime_store(&io, &session_id, &runtime_id, |store| {
+                clear_active_command(&io, &session_id);
                 let _ = store.set_runtime_status_with_reason(
                     &session_id,
                     SessionStatus::Disconnected,
@@ -345,10 +329,25 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 );
                 store.record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
                 if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, "shell disconnect state")
+                    persist_applied_store(store, &io.store_path, "shell disconnect state")
                 {
                     eprintln!("PortMate: failed to persist shell close event: {error}");
                 }
+            }) {
+                Ok(Some(())) => true,
+                Ok(None) => false,
+                Err(error) => {
+                    eprintln!("PortMate: failed to commit shell reader transition: {error}");
+                    true
+                }
+            };
+        if accepted {
+            if let Ok(Some(runtime)) =
+                remove_runtime_if_owned(&io.runtimes.shell, &session_id, |runtime| {
+                    runtime.runtime_id == runtime_id
+                })
+            {
+                runtime.closed.store(true, Ordering::SeqCst);
             }
         }
     }

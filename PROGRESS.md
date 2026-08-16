@@ -646,6 +646,8 @@ SSH/Shell/TCP/Serial reader 的入站事件现先取得精确 runtime generation
 
 Reader 产生的非字节事件也已绑定来源 runtime：SSH exit status/signal、TCP/Telnet read failure、Telnet negotiation reply failure 只有在对应 generation 仍为当前连接时才写入 Store/system log，Telnet 自动协商回复的 outbound control event 同样在 registry guard 内完成 raw shard、Store、terminal publication 和持久化。旧连接在 replacement 后不能再把控制状态或协议回复记到新设备；回归直接覆盖 stale system/control event 的 Store、screen、raw/text/JSONL 拒绝，runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered 均通过。
 
+TCP/Telnet、Serial 和 Shell reader 的结束状态现使用统一的 `runtime registry -> Store` generation guard：重连/断开决策、状态、原因、system event 和持久化完成前 replacement 无法插入，之后清空串口 writer、移除 runtime 或启动重连时仍按精确 runtime ID 复核。旧 reader 不再能在新连接安装后把 Store 覆盖为 `Disconnected`/`Reconnecting`，Store 锁失败时也只清理仍由它拥有的 runtime。并发回归同时证明提交期间 registry 与 Store 均被 guard 持有；runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered、显式 transport 模块 Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

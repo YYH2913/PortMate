@@ -103,6 +103,11 @@ pub(super) struct TcpReadTask {
     pub(super) telnet: Option<Arc<TelnetRuntimeState>>,
 }
 
+enum TcpReaderTransition {
+    Disconnect,
+    Reconnect,
+}
+
 pub(super) fn read_tcp_stream(
     task: TcpReadTask,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
@@ -251,89 +256,92 @@ pub(super) fn read_tcp_stream(
         )
         .unwrap_or_else(|| format!("{label} socket closed"));
 
-        let reconnect_profile = (!closed.load(Ordering::SeqCst))
-            .then(|| {
-                io.store
-                    .lock()
-                    .ok()
-                    .and_then(|store| store.profile(&session_id))
-                    .map(normalize_session_profile)
-                    .filter(tcp_reconnect_enabled)
-            })
-            .flatten();
-        let reconnect_delay_ms = reconnect_profile
-            .as_ref()
-            .map(tcp_reconnect_delay)
-            .unwrap_or_default()
-            .as_millis();
-        let reconnect_enabled = reconnect_profile.is_some();
-        let mut should_reconnect = false;
-        let removed_current = {
-            let mut connections = match io.runtimes.tcp.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-            {
-                if reconnect_enabled {
-                    should_reconnect = true;
-                    false
+        let transition =
+            match with_current_session_runtime_store(&io, &session_id, &runtime_id, |store| {
+                clear_active_command(&io, &session_id);
+                let reconnect_profile = (!closed.load(Ordering::SeqCst))
+                    .then(|| store.profile(&session_id).map(normalize_session_profile))
+                    .flatten()
+                    .filter(tcp_reconnect_enabled);
+                if let Some(reconnect_profile) = reconnect_profile {
+                    let reconnect_delay = tcp_reconnect_delay(&reconnect_profile);
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Reconnecting,
+                        Some(disconnect_reason.clone()),
+                    );
+                    store.record_system_event(
+                        &session_id,
+                        format!(
+                            "PortMate: {disconnect_reason}; reconnecting in {}ms",
+                            reconnect_delay.as_millis()
+                        ),
+                    );
+                    if let Err(error) = persist_applied_store(
+                        store,
+                        &io.store_path,
+                        "TCP/Telnet reconnect transition",
+                    ) {
+                        eprintln!("PortMate: failed to persist {label} reconnect event: {error}");
+                    }
+                    TcpReaderTransition::Reconnect
                 } else {
-                    connections.remove(&session_id);
-                    true
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Disconnected,
+                        Some(disconnect_reason.clone()),
+                    );
+                    if !disconnect_reason_recorded {
+                        store.record_system_event(
+                            &session_id,
+                            format!("PortMate: {disconnect_reason}"),
+                        );
+                    }
+                    if let Err(error) = persist_applied_store(
+                        store,
+                        &io.store_path,
+                        "TCP/Telnet disconnect transition",
+                    ) {
+                        eprintln!("PortMate: failed to persist {label} close event: {error}");
+                    }
+                    TcpReaderTransition::Disconnect
                 }
-            } else {
-                false
-            }
-        };
-        if should_reconnect || removed_current {
-            clear_active_command(&io, &session_id);
-        }
+            }) {
+                Ok(Some(transition)) => transition,
+                Ok(None) => return,
+                Err(error) => {
+                    eprintln!("PortMate: failed to commit {label} reader transition: {error}");
+                    if let Ok(Some(runtime)) =
+                        remove_runtime_if_owned(&io.runtimes.tcp, &session_id, |runtime| {
+                            runtime.runtime_id == runtime_id
+                        })
+                    {
+                        runtime.closed.store(true, Ordering::SeqCst);
+                    }
+                    return;
+                }
+            };
 
-        if should_reconnect {
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Reconnecting,
-                    Some(disconnect_reason.clone()),
-                );
-                store.record_system_event(
-                    &session_id,
-                    format!(
-                        "PortMate: {disconnect_reason}; reconnecting in {reconnect_delay_ms}ms"
-                    ),
-                );
-                if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, "TCP/Telnet reconnect transition")
+        match transition {
+            TcpReaderTransition::Reconnect => {
+                let still_current = io.runtimes.tcp.lock().ok().is_some_and(|connections| {
+                    connections
+                        .get(&session_id)
+                        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+                });
+                if still_current {
+                    tauri::async_runtime::spawn(reconnect_tcp_session(
+                        state, session_id, runtime_id, closed,
+                    ));
+                }
+            }
+            TcpReaderTransition::Disconnect => {
+                if let Ok(Some(runtime)) =
+                    remove_runtime_if_owned(&io.runtimes.tcp, &session_id, |runtime| {
+                        runtime.runtime_id == runtime_id
+                    })
                 {
-                    eprintln!("PortMate: failed to persist {label} reconnect event: {error}");
-                }
-            }
-            tauri::async_runtime::spawn(reconnect_tcp_session(
-                state, session_id, runtime_id, closed,
-            ));
-            return;
-        }
-
-        if removed_current {
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Disconnected,
-                    Some(disconnect_reason.clone()),
-                );
-                if !disconnect_reason_recorded {
-                    store
-                        .record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
-                }
-                if let Err(error) = persist_applied_store(
-                    &store,
-                    &io.store_path,
-                    "TCP/Telnet disconnect transition",
-                ) {
-                    eprintln!("PortMate: failed to persist {label} close event: {error}");
+                    runtime.closed.store(true, Ordering::SeqCst);
                 }
             }
         }

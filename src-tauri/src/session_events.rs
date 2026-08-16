@@ -246,6 +246,21 @@ pub(super) fn with_current_session_runtime_generation<T>(
     Ok(None)
 }
 
+pub(super) fn with_current_session_runtime_store<T>(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    operation: impl FnOnce(&mut SessionStore) -> T,
+) -> Result<Option<T>, String> {
+    match with_current_session_runtime_generation(&io.runtimes, session_id, runtime_id, || {
+        let mut store = io.store.lock().map_err(|error| error.to_string())?;
+        Ok(operation(&mut store))
+    })? {
+        Some(result) => result.map(Some),
+        None => Ok(None),
+    }
+}
+
 pub(super) fn record_runtime_system_event(
     io: &SessionIo,
     session_id: &str,
@@ -253,23 +268,19 @@ pub(super) fn record_runtime_system_event(
     text: String,
     persistence_context: &str,
 ) -> bool {
-    match with_current_session_runtime_generation(
-        &io.runtimes,
-        session_id,
-        runtime_id,
-        || match io.store.lock() {
-            Ok(mut store) => {
-                store.record_system_event(session_id, text);
-                if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, persistence_context)
-                {
-                    eprintln!("PortMate: failed to persist {persistence_context}: {error}");
-                }
-                true
+    match with_current_session_runtime_generation(&io.runtimes, session_id, runtime_id, || match io
+        .store
+        .lock()
+    {
+        Ok(mut store) => {
+            store.record_system_event(session_id, text);
+            if let Err(error) = persist_applied_store(&store, &io.store_path, persistence_context) {
+                eprintln!("PortMate: failed to persist {persistence_context}: {error}");
             }
-            Err(_) => false,
-        },
-    ) {
+            true
+        }
+        Err(_) => false,
+    }) {
         Ok(Some(recorded)) => recorded,
         Ok(None) => false,
         Err(error) => {

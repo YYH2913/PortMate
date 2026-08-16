@@ -312,15 +312,15 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
-            let runtimes = io.runtimes.clone();
+            let worker_io = io.clone();
             let session_id = profile.id.clone();
             scope.spawn(move || {
                 assert_eq!(
-                    with_current_session_runtime_generation(
-                        &runtimes,
+                    with_current_session_runtime_store(
+                        &worker_io,
                         &session_id,
                         "runtime-replacement",
-                        || {
+                        |_| {
                             entered_tx.send(()).unwrap();
                             release_rx.recv().unwrap();
                         },
@@ -332,6 +332,10 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             entered_rx.recv().unwrap();
             assert!(matches!(
                 io.runtimes.tcp.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            assert!(matches!(
+                io.store.try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             release_tx.send(()).unwrap();

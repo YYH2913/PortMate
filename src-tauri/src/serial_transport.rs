@@ -165,6 +165,11 @@ pub(super) struct SerialReadTask {
     pub(super) receive_idle_timeout: Option<Duration>,
 }
 
+enum SerialReaderTransition {
+    Disconnect,
+    Reconnect,
+}
+
 pub(super) fn spawn_serial_reader(
     task: SerialReadTask,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -250,88 +255,89 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
-        let reconnect_profile = (!closed.load(Ordering::SeqCst))
-            .then(|| {
-                io.store
-                    .lock()
-                    .ok()
-                    .and_then(|store| store.profile(&session_id))
-                    .map(normalize_session_profile)
-                    .filter(serial_reconnect_enabled)
-            })
-            .flatten();
-        let reconnect_delay = reconnect_profile.as_ref().map(serial_reconnect_delay);
-        let reconnect_enabled = reconnect_profile.is_some();
         let disconnect_reason =
             disconnect_reason.unwrap_or_else(|| format!("serial port closed ({port_name})"));
-        let mut should_reconnect = false;
-        let removed_current = {
-            let mut connections = match io.runtimes.serial.lock() {
-                Ok(connections) => connections,
-                Err(_) => return,
-            };
-            if connections
-                .get(&session_id)
-                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-            {
-                if reconnect_enabled {
-                    if let Some(runtime) = connections.get_mut(&session_id) {
-                        runtime.writer = None;
+        let transition =
+            match with_current_session_runtime_store(&io, &session_id, &runtime_id, |store| {
+                clear_active_command(&io, &session_id);
+                let reconnect_profile = (!closed.load(Ordering::SeqCst))
+                    .then(|| store.profile(&session_id).map(normalize_session_profile))
+                    .flatten()
+                    .filter(serial_reconnect_enabled);
+                if let Some(reconnect_profile) = reconnect_profile {
+                    let reconnect_delay = serial_reconnect_delay(&reconnect_profile);
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Reconnecting,
+                        Some(disconnect_reason.clone()),
+                    );
+                    store.record_system_event(
+                        &session_id,
+                        format!(
+                            "PortMate: {disconnect_reason}; reconnecting in {}ms",
+                            reconnect_delay.as_millis()
+                        ),
+                    );
+                    if let Err(error) =
+                        persist_applied_store(store, &io.store_path, "serial reconnect transition")
+                    {
+                        eprintln!("PortMate: failed to persist serial reconnect event: {error}");
                     }
-                    should_reconnect = true;
-                    false
+                    SerialReaderTransition::Reconnect
                 } else {
-                    connections.remove(&session_id);
-                    true
+                    let _ = store.set_runtime_status_with_reason(
+                        &session_id,
+                        SessionStatus::Disconnected,
+                        Some(disconnect_reason.clone()),
+                    );
+                    store
+                        .record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
+                    if let Err(error) =
+                        persist_applied_store(store, &io.store_path, "serial disconnect transition")
+                    {
+                        eprintln!("PortMate: failed to persist serial close event: {error}");
+                    }
+                    SerialReaderTransition::Disconnect
                 }
-            } else {
-                false
-            }
-        };
-        if should_reconnect || removed_current {
-            clear_active_command(&io, &session_id);
-        }
+            }) {
+                Ok(Some(transition)) => transition,
+                Ok(None) => return,
+                Err(error) => {
+                    eprintln!("PortMate: failed to commit serial reader transition: {error}");
+                    if let Ok(Some(runtime)) =
+                        remove_runtime_if_owned(&io.runtimes.serial, &session_id, |runtime| {
+                            runtime.runtime_id == runtime_id
+                        })
+                    {
+                        runtime.closed.store(true, Ordering::SeqCst);
+                    }
+                    return;
+                }
+            };
 
-        if should_reconnect {
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Reconnecting,
-                    Some(disconnect_reason.clone()),
-                );
-                store.record_system_event(
-                    &session_id,
-                    format!(
-                        "PortMate: {disconnect_reason}; reconnecting in {}ms",
-                        reconnect_delay
-                            .unwrap_or_else(|| Duration::from_millis(
-                                portmate_core::DEFAULT_SERIAL_RECONNECT_DELAY_MS
-                            ))
-                            .as_millis()
-                    ),
-                );
-                if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, "serial reconnect transition")
-                {
-                    eprintln!("PortMate: failed to persist serial reconnect event: {error}");
+        match transition {
+            SerialReaderTransition::Reconnect => {
+                let still_current = match io.runtimes.serial.lock() {
+                    Ok(mut connections) => connections
+                        .get_mut(&session_id)
+                        .filter(|runtime| runtime.runtime_id == runtime_id)
+                        .map(|runtime| {
+                            runtime.writer = None;
+                        })
+                        .is_some(),
+                    Err(_) => false,
+                };
+                if still_current {
+                    spawn_serial_reconnect(io, session_id, runtime_id, closed);
                 }
             }
-            spawn_serial_reconnect(io, session_id, runtime_id, closed);
-            return;
-        }
-
-        if removed_current {
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Disconnected,
-                    Some(disconnect_reason.clone()),
-                );
-                store.record_system_event(&session_id, format!("PortMate: {disconnect_reason}"));
-                if let Err(error) =
-                    persist_applied_store(&store, &io.store_path, "serial disconnect transition")
+            SerialReaderTransition::Disconnect => {
+                if let Ok(Some(runtime)) =
+                    remove_runtime_if_owned(&io.runtimes.serial, &session_id, |runtime| {
+                        runtime.runtime_id == runtime_id
+                    })
                 {
-                    eprintln!("PortMate: failed to persist serial close event: {error}");
+                    runtime.closed.store(true, Ordering::SeqCst);
                 }
             }
         }
