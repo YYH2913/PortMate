@@ -120,10 +120,9 @@ fn trigger_command_saturation_skips_execution_with_diagnostic() {
         .collect::<Vec<_>>();
 
     spawn_trigger_commands(
-        Arc::clone(&state.store),
-        store_path,
-        Arc::clone(&state.trigger_command_slots),
+        state.session_io(),
         session_id.clone(),
+        None,
         vec![
             "this command must not run".to_string(),
             "neither should this".to_string(),
@@ -141,6 +140,95 @@ fn trigger_command_saturation_skips_execution_with_diagnostic() {
     drop(store);
     drop(permits);
     let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn trigger_command_results_require_the_originating_runtime_generation() {
+    tauri::async_runtime::block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-trigger-command-generation-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection::default()));
+        let session_id = profile.id.clone();
+        let state = test_app_state(profile, root.join("portmate-store.sqlite3"));
+        let (tap, _) = broadcast::channel(8);
+        state.tcp.lock().unwrap().insert(
+            session_id.clone(),
+            TcpRuntime {
+                runtime_id: "runtime-current".to_string(),
+                writer: Arc::new(tokio::sync::Mutex::new(Box::new(tokio::io::sink()))),
+                tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+
+        spawn_trigger_commands(
+            state.session_io(),
+            session_id.clone(),
+            Some("runtime-current".to_string()),
+            vec!["printf CURRENT-TRIGGER-RESULT".to_string()],
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while state.trigger_command_slots.available_permits() != MAX_TRIGGER_COMMAND_CONCURRENCY
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("current trigger command did not finish");
+        assert!(state.store.lock().unwrap().events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("CURRENT-TRIGGER-RESULT"))
+        }));
+
+        let marker = root.join("stale-command-started");
+        spawn_trigger_commands(
+            state.session_io(),
+            session_id.clone(),
+            Some("runtime-current".to_string()),
+            vec![format!(
+                "printf started > {}; sleep 1; printf STALE-TRIGGER-RESULT",
+                shell_quote(&marker.display().to_string())
+            )],
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stale trigger command did not start");
+        state
+            .tcp
+            .lock()
+            .unwrap()
+            .get_mut(&session_id)
+            .unwrap()
+            .runtime_id = "runtime-replacement".to_string();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while state.trigger_command_slots.available_permits() != MAX_TRIGGER_COMMAND_CONCURRENCY
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stale trigger command did not finish");
+
+        assert!(!state.store.lock().unwrap().events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("STALE-TRIGGER-RESULT"))
+        }));
+        state.tcp.lock().unwrap().remove(&session_id);
+        let _ = fs::remove_dir_all(root);
+    });
 }
 
 #[test]
@@ -226,6 +314,67 @@ fn trigger_send_text_dispatch_bounds_batches_and_reports_saturation() {
     }));
     drop(permits);
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn trigger_send_text_failure_does_not_attach_to_a_replacement_runtime() {
+    tauri::async_runtime::block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-trigger-send-generation-{}",
+            Uuid::new_v4()
+        ));
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection::default()));
+        let session_id = profile.id.clone();
+        let state = test_app_state(profile, root.join("portmate-store.sqlite3"));
+        let (tap, _) = broadcast::channel(8);
+        state.tcp.lock().unwrap().insert(
+            session_id.clone(),
+            TcpRuntime {
+                runtime_id: "runtime-current".to_string(),
+                writer: Arc::new(tokio::sync::Mutex::new(Box::new(tokio::io::sink()))),
+                tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+        let io = state.session_io();
+        let outbound_lane = acquire_outbound_lane(&state.store_path, &session_id)
+            .await
+            .unwrap();
+
+        spawn_trigger_send_text_batch(
+            io,
+            session_id.clone(),
+            "runtime-current".to_string(),
+            vec!["must-not-reach-replacement".to_string()],
+        );
+        state
+            .tcp
+            .lock()
+            .unwrap()
+            .get_mut(&session_id)
+            .unwrap()
+            .runtime_id = "runtime-replacement".to_string();
+        drop(outbound_lane);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while state.trigger_send_batch_slots.available_permits()
+                != MAX_TRIGGER_SEND_BATCH_CONCURRENCY
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stale trigger send_text batch did not finish");
+
+        assert!(!state.store.lock().unwrap().events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("trigger send_text batch failed"))
+        }));
+        state.tcp.lock().unwrap().remove(&session_id);
+        let _ = fs::remove_dir_all(root);
+    });
 }
 
 #[test]

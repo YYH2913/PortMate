@@ -193,27 +193,25 @@ fn append_bounded_trigger_text(output: &mut String, value: &str, remaining: &mut
 }
 
 pub(super) fn spawn_trigger_commands(
-    store: Arc<Mutex<SessionStore>>,
-    store_path: PathBuf,
-    command_slots: Arc<tokio::sync::Semaphore>,
+    io: SessionIo,
     session_id: String,
+    source_runtime_id: Option<String>,
     commands: Vec<String>,
 ) {
     let mut skipped = 0_usize;
     for command in commands {
-        let permit = match Arc::clone(&command_slots).try_acquire_owned() {
+        let permit = match Arc::clone(&io.trigger_command_slots).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 skipped = skipped.saturating_add(1);
                 continue;
             }
         };
-        let command_store = Arc::clone(&store);
-        let command_store_path = store_path.clone();
+        let command_io = io.clone();
         let command_session_id = session_id.clone();
+        let command_runtime_id = source_runtime_id.clone();
         tauri::async_runtime::spawn(async move {
             let output = run_shell_command(&command).await;
-            drop(permit);
             let message = match output {
                 Ok((code, stdout, stderr)) => format!(
                     "PortMate: trigger command exited code={code}: {}{}",
@@ -227,27 +225,47 @@ pub(super) fn spawn_trigger_commands(
                 Err(error) => format!("PortMate: trigger command failed: {error}"),
             };
             let persist = tauri::async_runtime::spawn_blocking(move || {
-                record_trigger_command_event(
-                    &command_store,
-                    &command_store_path,
+                record_trigger_command_result(
+                    &command_io,
                     &command_session_id,
+                    command_runtime_id.as_deref(),
                     message,
                 );
             });
             if let Err(error) = persist.await {
                 eprintln!("PortMate: trigger command result task failed: {error}");
             }
+            drop(permit);
         });
     }
     if skipped > 0 {
         record_trigger_command_event(
-            &store,
-            &store_path,
+            &io.store,
+            &io.store_path,
             &session_id,
             format!(
                 "PortMate: trigger commands skipped: concurrent command limit reached ({MAX_TRIGGER_COMMAND_CONCURRENCY}); skipped {skipped} actions"
             ),
         );
+    }
+}
+
+fn record_trigger_command_result(
+    io: &SessionIo,
+    session_id: &str,
+    source_runtime_id: Option<&str>,
+    message: String,
+) {
+    if let Some(source_runtime_id) = source_runtime_id {
+        record_runtime_system_event(
+            io,
+            session_id,
+            source_runtime_id,
+            message,
+            "trigger command result event",
+        );
+    } else {
+        record_trigger_command_event(&io.store, &io.store_path, session_id, message);
     }
 }
 
@@ -306,18 +324,24 @@ pub(super) fn spawn_trigger_send_text_batch(
                 break;
             }
         }
-        drop(permit);
         if let Some(message) = failure {
-            let store = Arc::clone(&io.store);
-            let store_path = io.store_path.clone();
+            let persist_io = io.clone();
             let persist_session_id = session_id.clone();
+            let persist_runtime_id = source_runtime_id.clone();
             let persist = tauri::async_runtime::spawn_blocking(move || {
-                record_trigger_send_text_event(&store, &store_path, &persist_session_id, message);
+                record_runtime_system_event(
+                    &persist_io,
+                    &persist_session_id,
+                    &persist_runtime_id,
+                    message,
+                    "trigger send_text result event",
+                );
             });
             if let Err(error) = persist.await {
                 eprintln!("PortMate: trigger send_text result task failed: {error}");
             }
         }
+        drop(permit);
     });
 }
 

@@ -189,10 +189,9 @@ fn record_accepted_channel_bytes(
         }
     }
     spawn_trigger_commands(
-        Arc::clone(&io.store),
-        io.store_path.clone(),
-        Arc::clone(&io.trigger_command_slots),
+        io.clone(),
         session_id.to_string(),
+        source_runtime_id.map(str::to_string),
         trigger_dispatch.local_commands,
     );
     if let Some(source_runtime_id) = source_runtime_id {

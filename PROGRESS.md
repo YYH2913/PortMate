@@ -698,6 +698,8 @@ libssh 的协议 timeout 是整个 SSH session 的共享状态；终端 channel�
 
 Serial 与本地 Shell 会话打开现拆成无状态的资源准备和受 session lifecycle lane 保护的 runtime 安装两阶段：串口驱动打开、PTY/子进程创建卡住时，关闭会话会立即取消等待并提交本地 Disconnected 状态，迟到的串口句柄只会被释放，迟到的 Shell 预备对象会主动终止子进程，不再后台注册 runtime 或覆盖 Store。取消后仍在运行的 blocking worker 会继续占用全局 open slot，防止反复打开/取消绕过 64 路并发上限；已取消的同会话 token 则不阻止新的显式连接请求排队。回归验证 2 秒内取消、迟到资源销毁、Shell 子进程终止、许可归还、正常 Shell 生命周期、提交失败回滚和真实 socat 串口二进制 loopback；完整主应用 505 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Trigger 本地命令完成结果和异步 `send_text` 批次失败现绑定触发输入来源的精确 transport runtime ID；命令执行或 outbound lane 等待期间发生断开重连、手动重开或 runtime 替换时，旧任务不会再把诊断写入新连接的事件历史。触发器 command/send batch 的并发许可延长到结果持久化结束，慢 Store 不再允许已完成命令释放许可后继续累积无界后台写任务；输入处理期间立即产生的容量诊断仍在已验证的 runtime generation 锁内记录。回归覆盖当前 runtime 正常结果、命令执行中换代拒绝和 send_text 排队后换代拒绝；触发器专项 10 项、完整主应用 507 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
