@@ -6,7 +6,9 @@ pub(super) const MAX_SSH_EXEC_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const MAX_SSH_EXEC_STDERR_BYTES: usize = 64 * 1024;
 
 pub(super) async fn close_ssh_channel_bounded(channel: &SshBackendChannel) {
-    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
+    let _ = channel
+        .close_with_timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT)
+        .await;
 }
 
 #[cfg(all(test, unix))]

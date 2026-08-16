@@ -148,11 +148,13 @@ pub(super) async fn write_session_bytes_for_runtime(
     };
 
     if let Some(writer) = writer {
-        let writer = writer.lock().await;
-        writer
-            .data(bytes)
-            .await
-            .map_err(|error| format!("SSH 写入失败: {error}"))?;
+        write_ssh_channel_bytes_with_timeout(
+            &writer,
+            bytes,
+            SSH_TERMINAL_WRITE_TIMEOUT,
+            "SSH 写入",
+        )
+        .await?;
     } else {
         let writer = {
             let connections = runtimes.shell.lock().map_err(|error| error.to_string())?;

@@ -89,6 +89,16 @@ pub(super) async fn request_backend_disconnect_with_timeout<H: client::Handler>(
     handle: &SshBackendSession<H>,
     disconnect_description: &str,
 ) -> Option<String> {
+    // A live libssh runtime always owns at least its terminal channel. Calling
+    // ssh_disconnect before that channel (or a detached setup worker) is destroyed can
+    // crash in ssh_channel_free. Its absolute operation deadlines and SessionHolder
+    // destructor provide the safe cleanup boundary.
+    if handle.is_libssh() {
+        return Some(
+            "libssh forced disconnect skipped because active channels may still be in use"
+                .to_string(),
+        );
+    }
     match tokio::time::timeout(
         SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT,
         handle.disconnect(disconnect_description),
@@ -99,24 +109,6 @@ pub(super) async fn request_backend_disconnect_with_timeout<H: client::Handler>(
         Ok(Err(error)) => Some(format!("SSH disconnect request failed: {error}")),
         Err(_) => Some(format!(
             "SSH disconnect request timed out after {} ms",
-            SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
-        )),
-    }
-}
-
-pub(super) async fn request_libssh_disconnect_with_timeout(
-    session: libssh_rs::Session,
-) -> Option<String> {
-    match tokio::time::timeout(
-        SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT,
-        tokio::task::spawn_blocking(move || session.disconnect()),
-    )
-    .await
-    {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(format!("libssh disconnect worker failed: {error}")),
-        Err(_) => Some(format!(
-            "libssh disconnect worker timed out after {} ms",
             SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
         )),
     }

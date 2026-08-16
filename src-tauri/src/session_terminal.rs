@@ -99,11 +99,14 @@ pub(super) async fn resize_session_inner(
             .map(|runtime| Arc::clone(&runtime.writer))
     };
     if let Some(writer) = ssh_writer {
-        let writer = writer.lock().await;
-        writer
-            .window_change(u32::from(cols), u32::from(rows))
-            .await
-            .map_err(|error| format!("SSH resize failed: {error}"))?;
+        resize_ssh_channel_with_timeout(
+            &writer,
+            u32::from(cols),
+            u32::from(rows),
+            SSH_TERMINAL_WRITE_TIMEOUT,
+            "SSH resize",
+        )
+        .await?;
     }
 
     let shell_master = {

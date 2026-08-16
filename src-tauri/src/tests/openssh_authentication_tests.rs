@@ -359,7 +359,13 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
         .await
         .unwrap();
         assert_eq!(unfiltered.auth_method, AuthMethod::PublicKey);
-        disconnect_ssh_runtime(unfiltered.runtime, "PortMate agent test").await;
+        let EstablishedSshRuntime {
+            runtime,
+            read_half,
+            reader_finished,
+            ..
+        } = unfiltered;
+        disconnect_ssh_runtime(runtime, read_half, reader_finished, "PortMate agent test").await;
 
         let mut libssh_agent = profile.clone();
         if let ConnectionConfig::Ssh(ssh) = &mut libssh_agent.connection {
@@ -694,7 +700,19 @@ fn openssh_agent_policy_and_identity_filtering_end_to_end() {
         .await
         .unwrap();
         assert_eq!(filtered_runtime.auth_method, AuthMethod::PublicKey);
-        disconnect_ssh_runtime(filtered_runtime.runtime, "PortMate agent filter test").await;
+        let EstablishedSshRuntime {
+            runtime,
+            read_half,
+            reader_finished,
+            ..
+        } = filtered_runtime;
+        disconnect_ssh_runtime(
+            runtime,
+            read_half,
+            reader_finished,
+            "PortMate agent filter test",
+        )
+        .await;
 
         let mut mismatched = filtered;
         if let ConnectionConfig::Ssh(ssh) = &mut mismatched.connection {

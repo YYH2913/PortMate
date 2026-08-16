@@ -1,5 +1,57 @@
 use super::*;
 
+fn run_libssh_channel_operation<T>(
+    channel: &libssh_rs::Channel,
+    deadline: Instant,
+    label: &str,
+    operation: impl FnOnce(&libssh_rs::Channel) -> Result<T, String>,
+) -> Result<T, String> {
+    channel
+        .set_session_timeout_until(deadline)
+        .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
+    let result = operation(channel);
+    let restored = channel
+        .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
+        .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
+    match (result, restored) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+    }
+}
+
+pub(super) async fn run_libssh_channel_operation_with_timeout<T, F>(
+    channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
+    timeout: Duration,
+    label: &str,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&libssh_rs::Channel) -> Result<T, String> + Send + 'static,
+{
+    let started = Instant::now();
+    let deadline = started
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{label} deadline is outside the supported range"))?;
+    let channel = tokio::time::timeout(timeout, channel.lock_owned())
+        .await
+        .map_err(|_| format!("{label} channel lock timed out after {} ms", timeout.as_millis()))?;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
+    let worker_label = label.to_string();
+    let worker = tokio::task::spawn_blocking(move || {
+        run_libssh_channel_operation(&channel, deadline, &worker_label, operation)
+    });
+    tokio::time::timeout(remaining, worker)
+        .await
+        .map_err(|_| format!("{label} timed out after {} ms", timeout.as_millis()))?
+        .map_err(|error| format!("{label} worker failed: {error}"))?
+}
+
 pub(super) struct LibsshChannelReader {
     channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
     pending: VecDeque<SshBackendMessage>,
@@ -32,12 +84,14 @@ impl LibsshChannelReader {
         Arc::clone(&self.channel)
     }
 
-    pub(super) async fn close(&self) -> Result<(), String> {
-        let channel = Arc::clone(&self.channel);
-        tokio::task::spawn_blocking(move || channel.blocking_lock().close())
-            .await
-            .map_err(|error| format!("libssh close worker failed: {error}"))?
-            .map_err(|error| error.to_string())
+    pub(super) async fn close_with_timeout(&self, timeout: Duration) -> Result<(), String> {
+        run_libssh_channel_operation_with_timeout(
+            Arc::clone(&self.channel),
+            timeout,
+            "libssh close",
+            |channel| channel.close().map_err(|error| error.to_string()),
+        )
+        .await
     }
 
     async fn wait_inner(&mut self, closed: Option<&AtomicBool>) -> Option<SshBackendMessage> {

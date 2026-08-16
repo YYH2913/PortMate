@@ -265,6 +265,33 @@ impl SessionHolder {
         }
     }
 
+    fn set_timeout(&self, timeout: Duration) -> SshResult<()> {
+        let micros = duration_micros_c_long(timeout);
+        let res = unsafe {
+            sys::ssh_options_set(
+                self.sess,
+                sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
+                &micros as *const _ as _,
+            )
+        };
+        if res == 0 {
+            Ok(())
+        } else if let Some(error) = self.last_error() {
+            Err(error)
+        } else {
+            Err(Error::fatal("failed to set timeout"))
+        }
+    }
+
+    fn set_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| Error::fatal("libssh operation deadline expired"))?;
+        self.set_timeout(remaining.max(Duration::from_micros(1)))?;
+        Ok(remaining)
+    }
+
     fn blocking_flush(&self, timeout: Option<Duration>) -> SshResult<()> {
         let timeout = match timeout {
             Some(t) => duration_millis_c_int(t),
@@ -841,14 +868,7 @@ impl Session {
                     &socket as *const _ as _,
                 )
             },
-            SshOption::Timeout(duration) => unsafe {
-                let micros = duration_micros_c_long(duration);
-                sys::ssh_options_set(
-                    **sess,
-                    sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
-                    &micros as *const _ as _,
-                )
-            },
+            SshOption::Timeout(duration) => return sess.set_timeout(duration),
             SshOption::CiphersCS(name) => unsafe {
                 let name = CString::new(name)?;
                 sys::ssh_options_set(
@@ -914,25 +934,7 @@ impl Session {
     /// a stale timeout and start new protocol work after its deadline has elapsed.
     pub fn set_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
         let sess = self.lock_session();
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| Error::fatal("libssh operation deadline expired"))?;
-        let micros = duration_micros_c_long(remaining).max(1);
-        let res = unsafe {
-            sys::ssh_options_set(
-                **sess,
-                sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
-                &micros as *const _ as _,
-            )
-        };
-        if res == 0 {
-            Ok(remaining)
-        } else if let Some(error) = sess.last_error() {
-            Err(error)
-        } else {
-            Err(Error::fatal("failed to set deadline timeout"))
-        }
+        sess.set_timeout_until(deadline)
     }
 
     /// Configure a pre-connected TCP stream and retain ownership until the session is freed.

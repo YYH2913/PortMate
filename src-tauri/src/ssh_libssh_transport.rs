@@ -677,18 +677,15 @@ pub(super) async fn establish_libssh_gssapi_runtime(
 }
 
 async fn cleanup_failed_libssh_runtime(
-    session: Option<&libssh_rs::Session>,
+    _session: Option<&libssh_rs::Session>,
     jump_sessions: &[client::Handle<PortMateSshHandler>],
     transport_bridge_finished: &mut Option<tokio::sync::oneshot::Receiver<()>>,
     closed: &AtomicBool,
     context: &str,
 ) {
     closed.store(true, Ordering::SeqCst);
-    if let Some(session) = session {
-        if let Some(warning) = request_libssh_disconnect_with_timeout(session.clone()).await {
-            eprintln!("PortMate: libssh {context} cleanup warning: {warning}");
-        }
-    }
+    // A timed-out setup worker may still own a channel. Let the shared SessionHolder
+    // close its socket only after that worker and every channel have been destroyed.
     if let Some(finished) = transport_bridge_finished.take() {
         if tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, finished)
             .await

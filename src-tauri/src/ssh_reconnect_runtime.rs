@@ -204,6 +204,8 @@ pub(super) async fn reconnect_ssh_session(
             SshReconnectInstallDecision::Retry => {
                 disconnect_ssh_runtime(
                     runtime.take().expect("uninstalled runtime present"),
+                    read_half,
+                    reader_finished,
                     "PortMate SSH reconnect profile changed",
                 )
                 .await;
@@ -212,6 +214,8 @@ pub(super) async fn reconnect_ssh_session(
             SshReconnectInstallDecision::Stop => {
                 disconnect_ssh_runtime(
                     runtime.take().expect("uninstalled runtime present"),
+                    read_half,
+                    reader_finished,
                     "PortMate SSH reconnect disabled",
                 )
                 .await;
@@ -228,6 +232,8 @@ pub(super) async fn reconnect_ssh_session(
             SshReconnectInstallDecision::Superseded => {
                 disconnect_ssh_runtime(
                     runtime.take().expect("uninstalled runtime present"),
+                    read_half,
+                    reader_finished,
                     "PortMate SSH reconnect superseded",
                 )
                 .await;
@@ -236,6 +242,8 @@ pub(super) async fn reconnect_ssh_session(
             SshReconnectInstallDecision::Failed(error) => {
                 disconnect_ssh_runtime(
                     runtime.take().expect("uninstalled runtime present"),
+                    read_half,
+                    reader_finished,
                     "PortMate SSH reconnect state unavailable",
                 )
                 .await;

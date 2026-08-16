@@ -690,6 +690,8 @@ TCP/Telnet 普通输入、modem 数据、Telnet 自动协商回复和 NAWS resiz
 
 libssh 运行期 keepalive、健康 SFTP probe、SFTP setup、exec、direct-tcpip 和 remote-forward 创建/取消现把各自外层总 deadline 的剩余预算传入阻塞 worker；vendored `libssh-rs` 会在实际取得内部 session mutex 后重新计算剩余时间，过期 worker 不再安装陈旧 timeout 或继续发起协议副作用。每项操作结束后恢复独立的 20 秒运行期 I/O timeout；即使 Tokio 外层先取消 `JoinHandle`，后台 worker 也会按同一 deadline 释放 session mutex，而不是继续占锁到旧 20 秒上限。真实延迟 direct-tcpip 回归将默认协议 timeout 设为 4 秒并确认 100 ms 外层失败后 700 ms 内可重新取得 libssh session；shared setup deadline 测试扩大时序余量但仍区分“剩余预算”与“阶段重置”。libssh-rs 23 项加 2 项 doc-test、libssh transport 9 项、tunnel 18 项、SSH health 8 项、完整主应用 501 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+SSH 终端 data/EOF/close/resize 现把外层 writer/channel mutex 等待与 russh/libssh 协议操作纳入同一个总 deadline，普通输入和窗口变化使用 10 秒上限；vendored `libssh-rs` channel 会在取得共享 session mutex 后按绝对 deadline 重新计算并安装剩余 timeout，操作结束恢复 20 秒运行期预算，超时等待不会留下继续抢锁的 Tokio waiter。进一步审查发现，libssh 的未安装重连 runtime、连接提交失败回滚和通用超时补救曾可能在 terminal channel 或 detached blocking worker 尚存时调用 `ssh_disconnect`，造成后续 `ssh_channel_free` 的 native 崩溃；未安装 runtime 清理入口现强制先接收并释放 reader/完成通知，所有已建立 libssh runtime 与 setup 失败路径则改由最后一个 channel/SFTP/worker 释放共享 `SessionHolder` 后关闭 socket，russh 仍保留有界主动 disconnect。真实延迟 libssh 回归覆盖 writer 锁超时后恢复、活动 terminal channel 上的超时清理策略和未安装 runtime 的 channel-before-session 析构顺序；SSH transport 矩阵连续通过，vendored libssh-rs 23 项加 2 项 doc-test、完整主应用 503 passed/1 ignored 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

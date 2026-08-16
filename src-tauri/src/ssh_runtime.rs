@@ -69,39 +69,26 @@ pub(super) async fn disconnect_registered_ssh_runtime(
                 .is_ok(),
             None => true,
         };
-        let writer_released = Arc::try_unwrap(writer).map(drop).is_ok();
-        let handle_is_exclusive = Arc::strong_count(&handle) == 1;
-        if reader_stopped
-            && agent_forwarder_stopped
-            && transport_bridge_stopped
-            && writer_released
-            && handle_is_exclusive
-        {
-            if let Some(warning) =
-                request_shared_backend_disconnect_with_timeout(&handle, reason).await
-            {
-                eprintln!("PortMate: SSH runtime {runtime_id} disconnect warning: {warning}");
-            }
-        } else {
-            eprintln!(
-                "PortMate: skipped eager libssh disconnect for reader {runtime_id} while channel users are still shutting down"
-            );
-        }
+        // libssh requires the session to outlive every channel and SFTP handle. A
+        // detached blocking worker can retain one without affecting the runtime's Arcs,
+        // so an eager ssh_disconnect here would race its eventual destructor. Dropping
+        // our handles lets SessionHolder close the socket after the final user exits.
+        drop(writer);
         if !reader_stopped {
             eprintln!(
-                "PortMate: SSH reader {runtime_id} did not finish within {}ms before libssh disconnect",
+                "PortMate: SSH reader {runtime_id} did not finish within {}ms before libssh handle release",
                 SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
             );
         }
         if !agent_forwarder_stopped {
             eprintln!(
-                "PortMate: SSH agent forwarder {runtime_id} did not finish within {}ms before libssh disconnect",
+                "PortMate: SSH agent forwarder {runtime_id} did not finish within {}ms before libssh handle release",
                 SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
             );
         }
         if !transport_bridge_stopped {
             eprintln!(
-                "PortMate: SSH transport bridge {runtime_id} did not finish within {}ms before libssh disconnect",
+                "PortMate: SSH transport bridge {runtime_id} did not finish within {}ms before libssh handle release",
                 SSH_READER_SHUTDOWN_TIMEOUT.as_millis()
             );
         }
@@ -131,28 +118,15 @@ pub(super) async fn disconnect_registered_ssh_runtime(
     }
 }
 
-pub(super) async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
-    let SshRuntime {
-        handle,
-        jump_handles,
-        closed,
-        agent_forwarder_finished,
-        transport_bridge_finished,
-        ..
-    } = runtime;
-    closed.store(true, Ordering::SeqCst);
-    for finished in [agent_forwarder_finished, transport_bridge_finished]
-        .into_iter()
-        .flatten()
-    {
-        let _ = tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, finished).await;
-    }
-    if let Some(warning) = request_shared_backend_disconnect_with_timeout(&handle, reason).await {
-        eprintln!("PortMate: SSH reconnect disconnect warning: {warning}");
-    }
-    for jump_handle in jump_handles {
-        if let Some(warning) = request_shared_ssh_disconnect_with_timeout(&jump_handle, reason).await {
-            eprintln!("PortMate: SSH reconnect jump disconnect warning: {warning}");
-        }
-    }
+pub(super) async fn disconnect_ssh_runtime(
+    runtime: SshRuntime,
+    read_half: SshBackendChannelReader,
+    reader_finished: tokio::sync::oneshot::Sender<()>,
+    reason: &str,
+) {
+    // An uninstalled runtime has no reader task to own these values. libssh requires
+    // every channel to be freed before its session is disconnected.
+    drop(read_half);
+    drop(reader_finished);
+    disconnect_registered_ssh_runtime(runtime, reason, reason).await;
 }

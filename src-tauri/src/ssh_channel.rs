@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const SSH_TERMINAL_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub(super) enum SshBackendChannel {
     Russh(Channel<client::Msg>),
     Libssh(LibsshChannelReader),
@@ -55,41 +57,67 @@ impl SshBackendChannel {
     }
 
     pub(super) async fn data(&self, data: &[u8]) -> Result<(), String> {
+        self.data_with_timeout(data, SSH_RUNTIME_OPERATION_TIMEOUT)
+            .await
+    }
+
+    pub(super) async fn data_with_timeout(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Result<(), String> {
         match self {
-            Self::Russh(channel) => channel.data(data).await.map_err(|error| error.to_string()),
+            Self::Russh(channel) => tokio::time::timeout(timeout, channel.data(data))
+                .await
+                .map_err(|_| format!("SSH write timed out after {} ms", timeout.as_millis()))?
+                .map_err(|error| error.to_string()),
             Self::Libssh(reader) => {
                 let channel = reader.shared_channel();
                 let data = data.to_vec();
-                tokio::task::spawn_blocking(move || {
-                    let channel = channel.blocking_lock();
-                    let mut stdin = channel.stdin();
-                    stdin.write_all(&data)?;
-                    stdin.flush()
-                })
+                run_libssh_channel_operation_with_timeout(
+                    channel,
+                    timeout,
+                    "libssh write",
+                    move |channel| {
+                        let mut stdin = channel.stdin();
+                        stdin.write_all(&data).map_err(|error| error.to_string())?;
+                        stdin.flush().map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh write worker failed: {error}"))?
-                .map_err(|error| error.to_string())
             }
         }
     }
 
     pub(super) async fn eof(&self) -> Result<(), String> {
+        self.eof_with_timeout(SSH_RUNTIME_OPERATION_TIMEOUT).await
+    }
+
+    pub(super) async fn eof_with_timeout(&self, timeout: Duration) -> Result<(), String> {
         match self {
-            Self::Russh(channel) => channel.eof().await.map_err(|error| error.to_string()),
+            Self::Russh(channel) => tokio::time::timeout(timeout, channel.eof())
+                .await
+                .map_err(|_| format!("SSH EOF timed out after {} ms", timeout.as_millis()))?
+                .map_err(|error| error.to_string()),
             Self::Libssh(reader) => {
-                let channel = reader.shared_channel();
-                tokio::task::spawn_blocking(move || channel.blocking_lock().send_eof())
-                    .await
-                    .map_err(|error| format!("libssh EOF worker failed: {error}"))?
-                    .map_err(|error| error.to_string())
+                run_libssh_channel_operation_with_timeout(
+                    reader.shared_channel(),
+                    timeout,
+                    "libssh EOF",
+                    |channel| channel.send_eof().map_err(|error| error.to_string()),
+                )
+                .await
             }
         }
     }
 
-    pub(super) async fn close(&self) -> Result<(), String> {
+    pub(super) async fn close_with_timeout(&self, timeout: Duration) -> Result<(), String> {
         match self {
-            Self::Russh(channel) => channel.close().await.map_err(|error| error.to_string()),
-            Self::Libssh(reader) => reader.close().await,
+            Self::Russh(channel) => tokio::time::timeout(timeout, channel.close())
+                .await
+                .map_err(|_| format!("SSH close timed out after {} ms", timeout.as_millis()))?
+                .map_err(|error| error.to_string()),
+            Self::Libssh(reader) => reader.close_with_timeout(timeout).await,
         }
     }
 }
@@ -123,56 +151,132 @@ pub(super) enum SshBackendChannelWriter {
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Channel>>),
 }
 
+pub(super) async fn write_ssh_channel_bytes_with_timeout(
+    writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
+    data: &[u8],
+    timeout: Duration,
+    label: &str,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let writer = tokio::time::timeout(timeout, Arc::clone(writer).lock_owned())
+        .await
+        .map_err(|_| format!("{label} writer lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label}超时（{} ms）", timeout.as_millis()))?;
+    writer
+        .data_with_timeout(data, remaining)
+        .await
+        .map_err(|error| format!("{label}失败: {error}"))
+}
+
+pub(super) async fn resize_ssh_channel_with_timeout(
+    writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
+    cols: u32,
+    rows: u32,
+    timeout: Duration,
+    label: &str,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let writer = tokio::time::timeout(timeout, Arc::clone(writer).lock_owned())
+        .await
+        .map_err(|_| format!("{label} writer lock 超时（{} ms）", timeout.as_millis()))?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label}超时（{} ms）", timeout.as_millis()))?;
+    writer
+        .window_change_with_timeout(cols, rows, remaining)
+        .await
+        .map_err(|error| format!("{label}失败: {error}"))
+}
+
 impl SshBackendChannelWriter {
     pub(super) async fn data(&self, data: &[u8]) -> Result<(), String> {
+        self.data_with_timeout(data, SSH_RUNTIME_OPERATION_TIMEOUT)
+            .await
+    }
+
+    pub(super) async fn data_with_timeout(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Result<(), String> {
         match self {
-            Self::Russh(writer) => writer
-                .data(data)
+            Self::Russh(writer) => tokio::time::timeout(timeout, writer.data(data))
                 .await
+                .map_err(|_| format!("SSH write timed out after {} ms", timeout.as_millis()))?
                 .map_err(|_| "SSH channel 已关闭".to_string()),
             Self::Libssh(channel) => {
                 let channel = Arc::clone(channel);
                 let data = data.to_vec();
-                tokio::task::spawn_blocking(move || {
-                    let channel = channel.blocking_lock();
-                    let mut stdin = channel.stdin();
-                    stdin.write_all(&data)?;
-                    stdin.flush()
-                })
+                run_libssh_channel_operation_with_timeout(
+                    channel,
+                    timeout,
+                    "libssh write",
+                    move |channel| {
+                        let mut stdin = channel.stdin();
+                        stdin.write_all(&data).map_err(|error| error.to_string())?;
+                        stdin.flush().map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh write worker failed: {error}"))?
-                .map_err(|error| error.to_string())
             }
         }
     }
 
-    pub(super) async fn window_change(&self, cols: u32, rows: u32) -> Result<(), String> {
+    pub(super) async fn window_change_with_timeout(
+        &self,
+        cols: u32,
+        rows: u32,
+        timeout: Duration,
+    ) -> Result<(), String> {
         match self {
-            Self::Russh(writer) => writer
-                .window_change(cols, rows, 0, 0)
+            Self::Russh(writer) => {
+                tokio::time::timeout(timeout, writer.window_change(cols, rows, 0, 0))
                 .await
-                .map_err(|error| error.to_string()),
+                    .map_err(|_| {
+                        format!("SSH resize timed out after {} ms", timeout.as_millis())
+                    })?
+                    .map_err(|error| error.to_string())
+            }
             Self::Libssh(channel) => {
                 let channel = Arc::clone(channel);
-                tokio::task::spawn_blocking(move || {
-                    channel.blocking_lock().change_pty_size(cols, rows)
-                })
+                run_libssh_channel_operation_with_timeout(
+                    channel,
+                    timeout,
+                    "libssh resize",
+                    move |channel| {
+                        channel
+                            .change_pty_size(cols, rows)
+                            .map_err(|error| error.to_string())
+                    },
+                )
                 .await
-                .map_err(|error| format!("libssh resize worker failed: {error}"))?
-                .map_err(|error| error.to_string())
             }
         }
     }
 
     pub(super) async fn eof(&self) -> Result<(), String> {
+        self.eof_with_timeout(SSH_RUNTIME_OPERATION_TIMEOUT).await
+    }
+
+    pub(super) async fn eof_with_timeout(&self, timeout: Duration) -> Result<(), String> {
         match self {
-            Self::Russh(writer) => writer.eof().await.map_err(|error| error.to_string()),
+            Self::Russh(writer) => tokio::time::timeout(timeout, writer.eof())
+                .await
+                .map_err(|_| format!("SSH EOF timed out after {} ms", timeout.as_millis()))?
+                .map_err(|error| error.to_string()),
             Self::Libssh(channel) => {
                 let channel = Arc::clone(channel);
-                tokio::task::spawn_blocking(move || channel.blocking_lock().send_eof())
-                    .await
-                    .map_err(|error| format!("libssh EOF worker failed: {error}"))?
-                    .map_err(|error| error.to_string())
+                run_libssh_channel_operation_with_timeout(
+                    channel,
+                    timeout,
+                    "libssh EOF",
+                    |channel| channel.send_eof().map_err(|error| error.to_string()),
+                )
+                .await
             }
         }
     }

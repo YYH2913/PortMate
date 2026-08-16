@@ -6,7 +6,7 @@ use libssh_rs_sys as sys;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Represents a channel in a `Session`.
 ///
@@ -189,6 +189,20 @@ impl Channel {
 
     fn lock_session(&self) -> (MutexGuard<'_, SessionHolder>, sys::ssh_channel) {
         (self.sess.lock().unwrap(), self.chan_inner)
+    }
+
+    /// Set the owning session's connection timeout.
+    pub fn set_session_timeout(&self, timeout: Duration) -> SshResult<()> {
+        let (session, _) = self.lock_session();
+        session.set_timeout(timeout)
+    }
+
+    /// Set the owning session's timeout from an absolute deadline.
+    ///
+    /// The remaining duration is computed after the session mutex is acquired.
+    pub fn set_session_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
+        let (session, _) = self.lock_session();
+        session.set_timeout_until(deadline)
     }
 
     /// Close a channel.

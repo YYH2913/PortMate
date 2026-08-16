@@ -4,6 +4,8 @@ pub(super) async fn remove_ssh_runtime_after_failed_open(
     state: &AppState,
     session_id: &str,
     runtime_id: &str,
+    read_half: SshBackendChannelReader,
+    reader_finished: tokio::sync::oneshot::Sender<()>,
 ) -> Result<(), String> {
     let runtime = remove_runtime_if_owned(&state.ssh, session_id, |runtime| {
         runtime.runtime_id == runtime_id
@@ -11,25 +13,13 @@ pub(super) async fn remove_ssh_runtime_after_failed_open(
     let Some(runtime) = runtime else {
         return Ok(());
     };
-    runtime.closed.store(true, Ordering::SeqCst);
-    if let Some(warning) = request_shared_backend_disconnect_with_timeout(
-        &runtime.handle,
+    disconnect_ssh_runtime(
+        runtime,
+        read_half,
+        reader_finished,
         "PortMate connection commit failed",
     )
-    .await
-    {
-        eprintln!("PortMate: failed SSH runtime cleanup warning: {warning}");
-    }
-    for jump_handle in runtime.jump_handles {
-        if let Some(warning) = request_shared_ssh_disconnect_with_timeout(
-            &jump_handle,
-            "PortMate connection commit failed",
-        )
-        .await
-        {
-            eprintln!("PortMate: failed SSH jump runtime cleanup warning: {warning}");
-        }
-    }
+    .await;
     Ok(())
 }
 
@@ -119,8 +109,14 @@ pub(super) async fn open_ssh_session(
         Ok(summary) => summary,
         Err(error) => {
             let mut errors = vec![error];
-            if let Err(cleanup_error) =
-                remove_ssh_runtime_after_failed_open(state, &profile.id, &runtime_id).await
+            if let Err(cleanup_error) = remove_ssh_runtime_after_failed_open(
+                state,
+                &profile.id,
+                &runtime_id,
+                read_half,
+                reader_finished,
+            )
+            .await
             {
                 errors.push(format!("SSH runtime cleanup failed: {cleanup_error}"));
             }

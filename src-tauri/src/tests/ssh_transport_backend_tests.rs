@@ -172,6 +172,134 @@ fn libssh_direct_tcpip_worker_releases_the_session_after_its_outer_deadline() {
 
 #[cfg(unix)]
 #[test]
+fn libssh_terminal_writer_lock_deadline_recovers_without_an_orphaned_waiter() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh writer deadline test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = canonical_test_tempdir();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-libssh-writer-deadline-user";
+        let secret = "PortMate libssh writer deadline secret";
+        let (port, _, server_task) =
+            spawn_mixed_auth_test_server(&host_key, username, secret).await;
+        let session = connect_libssh_password_test_session(port, username, secret);
+        session
+            .set_option(libssh_rs::SshOption::Timeout(Duration::from_secs(2)))
+            .unwrap();
+        let channel = session.new_channel().unwrap();
+        channel.open_session().unwrap();
+        channel.request_exec("__PORTMATE_TEST_TERMINAL_INPUT__").unwrap();
+        let (reader, writer) = SshBackendChannel::from_libssh(channel).split();
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let backend = SshBackendSession::<AcceptAnyTestSshClient>::from_libssh(session.clone());
+        let cleanup_warning = request_backend_disconnect_with_timeout(
+            &backend,
+            "PortMate libssh live-channel cleanup test",
+        )
+        .await
+        .expect("libssh forced disconnect skip was not reported");
+        assert!(
+            cleanup_warning.contains("active channels"),
+            "unexpected cleanup warning: {cleanup_warning}"
+        );
+        drop(backend);
+        let guard = writer.lock().await;
+
+        let error = write_ssh_channel_bytes_with_timeout(
+            &writer,
+            b"blocked",
+            Duration::from_millis(30),
+            "SSH test write",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "SSH test write writer lock 超时（30 ms）");
+        drop(guard);
+
+        write_ssh_channel_bytes_with_timeout(
+            &writer,
+            b"released",
+            Duration::from_secs(1),
+            "SSH test write",
+        )
+        .await
+        .expect("SSH writer did not recover after its timed-out waiter");
+
+        drop(writer);
+        drop(reader);
+        session.disconnect();
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn libssh_uninstalled_runtime_cleanup_drops_channel_before_session_disconnect() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh cleanup order test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = canonical_test_tempdir();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-libssh-cleanup-order-user";
+        let secret = "PortMate libssh cleanup order secret";
+        let (port, _, server_task) =
+            spawn_mixed_auth_test_server(&host_key, username, secret).await;
+        let session = connect_libssh_password_test_session(port, username, secret);
+        let channel = session.new_channel().unwrap();
+        channel.open_session().unwrap();
+        channel.request_exec("__PORTMATE_TEST_TERMINAL_INPUT__").unwrap();
+        let (read_half, writer) = SshBackendChannel::from_libssh(channel).split();
+        let (tap, _) = broadcast::channel(4);
+        let (reader_finished, reader_stopped) = tokio::sync::oneshot::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let terminal_channel_open = Arc::new(AtomicBool::new(true));
+        let runtime = SshRuntime {
+            runtime_id: "libssh-uninstalled-cleanup-test".to_string(),
+            profile_snapshot: "{}".to_string(),
+            backend: SshBackendKind::Libssh,
+            auth_method: AuthMethod::Password,
+            handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_libssh(
+                session,
+            ))),
+            sftp: Arc::new(tokio::sync::Mutex::new(None)),
+            jump_handles: Vec::new(),
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            tap,
+            remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+            remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
+            agent_forwarder_finished: None,
+            transport_bridge_finished: None,
+            closed,
+            terminal_channel_open,
+            reader_finished: reader_stopped,
+        };
+
+        disconnect_ssh_runtime(
+            runtime,
+            read_half,
+            reader_finished,
+            "PortMate libssh cleanup order test",
+        )
+        .await;
+
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn libssh_backend_supports_scp_and_remote_copy_channels() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping libssh transfer test: ssh-keygen is not installed");
