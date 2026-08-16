@@ -138,6 +138,23 @@ describe("CI command logging", () => {
     expect(opensslSetup).not.toContain("Get-Command nmake.exe");
     expect(opensslSetup).toContain('"MAKE=nmake.exe"');
     expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKEFLAGS=/m);
+    const sodiumSetup = workflowStep(workflow, "Install release CRT libsodium on Windows");
+    expect(sodiumSetup).toContain("Get-Command vcpkg.exe");
+    expect(sodiumSetup).toContain("--triplet=x64-windows-static-md");
+    expect(sodiumSetup).toContain("x64-windows-static-md\\lib");
+    expect(sodiumSetup).toContain("libsodium.lib");
+    expect(sodiumSetup).toContain('"SODIUM_LIB_DIR=$sodiumLib"');
+    const vcpkgManifest = JSON.parse(readFileSync(
+      resolve(import.meta.dirname, "..", "vcpkg.json"),
+      "utf8",
+    ));
+    expect(vcpkgManifest).toEqual({
+      $schema: "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+      name: "portmate-native-ci",
+      version: "0.1.1",
+      "builtin-baseline": "86dc619bd8d9697405ae5c944b474117ea9457ce",
+      dependencies: ["libsodium"],
+    });
 
     const freshnessWorkflow = readFileSync(
       resolve(import.meta.dirname, "..", ".github", "workflows", "mcp-sdk-freshness.yml"),
