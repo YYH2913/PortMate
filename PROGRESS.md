@@ -664,6 +664,8 @@ MCP `create_tunnel` 现把首次授权快照带到 tunnel runtime 的实际安�
 
 MCP `close_session` 现区分两个不可混淆的授权提交点：在取消 pending open 前先复核 grant；若确实发出取消，该动作即视为已经提交，关闭必须等待 lifecycle lane 并一致收敛，不能因随后撤权留下半关闭状态；若没有 pending open 副作用，则在取得 lane 后、清理桌面暂存凭据或移除 transport runtime 前再次复核。排队期间撤权会保留已连接 Shell runtime、Connected Store 状态和原窗口临时 SSH 凭据，并把审计收敛为 `failed`；已授权取消 pending open 后的晚到撤权则继续完成关闭并记为 `succeeded`。桌面 close wrapper 仍保持立即取消卡住 SSH 握手的原行为。MCP 专项 51 passed/1 ignored、session lifecycle 10 项、完整主应用 491 passed/1 ignored、locked workspace 全 crate/integration/doc tests、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Remote tunnel 动态端口故障现与 registry 安装失败共用同一未提交 runtime 回滚：服务端接受 `tcpip-forward` 的端口 `0` 请求却没有返回分配端口时，不再直接遗留未知 forward，而是执行有界 `cancel-tcpip-forward`、清理 route map，并把 cancel 失败并入原始诊断。真实 russh 故障夹具分别触发 MCP 撤权和缺失动态端口两条路径，确认两次 forward 与两次 cancel 严格成对，且 runtime、route、Profile 和事件均无残留；tunnel 相关 20 项（含正常真实 OpenSSH 三模式端到端）、完整主应用 491 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

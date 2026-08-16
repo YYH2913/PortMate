@@ -1394,7 +1394,7 @@ fn queued_mcp_stop_tunnel_revalidates_its_grant_before_stopping() {
 
 #[cfg(unix)]
 #[test]
-fn stale_mcp_create_tunnel_rolls_back_local_and_remote_staging() {
+fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping MCP tunnel commit test: ssh-keygen is not installed");
         return;
@@ -1536,6 +1536,31 @@ fn stale_mcp_create_tunnel_rolls_back_local_and_remote_staging() {
         assert_eq!(
             counters.remote_forward_cancellations.load(Ordering::SeqCst),
             1
+        );
+
+        let assigned_port_error = create_tunnel_inner(
+            &state,
+            CreateTunnelRequest {
+                session_id: profile.id.clone(),
+                mode: TunnelMode::Remote,
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 0,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 9,
+                route_rules: Vec::new(),
+                label: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            assigned_port_error.contains("did not return an assigned port"),
+            "{assigned_port_error}"
+        );
+        assert_eq!(counters.remote_forward_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            counters.remote_forward_cancellations.load(Ordering::SeqCst),
+            2
         );
         assert!(remote_forwards.lock().unwrap().is_empty());
         assert!(state.tunnels.lock().unwrap().is_empty());

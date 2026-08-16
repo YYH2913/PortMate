@@ -83,7 +83,13 @@ pub(super) async fn start_tunnel_runtime_with_validation(
         };
         if tunnel.bind_port == 0 {
             if returned_port == 0 {
-                return Err("remote SSH tunnel request did not return an assigned port".to_string());
+                return Err(rollback_uninstalled_remote_tunnel(
+                    &handle,
+                    &remote_forwards,
+                    &tunnel,
+                    "remote SSH tunnel request did not return an assigned port".to_string(),
+                )
+                .await);
             }
             tunnel.bind_port = returned_port;
             if relabel_assigned_port {
@@ -145,20 +151,13 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                 Ok::<(), String>(())
             });
         if let Err(error) = install_result {
-            let warnings = cancel_remote_tunnel_forward(
-                Arc::clone(&handle),
-                Arc::clone(&remote_forwards),
+            return Err(rollback_uninstalled_remote_tunnel(
+                &handle,
+                &remote_forwards,
                 &tunnel,
+                error,
             )
-            .await;
-            return Err(if warnings.is_empty() {
-                error
-            } else {
-                format!(
-                    "{error}; remote tunnel cleanup failed: {}",
-                    warnings.join("; ")
-                )
-            });
+            .await);
         }
         if let Some(session) = libssh_session {
             if remote_forward_acceptor_started
@@ -358,6 +357,28 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     });
 
     Ok((tunnel, Some(local_addr), owner))
+}
+
+async fn rollback_uninstalled_remote_tunnel(
+    handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+    remote_forwards: &Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    tunnel: &TunnelSpec,
+    error: String,
+) -> String {
+    let warnings = cancel_remote_tunnel_forward(
+        Arc::clone(handle),
+        Arc::clone(remote_forwards),
+        tunnel,
+    )
+    .await;
+    if warnings.is_empty() {
+        error
+    } else {
+        format!(
+            "{error}; remote tunnel cleanup failed: {}",
+            warnings.join("; ")
+        )
+    }
 }
 
 pub(super) fn ensure_tunnel_runtime_slot(
