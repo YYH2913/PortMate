@@ -3,9 +3,28 @@ use super::*;
 pub(super) async fn start_tunnel_runtime(
     state: &AppState,
     session_id: &str,
+    tunnel: TunnelSpec,
+    relabel_assigned_port: bool,
+    expected_runtime_id: Option<&str>,
+) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, TunnelRuntimeOwner), String> {
+    start_tunnel_runtime_with_validation(
+        state,
+        session_id,
+        tunnel,
+        relabel_assigned_port,
+        expected_runtime_id,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn start_tunnel_runtime_with_validation(
+    state: &AppState,
+    session_id: &str,
     mut tunnel: TunnelSpec,
     relabel_assigned_port: bool,
     expected_runtime_id: Option<&str>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, TunnelRuntimeOwner), String> {
     validate_tunnels(std::slice::from_ref(&tunnel))?;
     let (
@@ -83,7 +102,9 @@ pub(super) async fn start_tunnel_runtime(
             ssh_runtime_id: ssh_runtime_id.clone(),
             closed: Arc::clone(&closed),
         };
-        let install_result = (|| {
+        let install_result = commit_validation
+            .map_or(Ok(()), |validate| validate())
+            .and_then(|()| {
             let connections = state.ssh.lock().map_err(|error| error.to_string())?;
             if connections
                 .get(session_id)
@@ -121,8 +142,8 @@ pub(super) async fn start_tunnel_runtime(
                     listener_worker: TunnelListenerWorker::completed(),
                 },
             );
-            Ok::<(), String>(())
-        })();
+                Ok::<(), String>(())
+            });
         if let Err(error) = install_result {
             let warnings = cancel_remote_tunnel_forward(
                 Arc::clone(&handle),
@@ -177,6 +198,9 @@ pub(super) async fn start_tunnel_runtime(
                 tunnel.target_port,
             );
         }
+    }
+    if let Some(validate) = commit_validation {
+        validate()?;
     }
     let closed = Arc::new(AtomicBool::new(false));
     let (listener_worker, listener_completion) = TunnelListenerWorker::running();

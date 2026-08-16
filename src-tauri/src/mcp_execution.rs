@@ -420,7 +420,14 @@ async fn execute_ipc_request_inner(
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
-            let spec = create_tunnel_inner(&state, tunnel).await?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let spec =
+                create_tunnel_inner_with_validation(&state, tunnel, Some(validation)).await?;
             serde_json::to_value(redact_mcp_tunnel_spec(spec)).map_err(|error| error.to_string())
         }
         "list_tunnels" => {

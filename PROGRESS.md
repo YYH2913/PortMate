@@ -660,6 +660,8 @@ MCP `open_session` 现把首次授权快照带入 session lifecycle lane，并�
 
 MCP `start_transfer`、内联/分块内容传输、`cancel_transfer` 和 `retry_transfer` 现把首次授权快照带到 transfer 的实际提交点，在注册 cancellation/staging、写入 `Queued` 或修改既有任务前重新校验 grant。授权在内容解码、分块上传复制或其他预检期间被撤销、删除、缩小或到期时会 fail-closed；已复制的任务暂存会清理，原始 resumable upload 保留供重新授权后重试，runner permit 完整归还，既有运行/失败任务不被取消或重试。回归逐条覆盖五条命令并断言零新任务、零事件和零暂存泄漏；MCP 专项 48 passed/1 ignored、transfer 相关 54 项、完整主应用 487 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+MCP `create_tunnel` 现把首次授权快照带到 tunnel runtime 的实际安装点：Local/Dynamic 在监听端口绑定成功、但尚未注册 listener worker 前复核 grant，Remote 在服务端 forward 创建成功、但尚未写入路由和 runtime registry 前复核；撤权、删除、缩小或到期会 fail-closed，Local/Dynamic 立即释放暂存 listener，Remote 主动取消已创建的服务端 forward。真实 russh 回归同时证明端口可立即重绑、remote forward/cancel 成对发生，且 Profile、事件、forward route 与 runtime registry 均无残留；桌面和重连恢复路径继续使用无授权 wrapper。MCP 专项 49 passed/1 ignored、tunnel 相关 20 项（含真实 OpenSSH SFTP/SCP/三模式 tunnel 综合端到端）、完整主应用 488 passed/1 ignored、locked workspace、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

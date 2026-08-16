@@ -1256,6 +1256,166 @@ fn queued_mcp_stop_tunnel_revalidates_its_grant_before_stopping() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn stale_mcp_create_tunnel_rolls_back_local_and_remote_staging() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping MCP tunnel commit test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let profile = test_ssh_profile();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        let username = "portmate-mcp-tunnel-user";
+        let secret = "PortMate MCP tunnel secret";
+        let (port, counters, server_task) =
+            spawn_mixed_auth_test_server(&host_key, username, secret).await;
+        let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
+        let handler = PortMateSshHandler {
+            profile_id: profile.id.clone(),
+            host: "127.0.0.1".to_string(),
+            port,
+            alias: None,
+            policy: portmate_core::HostKeyPolicy {
+                mode: HostKeyMode::TrustOnFirstUse,
+                alias: None,
+                trust_scope: HostKeyScope::Profile,
+                allow_rotation: false,
+                check_ip: false,
+            },
+            host_keys: state.store.lock().unwrap().host_keys.clone(),
+            one_time_host_key_ids: Vec::new(),
+            observed_key: Arc::new(Mutex::new(None)),
+            host_key_error: Arc::new(Mutex::new(None)),
+            remote_forwards: Arc::clone(&remote_forwards),
+        };
+        let mut ssh = client::connect(
+            Arc::new(client::Config::default()),
+            ("127.0.0.1", port),
+            handler,
+        )
+        .await
+        .unwrap();
+        assert!(ssh
+            .authenticate_password(username, secret)
+            .await
+            .unwrap()
+            .success());
+        let terminal = SshBackendChannel::from_russh(ssh.channel_open_session().await.unwrap());
+        let (_reader, writer) = terminal.split();
+        let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(ssh)));
+        let (tap, _) = broadcast::channel(1);
+        let (_reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
+        state.ssh.lock().unwrap().insert(
+            profile.id.clone(),
+            SshRuntime {
+                runtime_id: "mcp-tunnel-runtime".to_string(),
+                profile_snapshot: ssh_health::ssh_health_profile_snapshot(&profile).unwrap(),
+                backend: SshBackendKind::Russh,
+                auth_method: AuthMethod::Password,
+                handle,
+                sftp: Arc::new(tokio::sync::Mutex::new(None)),
+                jump_handles: Vec::new(),
+                writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                tap,
+                remote_forwards: Arc::clone(&remote_forwards),
+                remote_forward_acceptor_started: Arc::new(AtomicBool::new(false)),
+                agent_forwarder_finished: None,
+                transport_bridge_finished: None,
+                closed: Arc::new(AtomicBool::new(false)),
+                terminal_channel_open: Arc::new(AtomicBool::new(true)),
+                reader_finished,
+            },
+        );
+        state
+            .store
+            .lock()
+            .unwrap()
+            .set_runtime_status(&profile.id, SessionStatus::Connected)
+            .unwrap();
+
+        let client_id = "stale-create-tunnel-client";
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: client_id.to_string(),
+            name: "Stale create tunnel client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: vec![profile.id.clone()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        let execution = McpWriteExecutionContext::Generic;
+        let authorization =
+            McpWriteAuthorizationContext::new(McpScope::Tunnel, profile.id.clone(), false);
+        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+
+        let reservation = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let local_port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let request = |mode: &str, bind_port: u16| IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: client_id.to_string(),
+            trusted_write: false,
+            command: "create_tunnel".to_string(),
+            args: serde_json::json!({
+                "sessionId": profile.id,
+                "mode": mode,
+                "bindHost": "127.0.0.1",
+                "bindPort": bind_port,
+                "targetHost": "127.0.0.1",
+                "targetPort": 9,
+                "routeRules": [],
+            }),
+        };
+
+        let local_error = execute_ipc_request_with_context(
+            state.clone(),
+            request("local", local_port),
+            &execution,
+            &authorization,
+        )
+        .await
+        .unwrap_err();
+        assert!(local_error.contains("grant changed"), "{local_error}");
+        let rebound = TcpListener::bind(("127.0.0.1", local_port))
+            .await
+            .expect("stale MCP local tunnel retained its staged listener");
+        drop(rebound);
+
+        let remote_error = execute_ipc_request_with_context(
+            state.clone(),
+            request("remote", 41_923),
+            &execution,
+            &authorization,
+        )
+        .await
+        .unwrap_err();
+        assert!(remote_error.contains("grant changed"), "{remote_error}");
+        assert_eq!(counters.remote_forward_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            counters.remote_forward_cancellations.load(Ordering::SeqCst),
+            1
+        );
+        assert!(remote_forwards.lock().unwrap().is_empty());
+        assert!(state.tunnels.lock().unwrap().is_empty());
+        let store = state.store.lock().unwrap();
+        let stored_profile = store.profile(&profile.id).unwrap();
+        let tunnels = match &stored_profile.connection {
+            ConnectionConfig::Ssh(ssh) => &ssh.tunnels,
+            _ => unreachable!(),
+        };
+        assert!(tunnels.is_empty());
+        assert!(store.events.is_empty());
+        drop(store);
+        server_task.abort();
+    });
+}
+
 #[test]
 fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
     tauri::async_runtime::block_on(async {

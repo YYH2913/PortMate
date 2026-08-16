@@ -154,6 +154,8 @@ pub(super) struct MixedAuthTestCounters {
     pub(super) session_channel_completions: AtomicU64,
     pub(super) direct_tcpip_attempts: AtomicU64,
     pub(super) direct_tcpip_completions: AtomicU64,
+    pub(super) remote_forward_requests: AtomicU64,
+    pub(super) remote_forward_cancellations: AtomicU64,
     pub(super) channel_closes: AtomicU64,
     pub(super) scp_upload_bytes: AtomicU64,
 }
@@ -246,6 +248,30 @@ impl russh::server::Handler for MixedAuthTestServer {
             .fetch_add(1, Ordering::SeqCst);
         reply.accept().await;
         Ok(())
+    }
+
+    async fn tcpip_forward(
+        &mut self,
+        _address: &str,
+        _port: &mut u32,
+        _session: &mut russh::server::Session,
+    ) -> Result<bool, Self::Error> {
+        self.counters
+            .remote_forward_requests
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        _address: &str,
+        _port: u32,
+        _session: &mut russh::server::Session,
+    ) -> Result<bool, Self::Error> {
+        self.counters
+            .remote_forward_cancellations
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(true)
     }
 
     async fn exec_request(

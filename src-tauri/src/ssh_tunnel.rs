@@ -252,6 +252,14 @@ pub(super) async fn create_tunnel_inner(
     state: &AppState,
     request: CreateTunnelRequest,
 ) -> Result<TunnelSpec, String> {
+    create_tunnel_inner_with_validation(state, request, None).await
+}
+
+pub(super) async fn create_tunnel_inner_with_validation(
+    state: &AppState,
+    request: CreateTunnelRequest,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TunnelSpec, String> {
     let request = normalize_tunnel_request(request)?;
     ensure_tunnel_creation_capacity(state, &request.session_id)?;
     let tunnel = TunnelSpec {
@@ -276,12 +284,13 @@ pub(super) async fn create_tunnel_inner(
     validate_tunnels(std::slice::from_ref(&tunnel))?;
     let lifecycle_lane = tunnel_lifecycle_lane(state, &tunnel.id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;
-    let (tunnel, local_addr, owner) = start_tunnel_runtime(
+    let (tunnel, local_addr, owner) = start_tunnel_runtime_with_validation(
         state,
         &request.session_id,
         tunnel,
         request.label.is_none(),
         None,
+        commit_validation,
     )
     .await?;
     commit_started_tunnel(state, &request.session_id, tunnel, local_addr, &owner).await
