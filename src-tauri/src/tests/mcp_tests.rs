@@ -1475,6 +1475,57 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
             .set_runtime_status(&profile.id, SessionStatus::Connected)
             .unwrap();
 
+        let occupied_spec = TunnelSpec {
+            id: "occupied-remote-route".to_string(),
+            label: "Occupied remote route".to_string(),
+            mode: TunnelMode::Remote,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 41_922,
+            target_host: "127.0.0.1".to_string(),
+            target_port: 9,
+            route_rules: Vec::new(),
+            enabled: true,
+        };
+        let occupied_metrics = Arc::new(TunnelMetrics::default());
+        let occupied_target = TunnelForwardTarget {
+            spec: occupied_spec.clone(),
+            metrics: occupied_metrics,
+            connection_slots: Arc::clone(&state.tunnel_connection_slots),
+        };
+        {
+            let mut forwards = remote_forwards.lock().unwrap();
+            forwards.insert(
+                remote_forward_key(&occupied_spec.bind_host, occupied_spec.bind_port),
+                occupied_target.clone(),
+            );
+            forwards.insert(
+                remote_forward_port_key(occupied_spec.bind_port),
+                occupied_target,
+            );
+        }
+        let occupied_error = create_tunnel_inner(
+            &state,
+            CreateTunnelRequest {
+                session_id: profile.id.clone(),
+                mode: TunnelMode::Remote,
+                bind_host: occupied_spec.bind_host.clone(),
+                bind_port: occupied_spec.bind_port,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 9,
+                route_rules: Vec::new(),
+                label: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            occupied_error.contains("route already registered"),
+            "{occupied_error}"
+        );
+        assert_eq!(counters.remote_forward_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(remote_forwards.lock().unwrap().len(), 2);
+        remote_forwards.lock().unwrap().clear();
+
         let client_id = "stale-create-tunnel-client";
         state.store.lock().unwrap().grants.push(McpGrant {
             client_id: client_id.to_string(),
@@ -1561,6 +1612,39 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
         assert_eq!(
             counters.remote_forward_cancellations.load(Ordering::SeqCst),
             2
+        );
+        assert_eq!(
+            counters
+                .last_remote_forward_cancellation_port
+                .load(Ordering::SeqCst),
+            0
+        );
+
+        counters
+            .remote_forward_assigned_port
+            .store(41_924, Ordering::SeqCst);
+        let assigned_then_revoked_error = execute_ipc_request_with_context(
+            state.clone(),
+            request("remote", 0),
+            &execution,
+            &authorization,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            assigned_then_revoked_error.contains("grant changed"),
+            "{assigned_then_revoked_error}"
+        );
+        assert_eq!(counters.remote_forward_requests.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            counters.remote_forward_cancellations.load(Ordering::SeqCst),
+            3
+        );
+        assert_eq!(
+            counters
+                .last_remote_forward_cancellation_port
+                .load(Ordering::SeqCst),
+            41_924
         );
         assert!(remote_forwards.lock().unwrap().is_empty());
         assert!(state.tunnels.lock().unwrap().is_empty());

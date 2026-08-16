@@ -54,6 +54,64 @@ fn libssh_remote_forward_acceptor_registration_recovers_after_worker_exit() {
 }
 
 #[test]
+fn remote_forward_rollback_covers_returned_and_requested_ports_without_duplicates() {
+    assert_eq!(remote_forward_rollback_ports(0, Some(0)), vec![0]);
+    assert_eq!(remote_forward_rollback_ports(0, Some(41_923)), vec![41_923]);
+    assert_eq!(remote_forward_rollback_ports(41_923, None), vec![41_923]);
+    assert_eq!(
+        remote_forward_rollback_ports(41_923, Some(0)),
+        vec![41_923]
+    );
+    assert_eq!(
+        remote_forward_rollback_ports(41_923, Some(41_923)),
+        vec![41_923]
+    );
+    assert_eq!(
+        remote_forward_rollback_ports(41_923, Some(41_924)),
+        vec![41_924, 41_923]
+    );
+}
+
+#[test]
+fn remote_forward_route_cleanup_requires_the_exact_runtime_generation() {
+    let spec = TunnelSpec {
+        id: "shared-route-id".to_string(),
+        label: "Shared route".to_string(),
+        mode: TunnelMode::Remote,
+        bind_host: "127.0.0.1".to_string(),
+        bind_port: 41_923,
+        target_host: "127.0.0.1".to_string(),
+        target_port: 22,
+        route_rules: Vec::new(),
+        enabled: true,
+    };
+    let original_owner = Arc::new(TunnelMetrics::default());
+    let replacement_owner = Arc::new(TunnelMetrics::default());
+    let target = TunnelForwardTarget {
+        spec: spec.clone(),
+        metrics: Arc::clone(&original_owner),
+        connection_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+    };
+    let mut forwards = HashMap::from([
+        (
+            remote_forward_key(&spec.bind_host, spec.bind_port),
+            target.clone(),
+        ),
+        (remote_forward_port_key(spec.bind_port), target),
+    ]);
+
+    ensure_remote_forward_route_slot(&forwards, &spec, &original_owner).unwrap();
+    let conflict =
+        ensure_remote_forward_route_slot(&forwards, &spec, &replacement_owner).unwrap_err();
+    assert!(conflict.contains("already registered"), "{conflict}");
+
+    remove_remote_forward_routes_if_owned(&mut forwards, &spec, &replacement_owner);
+    assert_eq!(forwards.len(), 2);
+    remove_remote_forward_routes_if_owned(&mut forwards, &spec, &original_owner);
+    assert!(forwards.is_empty());
+}
+
+#[test]
 fn remote_tunnel_listener_probe_parses_linux_bsd_macos_and_unsupported_outputs() {
     let proc_output = "__PORTMATE_PROC__\n  0: 0100007F:0016 00000000:0000 0A 00000000:00000000\n  1: 0100007F:2710 00000000:0000 01 00000000:00000000\n";
     assert_eq!(

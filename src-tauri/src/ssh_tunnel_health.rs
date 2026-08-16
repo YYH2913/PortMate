@@ -237,6 +237,7 @@ pub(super) async fn probe_remote_tunnel_health(
         let exact_key = remote_forward_key(&runtime.spec.bind_host, runtime.spec.bind_port);
         let port_key = remote_forward_port_key(runtime.spec.bind_port);
         if !forwards.contains_key(&exact_key) || !forwards.contains_key(&port_key) {
+            ensure_remote_forward_route_slot(&forwards, &runtime.spec, &runtime.metrics)?;
             let target = TunnelForwardTarget {
                 spec: runtime.spec.clone(),
                 metrics: Arc::clone(&runtime.metrics),
@@ -319,13 +320,29 @@ pub(super) async fn probe_remote_tunnel_health(
                     })?
             };
             if returned_port != runtime.spec.bind_port {
-                return Err(format!(
-                    "listener restore returned unexpected port {returned_port} for {}",
-                    runtime.spec.bind_port
-                ));
+                return Err(rollback_remote_tunnel_forward_attempt(
+                    &handle,
+                    &remote_forwards,
+                    &runtime.spec,
+                    &runtime.metrics,
+                    Some(returned_port),
+                    format!(
+                        "listener restore returned unexpected port {returned_port} for {}",
+                        runtime.spec.bind_port
+                    ),
+                )
+                .await);
             }
             if runtime.closed.load(Ordering::SeqCst) {
-                return Err("tunnel closed during listener restore".to_string());
+                return Err(rollback_remote_tunnel_forward_attempt(
+                    &handle,
+                    &remote_forwards,
+                    &runtime.spec,
+                    &runtime.metrics,
+                    Some(returned_port),
+                    "tunnel closed during listener restore".to_string(),
+                )
+                .await);
             }
             Ok(RemoteTunnelHealth::Restored)
         }

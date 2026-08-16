@@ -68,6 +68,11 @@ pub(super) async fn start_tunnel_runtime_with_validation(
         if tunnel.target_host.trim().is_empty() || tunnel.target_port == 0 {
             return Err("remote tunnel requires a local target host and port".to_string());
         }
+        let metrics = Arc::new(TunnelMetrics::default());
+        if tunnel.bind_port != 0 {
+            let forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+            ensure_remote_forward_route_slot(&forwards, &tunnel, &metrics)?;
+        }
         let (returned_port, libssh_session) = {
             let handle = handle.lock().await;
             let returned_port = handle
@@ -83,10 +88,12 @@ pub(super) async fn start_tunnel_runtime_with_validation(
         };
         if tunnel.bind_port == 0 {
             if returned_port == 0 {
-                return Err(rollback_uninstalled_remote_tunnel(
+                return Err(rollback_remote_tunnel_forward_attempt(
                     &handle,
                     &remote_forwards,
                     &tunnel,
+                    &metrics,
+                    Some(returned_port),
                     "remote SSH tunnel request did not return an assigned port".to_string(),
                 )
                 .await);
@@ -101,8 +108,20 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                     tunnel.target_port,
                 );
             }
+        } else if returned_port != tunnel.bind_port {
+            return Err(rollback_remote_tunnel_forward_attempt(
+                &handle,
+                &remote_forwards,
+                &tunnel,
+                &metrics,
+                Some(returned_port),
+                format!(
+                    "remote SSH tunnel request returned unexpected port {returned_port} for {}",
+                    tunnel.bind_port
+                ),
+            )
+            .await);
         }
-        let metrics = Arc::new(TunnelMetrics::default());
         let closed = Arc::new(AtomicBool::new(false));
         let owner = TunnelRuntimeOwner {
             ssh_runtime_id: ssh_runtime_id.clone(),
@@ -127,6 +146,7 @@ pub(super) async fn start_tunnel_runtime_with_validation(
             let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
             ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
             let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+            ensure_remote_forward_route_slot(&forwards, &tunnel, &metrics)?;
             let target = TunnelForwardTarget {
                 spec: tunnel.clone(),
                 metrics: Arc::clone(&metrics),
@@ -151,10 +171,12 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                 Ok::<(), String>(())
             });
         if let Err(error) = install_result {
-            return Err(rollback_uninstalled_remote_tunnel(
+            return Err(rollback_remote_tunnel_forward_attempt(
                 &handle,
                 &remote_forwards,
                 &tunnel,
+                &metrics,
+                None,
                 error,
             )
             .await);
@@ -351,28 +373,6 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     });
 
     Ok((tunnel, Some(local_addr), owner))
-}
-
-async fn rollback_uninstalled_remote_tunnel(
-    handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
-    remote_forwards: &Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
-    tunnel: &TunnelSpec,
-    error: String,
-) -> String {
-    let warnings = cancel_remote_tunnel_forward(
-        Arc::clone(handle),
-        Arc::clone(remote_forwards),
-        tunnel,
-    )
-    .await;
-    if warnings.is_empty() {
-        error
-    } else {
-        format!(
-            "{error}; remote tunnel cleanup failed: {}",
-            warnings.join("; ")
-        )
-    }
 }
 
 pub(super) fn ensure_tunnel_runtime_slot(

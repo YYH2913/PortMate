@@ -212,7 +212,15 @@ pub(super) async fn stop_tunnel_runtime_effects(
         }
     };
     if let Some((handle, remote_forwards)) = remote_forward {
-        warnings.extend(cancel_remote_tunnel_forward(handle, remote_forwards, &runtime.spec).await);
+        warnings.extend(
+            cancel_remote_tunnel_forward(
+                handle,
+                remote_forwards,
+                &runtime.spec,
+                &runtime.metrics,
+            )
+            .await,
+        );
     } else if warnings.is_empty() {
         warnings.push("SSH runtime unavailable during remote cancel".to_string());
     }
@@ -223,6 +231,7 @@ pub(super) async fn cancel_remote_tunnel_forward(
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     tunnel: &TunnelSpec,
+    route_owner: &Arc<TunnelMetrics>,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let cancel = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, async {
@@ -245,10 +254,99 @@ pub(super) async fn cancel_remote_tunnel_forward(
     }
     match remote_forwards.lock() {
         Ok(mut forwards) => {
-            forwards.remove(&remote_forward_key(&tunnel.bind_host, tunnel.bind_port));
-            forwards.remove(&remote_forward_port_key(tunnel.bind_port));
+            remove_remote_forward_routes_if_owned(&mut forwards, tunnel, route_owner);
         }
         Err(error) => warnings.push(format!("remote forward route cleanup failed: {error}")),
     }
     warnings
+}
+
+pub(super) fn ensure_remote_forward_route_slot(
+    forwards: &HashMap<String, TunnelForwardTarget>,
+    tunnel: &TunnelSpec,
+    route_owner: &Arc<TunnelMetrics>,
+) -> Result<(), String> {
+    for key in [
+        remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
+        remote_forward_port_key(tunnel.bind_port),
+    ] {
+        if let Some(existing) = forwards.get(&key) {
+            let owned = existing.spec.id == tunnel.id
+                && Arc::ptr_eq(&existing.metrics, route_owner);
+            if !owned {
+                return Err(format!(
+                    "remote tunnel route already registered for {}:{}",
+                    tunnel.bind_host, tunnel.bind_port
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn remove_remote_forward_routes_if_owned(
+    forwards: &mut HashMap<String, TunnelForwardTarget>,
+    tunnel: &TunnelSpec,
+    route_owner: &Arc<TunnelMetrics>,
+) {
+    for key in [
+        remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
+        remote_forward_port_key(tunnel.bind_port),
+    ] {
+        let owned = forwards.get(&key).is_some_and(|target| {
+            target.spec.id == tunnel.id && Arc::ptr_eq(&target.metrics, route_owner)
+        });
+        if owned {
+            forwards.remove(&key);
+        }
+    }
+}
+
+pub(super) fn remote_forward_rollback_ports(
+    requested_port: u16,
+    returned_port: Option<u16>,
+) -> Vec<u16> {
+    let mut ports = Vec::with_capacity(2);
+    if let Some(returned_port) = returned_port.filter(|port| *port != 0) {
+        ports.push(returned_port);
+    }
+    if requested_port != 0 && !ports.contains(&requested_port) {
+        ports.push(requested_port);
+    }
+    if ports.is_empty() {
+        ports.push(0);
+    }
+    ports
+}
+
+pub(super) async fn rollback_remote_tunnel_forward_attempt(
+    handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+    remote_forwards: &Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    tunnel: &TunnelSpec,
+    route_owner: &Arc<TunnelMetrics>,
+    returned_port: Option<u16>,
+    error: String,
+) -> String {
+    let mut warnings = Vec::new();
+    for port in remote_forward_rollback_ports(tunnel.bind_port, returned_port) {
+        let mut candidate = tunnel.clone();
+        candidate.bind_port = port;
+        warnings.extend(
+            cancel_remote_tunnel_forward(
+                Arc::clone(handle),
+                Arc::clone(remote_forwards),
+                &candidate,
+                route_owner,
+            )
+            .await,
+        );
+    }
+    if warnings.is_empty() {
+        error
+    } else {
+        format!(
+            "{error}; remote tunnel cleanup failed: {}",
+            warnings.join("; ")
+        )
+    }
 }

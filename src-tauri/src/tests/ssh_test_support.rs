@@ -156,6 +156,8 @@ pub(super) struct MixedAuthTestCounters {
     pub(super) direct_tcpip_completions: AtomicU64,
     pub(super) remote_forward_requests: AtomicU64,
     pub(super) remote_forward_cancellations: AtomicU64,
+    pub(super) remote_forward_assigned_port: AtomicU64,
+    pub(super) last_remote_forward_cancellation_port: AtomicU64,
     pub(super) channel_closes: AtomicU64,
     pub(super) scp_upload_bytes: AtomicU64,
 }
@@ -253,24 +255,34 @@ impl russh::server::Handler for MixedAuthTestServer {
     async fn tcpip_forward(
         &mut self,
         _address: &str,
-        _port: &mut u32,
+        port: &mut u32,
         _session: &mut russh::server::Session,
     ) -> Result<bool, Self::Error> {
         self.counters
             .remote_forward_requests
             .fetch_add(1, Ordering::SeqCst);
+        let assigned_port = self
+            .counters
+            .remote_forward_assigned_port
+            .load(Ordering::SeqCst);
+        if *port == 0 && assigned_port != 0 {
+            *port = u32::try_from(assigned_port).unwrap();
+        }
         Ok(true)
     }
 
     async fn cancel_tcpip_forward(
         &mut self,
         _address: &str,
-        _port: u32,
+        port: u32,
         _session: &mut russh::server::Session,
     ) -> Result<bool, Self::Error> {
         self.counters
             .remote_forward_cancellations
             .fetch_add(1, Ordering::SeqCst);
+        self.counters
+            .last_remote_forward_cancellation_port
+            .store(u64::from(port), Ordering::SeqCst);
         Ok(true)
     }
 

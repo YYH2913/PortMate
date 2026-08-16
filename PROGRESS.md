@@ -668,6 +668,8 @@ Remote tunnel 动态端口故障现与 registry 安装失败共用同一未提�
 
 libssh remote-forward acceptor 现由单实例注册守卫管理，worker 正常退出、异常返回、panic unwind 或任务取消都会释放 `remote_forward_acceptor_started`，不再留下“标记仍运行但实际无人接收”的假健康状态。Remote tunnel 健康检查会补启动缺失的 libssh acceptor；当远端不支持 Linux/BSD/macOS/Windows listener probe 时，只停止昂贵的远端探测并保留轻量 acceptor 看门，russh backend 仍按原行为结束不支持的探测。回归覆盖重复启动抑制、runtime 关闭后注册释放、关闭期间拒绝启动和再次启动；tunnel 专项 21 项（含真实 OpenSSH 三模式端到端）、完整主应用 492 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Remote-forward 路由现以 tunnel ID 加 `TunnelMetrics` 实例共同标识运行代际：固定端口在发出服务端请求前拒绝既有精确/port-only 路由，动态分配端口在 registry 安装前再次复核；健康恢复不会覆盖其他 tunnel 或同 ID 的替代代际，停止与异常回滚也只删除自身两条路由。初次创建和健康恢复都会校验服务端返回端口，异常端口及恢复后关闭会对实际返回端口和请求端口去重执行有界 cancel，并保留其他代际的路由。真实 russh 夹具确认冲突在零服务端请求时失败、动态分配 `41924` 后撤权会精确取消 `41924`；纯所有权回归确认旧代际无法清理新代际。tunnel 专项 23 项（含真实 OpenSSH 三模式端到端）、完整主应用 494 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
