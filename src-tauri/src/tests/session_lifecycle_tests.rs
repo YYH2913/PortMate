@@ -553,6 +553,67 @@ fn session_close_persistence_failure_keeps_local_disconnect_truth() {
 }
 
 #[test]
+fn session_close_stops_tunnel_listeners_before_returning() {
+    tauri::async_runtime::block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = test_ssh_profile();
+        let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .open_session(&profile.id)
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (listener_worker, listener_completion) = TunnelListenerWorker::running();
+        let listener_waiter = listener_worker.clone();
+        let listener_task = tauri::async_runtime::spawn(async move {
+            let _listener = listener;
+            listener_waiter.wait_shutdown().await;
+            drop(listener_completion);
+        });
+        let closed = Arc::new(AtomicBool::new(false));
+        state.tunnels.lock().unwrap().insert(
+            "session-close-tunnel".to_string(),
+            TunnelRuntime {
+                session_id: profile.id.clone(),
+                ssh_runtime_id: "session-close-runtime".to_string(),
+                spec: TunnelSpec {
+                    id: "session-close-tunnel".to_string(),
+                    label: "session close listener".to_string(),
+                    mode: TunnelMode::Local,
+                    bind_host: address.ip().to_string(),
+                    bind_port: address.port(),
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: 22,
+                    route_rules: Vec::new(),
+                    enabled: true,
+                },
+                metrics: Arc::new(TunnelMetrics::default()),
+                closed: Arc::clone(&closed),
+                listener_worker: listener_worker.clone(),
+            },
+        );
+
+        let summary = close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+        assert!(closed.load(Ordering::SeqCst));
+        assert!(state.tunnels.lock().unwrap().is_empty());
+        assert!(listener_worker.is_finished());
+        listener_task.await.unwrap();
+        let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+    });
+}
+
+#[test]
 fn shell_open_removes_the_runtime_when_connected_state_cannot_commit() {
     let root = std::env::temp_dir().join(format!(
         "portmate-shell-open-commit-failure-{}",

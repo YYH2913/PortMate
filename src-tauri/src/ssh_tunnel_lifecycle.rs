@@ -90,6 +90,17 @@ pub(super) fn fail_session_tunnel_runtimes(
     session_id: &str,
     error: &str,
 ) -> Result<Vec<TunnelRuntime>, String> {
+    let removed = stop_session_tunnel_runtimes(tunnels, session_id)?;
+    for runtime in &removed {
+        runtime.metrics.record_error(error);
+    }
+    Ok(removed)
+}
+
+pub(super) fn stop_session_tunnel_runtimes(
+    tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
+    session_id: &str,
+) -> Result<Vec<TunnelRuntime>, String> {
     let mut tunnels = tunnels
         .lock()
         .map_err(|lock_error| lock_error.to_string())?;
@@ -100,7 +111,6 @@ pub(super) fn fail_session_tunnel_runtimes(
     let mut removed = Vec::with_capacity(ids.len());
     for id in ids {
         if let Some(runtime) = tunnels.remove(&id) {
-            runtime.metrics.record_error(error);
             runtime.request_shutdown();
             removed.push(runtime);
         }

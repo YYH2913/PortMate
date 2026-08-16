@@ -201,17 +201,13 @@ pub(super) async fn close_session_under_lifecycle_lock(
     if let Some(runtime) = existing_serial {
         runtime.closed.store(true, Ordering::SeqCst);
     }
-    {
-        let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-        let ids = tunnels
-            .iter()
-            .filter_map(|(id, runtime)| (runtime.session_id == session_id).then_some(id.clone()))
-            .collect::<Vec<_>>();
-        for id in ids {
-            if let Some(runtime) = tunnels.remove(&id) {
-                runtime.closed.store(true, Ordering::SeqCst);
-            }
-        }
+    let stopped_tunnel_runtimes = stop_session_tunnel_runtimes(&state.tunnels, &session_id)?;
+    let timed_out_tunnels = await_tunnel_listener_shutdowns(&stopped_tunnel_runtimes).await;
+    if !timed_out_tunnels.is_empty() {
+        eprintln!(
+            "PortMate: timed out waiting for tunnel listener shutdown while closing session {session_id}: {}",
+            timed_out_tunnels.join(", ")
+        );
     }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
