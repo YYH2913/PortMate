@@ -131,7 +131,11 @@ describe("CI command logging", () => {
     expect(opensslSetup).toContain("shell: pwsh");
     expect(opensslSetup).toContain("OPENSSL_SRC_PERL=$perl");
     expect(opensslSetup).toContain("$perlOs -ne 'MSWin32'");
-    expect(opensslSetup).toContain("Get-Command nmake.exe");
+    expect(opensslSetup).toContain("Microsoft Visual Studio\\Installer\\vswhere.exe");
+    expect(opensslSetup).toContain("Microsoft.VisualStudio.Component.VC.Tools.x86.x64");
+    expect(opensslSetup).toContain("VC\\Tools\\MSVC\\*\\bin\\Hostx64\\x64\\nmake.exe");
+    expect(opensslSetup).toContain("$env:GITHUB_PATH");
+    expect(opensslSetup).not.toContain("Get-Command nmake.exe");
     expect(opensslSetup).toContain('"MAKE=nmake.exe"');
     expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKEFLAGS=/m);
 
