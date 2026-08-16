@@ -652,6 +652,8 @@ Modem 协议 tap 和 outbound control/capture 现同样通过精确 runtime gene
 
 自定义脚本执行现先绑定请求进入时的精确 SSH/Shell/TCP/Serial runtime generation，再进入每会话 outbound lane；取得 lane 后会重新读取并复核脚本存在性、会话边界、MCP 暴露状态和 `updatedAt`，等待期间被编辑、删除、禁用或改目标的旧正文不会发送。实际命令写入及结构化事件提交也按同一 generation 验收，断线重连不能让排队的旧脚本落到新设备或把旧连接结果记到新会话。两个真实 TCP 回归分别占用 outbound lane 后修改脚本和替换 runtime，确认新旧 socket 均无误写且 Store 不产生出站事件；自定义脚本专项 7 项、完整主应用 482 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+MCP `send_text`、`send_key`、`run_command`、`attach_tmux` 和 `run_custom_script` 现把首次授权得到的 scope、session、显式 grant/trusted-bootstrap 模式及脚本版本快照带入 outbound lane，在任何终端字节写入前再次完整复核目标、参数、grant 撤销/到期/会话范围与脚本边界。授权在请求排队期间被删除、撤销、缩小或到期时会 fail-closed，且不会因显式 grant 被删空而意外降级为 trusted bootstrap。表驱动真实 TCP 回归逐条占住五条输入路径的 lane、撤销 grant，并确认 socket 零字节、SessionEvent 零新增和最终 `failed` 审计；MCP 专项 45 passed/1 ignored、完整主应用 483 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

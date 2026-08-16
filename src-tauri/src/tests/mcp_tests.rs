@@ -593,6 +593,155 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
 }
 
 #[test]
+fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
+    tauri::async_runtime::block_on(async {
+        for (index, command) in [
+            "send_text",
+            "send_key",
+            "run_command",
+            "attach_tmux",
+            "run_custom_script",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::time::timeout(Duration::from_millis(300), socket.read_u8()).await
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root = std::env::temp_dir().join(format!(
+                "portmate-mcp-outbound-commit-{index}-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (_reader, writer) = stream.into_split();
+            let (tap, _) = broadcast::channel(8);
+            state.tcp.lock().unwrap().insert(
+                profile.id.clone(),
+                TcpRuntime {
+                    runtime_id: Uuid::new_v4().to_string(),
+                    writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
+                    tap,
+                    closed: Arc::new(AtomicBool::new(false)),
+                    telnet: None,
+                },
+            );
+
+            let client_id = format!("queued-input-{index}");
+            let scope = if command == "run_custom_script" {
+                McpScope::RunScripts
+            } else {
+                McpScope::WriteInput
+            };
+            let script_timestamp = Utc::now();
+            let script = CustomScript {
+                id: Uuid::new_v4().to_string(),
+                name: "Queued MCP script".to_string(),
+                description: "Grant revocation regression".to_string(),
+                content: "must-not-run".to_string(),
+                allow_all_sessions: false,
+                allowed_session_ids: vec![profile.id.clone()],
+                mcp_enabled: true,
+                created_at: script_timestamp,
+                updated_at: script_timestamp,
+            };
+            let args = match command {
+                "send_text" => serde_json::json!({
+                    "sessionId": profile.id.clone(),
+                    "text": "must-not-send",
+                }),
+                "send_key" => serde_json::json!({
+                    "sessionId": profile.id.clone(),
+                    "key": "Enter",
+                }),
+                "run_command" => serde_json::json!({
+                    "sessionId": profile.id.clone(),
+                    "command": "must-not-run",
+                }),
+                "attach_tmux" => serde_json::json!({
+                    "sessionId": profile.id.clone(),
+                    "target": "main",
+                }),
+                "run_custom_script" => serde_json::json!({
+                    "sessionId": profile.id.clone(),
+                    "scriptId": script.id.clone(),
+                }),
+                _ => unreachable!(),
+            };
+            {
+                let mut store = state.store.lock().unwrap();
+                if command == "run_custom_script" {
+                    store.custom_scripts.push(script);
+                }
+                store.grants.push(McpGrant {
+                    client_id: client_id.clone(),
+                    name: "Queued input".to_string(),
+                    scopes: vec![scope],
+                    allowed_sessions: vec![profile.id.clone()],
+                    confirm_writes: false,
+                    expires_at: None,
+                    revoked_at: None,
+                });
+            }
+
+            let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+            let lane_guard = lane.lock().await;
+            let request = IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id,
+                trusted_write: false,
+                command: command.to_string(),
+                args,
+            };
+            let run_state = state.clone();
+            let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while Arc::strong_count(&lane) < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{command} did not enter the outbound queue"));
+
+            state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+            drop(lane_guard);
+
+            let error = run.await.unwrap().unwrap_err();
+            assert!(
+                error.contains("grant changed"),
+                "{command} returned an unexpected error: {error}"
+            );
+            assert!(
+                server.await.unwrap().is_err(),
+                "{command} wrote bytes after its grant was revoked"
+            );
+            let store = state.store.lock().unwrap();
+            assert!(store.events.is_empty());
+            assert_eq!(
+                store
+                    .audit
+                    .iter()
+                    .find(|record| record.action == command)
+                    .map(|record| record.decision.as_str()),
+                Some("failed")
+            );
+            drop(store);
+            let _ = fs::remove_dir_all(root);
+        }
+    });
+}
+
+#[test]
 fn mcp_cancel_transfer_authorizes_the_recorded_session_not_client_arguments() {
     tauri::async_runtime::block_on(async {
         let root =

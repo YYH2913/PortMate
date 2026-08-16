@@ -13,21 +13,29 @@ pub(super) async fn execute_ipc_request(
     state: AppState,
     request: IpcRequest,
 ) -> Result<serde_json::Value, String> {
-    execute_ipc_request_inner(state, request, None).await
+    execute_ipc_request_inner(state, request, None, None).await
 }
 
 pub(super) async fn execute_ipc_request_with_context(
     state: AppState,
     request: IpcRequest,
     execution_context: &McpWriteExecutionContext,
+    authorization_context: &McpWriteAuthorizationContext,
 ) -> Result<serde_json::Value, String> {
-    execute_ipc_request_inner(state, request, Some(execution_context)).await
+    execute_ipc_request_inner(
+        state,
+        request,
+        Some(execution_context),
+        Some(authorization_context),
+    )
+    .await
 }
 
 async fn execute_ipc_request_inner(
     state: AppState,
     request: IpcRequest,
     execution_context: Option<&McpWriteExecutionContext>,
+    authorization_context: Option<&McpWriteAuthorizationContext>,
 ) -> Result<serde_json::Value, String> {
     match request.command.as_str() {
         "list_sessions" => {
@@ -156,9 +164,21 @@ async fn execute_ipc_request_inner(
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
             let actor = mcp_audit_actor(&request.client_id);
-            let event =
-                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
-                    .await?;
+            let validation = mcp_outbound_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let event = send_text_inner_with_context_and_validation(
+                state.session_io(),
+                session_id,
+                text,
+                &actor,
+                None,
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "send_key" => {
@@ -169,9 +189,21 @@ async fn execute_ipc_request_inner(
                 is_telnet_session(&state.store, &session_id)?,
             )?;
             let actor = mcp_audit_actor(&request.client_id);
-            let event =
-                send_text_inner_with_context(state.session_io(), session_id, text, &actor, None)
-                    .await?;
+            let validation = mcp_outbound_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let event = send_text_inner_with_context_and_validation(
+                state.session_io(),
+                session_id,
+                text,
+                &actor,
+                None,
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "run_command" => {
@@ -182,9 +214,21 @@ async fn execute_ipc_request_inner(
                 is_telnet_session(&state.store, &session_id)?,
             );
             let actor = mcp_audit_actor(&request.client_id);
-            let event =
-                run_command_inner_with_context(state.session_io(), session_id, text, &actor, None)
-                    .await?;
+            let validation = mcp_outbound_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let event = run_command_inner_with_context_and_validation(
+                state.session_io(),
+                session_id,
+                text,
+                &actor,
+                None,
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "run_custom_script" => {
@@ -197,6 +241,12 @@ async fn execute_ipc_request_inner(
                 })?
                 .custom_script_updated_at(&script_id)?;
             let actor = mcp_audit_actor(&request.client_id);
+            let validation = mcp_outbound_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
             let event = run_custom_script_inner(
                 &state,
                 RunCustomScriptRequest {
@@ -207,6 +257,7 @@ async fn execute_ipc_request_inner(
                 &actor,
                 None,
                 true,
+                Some(validation),
             )
             .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
@@ -355,9 +406,21 @@ async fn execute_ipc_request_inner(
             let target = ipc_string_arg(&request.args, "target")?.to_string();
             let command = tmux_attach_command(&target)?;
             let actor = mcp_audit_actor(&request.client_id);
-            let event =
-                send_text_inner_with_context(state.session_io(), session_id, command, &actor, None)
-                    .await?;
+            let validation = mcp_outbound_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let event = send_text_inner_with_context_and_validation(
+                state.session_io(),
+                session_id,
+                command,
+                &actor,
+                None,
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "export_session_bundle" => {
@@ -368,6 +431,25 @@ async fn execute_ipc_request_inner(
         }
         other => Err(format!("unsupported IPC command: {other}")),
     }
+}
+
+fn mcp_outbound_commit_validation(
+    state: &AppState,
+    request: &IpcRequest,
+    execution_context: Option<&McpWriteExecutionContext>,
+    authorization_context: Option<&McpWriteAuthorizationContext>,
+) -> Result<OutboundCommitValidation, String> {
+    let execution_context = execution_context
+        .cloned()
+        .ok_or_else(|| "MCP input is missing its execution context".to_string())?;
+    let authorization_context = authorization_context
+        .cloned()
+        .ok_or_else(|| "MCP input is missing its authorization context".to_string())?;
+    let state = state.clone();
+    let request = request.clone();
+    Ok(Box::new(move || {
+        authorization_context.revalidate(&state, &request, &execution_context)
+    }))
 }
 
 pub(super) fn ipc_string_arg<'a>(

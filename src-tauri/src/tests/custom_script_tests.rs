@@ -231,6 +231,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         "script-runner",
         None,
         true,
+        None,
     ))
     .unwrap_err()
     .contains("changed after authorization"));
@@ -244,6 +245,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         "desktop-user",
         Some("run_custom_script"),
         false,
+        None,
     ))
     .unwrap_err()
     .contains("changed in another window"));
@@ -329,6 +331,7 @@ fn queued_custom_script_revalidates_the_script_before_writing() {
                 "desktop-user",
                 Some("run_custom_script"),
                 false,
+                None,
             )
             .await
         });
@@ -421,6 +424,7 @@ fn queued_custom_script_rejects_a_replacement_runtime() {
                 "desktop-user",
                 Some("run_custom_script"),
                 false,
+                None,
             )
             .await
         });
@@ -516,6 +520,7 @@ fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
             "desktop-user",
             Some("run_custom_script"),
             false,
+            None,
         )
         .await
         .unwrap();

@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) type OutboundCommitValidation = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
 pub(super) async fn send_one_key_value(
     io: SessionIo,
     session_id: &str,
@@ -78,8 +80,30 @@ pub(super) async fn send_text_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
+    send_text_inner_with_context_and_validation(
+        io,
+        session_id,
+        text,
+        actor,
+        audit_action,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn send_text_inner_with_context_and_validation(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    actor: &str,
+    audit_action: Option<&str>,
+    commit_validation: Option<OutboundCommitValidation>,
+) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     send_text_under_outbound_lane(&io, &session_id, &text, actor, audit_action, None).await
 }
 
@@ -145,8 +169,35 @@ pub(super) async fn run_command_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
-    run_command_inner_with_annotations(io, session_id, text, actor, audit_action, BTreeMap::new())
-        .await
+    run_command_inner_with_annotations(
+        io,
+        session_id,
+        text,
+        actor,
+        audit_action,
+        BTreeMap::new(),
+    )
+    .await
+}
+
+pub(super) async fn run_command_inner_with_context_and_validation(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    actor: &str,
+    audit_action: Option<&str>,
+    commit_validation: Option<OutboundCommitValidation>,
+) -> Result<SessionEvent, String> {
+    run_command_inner_with_annotations_impl(
+        io,
+        session_id,
+        text,
+        actor,
+        audit_action,
+        BTreeMap::new(),
+        commit_validation,
+    )
+    .await
 }
 
 pub(super) async fn run_command_inner_with_annotations(
@@ -161,10 +212,10 @@ pub(super) async fn run_command_inner_with_annotations(
         io,
         session_id,
         text,
-        None,
         actor,
         audit_action,
         additional_annotations,
+        None,
     )
     .await
 }
@@ -173,10 +224,10 @@ async fn run_command_inner_with_annotations_impl(
     io: SessionIo,
     session_id: String,
     text: String,
-    display_text: Option<String>,
     actor: &str,
     audit_action: Option<&str>,
     additional_annotations: BTreeMap<String, String>,
+    commit_validation: Option<OutboundCommitValidation>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
@@ -185,11 +236,12 @@ async fn run_command_inner_with_annotations_impl(
         &session_id,
         &text,
         RunCommandContext {
-            display_text: display_text.as_deref(),
+            display_text: None,
             actor,
             audit_action,
             additional_annotations,
             expected_runtime_id: None,
+            commit_validation,
         },
     )
     .await
@@ -201,6 +253,7 @@ pub(super) struct RunCommandContext<'a> {
     pub(super) audit_action: Option<&'a str>,
     pub(super) additional_annotations: BTreeMap<String, String>,
     pub(super) expected_runtime_id: Option<&'a str>,
+    pub(super) commit_validation: Option<OutboundCommitValidation>,
 }
 
 pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
@@ -215,7 +268,11 @@ pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display
         audit_action,
         mut additional_annotations,
         expected_runtime_id,
+        commit_validation,
     } = context;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, session_id, text)?;
     let command_id = Uuid::new_v4().to_string();
     set_active_command(io, session_id, &command_id);

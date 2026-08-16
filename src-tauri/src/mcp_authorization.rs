@@ -1,5 +1,38 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct McpWriteAuthorizationContext {
+    scope: McpScope,
+    session_id: String,
+    trusted_bootstrap: bool,
+}
+
+impl McpWriteAuthorizationContext {
+    fn new(scope: McpScope, session_id: String, trusted_bootstrap: bool) -> Self {
+        Self {
+            scope,
+            session_id,
+            trusted_bootstrap,
+        }
+    }
+
+    pub(super) fn revalidate(
+        &self,
+        state: &AppState,
+        request: &IpcRequest,
+        execution_context: &McpWriteExecutionContext,
+    ) -> Result<(), String> {
+        revalidate_ipc_write_target_with_context(
+            state,
+            request,
+            self.scope,
+            &self.session_id,
+            self.trusted_bootstrap,
+            execution_context,
+        )
+    }
+}
+
 pub(super) fn mcp_scope_allowed(
     store: &SessionStore,
     client_id: &str,
@@ -408,7 +441,15 @@ pub(super) async fn handle_ipc_request(
         &execution_context,
     ) {
         Ok(()) => {
-            execute_ipc_request_with_context(state.clone(), request, &execution_context).await
+            let authorization_context =
+                McpWriteAuthorizationContext::new(scope, session_id, trusted_bootstrap);
+            execute_ipc_request_with_context(
+                state.clone(),
+                request,
+                &execution_context,
+                &authorization_context,
+            )
+            .await
         }
         Err(error) => Err(error),
     };
