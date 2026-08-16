@@ -8417,6 +8417,91 @@ Host staging
     `Host Key prompt lifecycle browser exceptions: ${JSON.stringify(hostKeyPromptErrors)}`);
   await hostKeyPromptPage.close();
 
+  const deletedHostKeyDecisionPage = await context.newPage();
+  const deletedHostKeyDecisionErrors = [];
+  deletedHostKeyDecisionPage.on("pageerror", (error) => deletedHostKeyDecisionErrors.push(error.message));
+  await deletedHostKeyDecisionPage.goto(appUrl);
+  await deletedHostKeyDecisionPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const deletedHostKeyConnect = deletedHostKeyDecisionPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await deletedHostKeyDecisionPage.evaluate(() => {
+    window.__sessionOpenErrors["edge-router"] = "SSH Host Key 已变化: simulated mismatch";
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+  });
+  await deletedHostKeyConnect.click();
+  await deletedHostKeyDecisionPage.locator(".credential-dialog").getByRole("button", { name: "连接", exact: true }).click();
+  await deletedHostKeyDecisionPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const deletedHostKeyDialog = deletedHostKeyDecisionPage.locator(".hostkey-dialog");
+  await deletedHostKeyDialog.waitFor();
+  await deletedHostKeyDecisionPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  const deletedHostKeyDecision = deletedHostKeyDialog.getByRole("button", { name: "加入 Profile 并重连", exact: true });
+  await deletedHostKeyDecision.waitFor();
+  const deletedHostKeyTrustBaseline = await deletedHostKeyDecisionPage.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "trust_scanned_host_key").length);
+  await deletedHostKeyDecision.evaluate((button) => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    button.click();
+  });
+  await deletedHostKeyDialog.waitFor({ state: "detached" });
+  await deletedHostKeyDecisionPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  const deletedHostKeyDecisionState = await deletedHostKeyDecisionPage.evaluate((baseline) => ({
+    profiles: window.__sessions.map((session) => session.profile.id),
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - baseline,
+    credentialDialogs: document.querySelectorAll(".credential-dialog").length,
+    settingsDialogs: document.querySelectorAll(".session-settings-dialog").length,
+  }), deletedHostKeyTrustBaseline);
+  assert(!deletedHostKeyDecisionState.profiles.includes("edge-router")
+    && deletedHostKeyDecisionState.trustCalls === 0
+    && deletedHostKeyDecisionState.credentialDialogs === 0
+    && deletedHostKeyDecisionState.settingsDialogs === 0,
+  `a stale Host Key decision survived Profile deletion: ${JSON.stringify(deletedHostKeyDecisionState)}`);
+  assert(deletedHostKeyDecisionErrors.length === 0,
+    `deleted Host Key decision browser exceptions: ${JSON.stringify(deletedHostKeyDecisionErrors)}`);
+  await deletedHostKeyDecisionPage.close();
+
+  const deletedHostKeySettingsPage = await context.newPage();
+  const deletedHostKeySettingsErrors = [];
+  deletedHostKeySettingsPage.on("pageerror", (error) => deletedHostKeySettingsErrors.push(error.message));
+  await deletedHostKeySettingsPage.goto(appUrl);
+  await deletedHostKeySettingsPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  const deletedHostKeySettingsConnect = deletedHostKeySettingsPage.getByRole("button", { name: "连接 Edge Router", exact: true });
+  await deletedHostKeySettingsPage.evaluate(() => {
+    window.__sessionOpenErrors["edge-router"] = "SSH Host Key 已变化: simulated mismatch";
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+  });
+  await deletedHostKeySettingsConnect.click();
+  await deletedHostKeySettingsPage.locator(".credential-dialog").getByRole("button", { name: "连接", exact: true }).click();
+  await deletedHostKeySettingsPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const deletedHostKeySettingsDialog = deletedHostKeySettingsPage.locator(".hostkey-dialog");
+  const deletedHostKeySettings = deletedHostKeySettingsDialog.getByRole("button", { name: "打开验证设置", exact: true });
+  await deletedHostKeySettings.waitFor();
+  await deletedHostKeySettings.evaluate((button) => {
+    window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
+    window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
+    button.click();
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation.shift().resolve();
+  });
+  await deletedHostKeySettingsDialog.waitFor({ state: "detached" });
+  await deletedHostKeySettingsPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
+  await deletedHostKeySettingsPage.waitForTimeout(100);
+  const deletedHostKeySettingsState = await deletedHostKeySettingsPage.evaluate(() => ({
+    profiles: window.__sessions.map((session) => session.profile.id),
+    pendingScans: window.__pendingSessionValidation.length,
+    credentialDialogs: document.querySelectorAll(".credential-dialog").length,
+    settingsDialogs: document.querySelectorAll(".session-settings-dialog").length,
+  }));
+  assert(!deletedHostKeySettingsState.profiles.includes("edge-router")
+    && deletedHostKeySettingsState.pendingScans === 0
+    && deletedHostKeySettingsState.credentialDialogs === 0
+    && deletedHostKeySettingsState.settingsDialogs === 0,
+  `stale Host Key settings opened after Profile deletion: ${JSON.stringify(deletedHostKeySettingsState)}`);
+  assert(deletedHostKeySettingsErrors.length === 0,
+    `deleted Host Key settings browser exceptions: ${JSON.stringify(deletedHostKeySettingsErrors)}`);
+  await deletedHostKeySettingsPage.close();
+
   const sessionOperationPage = await context.newPage();
   const sessionOperationErrors = [];
   sessionOperationPage.on("pageerror", (error) => sessionOperationErrors.push(error.message));

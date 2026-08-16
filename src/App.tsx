@@ -338,7 +338,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [draggedWorkspacePanel, setDraggedWorkspacePanel] = useState<WorkspaceDockPanelId | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
-  const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
+  const [hostKeyPrompt, setHostKeyPromptState] = useState<HostKeyPromptState | null>(null);
+  const hostKeyPromptRef = useRef<HostKeyPromptState | null>(hostKeyPrompt);
   const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
   const [sessionSettingsMode, setSessionSettingsMode] = useState<SessionSettingsMode>("create");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
@@ -451,6 +452,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   workspaceRootRef.current = workspaceRoot;
   activePaneIdRef.current = activePaneId;
   closedWorkspaceViewsRef.current = closedWorkspaceViews;
+  hostKeyPromptRef.current = hostKeyPrompt;
   detachedCommandHandlerRef.current = (command) => {
     if (command.action === "lock-screen") {
       lockScreen("manual");
@@ -498,6 +500,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const next = typeof update === "function" ? update(closedWorkspaceViewsRef.current) : update;
     closedWorkspaceViewsRef.current = next;
     setClosedWorkspaceViewsState(next);
+  }
+
+  function setHostKeyPrompt(update: SetStateAction<HostKeyPromptState | null>) {
+    const next = typeof update === "function" ? update(hostKeyPromptRef.current) : update;
+    hostKeyPromptRef.current = next;
+    setHostKeyPromptState(next);
   }
   profileUpdateHandlerRef.current = (summary) => {
     if (!summary?.profile?.id) return;
@@ -2373,7 +2381,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setCredentialPrompt(null);
       credentialRequest.resolve(null);
     }
-    if (hostKeyPrompt?.profile.id === profileId) {
+    if (hostKeyPromptRef.current?.profile.id === profileId) {
       hostKeyPromptOperationGateRef.current.invalidateAll();
       setHostKeyPrompt(null);
     }
@@ -3605,6 +3613,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function openHostKeyPrompt(profile: SessionProfile, message: string, credentials?: ConnectionCredentials) {
+    const profileExists = () => sessionsRef.current.some((session) => session.profile.id === profile.id);
+    if (!profileExists()) return;
     const gate = hostKeyPromptOperationGateRef.current;
     gate.invalidate("decision");
     const token = gate.replace("scan");
@@ -3613,15 +3623,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const credentialHandle = credentials
         ? await stageConnectionCredentials(invokeBackend, profile.id, credentials)
         : null;
-      if (!gate.isCurrent("scan", token)) return;
+      if (!gate.isCurrent("scan", token) || !profileExists()) return;
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
         request: { profile: prepareSessionProfile(profile), credentialHandle },
       });
-      if (gate.isCurrent("scan", token)) {
+      if (gate.isCurrent("scan", token) && profileExists()) {
         setHostKeyPrompt({ profile, message, scan, scanError: null, busy: false });
       }
     } catch (error) {
-      if (gate.isCurrent("scan", token)) {
+      if (gate.isCurrent("scan", token) && profileExists()) {
         setHostKeyPrompt({ profile, message, scan: null, scanError: formatError(error), busy: false });
       }
     } finally {
@@ -3630,8 +3640,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function applyHostKeyPromptDecision(decision: HostKeyDecisionValue, reconnect: boolean) {
-    const prompt = hostKeyPrompt;
+    const prompt = hostKeyPromptRef.current;
     if (!prompt?.scan) return;
+    if (!sessionsRef.current.some((session) => session.profile.id === prompt.profile.id)) {
+      closeHostKeyPrompt();
+      return;
+    }
     const gate = hostKeyPromptOperationGateRef.current;
     const token = gate.begin("decision");
     if (token === null) return;
@@ -3667,10 +3681,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function openHostKeySettingsFromPrompt() {
-    if (!hostKeyPrompt) return;
-    hostKeyPromptOperationGateRef.current.invalidateAll();
-    openSessionProfileDialog(hostKeyPrompt.profile, hostKeyPrompt.profile, "验证");
-    setHostKeyPrompt(null);
+    const prompt = hostKeyPromptRef.current;
+    if (!prompt) return;
+    closeHostKeyPrompt();
+    if (!sessionsRef.current.some((session) => session.profile.id === prompt.profile.id)) return;
+    openSessionProfileDialog(prompt.profile, prompt.profile, "验证");
   }
 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {

@@ -170,6 +170,8 @@ Tauri 子窗口创建补齐失败清理边界：新工作区、分离终端和�
 
 同一 HEAD 针对已报告的 Native CI 故障再次执行专项复验：WebGL Insert/Normal/Insert 光标分别采样到有效的 1 像素竖线、7x17 方块和 1x17 竖线；`libssh-rs` 22 项单线程库测试全部通过且 `sftp::tests::file_handles_keep_the_sftp_session_alive` 不再崩溃；npm dependency audit 报告 0 个允许或未处理发现，workspace all-targets Clippy 在 `-D warnings` 下通过。Swift SDK 0.11.0/0.12.1 均从隔离 working copy 重新建立依赖并分别通过 stdio 8 消息和 HTTP 8 请求，未再出现损坏 repository 路径。Windows MSVC/OpenSSL 的递归 `nmake.exe` 约束及 Windows `npm.cmd` 审计分支已有仓库测试覆盖，但最终原生编译仍需 Windows runner 的新成功记录。
 
+SSH Host Key 安全提示现与 Session/workspace 一样使用同步最新值边界：Profile 删除会在 React DOM 提交前立即失效当前 prompt、扫描和决策，旧“信任并重连”按钮不能再调用 `trust_scanned_host_key`，旧“打开验证设置”按钮也不能为已删除 Profile 打开设置。扫描在凭据暂存后、后端返回后和错误回写前都会重新确认 Profile 仍存在，迟到结果不能恢复弹窗；决策入口也会在后端调用前复核权威 Session。Workspace UI 在删除事件和两个旧按钮点击的同一 JavaScript task 内验证零信任写入、零凭据重开和零设置弹窗；完整前端 114 文件/625 项、生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
