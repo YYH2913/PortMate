@@ -630,6 +630,8 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 
 SSH 健康检查现绑定建立连接时的规范化 Profile 快照和精确 runtime 资源：快照覆盖 SSH/Tmux connection 与 terminal 设置，只忽略不会改变既有连接的 Host Key 持久镜像和自动记录的上次成功认证方式。健康命令在同一次 runtime registry 锁内校验预期 Profile、取得 runtime ID/后端/认证状态并克隆 handle/SFTP 资源，目标、代理、Jump Host、认证、terminal 或 Profile ID 已变化时会在 keepalive、exec 和 SFTP 探测前拒绝；连接在探测期间换代仍由结束时的 runtime ID 复核拒绝。Session Settings 会随请求发送完整规范化草稿，配置变化立即清空并失效旧报告，迟到成功/错误不能恢复；未保存的新目标会明确要求保存并重新连接。Rust 4 项快照回归、完整前端 116 文件/630 项、生产构建、Workspace UI、release-source、Rustfmt、PortMate all-targets Clippy `-D warnings` 和主应用 469 passed/1 ignored/1 filtered 均通过。
 
+远端 Sysmon 采样现与开始采集时的 SSH runtime ID 绑定：辅助 lease 在同一次 SSH registry 锁内取得 handle 和 runtime ID，采集完成后持有 registry 锁复核 runtime 未被断线重连替换，再与 Store 事务一起提交快照和成功事件；换代、断开或 Profile 改为非 SSH 时只返回错误，不会把旧设备指标记到新连接。非 SSH 的本机采样同样复核 Profile 未在采样期间改为 SSH，避免本机指标进入远端历史。新增 3 项目标/换代回归，完整主应用 472 passed/1 ignored/1 filtered、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

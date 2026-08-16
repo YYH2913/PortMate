@@ -151,28 +151,72 @@ pub(super) async fn refresh_sysmon_inner(
             .ok_or_else(|| format!("unknown session: {session_id}"))?
     };
 
-    let snapshot = if matches!(
+    let (snapshot, target) = if matches!(
         profile.connection,
         ConnectionConfig::Ssh(_) | ConnectionConfig::Tmux(_)
     ) {
-        let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        collect_remote_sysmon(session_id, auxiliary.handle()).await?
+        let (runtime_id, auxiliary) =
+            ssh_auxiliary_lease_with_runtime(state, session_id, |runtime| {
+                Ok(runtime.runtime_id.clone())
+            })?;
+        (
+            collect_remote_sysmon(session_id, auxiliary.handle()).await?,
+            SysmonCollectionTarget::Ssh(runtime_id),
+        )
     } else {
-        collect_local_sysmon(session_id).await?
+        (
+            collect_local_sysmon(session_id).await?,
+            SysmonCollectionTarget::Local,
+        )
     };
 
-    commit_sysmon_snapshot(state, session_id, snapshot)
+    commit_sysmon_snapshot_for_target(state, session_id, snapshot, &target)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SysmonCollectionTarget {
+    Local,
+    Ssh(String),
+}
+
+#[cfg(test)]
 pub(super) fn commit_sysmon_snapshot(
     state: &AppState,
     session_id: &str,
     snapshot: SysmonSnapshot,
 ) -> Result<SysmonSnapshot, String> {
+    commit_sysmon_snapshot_for_target(
+        state,
+        session_id,
+        snapshot,
+        &SysmonCollectionTarget::Local,
+    )
+}
+
+pub(super) fn commit_sysmon_snapshot_for_target(
+    state: &AppState,
+    session_id: &str,
+    snapshot: SysmonSnapshot,
+    target: &SysmonCollectionTarget,
+) -> Result<SysmonSnapshot, String> {
     if snapshot.session_id != session_id {
         return Err("Sysmon snapshot session does not match the requested session".to_string());
     }
+    let ssh_runtimes = match target {
+        SysmonCollectionTarget::Local => None,
+        SysmonCollectionTarget::Ssh(_) => {
+            Some(state.ssh.lock().map_err(|error| error.to_string())?)
+        }
+    };
+    let current_ssh_runtime_id = ssh_runtimes
+        .as_ref()
+        .and_then(|runtimes| runtimes.get(session_id))
+        .map(|runtime| runtime.runtime_id.as_str());
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    validate_sysmon_collection_target(&profile, current_ssh_runtime_id, target)?;
     commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
         if next_store.profile(session_id).is_none() {
             return Err(format!("unknown session: {session_id}"));
@@ -184,6 +228,32 @@ pub(super) fn commit_sysmon_snapshot(
             .collect();
         Ok((snapshot, event_ids))
     })
+}
+
+pub(super) fn validate_sysmon_collection_target(
+    profile: &SessionProfile,
+    current_ssh_runtime_id: Option<&str>,
+    target: &SysmonCollectionTarget,
+) -> Result<(), String> {
+    let profile_is_ssh = matches!(
+        &profile.connection,
+        ConnectionConfig::Ssh(_) | ConnectionConfig::Tmux(_)
+    );
+    match target {
+        SysmonCollectionTarget::Local if profile_is_ssh => {
+            Err("Sysmon 采样期间目标已从本机变为 SSH，请重试".to_string())
+        }
+        SysmonCollectionTarget::Local => Ok(()),
+        SysmonCollectionTarget::Ssh(expected_runtime_id)
+            if profile_is_ssh
+                && current_ssh_runtime_id == Some(expected_runtime_id.as_str()) =>
+        {
+            Ok(())
+        }
+        SysmonCollectionTarget::Ssh(_) => {
+            Err("SSH runtime 在 Sysmon 采样期间已变化，请重试".to_string())
+        }
+    }
 }
 
 pub(super) fn validate_sysmon_history_query_limit(limit: Option<usize>) -> Result<usize, String> {
