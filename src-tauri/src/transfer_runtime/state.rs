@@ -217,12 +217,11 @@ pub(crate) fn cancel_transfer_inner(
         .iter_mut()
         .find(|task| task.id == transfer_id)
         .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?;
-    let abort_modem_session = (task.status == TransferStatus::Running
+    let abort_modem_session = task.status == TransferStatus::Running
         && matches!(
             task.protocol,
             TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
-        ))
-    .then(|| task.session_id.clone());
+        );
     let was_active = transfer_task_is_active(&task.status);
     if was_active {
         if let Some(cancel) = cancel.as_ref() {
@@ -243,12 +242,25 @@ pub(crate) fn cancel_transfer_inner(
         );
     }
     drop(store);
-    if let Some(session_id) = abort_modem_session {
-        let state = state.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ =
-                write_runtime_bytes(&state, &session_id, &[MODEM_CAN, MODEM_CAN, MODEM_CAN]).await;
-        });
+    if abort_modem_session {
+        match cancel
+            .as_ref()
+            .map(|cancel| cancel.modem_runtime_binding())
+            .transpose()
+        {
+            Ok(Some(Some(binding))) => {
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = binding
+                        .write_runtime_bytes(&state, &[MODEM_CAN, MODEM_CAN, MODEM_CAN])
+                        .await;
+                });
+            }
+            Ok(Some(None) | None) => {}
+            Err(error) => {
+                eprintln!("PortMate: failed to resolve modem cancellation binding: {error}")
+            }
+        }
     }
     emit_transfer_task(state, &task);
     Ok(task)

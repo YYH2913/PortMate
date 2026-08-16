@@ -14,6 +14,7 @@ struct DeviceModemSession {
 struct DeviceBaudRestore {
     original_baud_rate: u32,
     receiver: broadcast::Receiver<Vec<u8>>,
+    binding: ModemRuntimeBinding,
 }
 
 pub(super) fn device_modem_upload(
@@ -95,47 +96,53 @@ async fn start_device_modem(
     receiver: &LoadReceiverSpec,
     progress: &TransferProgressContext,
 ) -> Result<DeviceModemSession, String> {
-    let tap_receiver = runtime_tap_receiver(state, session_id)?;
+    let binding = transfer_modem_binding(state, session_id, progress).await?;
+    let tap_receiver = binding.subscribe();
     let baud_restore_receiver = receiver
         .baud_rate
-        .map(|_| runtime_tap_receiver(state, session_id))
-        .transpose()?;
+        .map(|_| binding.subscribe());
     let original_baud_rate = receiver
         .baud_rate
-        .map(|_| current_serial_runtime_baud(state, session_id))
+        .map(|_| current_serial_runtime_baud(state, session_id, binding.runtime_id()))
         .transpose()?;
 
-    write_runtime_bytes(state, session_id, receiver.command_line().as_bytes()).await?;
+    binding
+        .write_runtime_bytes(state, receiver.command_line().as_bytes())
+        .await?;
 
     let Some(target_baud_rate) = receiver.baud_rate else {
         return Ok(DeviceModemSession {
-            reader: ModemByteReader::new(tap_receiver, Arc::clone(&progress.cancel))
-                .watch_connection(Arc::clone(&state.store), session_id.to_string()),
+            reader: binding.reader_with_receiver(tap_receiver, Arc::clone(&progress.cancel)),
             baud_restore: None,
         });
     };
     let original_baud_rate = original_baud_rate.expect("baud rate was read above");
     if target_baud_rate == original_baud_rate {
         return Ok(DeviceModemSession {
-            reader: ModemByteReader::new(tap_receiver, Arc::clone(&progress.cancel))
-                .watch_connection(Arc::clone(&state.store), session_id.to_string()),
+            reader: binding.reader_with_receiver(tap_receiver, Arc::clone(&progress.cancel)),
             baud_restore: None,
         });
     }
 
-    let reader = ModemByteReader::after_marker(
+    let reader = ModemByteReader::after_marker_for_binding(
         tap_receiver,
         LOAD_BAUD_SWITCH_MARKER,
         Arc::clone(&progress.cancel),
-        Some((Arc::clone(&state.store), session_id.to_string())),
+        &binding,
     )
     .await
     .map_err(|error| format!("等待设备切换 load 波特率失败: {error}"))?;
     tokio::time::sleep(LOAD_BAUD_DEVICE_SETTLE_DELAY).await;
-    set_serial_runtime_baud(state, session_id, target_baud_rate)?;
+    set_serial_runtime_baud(state, session_id, binding.runtime_id(), target_baud_rate)?;
     tokio::time::sleep(LOAD_BAUD_HOST_SETTLE_DELAY).await;
-    if let Err(error) = write_runtime_bytes(state, session_id, b"\r").await {
-        let restore_error = restore_serial_runtime_baud(state, session_id, original_baud_rate).err();
+    if let Err(error) = binding.write_runtime_bytes(state, b"\r").await {
+        let restore_error = restore_serial_runtime_baud(
+            state,
+            session_id,
+            binding.runtime_id(),
+            original_baud_rate,
+        )
+        .err();
         return Err(match restore_error {
             Some(restore_error) => format!(
                 "切换 load 波特率后确认设备失败: {error}; 恢复串口波特率失败: {restore_error}"
@@ -149,6 +156,7 @@ async fn start_device_modem(
         baud_restore: Some(DeviceBaudRestore {
             original_baud_rate,
             receiver: baud_restore_receiver.expect("baud restore receiver was created above"),
+            binding,
         }),
     })
 }
@@ -164,25 +172,32 @@ async fn finish_device_modem<T>(
     };
 
     if result.is_err() {
-        let _ = write_runtime_bytes(state, session_id, &[MODEM_CAN, MODEM_CAN, MODEM_CAN]).await;
+        let _ = restore
+            .binding
+            .write_runtime_bytes(state, &[MODEM_CAN, MODEM_CAN, MODEM_CAN])
+            .await;
     }
     let prompt_result = wait_for_device_output_marker(
         &mut restore.receiver,
         LOAD_BAUD_RESTORE_MARKER,
         LOAD_BAUD_RESTORE_TIMEOUT,
-        &state.store,
-        session_id,
+        &restore.binding,
     )
     .await;
     if prompt_result.is_ok() {
         tokio::time::sleep(LOAD_BAUD_DEVICE_SETTLE_DELAY).await;
     }
-    let restore_result = restore_serial_runtime_baud(state, session_id, restore.original_baud_rate);
+    let restore_result = restore_serial_runtime_baud(
+        state,
+        session_id,
+        restore.binding.runtime_id(),
+        restore.original_baud_rate,
+    );
     if restore_result.is_ok() {
         tokio::time::sleep(LOAD_BAUD_HOST_SETTLE_DELAY).await;
     }
     let confirm_result = match &restore_result {
-        Ok(()) => write_runtime_bytes(state, session_id, &[0x1b]).await,
+        Ok(()) => restore.binding.write_runtime_bytes(state, &[0x1b]).await,
         Err(_) => Ok(()),
     };
 
@@ -200,8 +215,12 @@ async fn finish_device_modem<T>(
     }
 }
 
-fn current_serial_runtime_baud(state: &AppState, session_id: &str) -> Result<u32, String> {
-    let writer = serial_runtime_writer(state, session_id)?;
+fn current_serial_runtime_baud(
+    state: &AppState,
+    session_id: &str,
+    expected_runtime_id: &str,
+) -> Result<u32, String> {
+    let writer = serial_runtime_writer(state, session_id, expected_runtime_id)?;
     let result = writer
         .lock()
         .map_err(|error| error.to_string())?
@@ -213,9 +232,10 @@ fn current_serial_runtime_baud(state: &AppState, session_id: &str) -> Result<u32
 fn set_serial_runtime_baud(
     state: &AppState,
     session_id: &str,
+    expected_runtime_id: &str,
     baud_rate: u32,
 ) -> Result<(), String> {
-    let writer = serial_runtime_writer(state, session_id)?;
+    let writer = serial_runtime_writer(state, session_id, expected_runtime_id)?;
     let result = writer
         .lock()
         .map_err(|error| error.to_string())?
@@ -224,23 +244,28 @@ fn set_serial_runtime_baud(
     result
 }
 
-fn restore_serial_runtime_baud(
+pub(super) fn restore_serial_runtime_baud(
     state: &AppState,
     session_id: &str,
+    expected_runtime_id: &str,
     baud_rate: u32,
 ) -> Result<(), String> {
-    set_serial_runtime_baud(state, session_id, baud_rate)
+    set_serial_runtime_baud(state, session_id, expected_runtime_id, baud_rate)
 }
 
-fn serial_runtime_writer(
+pub(super) fn serial_runtime_writer(
     state: &AppState,
     session_id: &str,
+    expected_runtime_id: &str,
 ) -> Result<Arc<Mutex<SerialPortHandle>>, String> {
     state
         .serial
         .lock()
         .map_err(|error| error.to_string())?
         .get(session_id)
+        .filter(|runtime| {
+            runtime.runtime_id == expected_runtime_id && !runtime.closed.load(Ordering::SeqCst)
+        })
         .ok_or_else(|| "load 波特率参数仅支持已连接的串口会话".to_string())?
         .writer
         .as_ref()
@@ -252,14 +277,13 @@ async fn wait_for_device_output_marker(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     marker: &str,
     timeout: Duration,
-    store: &Arc<Mutex<SessionStore>>,
-    session_id: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<(), String> {
     let started = Instant::now();
     let marker = marker.as_bytes();
     let mut buffered = Vec::new();
     loop {
-        ensure_modem_session_connected(store, session_id)?;
+        binding.ensure_current()?;
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err(format!(

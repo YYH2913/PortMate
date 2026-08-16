@@ -77,14 +77,14 @@ pub(super) async fn modem_send_packet_with_retries(
 
 pub(super) async fn modem_send_packet_bytes_with_retries(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     reader: &mut ModemByteReader,
     block_no: u8,
     packet: &[u8],
     ack_timeout: Duration,
 ) -> Result<(), String> {
     for _ in 0..MODEM_MAX_RETRIES {
-        write_runtime_bytes(state, session_id, packet).await?;
+        reader.write_runtime_bytes(state, packet).await?;
         match modem_wait_for_ack(reader, ack_timeout).await {
             Ok(ModemAck::Ack) => return Ok(()),
             Ok(ModemAck::Nak) => {}
@@ -159,12 +159,12 @@ pub(super) async fn modem_finish_eot(
 
 pub(super) async fn modem_finish_eot_with_timeout(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     reader: &mut ModemByteReader,
     ack_timeout: Duration,
 ) -> Result<(), String> {
     for _ in 0..MODEM_MAX_RETRIES {
-        write_runtime_bytes(state, session_id, &[MODEM_EOT]).await?;
+        reader.write_runtime_bytes(state, &[MODEM_EOT]).await?;
         match modem_wait_for_ack(reader, ack_timeout).await {
             Ok(ModemAck::Ack) => return Ok(()),
             Ok(ModemAck::Nak) => {}
@@ -179,11 +179,13 @@ pub(super) async fn modem_finish_eot_with_timeout(
 
 pub(super) async fn modem_wait_for_packet_marker(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     reader: &mut ModemByteReader,
 ) -> Result<u8, String> {
     for _ in 0..24 {
-        write_runtime_bytes(state, session_id, &[MODEM_CRC_REQUEST]).await?;
+        reader
+            .write_runtime_bytes(state, &[MODEM_CRC_REQUEST])
+            .await?;
         match modem_wait_for_next_marker(reader, Duration::from_secs(3)).await {
             Ok(marker) => return Ok(marker),
             Err(error) if is_modem_timeout(&error) => {}

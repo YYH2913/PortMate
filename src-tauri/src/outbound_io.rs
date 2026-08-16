@@ -190,10 +190,20 @@ pub(super) fn is_telnet_session(
         .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_))))
 }
 
+#[cfg(test)]
 pub(super) async fn write_runtime_bytes(
     state: &AppState,
     session_id: &str,
     bytes: &[u8],
+) -> Result<(), String> {
+    write_runtime_bytes_for_runtime(state, session_id, bytes, None).await
+}
+
+pub(super) async fn write_runtime_bytes_for_runtime(
+    state: &AppState,
+    session_id: &str,
+    bytes: &[u8],
+    expected_runtime_id: Option<&str>,
 ) -> Result<(), String> {
     let io = state.session_io();
     let lane = outbound_lane(&io.store_path, session_id)?;
@@ -204,6 +214,9 @@ pub(super) async fn write_runtime_bytes(
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
             .get(session_id)
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+            })
             .map(|runtime| Arc::clone(&runtime.writer))
     };
     if let Some(writer) = ssh_writer {
@@ -220,6 +233,9 @@ pub(super) async fn write_runtime_bytes(
         let connections = state.shell.lock().map_err(|error| error.to_string())?;
         connections
             .get(session_id)
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+            })
             .map(|runtime| Arc::clone(&runtime.writer))
     };
     if let Some(writer) = shell_writer {
@@ -238,6 +254,9 @@ pub(super) async fn write_runtime_bytes(
         let connections = state.tcp.lock().map_err(|error| error.to_string())?;
         connections
             .get(session_id)
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+            })
             .map(|runtime| Arc::clone(&runtime.writer))
     };
     if let Some(writer) = tcp_writer {
@@ -252,12 +271,17 @@ pub(super) async fn write_runtime_bytes(
 
     let serial_writer = {
         let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections.get(session_id).map(|runtime| {
-            (
-                runtime.writer.as_ref().map(Arc::clone),
-                Arc::clone(&runtime.capture),
-            )
-        })
+        connections
+            .get(session_id)
+            .filter(|runtime| {
+                expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
+            })
+            .map(|runtime| {
+                (
+                    runtime.writer.as_ref().map(Arc::clone),
+                    Arc::clone(&runtime.capture),
+                )
+            })
     };
     match serial_writer {
         Some((Some(writer), capture)) => {
@@ -276,5 +300,9 @@ pub(super) async fn write_runtime_bytes(
         None => {}
     }
 
-    Err("会话尚未连接，无法执行 modem 写入".to_string())
+    Err(if expected_runtime_id.is_some() {
+        "Modem 来源连接已关闭或被新连接替换".to_string()
+    } else {
+        "会话尚未连接，无法执行 modem 写入".to_string()
+    })
 }

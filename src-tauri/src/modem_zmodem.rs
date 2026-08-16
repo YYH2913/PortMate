@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn zmodem_send_file(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     mut reader: ModemByteReader,
     local_source: &str,
     remote_destination: Option<&str>,
@@ -34,12 +34,12 @@ pub(super) async fn zmodem_send_file(
     let mut bytes_done = 0_u64;
 
     while !session_done || !sender.drain_outgoing().is_empty() {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let mut progressed = false;
 
         let outgoing = sender.drain_outgoing().to_vec();
         if !outgoing.is_empty() {
-            write_runtime_bytes(state, session_id, &outgoing).await?;
+            reader.write_runtime_bytes(state, &outgoing).await?;
             sender.advance_outgoing(outgoing.len());
             progressed = true;
         }
@@ -119,7 +119,7 @@ pub(super) async fn zmodem_send_file(
 
 pub(super) async fn zmodem_receive_files(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     mut reader: ModemByteReader,
     local_destination: &str,
     progress: &TransferProgressContext,
@@ -135,12 +135,12 @@ pub(super) async fn zmodem_receive_files(
     let mut last_progress = Instant::now();
 
     while !session_done || !modem_receiver.drain_outgoing().is_empty() {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let mut progressed = false;
 
         let outgoing = modem_receiver.drain_outgoing().to_vec();
         if !outgoing.is_empty() {
-            write_runtime_bytes(state, session_id, &outgoing).await?;
+            reader.write_runtime_bytes(state, &outgoing).await?;
             modem_receiver.advance_outgoing(outgoing.len());
             progressed = true;
         }

@@ -21,6 +21,7 @@ pub(super) async fn maybe_start_remote_modem(
     protocol: TransferProtocol,
     upload: bool,
     remote_path: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<Option<RemoteModemStart>, String> {
     if !remote_modem_auto_start_enabled(state, session_id)? {
         return Ok(None);
@@ -28,7 +29,15 @@ pub(super) async fn maybe_start_remote_modem(
 
     let readiness_token = Uuid::new_v4().simple().to_string();
     let command = modem_remote_command(protocol, upload, remote_path, &readiness_token);
-    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
+    let _ = send_text_inner_for_runtime(
+        state.session_io(),
+        session_id.to_string(),
+        command,
+        binding.runtime_id(),
+        "transfer",
+        Some("start_remote_modem"),
+    )
+    .await?;
     Ok(Some(RemoteModemStart {
         ready_marker: format!("__PORTMATE_MODEM_{readiness_token}_READY__"),
         token: readiness_token,
@@ -111,18 +120,35 @@ pub(super) async fn finalize_remote_modem_upload(
     remote_part: &str,
     remote_target: &str,
     progress: &TransferProgressContext,
+    binding: &ModemRuntimeBinding,
 ) -> Result<(), String> {
     let completion_token = Uuid::new_v4().simple().to_string();
     let command = remote_modem_finalize_command(remote_part, remote_target, &completion_token);
-    let _ = send_text_inner(state.session_io(), session_id.to_string(), command).await?;
-    wait_for_remote_modem_finalize(receiver, &completion_token, progress, session_id).await
+    let _ = send_text_inner_for_runtime(
+        state.session_io(),
+        session_id.to_string(),
+        command,
+        binding.runtime_id(),
+        "transfer",
+        Some("finalize_remote_modem"),
+    )
+    .await?;
+    wait_for_remote_modem_finalize(
+        receiver,
+        &completion_token,
+        progress,
+        session_id,
+        binding,
+    )
+    .await
 }
 
 pub(super) async fn wait_for_remote_modem_finalize(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     completion_token: &str,
     progress: &TransferProgressContext,
-    session_id: &str,
+    _session_id: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<(), String> {
     let success = format!("__PORTMATE_MODEM_FINALIZE_{completion_token}_DONE__");
     let failure = format!("__PORTMATE_MODEM_FINALIZE_{completion_token}_FAIL__");
@@ -130,7 +156,7 @@ pub(super) async fn wait_for_remote_modem_finalize(
     let mut output = Vec::new();
     loop {
         progress.check_cancelled()?;
-        ensure_modem_session_connected(&progress.state.store, session_id)?;
+        binding.ensure_current()?;
         let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("remote modem finalize timed out".to_string());
@@ -172,7 +198,8 @@ pub(super) async fn wait_for_xmodem_remote_completion(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     completion_token: &str,
     progress: &TransferProgressContext,
-    session_id: &str,
+    _session_id: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<(), String> {
     let success = format!("__PORTMATE_XMODEM_{completion_token}_DONE__");
     let failure = format!("__PORTMATE_XMODEM_{completion_token}_FAIL__");
@@ -180,7 +207,7 @@ pub(super) async fn wait_for_xmodem_remote_completion(
     let mut output = Vec::new();
     loop {
         progress.check_cancelled()?;
-        ensure_modem_session_connected(&progress.state.store, session_id)?;
+        binding.ensure_current()?;
         let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("XModem remote finalize timed out".to_string());
@@ -222,7 +249,8 @@ pub(super) async fn wait_for_remote_modem_completion(
     receiver: &mut broadcast::Receiver<Vec<u8>>,
     remote_start: &RemoteModemStart,
     progress: &TransferProgressContext,
-    session_id: &str,
+    _session_id: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<(), String> {
     let success = remote_start.success_marker();
     let failure = remote_start.failure_marker();
@@ -230,7 +258,7 @@ pub(super) async fn wait_for_remote_modem_completion(
     let mut output = Vec::new();
     loop {
         progress.check_cancelled()?;
-        ensure_modem_session_connected(&progress.state.store, session_id)?;
+        binding.ensure_current()?;
         let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Err("remote modem command completion timed out".to_string());
@@ -376,20 +404,19 @@ pub(super) async fn modem_reader_after_start(
     receiver: broadcast::Receiver<Vec<u8>>,
     remote_start: Option<&RemoteModemStart>,
     progress: &TransferProgressContext,
-    session_id: &str,
+    _session_id: &str,
+    binding: &ModemRuntimeBinding,
 ) -> Result<ModemByteReader, String> {
-    let connection = Some((Arc::clone(&progress.state.store), session_id.to_string()));
     match remote_start {
         Some(start) => {
-            ModemByteReader::after_marker(
+            ModemByteReader::after_marker_for_binding(
                 receiver,
                 &start.ready_marker,
                 Arc::clone(&progress.cancel),
-                connection,
+                binding,
             )
             .await
         }
-        None => Ok(ModemByteReader::new(receiver, Arc::clone(&progress.cancel))
-            .watch_connection(Arc::clone(&progress.state.store), session_id.to_string())),
+        None => Ok(binding.reader_with_receiver(receiver, Arc::clone(&progress.cancel))),
     }
 }

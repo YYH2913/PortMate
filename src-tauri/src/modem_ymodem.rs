@@ -40,7 +40,7 @@ pub(super) async fn ymodem_send_file(
     let mut bytes_done = 0_u64;
     let mut buffer = [0_u8; YMODEM_BLOCK_SIZE];
     while bytes_done < total {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let limit = (total - bytes_done).min(buffer.len() as u64) as usize;
         let read = file
             .read(&mut buffer[..limit])
@@ -83,13 +83,13 @@ pub(super) async fn ymodem_send_file(
 
 pub(super) async fn modem_finish_auto_remote_ymodem_batch(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     reader: &mut ModemByteReader,
 ) -> Result<(), String> {
     let empty = vec![0_u8; XMODEM_BLOCK_SIZE];
     let packet = modem_packet_bytes(MODEM_SOH, 0, &empty, XMODEM_BLOCK_SIZE, true);
     for _ in 0..3 {
-        write_runtime_bytes(state, session_id, &packet).await?;
+        reader.write_runtime_bytes(state, &packet).await?;
         match modem_wait_for_ack(reader, Duration::from_secs(2)).await {
             Ok(ModemAck::Ack) => return Ok(()),
             Ok(ModemAck::Nak) => {}
@@ -117,10 +117,12 @@ pub(super) async fn ymodem_receive_file(
     }
     let (name, expected_size) = parse_ymodem_metadata(&metadata.data);
     if name.is_empty() {
-        write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
+        reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
         return Err("YModem sender sent empty batch".to_string());
     }
-    write_runtime_bytes(state, session_id, &[MODEM_ACK, MODEM_CRC_REQUEST]).await?;
+    reader
+        .write_runtime_bytes(state, &[MODEM_ACK, MODEM_CRC_REQUEST])
+        .await?;
 
     let destination = ymodem_local_target_path(local_destination, &name)?;
     let mut expected = 1_u8;
@@ -130,17 +132,19 @@ pub(super) async fn ymodem_receive_file(
     let mut bytes_written = 0_u64;
     let total = expected_size.unwrap_or(0) as u64;
     loop {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let marker = modem_wait_for_next_marker(&mut reader, Duration::from_secs(15)).await?;
         if marker == MODEM_EOT {
-            write_runtime_bytes(state, session_id, &[MODEM_ACK, MODEM_CRC_REQUEST]).await?;
+            reader
+                .write_runtime_bytes(state, &[MODEM_ACK, MODEM_CRC_REQUEST])
+                .await?;
             if let Ok(final_marker) =
                 modem_wait_for_next_marker(&mut reader, Duration::from_secs(5)).await
             {
                 if final_marker != MODEM_EOT {
                     let final_packet = modem_read_packet(&mut reader, final_marker).await?;
                     if final_packet.block_no == 0 {
-                        write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
+                        reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
                     }
                 }
             }
@@ -169,7 +173,7 @@ pub(super) async fn ymodem_receive_file(
             progress.update(bytes_received, total).await?;
             expected = expected.wrapping_add(1);
         }
-        write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
+        reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
     }
 
     output.finish()?;

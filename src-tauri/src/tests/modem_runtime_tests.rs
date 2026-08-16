@@ -257,3 +257,165 @@ fn silent_xmodem_fails_promptly_when_transport_reconnects() {
         let _ = fs::remove_dir_all(root);
     });
 }
+
+#[test]
+fn modem_binding_rejects_replaced_tcp_runtime_without_writing_the_replacement() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_first, _) = listener.accept().await.unwrap();
+            let (mut replacement, _) = listener.accept().await.unwrap();
+            match tokio::time::timeout(Duration::from_millis(300), replacement.read_u8()).await {
+                Err(_) => None,
+                Ok(Ok(byte)) => Some(byte),
+                Ok(Err(error)) => panic!("replacement TCP runtime closed unexpectedly: {error}"),
+            }
+        });
+
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root =
+            std::env::temp_dir().join(format!("portmate-modem-generation-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let binding = runtime_modem_binding(&state, &profile.id).unwrap();
+        let mut protocol_receiver = binding.subscribe();
+        let mut completion_receiver = binding.subscribe();
+        let old_tap = state
+            .tcp
+            .lock()
+            .unwrap()
+            .get(&profile.id)
+            .unwrap()
+            .tap
+            .clone();
+        old_tap.send(b"old generation".to_vec()).unwrap();
+        assert_eq!(protocol_receiver.recv().await.unwrap(), b"old generation");
+        assert_eq!(completion_receiver.recv().await.unwrap(), b"old generation");
+        let reader =
+            binding.reader_with_receiver(protocol_receiver, Arc::new(AtomicBool::new(false)));
+
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == profile.id)
+                .unwrap()
+                .runtime
+                .status,
+            SessionStatus::Connected
+        );
+        assert_ne!(
+            state
+                .tcp
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .runtime_id,
+            binding.runtime_id()
+        );
+
+        let binding_error = binding.ensure_current().unwrap_err();
+        assert!(binding_error.contains("替换"), "{binding_error}");
+        let reader_error = reader.check_interrupted().unwrap_err();
+        assert!(reader_error.contains("替换"), "{reader_error}");
+        let write_error = binding
+            .write_runtime_bytes(&state, b"must not reach replacement")
+            .await
+            .unwrap_err();
+        assert!(write_error.contains("替换"), "{write_error}");
+        assert_eq!(server.await.unwrap(), None);
+
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn load_baud_restore_rejects_a_replaced_serial_runtime() {
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "test-serial".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let root = std::env::temp_dir().join(format!("portmate-load-generation-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+    let (old_tap, _) = broadcast::channel(8);
+    let old_closed = Arc::new(AtomicBool::new(false));
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "old-serial-runtime".to_string(),
+            writer: None,
+            tap: old_tap,
+            closed: Arc::clone(&old_closed),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_runtime_status_with_reason(&profile.id, SessionStatus::Connected, None)
+        .unwrap();
+    let binding = runtime_modem_binding(&state, &profile.id).unwrap();
+
+    old_closed.store(true, Ordering::SeqCst);
+    let (new_tap, _) = broadcast::channel(8);
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "new-serial-runtime".to_string(),
+            writer: None,
+            tap: new_tap,
+            closed: Arc::new(AtomicBool::new(false)),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+
+    assert_eq!(
+        state
+            .store
+            .lock()
+            .unwrap()
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.profile.id == profile.id)
+            .unwrap()
+            .runtime
+            .status,
+        SessionStatus::Connected
+    );
+    let binding_error = binding.ensure_current().unwrap_err();
+    assert!(binding_error.contains("替换"), "{binding_error}");
+    assert!(serial_runtime_writer(&state, &profile.id, binding.runtime_id()).is_err());
+    assert!(
+        restore_serial_runtime_baud(&state, &profile.id, binding.runtime_id(), 115_200,).is_err()
+    );
+
+    let _ = fs::remove_dir_all(root);
+}

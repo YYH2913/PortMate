@@ -1,54 +1,216 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct ModemRuntimeBinding {
+    session_id: String,
+    runtime_id: String,
+    tap: broadcast::Sender<Vec<u8>>,
+    watch: ModemConnectionWatch,
+}
+
+#[derive(Clone)]
+struct ModemConnectionWatch {
+    store: Arc<Mutex<SessionStore>>,
+    runtimes: Option<RuntimeRegistry>,
+    session_id: String,
+    runtime_id: Option<String>,
+    runtime_kind: Option<ModemRuntimeKind>,
+}
+
+#[derive(Clone, Copy)]
+enum ModemRuntimeKind {
+    Ssh,
+    Shell,
+    Tcp,
+    Serial,
+}
+
+impl ModemRuntimeBinding {
+    pub(super) fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    pub(super) fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.tap.subscribe()
+    }
+
+    pub(super) fn reader_with_receiver(
+        &self,
+        receiver: broadcast::Receiver<Vec<u8>>,
+        cancel: Arc<AtomicBool>,
+    ) -> ModemByteReader {
+        ModemByteReader {
+            receiver,
+            pending: VecDeque::new(),
+            cancel,
+            connection: Some(self.watch.clone()),
+        }
+    }
+
+    pub(super) fn ensure_current(&self) -> Result<(), String> {
+        self.watch.ensure_current()
+    }
+
+    pub(super) async fn write_runtime_bytes(
+        &self,
+        state: &AppState,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        self.ensure_current()?;
+        write_runtime_bytes_for_runtime(
+            state,
+            &self.session_id,
+            bytes,
+            Some(&self.runtime_id),
+        )
+        .await
+    }
+}
+
+impl ModemConnectionWatch {
+    #[cfg(test)]
+    fn store_only(store: Arc<Mutex<SessionStore>>, session_id: String) -> Self {
+        Self {
+            store,
+            runtimes: None,
+            session_id,
+            runtime_id: None,
+            runtime_kind: None,
+        }
+    }
+
+    fn ensure_current(&self) -> Result<(), String> {
+        ensure_modem_session_connected(&self.store, &self.session_id)?;
+        if let (Some(runtimes), Some(runtime_id), Some(runtime_kind)) =
+            (&self.runtimes, &self.runtime_id, self.runtime_kind)
+        {
+            ensure_modem_runtime_current(
+                runtimes,
+                &self.session_id,
+                runtime_id,
+                runtime_kind,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn runtime_modem_binding(
+    state: &AppState,
+    session_id: &str,
+) -> Result<ModemRuntimeBinding, String> {
+    let mut target = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        connections.get(session_id).map(|runtime| {
+            (
+                ModemRuntimeKind::Ssh,
+                runtime.runtime_id.clone(),
+                runtime.tap.clone(),
+                runtime.closed.load(Ordering::SeqCst),
+            )
+        })
+    };
+    if target.is_none() {
+        let connections = state.shell.lock().map_err(|error| error.to_string())?;
+        target = connections.get(session_id).map(|runtime| {
+            (
+                ModemRuntimeKind::Shell,
+                runtime.runtime_id.clone(),
+                runtime.tap.clone(),
+                runtime.closed.load(Ordering::SeqCst),
+            )
+        });
+    }
+    if target.is_none() {
+        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
+        target = connections.get(session_id).map(|runtime| {
+            (
+                ModemRuntimeKind::Tcp,
+                runtime.runtime_id.clone(),
+                runtime.tap.clone(),
+                runtime.closed.load(Ordering::SeqCst),
+            )
+        });
+    }
+    if target.is_none() {
+        let connections = state.serial.lock().map_err(|error| error.to_string())?;
+        target = connections.get(session_id).map(|runtime| {
+            (
+                ModemRuntimeKind::Serial,
+                runtime.runtime_id.clone(),
+                runtime.tap.clone(),
+                runtime.closed.load(Ordering::SeqCst),
+            )
+        });
+    }
+    let target = target
+        .ok_or_else(|| "需要先连接会话才能执行 X/Y/ZModem 传输".to_string())?;
+    if target.3 {
+        return Err("Modem 来源连接已关闭或正在重连".to_string());
+    }
+    let watch = ModemConnectionWatch {
+        store: Arc::clone(&state.store),
+        runtimes: Some(state.runtimes()),
+        session_id: session_id.to_string(),
+        runtime_id: Some(target.1.clone()),
+        runtime_kind: Some(target.0),
+    };
+    let binding = ModemRuntimeBinding {
+        session_id: session_id.to_string(),
+        runtime_id: target.1,
+        tap: target.2,
+        watch,
+    };
+    binding.ensure_current()?;
+    Ok(binding)
+}
+
+pub(super) async fn transfer_modem_binding(
+    state: &AppState,
+    session_id: &str,
+    progress: &TransferProgressContext,
+) -> Result<ModemRuntimeBinding, String> {
+    progress.check_cancelled()?;
+    let binding = runtime_modem_binding(state, session_id)?;
+    let cancellation = state
+        .transfer_cancellations
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&progress.task_id)
+        .cloned();
+    if let Some(cancellation) = cancellation {
+        cancellation.bind_modem_runtime(binding.clone())?;
+    }
+    if progress.cancel.load(Ordering::SeqCst) {
+        let _ = binding
+            .write_runtime_bytes(state, &[MODEM_CAN, MODEM_CAN, MODEM_CAN])
+            .await;
+        return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+    }
+    binding.ensure_current()?;
+    Ok(binding)
+}
+
+#[cfg(test)]
 pub(super) fn runtime_tap_receiver(
     state: &AppState,
     session_id: &str,
 ) -> Result<broadcast::Receiver<Vec<u8>>, String> {
-    if let Some(tap) = {
-        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.shell.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.tcp.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    if let Some(tap) = {
-        let connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections
-            .get(session_id)
-            .map(|runtime| runtime.tap.clone())
-    } {
-        return Ok(tap.subscribe());
-    }
-    Err("需要先连接会话才能执行 X/Y/ZModem 传输".to_string())
+    runtime_modem_binding(state, session_id).map(|binding| binding.subscribe())
 }
 
 pub(super) async fn check_modem_cancelled(
     state: &AppState,
-    session_id: &str,
+    reader: &ModemByteReader,
     progress: &TransferProgressContext,
 ) -> Result<(), String> {
     if progress.cancel.load(Ordering::SeqCst) {
-        let _ = write_runtime_bytes(state, session_id, &[MODEM_CAN, MODEM_CAN, MODEM_CAN]).await;
+        let _ = reader
+            .write_runtime_bytes(state, &[MODEM_CAN, MODEM_CAN, MODEM_CAN])
+            .await;
         Err(TRANSFER_CANCELLED_MESSAGE.to_string())
     } else {
-        Ok(())
+        reader.check_interrupted()
     }
 }
 
@@ -56,10 +218,11 @@ pub(super) struct ModemByteReader {
     receiver: broadcast::Receiver<Vec<u8>>,
     pending: VecDeque<u8>,
     cancel: Arc<AtomicBool>,
-    connection: Option<(Arc<Mutex<SessionStore>>, String)>,
+    connection: Option<ModemConnectionWatch>,
 }
 
 impl ModemByteReader {
+    #[cfg(test)]
     pub(super) fn new(receiver: broadcast::Receiver<Vec<u8>>, cancel: Arc<AtomicBool>) -> Self {
         Self {
             receiver,
@@ -69,30 +232,84 @@ impl ModemByteReader {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn watch_connection(
         mut self,
         store: Arc<Mutex<SessionStore>>,
         session_id: String,
     ) -> Self {
-        self.connection = Some((store, session_id));
+        self.connection = Some(ModemConnectionWatch::store_only(store, session_id));
         self
+    }
+
+    pub(super) fn runtime_id(&self) -> Option<&str> {
+        self.connection
+            .as_ref()
+            .and_then(|watch| watch.runtime_id.as_deref())
+    }
+
+    pub(super) async fn write_runtime_bytes(
+        &self,
+        state: &AppState,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        self.check_interrupted()?;
+        let session_id = self
+            .connection
+            .as_ref()
+            .map(|watch| watch.session_id.as_str())
+            .ok_or_else(|| "Modem reader 未绑定会话".to_string())?;
+        write_runtime_bytes_for_runtime(state, session_id, bytes, self.runtime_id()).await
     }
 
     pub(super) fn check_interrupted(&self) -> Result<(), String> {
         if self.cancel.load(Ordering::SeqCst) {
             return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
         }
-        if let Some((store, session_id)) = &self.connection {
-            ensure_modem_session_connected(store, session_id)?;
+        if let Some(connection) = &self.connection {
+            connection.ensure_current()?;
         }
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn after_marker(
-        mut receiver: broadcast::Receiver<Vec<u8>>,
+        receiver: broadcast::Receiver<Vec<u8>>,
         marker: &str,
         cancel: Arc<AtomicBool>,
         connection: Option<(Arc<Mutex<SessionStore>>, String)>,
+    ) -> Result<Self, String> {
+        Self::after_marker_with_watch(
+            receiver,
+            marker,
+            cancel,
+            connection.map(|(store, session_id)| {
+                ModemConnectionWatch::store_only(store, session_id)
+            }),
+        )
+        .await
+    }
+
+    pub(super) async fn after_marker_for_binding(
+        receiver: broadcast::Receiver<Vec<u8>>,
+        marker: &str,
+        cancel: Arc<AtomicBool>,
+        binding: &ModemRuntimeBinding,
+    ) -> Result<Self, String> {
+        Self::after_marker_with_watch(
+            receiver,
+            marker,
+            cancel,
+            Some(binding.watch.clone()),
+        )
+        .await
+    }
+
+    async fn after_marker_with_watch(
+        mut receiver: broadcast::Receiver<Vec<u8>>,
+        marker: &str,
+        cancel: Arc<AtomicBool>,
+        connection: Option<ModemConnectionWatch>,
     ) -> Result<Self, String> {
         let started = Instant::now();
         let marker = marker.as_bytes();
@@ -101,8 +318,8 @@ impl ModemByteReader {
             if cancel.load(Ordering::SeqCst) {
                 return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
             }
-            if let Some((store, session_id)) = &connection {
-                ensure_modem_session_connected(store, session_id)?;
+            if let Some(connection) = &connection {
+                connection.ensure_current()?;
             }
             let remaining = REMOTE_MODEM_READY_TIMEOUT.saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -215,6 +432,53 @@ impl ModemByteReader {
                 Err(_) => {}
             }
         }
+    }
+}
+
+fn ensure_modem_runtime_current(
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
+    runtime_id: &str,
+    runtime_kind: ModemRuntimeKind,
+) -> Result<(), String> {
+    let current = match runtime_kind {
+        ModemRuntimeKind::Ssh => runtimes
+            .ssh
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.runtime_id == runtime_id && !runtime.closed.load(Ordering::SeqCst)
+            }),
+        ModemRuntimeKind::Shell => runtimes
+            .shell
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.runtime_id == runtime_id && !runtime.closed.load(Ordering::SeqCst)
+            }),
+        ModemRuntimeKind::Tcp => runtimes
+            .tcp
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.runtime_id == runtime_id && !runtime.closed.load(Ordering::SeqCst)
+            }),
+        ModemRuntimeKind::Serial => runtimes
+            .serial
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.runtime_id == runtime_id && !runtime.closed.load(Ordering::SeqCst)
+            }),
+    };
+    if current {
+        Ok(())
+    } else {
+        Err("Modem 来源连接已关闭或被新连接替换".to_string())
     }
 }
 

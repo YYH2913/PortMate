@@ -15,7 +15,7 @@ pub(super) async fn xmodem_send_file(
     let mut buffer = [0_u8; XMODEM_BLOCK_SIZE];
 
     while bytes_done < total {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let limit = (total - bytes_done).min(buffer.len() as u64) as usize;
         let read = file
             .read(&mut buffer[..limit])
@@ -53,11 +53,11 @@ pub(super) async fn xmodem_send_file(
 
 pub(super) async fn modem_finish_auto_remote_xmodem(
     state: &AppState,
-    session_id: &str,
+    _session_id: &str,
     reader: &mut ModemByteReader,
 ) -> Result<(), String> {
     for _ in 0..3 {
-        write_runtime_bytes(state, session_id, &[MODEM_EOT]).await?;
+        reader.write_runtime_bytes(state, &[MODEM_EOT]).await?;
         match modem_wait_for_ack(reader, Duration::from_secs(2)).await {
             Ok(ModemAck::Ack) => return Ok(()),
             Ok(ModemAck::Nak) => {}
@@ -84,7 +84,7 @@ pub(super) async fn xmodem_receive_file(
     let mut first_packet = true;
 
     loop {
-        check_modem_cancelled(state, session_id, progress).await?;
+        check_modem_cancelled(state, &reader, progress).await?;
         let marker = if first_packet {
             first_packet = false;
             modem_wait_for_packet_marker(state, session_id, &mut reader).await?
@@ -92,13 +92,13 @@ pub(super) async fn xmodem_receive_file(
             modem_wait_for_next_marker(&mut reader, Duration::from_secs(15)).await?
         };
         if marker == MODEM_EOT {
-            write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
+            reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
             break;
         }
         let packet = match modem_read_packet(&mut reader, marker).await {
             Ok(packet) => packet,
             Err(error) => {
-                write_runtime_bytes(state, session_id, &[MODEM_NAK]).await?;
+                reader.write_runtime_bytes(state, &[MODEM_NAK]).await?;
                 return Err(error);
             }
         };
@@ -115,7 +115,7 @@ pub(super) async fn xmodem_receive_file(
             progress.update(bytes_received, 0).await?;
             expected = expected.wrapping_add(1);
         }
-        write_runtime_bytes(state, session_id, &[MODEM_ACK]).await?;
+        reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
     }
 
     output.finish()?;

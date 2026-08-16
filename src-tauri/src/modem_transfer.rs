@@ -29,8 +29,9 @@ pub(super) async fn transfer_file_via_xmodem(
             local_source,
             remote_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let source_size = local_transfer_source_size(&local_source)?;
             let remote_part = remote_resume_part_path(&remote_destination);
             let completion_token = Uuid::new_v4().simple().to_string();
@@ -40,6 +41,7 @@ pub(super) async fn transfer_file_via_xmodem(
                 TransferProtocol::Xmodem,
                 true,
                 &remote_part,
+                &binding,
             )
             .await?;
             let remote_started = remote_start.is_some();
@@ -48,6 +50,7 @@ pub(super) async fn transfer_file_via_xmodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let bytes = xmodem_send_file(
@@ -65,6 +68,7 @@ pub(super) async fn transfer_file_via_xmodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
                 let command = xmodem_remote_finalize_command(
@@ -73,13 +77,21 @@ pub(super) async fn transfer_file_via_xmodem(
                     source_size,
                     &completion_token,
                 );
-                let _ = send_text_inner(state.session_io(), request.session_id.clone(), command)
-                    .await?;
+                let _ = send_text_inner_for_runtime(
+                    state.session_io(),
+                    request.session_id.clone(),
+                    command,
+                    binding.runtime_id(),
+                    "transfer",
+                    Some("finalize_remote_xmodem"),
+                )
+                .await?;
                 wait_for_xmodem_remote_completion(
                     &mut completion_receiver,
                     &completion_token,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
             }
@@ -89,14 +101,16 @@ pub(super) async fn transfer_file_via_xmodem(
             remote_source,
             local_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Xmodem,
                 false,
                 &remote_source,
+                &binding,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -104,6 +118,7 @@ pub(super) async fn transfer_file_via_xmodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let bytes = xmodem_receive_file(
@@ -120,6 +135,7 @@ pub(super) async fn transfer_file_via_xmodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
             }
@@ -142,8 +158,9 @@ pub(super) async fn transfer_file_via_ymodem(
             local_source,
             remote_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let remote_part = remote_resume_part_path(&remote_destination);
             let remote_start = maybe_start_remote_modem(
                 state,
@@ -151,6 +168,7 @@ pub(super) async fn transfer_file_via_ymodem(
                 TransferProtocol::Ymodem,
                 true,
                 &remote_part,
+                &binding,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -158,6 +176,7 @@ pub(super) async fn transfer_file_via_ymodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let receiver_destination = if remote_start.is_some() {
@@ -181,6 +200,7 @@ pub(super) async fn transfer_file_via_ymodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
                 finalize_remote_modem_upload(
@@ -190,6 +210,7 @@ pub(super) async fn transfer_file_via_ymodem(
                     &remote_part,
                     &remote_destination,
                     progress,
+                    &binding,
                 )
                 .await?;
             }
@@ -199,14 +220,16 @@ pub(super) async fn transfer_file_via_ymodem(
             remote_source,
             local_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Ymodem,
                 false,
                 &remote_source,
+                &binding,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -214,6 +237,7 @@ pub(super) async fn transfer_file_via_ymodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let bytes = ymodem_receive_file(
@@ -230,6 +254,7 @@ pub(super) async fn transfer_file_via_ymodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
             }
@@ -252,8 +277,9 @@ pub(super) async fn transfer_file_via_zmodem(
             local_source,
             remote_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let remote_part = remote_resume_part_path(&remote_destination);
             let remote_start = maybe_start_remote_modem(
                 state,
@@ -261,6 +287,7 @@ pub(super) async fn transfer_file_via_zmodem(
                 TransferProtocol::Zmodem,
                 true,
                 &remote_part,
+                &binding,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -268,6 +295,7 @@ pub(super) async fn transfer_file_via_zmodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let receiver_destination = if remote_start.is_some() {
@@ -290,6 +318,7 @@ pub(super) async fn transfer_file_via_zmodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
                 finalize_remote_modem_upload(
@@ -299,6 +328,7 @@ pub(super) async fn transfer_file_via_zmodem(
                     &remote_part,
                     &remote_destination,
                     progress,
+                    &binding,
                 )
                 .await?;
             }
@@ -308,14 +338,16 @@ pub(super) async fn transfer_file_via_zmodem(
             remote_source,
             local_destination,
         } => {
-            let receiver = runtime_tap_receiver(state, &request.session_id)?;
-            let mut completion_receiver = runtime_tap_receiver(state, &request.session_id)?;
+            let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+            let receiver = binding.subscribe();
+            let mut completion_receiver = binding.subscribe();
             let remote_start = maybe_start_remote_modem(
                 state,
                 &request.session_id,
                 TransferProtocol::Zmodem,
                 false,
                 &remote_source,
+                &binding,
             )
             .await?;
             let reader = modem_reader_after_start(
@@ -323,6 +355,7 @@ pub(super) async fn transfer_file_via_zmodem(
                 remote_start.as_ref(),
                 progress,
                 &request.session_id,
+                &binding,
             )
             .await?;
             let bytes = zmodem_receive_files(
@@ -339,6 +372,7 @@ pub(super) async fn transfer_file_via_zmodem(
                     remote_start,
                     progress,
                     &request.session_id,
+                    &binding,
                 )
                 .await?;
             }

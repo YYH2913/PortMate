@@ -83,6 +83,27 @@ pub(super) async fn send_text_inner_with_context(
     send_text_under_outbound_lane(&io, &session_id, &text, actor, audit_action, None).await
 }
 
+pub(super) async fn send_text_inner_for_runtime(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    expected_runtime_id: &str,
+    actor: &str,
+    audit_action: Option<&str>,
+) -> Result<SessionEvent, String> {
+    let lane = outbound_lane(&io.store_path, &session_id)?;
+    let _lane_guard = lane.lock().await;
+    send_text_under_outbound_lane(
+        &io,
+        &session_id,
+        &text,
+        actor,
+        audit_action,
+        Some(expected_runtime_id),
+    )
+    .await
+}
+
 pub(super) async fn send_text_under_outbound_lane(
     io: &SessionIo,
     session_id: &str,

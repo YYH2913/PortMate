@@ -9,6 +9,7 @@ pub(super) const MAX_ACTIVE_TRANSFERS_PER_SESSION: usize = 5_000;
 pub(super) struct TransferCancellation {
     cancelled: Arc<AtomicBool>,
     changed: tokio::sync::Notify,
+    modem_binding: Mutex<Option<ModemRuntimeBinding>>,
 }
 
 impl TransferCancellation {
@@ -20,6 +21,7 @@ impl TransferCancellation {
         Self {
             cancelled,
             changed: tokio::sync::Notify::new(),
+            modem_binding: Mutex::new(None),
         }
     }
 
@@ -38,6 +40,25 @@ impl TransferCancellation {
             return;
         }
         changed.await;
+    }
+
+    pub(super) fn bind_modem_runtime(
+        &self,
+        binding: ModemRuntimeBinding,
+    ) -> Result<(), String> {
+        *self
+            .modem_binding
+            .lock()
+            .map_err(|error| error.to_string())? = Some(binding);
+        Ok(())
+    }
+
+    pub(super) fn modem_runtime_binding(&self) -> Result<Option<ModemRuntimeBinding>, String> {
+        Ok(self
+            .modem_binding
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone())
     }
 }
 
