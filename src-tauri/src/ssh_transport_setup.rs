@@ -104,6 +104,42 @@ pub(super) async fn request_backend_disconnect_with_timeout<H: client::Handler>(
     }
 }
 
+pub(super) async fn request_shared_ssh_disconnect_with_timeout<H: client::Handler>(
+    handle: &Arc<tokio::sync::Mutex<client::Handle<H>>>,
+    disconnect_description: &str,
+) -> Option<String> {
+    let handle = match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock())
+        .await
+    {
+        Ok(handle) => handle,
+        Err(_) => {
+            return Some(format!(
+                "SSH handle lock timed out after {} ms",
+                SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+            ));
+        }
+    };
+    request_ssh_disconnect_with_timeout(&handle, disconnect_description).await
+}
+
+pub(super) async fn request_shared_backend_disconnect_with_timeout<H: client::Handler>(
+    handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
+    disconnect_description: &str,
+) -> Option<String> {
+    let handle = match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock())
+        .await
+    {
+        Ok(handle) => handle,
+        Err(_) => {
+            return Some(format!(
+                "SSH backend handle lock timed out after {} ms",
+                SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+            ));
+        }
+    };
+    request_backend_disconnect_with_timeout(&handle, disconnect_description).await
+}
+
 pub(super) async fn open_shared_ssh_exec_channel<H: client::Handler>(
     shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
     command: &str,

@@ -39,6 +39,7 @@ pub(super) async fn disconnect_registered_ssh_runtime(
 ) {
     let SshRuntime {
         runtime_id,
+        backend,
         handle,
         sftp,
         jump_handles,
@@ -52,8 +53,7 @@ pub(super) async fn disconnect_registered_ssh_runtime(
     closed.store(true, Ordering::SeqCst);
     drop(sftp);
 
-    let is_libssh = handle.lock().await.is_libssh();
-    if is_libssh {
+    if backend == SshBackendKind::Libssh {
         let reader_stopped = tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
             .await
             .is_ok();
@@ -77,8 +77,11 @@ pub(super) async fn disconnect_registered_ssh_runtime(
             && writer_released
             && handle_is_exclusive
         {
-            let handle = handle.lock().await;
-            let _ = handle.disconnect(reason).await;
+            if let Some(warning) =
+                request_shared_backend_disconnect_with_timeout(&handle, reason).await
+            {
+                eprintln!("PortMate: SSH runtime {runtime_id} disconnect warning: {warning}");
+            }
         } else {
             eprintln!(
                 "PortMate: skipped eager libssh disconnect for reader {runtime_id} while channel users are still shutting down"
@@ -104,9 +107,9 @@ pub(super) async fn disconnect_registered_ssh_runtime(
         }
     } else {
         drop(writer);
-        let handle_guard = handle.lock().await;
-        let _ = handle_guard.disconnect(reason).await;
-        drop(handle_guard);
+        if let Some(warning) = request_shared_backend_disconnect_with_timeout(&handle, reason).await {
+            eprintln!("PortMate: SSH runtime {runtime_id} disconnect warning: {warning}");
+        }
         if tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)
             .await
             .is_err()
@@ -120,10 +123,11 @@ pub(super) async fn disconnect_registered_ssh_runtime(
     drop(handle);
 
     for jump_handle in jump_handles {
-        let handle = jump_handle.lock().await;
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, jump_reason, "en")
-            .await;
+        if let Some(warning) =
+            request_shared_ssh_disconnect_with_timeout(&jump_handle, jump_reason).await
+        {
+            eprintln!("PortMate: SSH jump runtime {runtime_id} disconnect warning: {warning}");
+        }
     }
 }
 
@@ -143,13 +147,12 @@ pub(super) async fn disconnect_ssh_runtime(runtime: SshRuntime, reason: &str) {
     {
         let _ = tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, finished).await;
     }
-    let handle = handle.lock().await;
-    let _ = handle.disconnect(reason).await;
-    drop(handle);
+    if let Some(warning) = request_shared_backend_disconnect_with_timeout(&handle, reason).await {
+        eprintln!("PortMate: SSH reconnect disconnect warning: {warning}");
+    }
     for jump_handle in jump_handles {
-        let handle = jump_handle.lock().await;
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, reason, "en")
-            .await;
+        if let Some(warning) = request_shared_ssh_disconnect_with_timeout(&jump_handle, reason).await {
+            eprintln!("PortMate: SSH reconnect jump disconnect warning: {warning}");
+        }
     }
 }

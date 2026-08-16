@@ -12,18 +12,23 @@ pub(super) async fn remove_ssh_runtime_after_failed_open(
         return Ok(());
     };
     runtime.closed.store(true, Ordering::SeqCst);
-    let handle = runtime.handle.lock().await;
-    let _ = handle.disconnect("PortMate connection commit failed").await;
-    drop(handle);
+    if let Some(warning) = request_shared_backend_disconnect_with_timeout(
+        &runtime.handle,
+        "PortMate connection commit failed",
+    )
+    .await
+    {
+        eprintln!("PortMate: failed SSH runtime cleanup warning: {warning}");
+    }
     for jump_handle in runtime.jump_handles {
-        let handle = jump_handle.lock().await;
-        let _ = handle
-            .disconnect(
-                Disconnect::ByApplication,
-                "PortMate connection commit failed",
-                "en",
-            )
-            .await;
+        if let Some(warning) = request_shared_ssh_disconnect_with_timeout(
+            &jump_handle,
+            "PortMate connection commit failed",
+        )
+        .await
+        {
+            eprintln!("PortMate: failed SSH jump runtime cleanup warning: {warning}");
+        }
     }
     Ok(())
 }

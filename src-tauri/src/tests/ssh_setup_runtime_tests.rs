@@ -44,6 +44,66 @@ fn bounded_connection_step_preserves_results_and_stops_pending_operations() {
 
 #[cfg(unix)]
 #[test]
+fn shared_ssh_disconnect_times_out_waiting_for_a_busy_backend_handle() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping shared SSH disconnect timeout test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-shared-disconnect-user";
+        let secret = "PortMate shared disconnect secret";
+        let (port, _, server_task) =
+            spawn_mixed_auth_test_server(&host_key, username, secret).await;
+        let mut session = client::connect(
+            Arc::new(client::Config::default()),
+            ("127.0.0.1", port),
+            AcceptAnyTestSshClient,
+        )
+        .await
+        .unwrap();
+        assert!(session
+            .authenticate_password(username, secret)
+            .await
+            .unwrap()
+            .success());
+        let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+            session,
+        )));
+        let guard = handle.lock().await;
+        let disconnect_handle = Arc::clone(&handle);
+        let warning = tokio::time::timeout(Duration::from_secs(2), async move {
+            request_shared_backend_disconnect_with_timeout(
+                &disconnect_handle,
+                "PortMate shared disconnect timeout test",
+            )
+            .await
+        })
+        .await
+        .expect("shared SSH disconnect did not honor its lock deadline")
+        .expect("shared SSH disconnect unexpectedly acquired a held backend handle");
+        assert!(warning.contains("handle lock timed out"), "{warning}");
+        drop(guard);
+        assert_eq!(
+            request_shared_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate shared disconnect cleanup",
+            )
+            .await,
+            None
+        );
+
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn direct_tcpip_open_timeout_disconnects_a_stalled_russh_session() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping direct-tcpip timeout test: ssh-keygen is not installed");
