@@ -304,21 +304,20 @@ pub(super) async fn probe_remote_tunnel_health(
             if runtime.closed.load(Ordering::SeqCst) {
                 return Err("tunnel closed during listener probe".to_string());
             }
-            let returned_port = {
-                let handle = handle.lock().await;
-                if runtime.closed.load(Ordering::SeqCst) {
-                    return Err("tunnel closed before listener restore".to_string());
-                }
-                handle
-                    .listen_remote_forward(runtime.spec.bind_host.clone(), runtime.spec.bind_port)
-                    .await
-                    .map_err(|error| {
-                        format!(
-                            "listener restore failed {}:{}: {error}",
-                            runtime.spec.bind_host, runtime.spec.bind_port
-                        )
-                    })?
-            };
+            if runtime.closed.load(Ordering::SeqCst) {
+                return Err("tunnel closed before listener restore".to_string());
+            }
+            let (returned_port, _) = listen_remote_tunnel_forward_with_timeout(
+                &handle,
+                runtime.spec.bind_host.clone(),
+                runtime.spec.bind_port,
+                REMOTE_TUNNEL_HEALTH_TIMEOUT,
+                &format!(
+                    "remote SSH listener restore {}:{}",
+                    runtime.spec.bind_host, runtime.spec.bind_port
+                ),
+            )
+            .await?;
             if returned_port != runtime.spec.bind_port {
                 return Err(rollback_remote_tunnel_forward_attempt(
                     &handle,

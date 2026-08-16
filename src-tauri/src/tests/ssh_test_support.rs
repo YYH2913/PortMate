@@ -158,6 +158,7 @@ pub(super) struct MixedAuthTestCounters {
     pub(super) remote_forward_cancellations: AtomicU64,
     pub(super) remote_forward_assigned_port: AtomicU64,
     pub(super) last_remote_forward_cancellation_port: AtomicU64,
+    pub(super) remote_forward_delay_millis: AtomicU64,
     pub(super) channel_closes: AtomicU64,
     pub(super) scp_upload_bytes: AtomicU64,
 }
@@ -261,6 +262,13 @@ impl russh::server::Handler for MixedAuthTestServer {
         self.counters
             .remote_forward_requests
             .fetch_add(1, Ordering::SeqCst);
+        let delay_millis = self
+            .counters
+            .remote_forward_delay_millis
+            .load(Ordering::SeqCst);
+        if delay_millis != 0 {
+            tokio::time::sleep(Duration::from_millis(delay_millis)).await;
+        }
         let assigned_port = self
             .counters
             .remote_forward_assigned_port

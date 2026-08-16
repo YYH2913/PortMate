@@ -350,3 +350,48 @@ pub(super) async fn rollback_remote_tunnel_forward_attempt(
         )
     }
 }
+
+pub(super) async fn listen_remote_tunnel_forward_with_timeout(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+    bind_host: String,
+    bind_port: u16,
+    timeout: Duration,
+    label: &str,
+) -> Result<(u16, Option<libssh_rs::Session>), String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
+        .await
+        .map_err(|_| {
+            format!(
+                "{label} handle lock timed out after {} ms",
+                timeout.as_millis()
+            )
+        })?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
+    match bounded_connection_step(
+        handle.listen_remote_forward(bind_host, bind_port),
+        remaining,
+    )
+    .await
+    {
+        Ok(port) => Ok((port, handle.libssh_forward_session())),
+        Err(BoundedConnectionStepError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(BoundedConnectionStepError::TimedOut) => {
+            // A timed-out global request can have been accepted after its reply waiter is dropped.
+            let cleanup_warning = request_backend_disconnect_with_timeout(
+                &handle,
+                "PortMate remote tunnel forward request timeout",
+            )
+            .await
+            .map(|warning| format!("; {warning}"))
+            .unwrap_or_default();
+            Err(format!(
+                "{label} timed out after {} ms{cleanup_warning}",
+                timeout.as_millis()
+            ))
+        }
+    }
+}

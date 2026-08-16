@@ -73,19 +73,17 @@ pub(super) async fn start_tunnel_runtime_with_validation(
             let forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
             ensure_remote_forward_route_slot(&forwards, &tunnel, &metrics)?;
         }
-        let (returned_port, libssh_session) = {
-            let handle = handle.lock().await;
-            let returned_port = handle
-                .listen_remote_forward(tunnel.bind_host.clone(), tunnel.bind_port)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "remote SSH tunnel request failed {}:{}: {error}",
-                        tunnel.bind_host, tunnel.bind_port
-                    )
-                })?;
-            (returned_port, handle.libssh_forward_session())
-        };
+        let (returned_port, libssh_session) = listen_remote_tunnel_forward_with_timeout(
+            &handle,
+            tunnel.bind_host.clone(),
+            tunnel.bind_port,
+            TUNNEL_CONNECT_TIMEOUT,
+            &format!(
+                "remote SSH tunnel request {}:{}",
+                tunnel.bind_host, tunnel.bind_port
+            ),
+        )
+        .await?;
         if tunnel.bind_port == 0 {
             if returned_port == 0 {
                 return Err(rollback_remote_tunnel_forward_attempt(

@@ -1648,15 +1648,37 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
         );
         assert!(remote_forwards.lock().unwrap().is_empty());
         assert!(state.tunnels.lock().unwrap().is_empty());
-        let store = state.store.lock().unwrap();
-        let stored_profile = store.profile(&profile.id).unwrap();
-        let tunnels = match &stored_profile.connection {
-            ConnectionConfig::Ssh(ssh) => &ssh.tunnels,
-            _ => unreachable!(),
+        {
+            let store = state.store.lock().unwrap();
+            let stored_profile = store.profile(&profile.id).unwrap();
+            let tunnels = match &stored_profile.connection {
+                ConnectionConfig::Ssh(ssh) => &ssh.tunnels,
+                _ => unreachable!(),
+            };
+            assert!(tunnels.is_empty());
+            assert!(store.events.is_empty());
+        }
+
+        let timeout_handle = Arc::clone(&state.ssh.lock().unwrap()[&profile.id].handle);
+        counters
+            .remote_forward_delay_millis
+            .store(100, Ordering::SeqCst);
+        let timeout_result = listen_remote_tunnel_forward_with_timeout(
+            &timeout_handle,
+            "127.0.0.1".to_string(),
+            41_925,
+            Duration::from_millis(20),
+            "test remote forward",
+        )
+        .await;
+        let timeout_error = match timeout_result {
+            Ok(_) => panic!("remote forward request unexpectedly completed"),
+            Err(error) => error,
         };
-        assert!(tunnels.is_empty());
-        assert!(store.events.is_empty());
-        drop(store);
+        assert!(timeout_error.contains("timed out"), "{timeout_error}");
+        counters
+            .remote_forward_delay_millis
+            .store(0, Ordering::SeqCst);
         server_task.abort();
     });
 }
