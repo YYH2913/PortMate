@@ -409,6 +409,8 @@ try {
     window.__hostKeyScanMode = "unknown";
     window.__deferHostKeyMutations = false;
     window.__pendingHostKeyMutations = [];
+    window.__deferKnownHostsExports = false;
+    window.__pendingKnownHostsExports = [];
     window.__deferProfileMutations = false;
     window.__pendingProfileMutations = [];
     window.__deferSessionProfileSaves = false;
@@ -1282,6 +1284,13 @@ try {
           return new Promise((resolve) => window.__pendingOneKeyMutations.push({ result, resolve }));
         }
         if (command === "list_host_keys") return { keys: structuredClone(window.__hostKeys) };
+        if (command === "export_known_hosts") {
+          const result = window.__hostKeys
+            .map((key) => `${key.alias} ${key.algorithm} ${key.publicKeyBase64}`)
+            .join("\n");
+          if (!window.__deferKnownHostsExports) return result;
+          return new Promise((resolve) => window.__pendingKnownHostsExports.push({ result, resolve }));
+        }
         if (command === "scan_ssh_host_key") {
           const profile = args.request.profile;
           const mismatch = window.__hostKeyScanMode === "mismatch";
@@ -7879,6 +7888,48 @@ Host staging
   }), hostKeyProfileCopyBaseline);
   assert(hostKeyProfileCopyState.pending === 0 && hostKeyProfileCopyState.saveCalls === 1,
     `key-manager Profile copy submitted duplicate writes: ${JSON.stringify(hostKeyProfileCopyState)}`);
+
+  const knownHostsExportBaseline = await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferKnownHostsExports = true;
+    return window.__invokeCalls.filter((call) => call.command === "export_known_hosts").length;
+  });
+  const knownHostsExportButton = thirdKeyManager.locator(".key-actions button", { hasText: "导出" });
+  await knownHostsExportButton.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingKnownHostsExports.length === 1);
+  const pendingKnownHostsExportState = await hostKeyLifecyclePage.evaluate((baseline) => ({
+    calls: window.__invokeCalls.filter((call) => call.command === "export_known_hosts").length - baseline,
+    pending: window.__pendingKnownHostsExports.length,
+  }), knownHostsExportBaseline);
+  assert(pendingKnownHostsExportState.calls === 1
+    && pendingKnownHostsExportState.pending === 1
+    && await knownHostsExportButton.isDisabled(),
+  `known_hosts export submitted duplicate reads: ${JSON.stringify(pendingKnownHostsExportState)}`);
+  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea")
+    .fill("export-race.example ssh-ed25519 AAAAEXPORT");
+  await thirdKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
+  await thirdKeyManager.locator(".key-row", { hasText: "export-race.example:22" }).waitFor();
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferKnownHostsExports = false;
+    const pending = window.__pendingKnownHostsExports.shift();
+    pending.resolve(pending.result);
+  });
+  await hostKeyLifecyclePage.waitForTimeout(100);
+  const completedKnownHostsExportState = await hostKeyLifecyclePage.evaluate(() => ({
+    pending: window.__pendingKnownHostsExports.length,
+    exportTextareas: document.querySelectorAll("textarea.key-export").length,
+  }));
+  assert(completedKnownHostsExportState.pending === 0
+    && completedKnownHostsExportState.exportTextareas === 0
+    && await knownHostsExportButton.isEnabled(),
+  `a stale known_hosts export survived a Store mutation: ${JSON.stringify(completedKnownHostsExportState)}`);
+  await knownHostsExportButton.click();
+  const currentKnownHostsExport = thirdKeyManager.locator("textarea.key-export");
+  await currentKnownHostsExport.waitFor();
+  assert((await currentKnownHostsExport.inputValue()).includes("export-race.example ssh-ed25519 AAAAEXPORT"),
+    "a replacement known_hosts export did not read the current Store snapshot");
 
   const staleHostKeyTrustBaseline = await hostKeyLifecyclePage.evaluate(() => {
     window.__deferSessionValidation = true;

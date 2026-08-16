@@ -150,6 +150,7 @@ export default function KeyManagerDialog({
   const [profileId, setProfileId] = useState(sshSessions[0]?.profile.id ?? "");
   const [knownHostsText, setKnownHostsText] = useState("");
   const [exportText, setExportText] = useState("");
+  const [knownHostsExportBusy, setKnownHostsExportBusy] = useState(false);
   const [agentKeys, setAgentKeys] = useState<IdentityRef[]>([]);
   const [clientKeyQuery, setClientKeyQuery] = useState("");
   const [clientKeySourceFilter, setClientKeySourceFilter] = useState<IdentityRef["source"] | "all">("all");
@@ -205,7 +206,7 @@ export default function KeyManagerDialog({
   const hostKeyScanProfileKeyRef = useRef("");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery" | "host-scan">());
+  const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery" | "host-scan" | "known-hosts-export">());
   const mountedRef = useRef(true);
   const credentialSyncRevisionRef = useRef(credentialSyncRevision);
 
@@ -302,6 +303,12 @@ export default function KeyManagerDialog({
     setHostKeyScanError("");
     setHostKeyScanBusy(false);
   }, [selectedProfileScanKey]);
+
+  useEffect(() => {
+    refreshGate.current.invalidate("known-hosts-export");
+    setKnownHostsExportBusy(false);
+    setExportText("");
+  }, [hostKeys.keys]);
 
   useEffect(() => {
     if (editingKeyId && !hostKeys.keys.some((key) => key.id === editingKeyId)) {
@@ -733,12 +740,20 @@ export default function KeyManagerDialog({
   }
 
   async function exportKnownHostsText() {
+    const token = refreshGate.current.begin("known-hosts-export");
+    if (token === null) return;
+    setKnownHostsExportBusy(true);
     setError("");
     setStatus("");
     try {
-      setExportText(await invokeBackend<string>("export_known_hosts", {}));
+      const contents = await invokeBackend<string>("export_known_hosts", {});
+      if (refreshGate.current.isCurrent("known-hosts-export", token)) setExportText(contents);
     } catch (error) {
-      setError(formatError(error));
+      if (refreshGate.current.isCurrent("known-hosts-export", token)) setError(formatError(error));
+    } finally {
+      if (refreshGate.current.finish("known-hosts-export", token) && mountedRef.current) {
+        setKnownHostsExportBusy(false);
+      }
     }
   }
 
@@ -1678,7 +1693,7 @@ export default function KeyManagerDialog({
             {status ? <div className="utility-status">{status}</div> : null}
             <div className="key-actions">
               <button onClick={() => void importKnownHostsText()} disabled={hostKeyMutationBusy || !profileId || !knownHostsText.trim()}>导入</button>
-              <button onClick={() => void exportKnownHostsText()}>导出</button>
+              <button onClick={() => void exportKnownHostsText()} disabled={hostKeyMutationBusy || knownHostsExportBusy}>{knownHostsExportBusy ? "导出中" : "导出"}</button>
             </div>
             {exportText ? (
               <textarea className="key-export" value={exportText} onChange={(event) => setExportText(event.target.value)} />
