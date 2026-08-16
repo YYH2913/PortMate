@@ -19,6 +19,8 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controlTimeoutMs = 180_000;
 const serverStartupTimeoutMs = 60_000;
 const serverStartupPollMs = 50;
+const sshHostPortRange = "20000-24999";
+const kdcHostPortRange = "25000-29999";
 const cargoTargetDir = process.env.PORTMATE_GSSAPI_TARGET_DIR
   ? resolve(process.env.PORTMATE_GSSAPI_TARGET_DIR)
   : resolve(projectRoot, "target/gssapi-compat");
@@ -171,9 +173,9 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
       "--env",
       `PORTMATE_GSSAPI_SFTP=${sftpMode}`,
       "--publish",
-      `127.0.0.1::${sshContainerPort}/tcp`,
+      `127.0.0.1:${sshHostPortRange}:${sshContainerPort}/tcp`,
       "--publish",
-      "127.0.0.1::88/tcp",
+      `127.0.0.1:${kdcHostPortRange}:88/tcp`,
       image,
     ], { quiet: true, timeout: controlTimeoutMs });
     const ports = await waitForPublishedPorts(container, sshContainerPort);

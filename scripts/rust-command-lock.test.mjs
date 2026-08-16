@@ -50,5 +50,8 @@ describe("Rust command lock boundary", () => {
     expect(gssapiMatrix).toContain('"--no-run"');
     expect(prebuildIndex).toBeGreaterThanOrEqual(0);
     expect(prebuildIndex).toBeLessThan(gssapiMatrix.indexOf("for (const entry of selectedMatrix)"));
+    expect(gssapiMatrix).toContain('const sshHostPortRange = "20000-24999";');
+    expect(gssapiMatrix).toContain('const kdcHostPortRange = "25000-29999";');
+    expect(gssapiMatrix).not.toContain("127.0.0.1::");
   });
 });
