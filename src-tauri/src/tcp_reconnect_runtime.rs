@@ -35,11 +35,18 @@ async fn wait_for_tcp_reconnect_attempt(
                 continue;
             }
             Err(error) => {
+                fail_pending_tcp_reconnect_install(
+                    state,
+                    session_id,
+                    runtime_id,
+                    closed,
+                    "TCP/Telnet",
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
                 eprintln!(
                     "PortMate: failed to load TCP/Telnet reconnect delay from latest profile: {error}"
                 );
-                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
-                continue;
+                return false;
             }
         };
         let remaining = tcp_reconnect_delay(&profile).saturating_sub(started.elapsed());
@@ -82,8 +89,16 @@ pub(super) async fn reconnect_tcp_session(
                 continue;
             }
             Err(error) => {
+                fail_pending_tcp_reconnect_install(
+                    &state,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    "TCP/Telnet",
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
                 eprintln!("PortMate: failed to load latest TCP/Telnet reconnect profile: {error}");
-                continue;
+                return;
             }
         };
         let (tcp, label) = match tcp_connection_details(&profile) {

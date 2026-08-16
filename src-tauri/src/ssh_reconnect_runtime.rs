@@ -35,11 +35,17 @@ pub(super) async fn wait_for_ssh_reconnect_attempt(
                 continue;
             }
             Err(error) => {
+                fail_pending_ssh_reconnect_install(
+                    state,
+                    session_id,
+                    runtime_id,
+                    closed,
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
                 eprintln!(
                     "PortMate: failed to load SSH reconnect delay from latest profile: {error}"
                 );
-                tokio::time::sleep(RECONNECT_DELAY_POLL_INTERVAL).await;
-                continue;
+                return false;
             }
         };
         let remaining = ssh_reconnect_delay(&profile).saturating_sub(started.elapsed());
@@ -82,18 +88,15 @@ pub(super) async fn reconnect_ssh_session(
                 continue;
             }
             Err(error) => {
-                if record_ssh_reconnect_failure_if_pending(
+                fail_pending_ssh_reconnect_install(
                     &state,
                     &session_id,
                     &previous_runtime_id,
                     closed.as_ref(),
-                    None,
-                    &error,
-                ) == SshReconnectFailureDisposition::Superseded
-                {
-                    return;
-                }
-                continue;
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
+                eprintln!("PortMate: failed to load latest SSH reconnect profile: {error}");
+                return;
             }
         };
         let established = match establish_ssh_reconnect_runtime(&state, &profile).await {

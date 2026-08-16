@@ -406,3 +406,58 @@ fn serial_reconnect_install_failure_requires_the_pending_runtime_owner() {
             .is_some_and(|text| text.contains("stale failure"))
     }));
 }
+
+#[test]
+fn serial_reconnect_store_poison_removes_the_pending_runtime() {
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: true,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let root = tempfile::tempdir().unwrap();
+    let state = test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
+    let io = state.session_io();
+    let closed = Arc::new(AtomicBool::new(false));
+    let (tap, _) = broadcast::channel(8);
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "poisoned-store-runtime".to_string(),
+            writer: None,
+            tap,
+            closed: Arc::clone(&closed),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_runtime_status(&profile.id, SessionStatus::Reconnecting)
+        .unwrap();
+
+    let store = Arc::clone(&state.store);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = store.lock().unwrap();
+        panic!("poison reconnect Store for test");
+    }));
+    assert!(poisoned.is_err());
+
+    assert!(!serial_reconnect_pending(
+        &io,
+        &profile.id,
+        "poisoned-store-runtime",
+        closed.as_ref(),
+    ));
+    assert!(closed.load(Ordering::SeqCst));
+    assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+}

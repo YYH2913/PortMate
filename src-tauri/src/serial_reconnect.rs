@@ -63,7 +63,7 @@ pub(super) fn latest_serial_reconnect_profile(
     Ok(serial_reconnect_enabled(&profile).then_some(profile))
 }
 
-fn serial_reconnect_pending(
+pub(super) fn serial_reconnect_pending(
     io: &SessionIo,
     session_id: &str,
     runtime_id: &str,
@@ -82,11 +82,24 @@ fn serial_reconnect_pending(
     {
         return false;
     }
-    io.store.lock().ok().is_some_and(|store| {
-        store.runtimes.iter().any(|runtime| {
+    drop(connections);
+    match io.store.lock() {
+        Ok(store) => store.runtimes.iter().any(|runtime| {
             runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
-        })
-    })
+        }),
+        Err(error) => {
+            let lock_error = error.to_string();
+            drop(error);
+            fail_pending_serial_reconnect_install(
+                io,
+                session_id,
+                runtime_id,
+                closed,
+                &format!("reconnect Store unavailable: {lock_error}"),
+            );
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +134,19 @@ pub(super) fn record_serial_reconnect_failure_if_pending(
     }
     let mut store = match io.store.lock() {
         Ok(store) => store,
-        Err(_) => return SerialReconnectFailureDisposition::Superseded,
+        Err(error) => {
+            let lock_error = error.to_string();
+            drop(error);
+            drop(connections);
+            fail_pending_serial_reconnect_install(
+                io,
+                session_id,
+                runtime_id,
+                closed,
+                &format!("reconnect Store unavailable: {lock_error}"),
+            );
+            return SerialReconnectFailureDisposition::Superseded;
+        }
     };
     if !store.runtimes.iter().any(|runtime| {
         runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
@@ -284,11 +309,17 @@ pub(super) fn wait_for_serial_reconnect_attempt(
                 continue;
             }
             Err(error) => {
+                fail_pending_serial_reconnect_install(
+                    io,
+                    session_id,
+                    runtime_id,
+                    closed,
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
                 eprintln!(
                     "PortMate: failed to load serial reconnect delay from latest profile: {error}"
                 );
-                std::thread::sleep(RECONNECT_DELAY_POLL_INTERVAL);
-                continue;
+                return false;
             }
         };
         let remaining = serial_reconnect_delay(&profile).saturating_sub(started.elapsed());

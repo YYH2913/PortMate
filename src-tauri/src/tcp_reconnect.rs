@@ -82,11 +82,25 @@ pub(super) fn tcp_reconnect_pending(
     {
         return false;
     }
-    state.store.lock().ok().is_some_and(|store| {
-        store.runtimes.iter().any(|runtime| {
+    drop(connections);
+    match state.store.lock() {
+        Ok(store) => store.runtimes.iter().any(|runtime| {
             runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting
-        })
-    })
+        }),
+        Err(error) => {
+            let lock_error = error.to_string();
+            drop(error);
+            fail_pending_tcp_reconnect_install(
+                state,
+                session_id,
+                runtime_id,
+                closed,
+                "TCP/Telnet",
+                &format!("reconnect Store unavailable: {lock_error}"),
+            );
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +135,20 @@ pub(super) fn record_tcp_reconnect_failure_if_pending(
     }
     let mut store = match state.store.lock() {
         Ok(store) => store,
-        Err(_) => return TcpReconnectFailureDisposition::Superseded,
+        Err(error) => {
+            let lock_error = error.to_string();
+            drop(error);
+            drop(connections);
+            fail_pending_tcp_reconnect_install(
+                state,
+                session_id,
+                runtime_id,
+                closed,
+                label,
+                &format!("reconnect Store unavailable: {lock_error}"),
+            );
+            return TcpReconnectFailureDisposition::Superseded;
+        }
     };
     if !store.runtimes.iter().any(|runtime| {
         runtime.session_id == session_id && runtime.status == SessionStatus::Reconnecting

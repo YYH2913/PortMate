@@ -71,8 +71,15 @@ fn reconnect_serial_session(
                 continue;
             }
             Err(error) => {
+                fail_pending_serial_reconnect_install(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &format!("latest reconnect profile unavailable: {error}"),
+                );
                 eprintln!("PortMate: failed to load latest serial reconnect profile: {error}");
-                continue;
+                return;
             }
         };
         let (serial, port_name) = match serial_connection_details(&profile) {
