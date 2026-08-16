@@ -228,18 +228,13 @@ pub(super) fn read_ssh_channel(
                 timed_out_tunnels.join(", ")
             );
             eprintln!("{message}");
-            if let Ok(mut store) = io.store.lock() {
-                store.record_system_event(&session_id, message);
-                if let Err(error) = persist_applied_store(
-                    &store,
-                    &io.store_path,
-                    "SSH tunnel listener shutdown timeout",
-                ) {
-                    eprintln!(
-                        "PortMate: failed to persist tunnel listener shutdown timeout: {error}"
-                    );
-                }
-            }
+            record_runtime_system_event(
+                &io,
+                &session_id,
+                &runtime_id,
+                message,
+                "SSH tunnel listener shutdown timeout",
+            );
         }
 
         if should_reconnect {
