@@ -682,6 +682,8 @@ libssh runtime 在连接、Host Key 状态/验证/持久化、凭据读取、认
 
 Local/Dynamic tunnel 的 `direct-tcpip` 打开现把 backend mutex 等待和服务端 channel 回复纳入同一个 10 秒总 deadline，不再各自消耗完整预算而实际卡住近 20 秒；协议请求超时后仍按既有策略主动断开后端，避免晚到 channel 被本地遗漏。真实 russh 回归先占用 backend 锁 350 ms、再延迟服务端回复，确认 500 ms 测试预算不会被分段重置；24 项 tunnel 专项、完整主应用 496 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+TCP/Telnet runtime 的替换、手动关闭、连接状态提交失败回滚和未安装自动重连清理现统一使用 1 秒有界 socket shutdown；writer 正被背压写入或其他任务占用时，不再无限阻塞 session lifecycle lane、后续连接或错误收敛。runtime 会先标记关闭并从 registry 移除，超时仅记录清理诊断，Store 仍能提交本地已断开事实。回归持有 writer mutex 并确认关闭在 deadline 后完成、runtime 被移除且状态为 Disconnected；transport runtime 12 项、完整主应用 497 passed/1 ignored、Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

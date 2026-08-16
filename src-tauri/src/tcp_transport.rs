@@ -1,4 +1,4 @@
-use super::transport_timing::STREAM_PERSIST_INTERVAL;
+use super::transport_timing::{STREAM_PERSIST_INTERVAL, TCP_RUNTIME_SHUTDOWN_TIMEOUT};
 use super::*;
 
 pub(super) struct TcpRuntime {
@@ -7,6 +7,24 @@ pub(super) struct TcpRuntime {
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) telnet: Option<Arc<TelnetRuntimeState>>,
+}
+
+pub(super) async fn shutdown_tcp_writer(
+    writer: &Arc<tokio::sync::Mutex<TcpWriteHalf>>,
+    label: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(TCP_RUNTIME_SHUTDOWN_TIMEOUT, async {
+        let mut writer = writer.lock().await;
+        writer.shutdown().await
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "{label} socket shutdown exceeded {}ms",
+            TCP_RUNTIME_SHUTDOWN_TIMEOUT.as_millis()
+        )
+    })?
+    .map_err(|error| format!("{label} socket shutdown failed: {error}"))
 }
 
 pub(super) async fn open_tcp_session(
@@ -19,8 +37,9 @@ pub(super) async fn open_tcp_session(
         connections.remove(&profile.id)
     } {
         existing.closed.store(true, Ordering::SeqCst);
-        let mut writer = existing.writer.lock().await;
-        let _ = writer.shutdown().await;
+        if let Err(error) = shutdown_tcp_writer(&existing.writer, label).await {
+            eprintln!("PortMate: failed to close replaced {label} runtime: {error}");
+        }
     }
 
     let stream = connect_tcp_transport(&tcp, label).await?;
@@ -65,13 +84,13 @@ pub(super) async fn open_tcp_session(
                 runtime.runtime_id == runtime_id
             })
             .err();
-            let shutdown_error = writer.lock().await.shutdown().await.err();
+            let shutdown_error = shutdown_tcp_writer(&writer, label).await.err();
             let mut errors = vec![error];
             if let Some(cleanup_error) = cleanup_error {
                 errors.push(format!("{label} runtime cleanup failed: {cleanup_error}"));
             }
             if let Some(shutdown_error) = shutdown_error {
-                errors.push(format!("{label} socket shutdown failed: {shutdown_error}"));
+                errors.push(shutdown_error);
             }
             return Err(errors.join("; "));
         }

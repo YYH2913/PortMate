@@ -231,9 +231,9 @@ pub(super) async fn reconnect_tcp_session(
         };
 
         if !matches!(install, TcpReconnectInstallDecision::Installed) {
-            let mut writer = writer.lock().await;
-            let _ = writer.shutdown().await;
-            drop(writer);
+            if let Err(error) = shutdown_tcp_writer(&writer, label).await {
+                eprintln!("PortMate: failed to close unused {label} reconnect runtime: {error}");
+            }
             match install {
                 TcpReconnectInstallDecision::Retry => continue,
                 TcpReconnectInstallDecision::Stop | TcpReconnectInstallDecision::Superseded => {

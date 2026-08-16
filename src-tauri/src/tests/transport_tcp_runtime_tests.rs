@@ -118,6 +118,65 @@ fn tcp_loopback_reconnects_after_remote_disconnect() {
     });
 }
 
+#[test]
+fn tcp_close_does_not_wait_forever_for_an_occupied_writer() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_server_tx, release_server_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _ = release_server_rx.await;
+            drop(socket);
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-tcp-bounded-close-test-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let writer = Arc::clone(
+            &state
+                .tcp
+                .lock()
+                .unwrap()
+                .get(&profile.id)
+                .unwrap()
+                .writer,
+        );
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::spawn(async move {
+            let _writer = writer.lock().await;
+            let _ = locked_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        locked_rx.await.unwrap();
+
+        let closed = tokio::time::timeout(
+            crate::transport_timing::TCP_RUNTIME_SHUTDOWN_TIMEOUT + Duration::from_secs(1),
+            close_session_inner(&state, profile.id.clone()),
+        )
+        .await
+        .expect("TCP close exceeded its bounded writer shutdown deadline")
+        .unwrap();
+        assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
+        assert!(!state.tcp.lock().unwrap().contains_key(&profile.id));
+
+        holder.abort();
+        let _ = holder.await;
+        let _ = release_server_tx.send(());
+        server.await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn tcp_read_failure_preserves_the_socket_error_as_the_disconnect_reason() {

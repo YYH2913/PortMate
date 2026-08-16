@@ -190,8 +190,9 @@ pub(super) async fn close_session_under_lifecycle_lock(
     };
     if let Some(runtime) = existing_tcp {
         runtime.closed.store(true, Ordering::SeqCst);
-        let mut writer = runtime.writer.lock().await;
-        let _ = writer.shutdown().await;
+        if let Err(error) = shutdown_tcp_writer(&runtime.writer, "TCP/Telnet").await {
+            eprintln!("PortMate: failed to close TCP/Telnet session {session_id}: {error}");
+        }
     }
     let existing_serial = {
         let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
