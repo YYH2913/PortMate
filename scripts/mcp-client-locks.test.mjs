@@ -68,6 +68,12 @@ describe("MCP client dependency locks", () => {
     expect(source).toContain('"--disable-prefetching"');
     expect(source).toContain('environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1"');
     expect(source).toContain('"-swift-version"');
+    const clientSource = readFileSync(
+      join(projectRoot, "scripts", "mcp-swift-client-check", "Sources", "McpSwiftClientCheck", "main.swift"),
+      "utf8",
+    );
+    expect(clientSource).toMatch(/#if canImport\(System\)\s+@preconcurrency import System/);
+    expect(clientSource).toMatch(/#elseif canImport\(SystemPackage\)\s+@preconcurrency import SystemPackage/);
     expect(swiftMatrix.sdks.find(({ version }) => version === "0.11.0")?.swiftLanguageMode)
       .toBe("5");
     expect(swiftMatrix.sdks.find(({ version }) => version === "0.12.1"))

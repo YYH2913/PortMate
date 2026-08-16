@@ -5,7 +5,9 @@ import MCP
     import FoundationNetworking
 #endif
 
-#if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+#if canImport(System)
+    @preconcurrency import System
+#elseif canImport(SystemPackage)
     @preconcurrency import SystemPackage
 #endif
 
