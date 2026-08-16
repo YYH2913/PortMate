@@ -42,9 +42,11 @@ use session_events::{append_logging_error, append_logging_errors, sync_stored_ev
 #[cfg(test)]
 use session_open::{
     apply_session_open_profile_credentials, cancel_pending_session_opens,
-    register_session_open_cancellation, session_lifecycle_lane,
+    open_session_inner, register_session_open_cancellation, session_lifecycle_lane,
 };
-use session_open::{open_session_inner, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS};
+use session_open::{
+    open_session_inner_with_validation, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,
+};
 #[cfg(test)]
 use session_profile_delete::delete_session_profile_inner;
 #[cfg(test)]

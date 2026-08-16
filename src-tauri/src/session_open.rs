@@ -125,8 +125,24 @@ pub(super) async fn open_session_inner(
     session_id: String,
     credentials: SessionOpenCredentials,
 ) -> Result<SessionSummary, String> {
+    open_session_inner_with_validation(state, session_id, credentials, None).await
+}
+
+pub(super) async fn open_session_inner_with_validation(
+    state: AppState,
+    session_id: String,
+    credentials: SessionOpenCredentials,
+    commit_validation: Option<CommitValidation>,
+) -> Result<SessionSummary, String> {
     let cancellation = register_session_open_cancellation(&state, &session_id)?;
-    open_reserved_session_inner(state, session_id, credentials, cancellation).await
+    open_reserved_session_inner_with_validation(
+        state,
+        session_id,
+        credentials,
+        cancellation,
+        commit_validation,
+    )
+    .await
 }
 
 pub(super) async fn open_reserved_session_inner(
@@ -135,10 +151,30 @@ pub(super) async fn open_reserved_session_inner(
     credentials: SessionOpenCredentials,
     cancellation: Arc<SessionOpenCancellation>,
 ) -> Result<SessionSummary, String> {
+    open_reserved_session_inner_with_validation(
+        state,
+        session_id,
+        credentials,
+        cancellation,
+        None,
+    )
+    .await
+}
+
+async fn open_reserved_session_inner_with_validation(
+    state: AppState,
+    session_id: String,
+    credentials: SessionOpenCredentials,
+    cancellation: Arc<SessionOpenCancellation>,
+    commit_validation: Option<CommitValidation>,
+) -> Result<SessionSummary, String> {
     let lifecycle_lane = session_lifecycle_lane(&state, &session_id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;
     if cancellation.is_cancelled() {
         return Err("session connection was cancelled before it started".to_string());
+    }
+    if let Some(validate) = commit_validation {
+        validate()?;
     }
     open_session_under_lifecycle_lock(state, session_id, credentials, cancellation).await
 }

@@ -742,6 +742,71 @@ fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
 }
 
 #[test]
+fn queued_mcp_open_session_revalidates_its_grant_before_connecting() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-open-commit-{}", Uuid::new_v4()));
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "queued-open-client".to_string(),
+            name: "Queued open client".to_string(),
+            scopes: vec![McpScope::ManageSessions],
+            allowed_sessions: vec![profile.id.clone()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let request = IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "queued-open-client".to_string(),
+            trusted_write: false,
+            command: "open_session".to_string(),
+            args: serde_json::json!({ "sessionId": profile.id }),
+        };
+        let run_state = state.clone();
+        let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&lane) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("open_session did not enter the lifecycle queue");
+
+        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+        drop(lane_guard);
+
+        let error = run.await.unwrap().unwrap_err();
+        assert!(error.contains("grant changed"), "{error}");
+        assert!(state.shell.lock().unwrap().is_empty());
+        let store = state.store.lock().unwrap();
+        assert_eq!(
+            store.summaries()[0].runtime.status,
+            SessionStatus::Disconnected
+        );
+        assert!(store.events.is_empty());
+        assert_eq!(
+            store
+                .audit
+                .iter()
+                .find(|record| record.action == "open_session")
+                .map(|record| record.decision.as_str()),
+            Some("failed")
+        );
+        drop(store);
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS
+        );
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn mcp_cancel_transfer_authorizes_the_recorded_session_not_client_arguments() {
     tauri::async_runtime::block_on(async {
         let root =

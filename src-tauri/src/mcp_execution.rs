@@ -273,10 +273,17 @@ async fn execute_ipc_request_inner(
                         .to_string(),
                 );
             }
-            let summary = open_session_inner(
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let summary = open_session_inner_with_validation(
                 state.clone(),
                 session_id,
                 SessionOpenCredentials::default(),
+                Some(validation),
             )
             .await?;
             serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())

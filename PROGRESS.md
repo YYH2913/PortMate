@@ -656,6 +656,8 @@ MCP `send_text`、`send_key`、`run_command`、`attach_tmux` 和 `run_custom_scr
 
 MCP `stop_tunnel` 现把首次授权快照带入 tunnel lifecycle lane，并在取得 lane 后、移除 runtime 或关闭 listener 前重新校验 grant。授权在排队期间被撤销、删除、缩小或到期时会 fail-closed，不会停止仍在运行的隧道；回归占住同一 tunnel lane 后撤销 grant，确认 runtime 仍存在、`closed` 保持 false 且最终审计为 `failed`。MCP 专项 46 passed/1 ignored、tunnel 专项 19 项、完整主应用 484 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+MCP `open_session` 现把首次授权快照带入 session lifecycle lane，并在取得 lane 后、写入 `Connecting`、启动本地进程或建立网络/串口连接前重新校验 grant。授权在排队期间被撤销、删除、缩小或到期时会 fail-closed；回归占住同一 session lane 后撤销 grant，确认 Shell runtime 未创建、会话保持 `Disconnected`、零连接事件、open slot 完整释放且最终审计为 `failed`。桌面和 OneKey 打开路径继续使用原生命周期行为；MCP 专项 47 passed/1 ignored、session 专项 48 项、完整主应用 485 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
