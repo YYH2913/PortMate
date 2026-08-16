@@ -144,7 +144,7 @@ pub(super) fn read_ssh_channel(
         )
         .unwrap_or_else(|| "SSH channel closed".to_string());
 
-        let (should_reconnect, stopped_tunnel_runtimes) = {
+        let (should_reconnect, stopped_tunnel_runtimes) = 'disconnect: {
             let mut connections = match io.runtimes.ssh.lock() {
                 Ok(connections) => connections,
                 Err(_) => return,
@@ -157,13 +157,6 @@ pub(super) fn read_ssh_channel(
             }
             clear_active_command(&io, &session_id);
 
-            let mut store = match io.store.lock() {
-                Ok(store) => store,
-                Err(_) => {
-                    connections.remove(&session_id);
-                    return;
-                }
-            };
             let stopped_tunnel_runtimes =
                 match fail_session_tunnel_runtimes(&state.tunnels, &session_id, &disconnect_reason)
                 {
@@ -174,6 +167,18 @@ pub(super) fn read_ssh_channel(
                     }
                 };
             let stopped_tunnels = stopped_tunnel_runtimes.len();
+            let mut store = match io.store.lock() {
+                Ok(store) => store,
+                Err(error) => {
+                    if let Some(runtime) = connections.remove(&session_id) {
+                        runtime.closed.store(true, Ordering::SeqCst);
+                    }
+                    eprintln!(
+                        "PortMate: Store unavailable while finalizing SSH disconnect for {session_id}: {error}"
+                    );
+                    break 'disconnect (false, stopped_tunnel_runtimes);
+                }
+            };
             let reconnect_profile = (!closed.load(Ordering::SeqCst))
                 .then(|| store.profile(&session_id).map(normalize_session_profile))
                 .flatten()
