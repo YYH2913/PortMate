@@ -131,6 +131,35 @@ fn reconnect_serial_session(
                 return;
             }
         };
+        let reader_start_gate = Arc::new(ReaderStartGate::default());
+        if let Err(error) = spawn_serial_reader(SerialReadTask {
+            io: io.clone(),
+            profile: profile.clone(),
+            runtime_id: runtime_id.clone(),
+            port_name: port_name.clone(),
+            tap: tap.clone(),
+            closed: Arc::clone(&next_closed),
+            start_gate: Arc::clone(&reader_start_gate),
+            reader,
+            capture: Arc::clone(&capture),
+            receive_idle_timeout: serial
+                .receive_idle_timeout_enabled
+                .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
+        }) {
+            next_closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
+            let error = format!("serial read thread restart failed: {error}");
+            fail_pending_serial_reconnect_install(
+                &io,
+                &session_id,
+                &previous_runtime_id,
+                closed.as_ref(),
+                &error,
+            );
+            eprintln!("PortMate: {error}");
+            return;
+        }
+
         let install = match io.runtimes.serial.lock() {
             Err(error) => SerialReconnectInstallDecision::Failed(error.to_string()),
             Ok(mut connections) => {
@@ -174,17 +203,38 @@ fn reconnect_serial_session(
                                     SerialReconnectInstallDecision::Stop
                                 }
                                 SerialReconnectProfileState::Current => {
-                                    connections.insert(
-                                        session_id.clone(),
-                                        SerialRuntime {
-                                            runtime_id: runtime_id.clone(),
-                                            writer: Some(Arc::clone(&writer)),
-                                            tap: tap.clone(),
-                                            closed: Arc::clone(&next_closed),
-                                            capture: Arc::clone(&capture),
+                                    let committed = commit_tracked_store_mutation(
+                                        &mut store,
+                                        &io.store_path,
+                                        |next_store| {
+                                            mark_session_connected_with_events(
+                                                next_store,
+                                                &profile,
+                                                [format!(
+                                                    "PortMate: serial port reconnected ({port_name}, {} baud)",
+                                                    serial.baud_rate
+                                                )],
+                                            )
                                         },
                                     );
-                                    SerialReconnectInstallDecision::Installed
+                                    match committed {
+                                        Ok(_) => {
+                                            connections.insert(
+                                                session_id.clone(),
+                                                SerialRuntime {
+                                                    runtime_id: runtime_id.clone(),
+                                                    writer: Some(Arc::clone(&writer)),
+                                                    tap: tap.clone(),
+                                                    closed: Arc::clone(&next_closed),
+                                                    capture: Arc::clone(&capture),
+                                                },
+                                            );
+                                            SerialReconnectInstallDecision::Installed
+                                        }
+                                        Err(error) => {
+                                            SerialReconnectInstallDecision::Failed(error)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -193,109 +243,27 @@ fn reconnect_serial_session(
             }
         };
         if !matches!(install, SerialReconnectInstallDecision::Installed) {
+            next_closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
             match install {
                 SerialReconnectInstallDecision::Retry => continue,
                 SerialReconnectInstallDecision::Stop
                 | SerialReconnectInstallDecision::Superseded => return,
                 SerialReconnectInstallDecision::Failed(error) => {
+                    fail_pending_serial_reconnect_install(
+                        &io,
+                        &session_id,
+                        &previous_runtime_id,
+                        closed.as_ref(),
+                        &error,
+                    );
                     eprintln!("PortMate: failed to install serial reconnect runtime: {error}");
                     return;
                 }
                 SerialReconnectInstallDecision::Installed => unreachable!(),
             }
         }
-
-        let reader_start_gate = Arc::new(ReaderStartGate::default());
-        if let Err(error) = spawn_serial_reader(SerialReadTask {
-            io: io.clone(),
-            profile: profile.clone(),
-            runtime_id: runtime_id.clone(),
-            port_name: port_name.clone(),
-            tap,
-            closed: Arc::clone(&next_closed),
-            start_gate: Arc::clone(&reader_start_gate),
-            reader,
-            capture,
-            receive_idle_timeout: serial
-                .receive_idle_timeout_enabled
-                .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
-        }) {
-            next_closed.store(true, Ordering::SeqCst);
-            reader_start_gate.cancel();
-            if let Ok(mut connections) = io.runtimes.serial.lock() {
-                if connections
-                    .get(&session_id)
-                    .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-                {
-                    connections.remove(&session_id);
-                }
-            }
-            if let Ok(mut store) = io.store.lock() {
-                let _ = store.set_runtime_status_with_reason(
-                    &session_id,
-                    SessionStatus::Error,
-                    Some(format!("serial read thread restart failed: {error}")),
-                );
-                store.record_system_event(
-                    &session_id,
-                    format!("PortMate: serial read thread restart failed: {error}"),
-                );
-                if let Err(save_error) = persist_applied_store(
-                    &store,
-                    &io.store_path,
-                    "failed serial reader restart state",
-                ) {
-                    eprintln!(
-                        "PortMate: failed to persist serial reader restart failure: {save_error}"
-                    );
-                }
-            }
-            return;
-        }
-
-        let finalize_result = match io.store.lock() {
-            Ok(mut store) => {
-                commit_tracked_store_mutation(&mut store, &io.store_path, |next_store| {
-                    mark_session_connected_with_events(
-                        next_store,
-                        &profile,
-                        [format!(
-                            "PortMate: serial port reconnected ({port_name}, {} baud)",
-                            serial.baud_rate
-                        )],
-                    )
-                })
-            }
-            Err(error) => Err(error.to_string()),
-        };
-        match finalize_result {
-            Ok(_) => {
-                reader_start_gate.start();
-                return;
-            }
-            Err(error) => {
-                next_closed.store(true, Ordering::SeqCst);
-                reader_start_gate.cancel();
-                if let Ok(mut connections) = io.runtimes.serial.lock() {
-                    if connections
-                        .get(&session_id)
-                        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-                    {
-                        connections.remove(&session_id);
-                    }
-                }
-                if let Ok(mut store) = io.store.lock() {
-                    let reason = format!("serial reconnect completion failed: {error}");
-                    let _ = store.set_runtime_status_with_reason(
-                        &session_id,
-                        SessionStatus::Error,
-                        Some(reason.clone()),
-                    );
-                    store.record_system_event(&session_id, format!("PortMate: {reason}"));
-                }
-                eprintln!("PortMate: failed to complete serial reconnect: {error}");
-                return;
-            }
-        }
+        reader_start_gate.start();
+        return;
     }
 }

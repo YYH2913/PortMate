@@ -260,29 +260,23 @@ pub(super) fn fail_pending_ssh_reconnect_install(
     error: &str,
 ) {
     closed.store(true, Ordering::SeqCst);
-    let removed_current = match state.ssh.lock() {
-        Ok(mut connections) => {
-            if connections
-                .get(session_id)
-                .is_some_and(|runtime| runtime.runtime_id == runtime_id)
-            {
-                if let Some(runtime) = connections.remove(session_id) {
-                    runtime.closed.store(true, Ordering::SeqCst);
-                }
-                true
-            } else {
-                false
-            }
-        }
+    let mut connections = match state.ssh.lock() {
+        Ok(connections) => connections,
         Err(lock_error) => {
             eprintln!(
                 "PortMate: failed to clean up SSH reconnect runtime after Store failure: {lock_error}"
             );
-            false
+            return;
         }
     };
-    if !removed_current {
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
         return;
+    }
+    if let Some(runtime) = connections.remove(session_id) {
+        runtime.closed.store(true, Ordering::SeqCst);
     }
 
     clear_active_command(&state.session_io(), session_id);
@@ -290,13 +284,25 @@ pub(super) fn fail_pending_ssh_reconnect_install(
         "SSH reconnect install failed: {error}"
     ))
     .unwrap_or_else(|| "SSH reconnect install failed".to_string());
-    if let Ok(mut store) = state.store.lock() {
-        let _ = store.set_runtime_status_with_reason(
-            session_id,
-            SessionStatus::Error,
-            Some(reason.clone()),
-        );
-        store.record_system_event(session_id, format!("PortMate: {reason}"));
+    let mut store = match state.store.lock() {
+        Ok(store) => store,
+        Err(lock_error) => {
+            eprintln!("PortMate: failed to record SSH reconnect install failure: {lock_error}");
+            return;
+        }
+    };
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Error,
+        Some(reason.clone()),
+    );
+    store.record_system_event(session_id, format!("PortMate: {reason}"));
+    if let Err(save_error) = persist_applied_store(
+        &store,
+        &state.store_path,
+        "failed SSH reconnect install state",
+    ) {
+        eprintln!("PortMate: failed to persist SSH reconnect install failure: {save_error}");
     }
 }
 

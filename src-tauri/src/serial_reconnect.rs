@@ -204,6 +204,60 @@ pub(super) fn stop_pending_serial_reconnect_if_disabled(
     true
 }
 
+pub(super) fn fail_pending_serial_reconnect_install(
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    closed: &AtomicBool,
+    error: &str,
+) {
+    closed.store(true, Ordering::SeqCst);
+    let mut connections = match io.runtimes.serial.lock() {
+        Ok(connections) => connections,
+        Err(lock_error) => {
+            eprintln!(
+                "PortMate: failed to clean up serial reconnect runtime after install failure: {lock_error}"
+            );
+            return;
+        }
+    };
+    if connections
+        .get(session_id)
+        .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+    {
+        return;
+    }
+    if let Some(runtime) = connections.remove(session_id) {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+
+    clear_active_command(io, session_id);
+    let reason = portmate_core::normalize_session_disconnect_reason(&format!(
+        "serial reconnect install failed: {error}"
+    ))
+    .unwrap_or_else(|| "serial reconnect install failed".to_string());
+    let mut store = match io.store.lock() {
+        Ok(store) => store,
+        Err(lock_error) => {
+            eprintln!("PortMate: failed to record serial reconnect install failure: {lock_error}");
+            return;
+        }
+    };
+    let _ = store.set_runtime_status_with_reason(
+        session_id,
+        SessionStatus::Error,
+        Some(reason.clone()),
+    );
+    store.record_system_event(session_id, format!("PortMate: {reason}"));
+    if let Err(save_error) = persist_applied_store(
+        &store,
+        &io.store_path,
+        "failed serial reconnect install state",
+    ) {
+        eprintln!("PortMate: failed to persist serial reconnect install failure: {save_error}");
+    }
+}
+
 pub(super) fn wait_for_serial_reconnect_attempt(
     io: &SessionIo,
     session_id: &str,

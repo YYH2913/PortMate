@@ -290,3 +290,119 @@ fn disabling_serial_reconnect_removes_pending_runtime() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn serial_reconnect_install_failure_requires_the_pending_runtime_owner() {
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: true,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let root = tempfile::tempdir().unwrap();
+    let state = test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
+    let io = state.session_io();
+    let (tap, _) = broadcast::channel(8);
+    let pending_closed = Arc::new(AtomicBool::new(false));
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "pending-runtime".to_string(),
+            writer: None,
+            tap: tap.clone(),
+            closed: Arc::clone(&pending_closed),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_runtime_status(&profile.id, SessionStatus::Reconnecting)
+        .unwrap();
+
+    fail_pending_serial_reconnect_install(
+        &io,
+        &profile.id,
+        "pending-runtime",
+        pending_closed.as_ref(),
+        "reader unavailable",
+    );
+
+    assert!(pending_closed.load(Ordering::SeqCst));
+    assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+    let summary = state
+        .store
+        .lock()
+        .unwrap()
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile.id)
+        .unwrap();
+    assert_eq!(summary.runtime.status, SessionStatus::Error);
+    assert!(summary
+        .runtime
+        .last_disconnect_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("reader unavailable")));
+
+    let replacement_closed = Arc::new(AtomicBool::new(false));
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "replacement-runtime".to_string(),
+            writer: None,
+            tap,
+            closed: Arc::clone(&replacement_closed),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_runtime_status(&profile.id, SessionStatus::Connected)
+        .unwrap();
+    let stale_closed = AtomicBool::new(false);
+
+    fail_pending_serial_reconnect_install(
+        &io,
+        &profile.id,
+        "pending-runtime",
+        &stale_closed,
+        "stale failure",
+    );
+
+    assert!(stale_closed.load(Ordering::SeqCst));
+    assert!(!replacement_closed.load(Ordering::SeqCst));
+    assert_eq!(
+        state
+            .serial
+            .lock()
+            .unwrap()
+            .get(&profile.id)
+            .map(|runtime| runtime.runtime_id.as_str()),
+        Some("replacement-runtime")
+    );
+    let store = state.store.lock().unwrap();
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.profile.id == profile.id)
+        .unwrap();
+    assert_eq!(summary.runtime.status, SessionStatus::Connected);
+    assert!(!store.events.iter().any(|event| {
+        event
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("stale failure"))
+    }));
+}
