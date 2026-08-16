@@ -118,9 +118,11 @@ pub(super) async fn scan_ssh_host_key_inner(
                 ));
             }
         };
-        let _ = session
-            .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
-            .await;
+        if let Some(warning) =
+            request_ssh_disconnect_with_timeout(&session, "PortMate host key scan").await
+        {
+            eprintln!("PortMate: host key scan disconnect warning: {warning}");
+        }
     }
 
     let observation = observed_key
@@ -422,9 +424,11 @@ async fn scan_ssh_host_key_via_jump(
             ));
         }
     };
-    let _ = target_session
-        .disconnect(Disconnect::ByApplication, "PortMate host key scan", "en")
-        .await;
+    if let Some(warning) =
+        request_ssh_disconnect_with_timeout(&target_session, "PortMate host key scan").await
+    {
+        eprintln!("PortMate: jump target host key scan disconnect warning: {warning}");
+    }
     disconnect_jump_sessions(jump_sessions, "PortMate jump host key scan").await;
     Ok(None)
 }

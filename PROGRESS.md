@@ -674,7 +674,7 @@ Remote-forward 的初次 `tcpip-forward` 请求和健康恢复现共享总 deadl
 
 Remote-forward 的 `cancel-tcpip-forward` 现与创建请求使用相同的总 deadline 语义：handle 锁获取和服务端 cancel 回复共用预算；若取消请求已发出却超时，则主动断开后端，防止服务端稍后接受取消而本地继续复用状态不确定的 SSH session。停止与回滚仍只按 `TunnelMetrics` generation 删除自身 route，锁等待超时或取消失败会以 warning 收敛。真实 russh 夹具在服务端 cancel 回复前注入 100 ms 延迟，确认 20 ms deadline 失败、服务端确实收到请求且后端进入安全 teardown；定向回归、完整主应用 495 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
-SSH 会话关闭、自动重连中未安装 runtime 的回收和连接提交失败回滚现不再直接无限等待共享 backend/Jump Host mutex 或 disconnect 回复：锁获取与断开协议各有 1 秒 deadline，超时以有界 warning 收敛，russh reader 仍按既有 5 秒完成预算等待；libssh backend 类型直接来自已建立 runtime，不再为了判断类型先取得可能被占用的 handle。真实 russh 回归持有 backend mutex，确认共享断开在锁 deadline 后返回，释放后正常 disconnect；完整主应用 496 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+SSH 会话关闭、自动重连中未安装 runtime 的回收、连接提交失败回滚和 Host Key 扫描成功清理现不再直接无限等待共享 backend/Jump Host mutex 或 disconnect 回复：锁获取与断开协议各有 1 秒 deadline，超时以有界 warning 收敛，russh reader 仍按既有 5 秒完成预算等待；libssh backend 类型直接来自已建立 runtime，不再为了判断类型先取得可能被占用的 handle。真实 russh 回归持有 backend mutex，确认共享断开在锁 deadline 后返回，释放后正常 disconnect；经 Jump Host 的真实 Host Key 扫描、完整主应用 496 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
 ## 剩余外部验证门槛
 
