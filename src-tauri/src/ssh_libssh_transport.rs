@@ -389,6 +389,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id,
+            profile_snapshot: ssh_health::ssh_health_profile_snapshot(profile)?,
             backend: SshBackendKind::Libssh,
             auth_method,
             handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_libssh(

@@ -4,6 +4,7 @@ const SSH_READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct SshRuntime {
     pub(super) runtime_id: String,
+    pub(super) profile_snapshot: String,
     pub(super) backend: SshBackendKind,
     pub(super) auth_method: AuthMethod,
     pub(super) handle: Arc<tokio::sync::Mutex<SshBackendSession>>,

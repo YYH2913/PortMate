@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { invokeBackend } from "./api";
 import { hostKeyProfileRequestKey } from "./host-key-profile-state";
+import { sshHealthProfileRequestKey } from "./ssh-health-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import ShellArgumentsEditor from "./ShellArgumentsEditor";
@@ -1170,6 +1171,16 @@ function SshAdvancedFields({
   const hostKeyRequestKey = hostKeyProfileRequestKey(prepareProfile(draft));
   const hostKeyRequestKeyRef = useRef(hostKeyRequestKey);
   hostKeyRequestKeyRef.current = hostKeyRequestKey;
+  const sshHealthRequestKey = sshHealthProfileRequestKey(prepareProfile(draft));
+  const sshHealthRequestKeyRef = useRef(sshHealthRequestKey);
+  sshHealthRequestKeyRef.current = sshHealthRequestKey;
+
+  useEffect(() => {
+    requestGate.current.invalidate("health");
+    setSshHealthBusy(false);
+    setSshHealth(null);
+    setSshHealthError("");
+  }, [sshHealthRequestKey]);
 
   useEffect(() => {
     requestGate.current.invalidate("host-key");
@@ -1394,7 +1405,9 @@ function SshAdvancedFields({
     const checkHealth = async () => {
       const token = requestGate.current.begin("health");
       if (token === null) return;
-      const sessionId = draft.id;
+      const profile = prepareProfile(draftRef.current);
+      const sessionId = profile.id;
+      const requestKey = sshHealthProfileRequestKey(profile);
       setSshHealthBusy(true);
       setSshHealth(null);
       setSshHealthError("");
@@ -1402,12 +1415,13 @@ function SshAdvancedFields({
         const report = await invokeBackend<SshHealthReport>("check_ssh_health", {
           sessionId,
           probeSftp: true,
+          expectedProfile: profile,
         });
-        if (requestGate.current.isCurrent("health", token) && draftRef.current.id === sessionId) {
+        if (requestGate.current.isCurrent("health", token) && sshHealthRequestKeyRef.current === requestKey) {
           setSshHealth(report);
         }
       } catch (error) {
-        if (requestGate.current.isCurrent("health", token) && draftRef.current.id === sessionId) {
+        if (requestGate.current.isCurrent("health", token) && sshHealthRequestKeyRef.current === requestKey) {
           setSshHealthError(formatError(error));
         }
       } finally {

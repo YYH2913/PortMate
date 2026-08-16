@@ -43,8 +43,21 @@ pub(crate) async fn check_ssh_health(
     state: State<'_, AppState>,
     session_id: String,
     probe_sftp: Option<bool>,
+    expected_profile: Option<SessionProfile>,
 ) -> Result<SshHealthReport, String> {
-    check_ssh_health_inner(state.inner(), &session_id, probe_sftp.unwrap_or(false)).await
+    let probe_sftp = probe_sftp.unwrap_or(false);
+    match expected_profile.as_ref() {
+        Some(expected_profile) => {
+            check_ssh_health_for_profile_inner(
+                state.inner(),
+                &session_id,
+                probe_sftp,
+                Some(expected_profile),
+            )
+            .await
+        }
+        None => check_ssh_health_inner(state.inner(), &session_id, probe_sftp).await,
+    }
 }
 
 pub(super) async fn check_ssh_health_inner(
@@ -52,21 +65,31 @@ pub(super) async fn check_ssh_health_inner(
     session_id: &str,
     probe_sftp: bool,
 ) -> Result<SshHealthReport, String> {
-    let (runtime_id, backend, authentication_method, terminal_channel_open) = {
-        let runtimes = state.ssh.lock().map_err(|error| error.to_string())?;
-        runtimes
-            .get(session_id)
-            .map(|runtime| {
-                (
-                    runtime.runtime_id.clone(),
-                    runtime.backend,
-                    runtime.auth_method,
-                    runtime.terminal_channel_open.load(Ordering::SeqCst),
-                )
-            })
-            .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行健康检查".to_string())?
-    };
-    let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+    check_ssh_health_for_profile_inner(state, session_id, probe_sftp, None).await
+}
+
+pub(super) async fn check_ssh_health_for_profile_inner(
+    state: &AppState,
+    session_id: &str,
+    probe_sftp: bool,
+    expected_profile: Option<&SessionProfile>,
+) -> Result<SshHealthReport, String> {
+    let ((runtime_id, backend, authentication_method, terminal_channel_open), auxiliary) =
+        ssh_auxiliary_lease_with_runtime(state, session_id, |runtime| {
+            if let Some(expected_profile) = expected_profile {
+                validate_ssh_health_profile_snapshot(
+                    session_id,
+                    &runtime.profile_snapshot,
+                    expected_profile,
+                )?;
+            }
+            Ok((
+                runtime.runtime_id.clone(),
+                runtime.backend,
+                runtime.auth_method,
+                runtime.terminal_channel_open.load(Ordering::SeqCst),
+            ))
+        })?;
     let handle = auxiliary.handle();
     let mut report = SshHealthReport {
         session_id: session_id.to_string(),
@@ -161,6 +184,33 @@ pub(super) async fn check_ssh_health_inner(
     }
 
     finish_health_report(state, runtime_id, report)
+}
+
+pub(super) fn ssh_health_profile_snapshot(profile: &SessionProfile) -> Result<String, String> {
+    let mut profile = normalize_session_profile(profile.clone());
+    let ssh = match &mut profile.connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh,
+        _ => return Err("SSH 健康检查仅支持 SSH/Tmux Profile".to_string()),
+    };
+    ssh.trusted_host_keys.clear();
+    ssh.identity_policy.last_successful = None;
+    serde_json::to_string(&(&profile.connection, &profile.terminal))
+        .map_err(|error| format!("无法创建 SSH 健康检查配置快照: {error}"))
+}
+
+pub(super) fn validate_ssh_health_profile_snapshot(
+    session_id: &str,
+    runtime_snapshot: &str,
+    expected_profile: &SessionProfile,
+) -> Result<(), String> {
+    if expected_profile.id != session_id {
+        return Err("SSH 健康检查 Profile 与会话不匹配".to_string());
+    }
+    let expected_snapshot = ssh_health_profile_snapshot(expected_profile)?;
+    if expected_snapshot != runtime_snapshot {
+        return Err("SSH 连接配置已更改，请保存并重新连接后再检查健康状态".to_string());
+    }
+    Ok(())
 }
 
 async fn probe_sftp_health(

@@ -236,6 +236,7 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
             profile.id.clone(),
             SshRuntime {
                 runtime_id: "tmux-lease-runtime".to_string(),
+                profile_snapshot: ssh_health::ssh_health_profile_snapshot(&profile).unwrap(),
                 backend: SshBackendKind::Russh,
                 auth_method: AuthMethod::Password,
                 handle: Arc::clone(&handle),

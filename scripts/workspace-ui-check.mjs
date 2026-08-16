@@ -368,6 +368,9 @@ try {
     }
     window.__invokeCalls = [];
     window.__sessions = structuredClone(initialSessions);
+    window.__sshHealthRuntimeProfiles = Object.fromEntries(window.__sessions
+      .filter((session) => session.profile.connection.kind === "ssh" || session.profile.connection.kind === "tmux")
+      .map((session) => [session.profile.id, structuredClone(session.profile)]));
     if (recoverInactiveStartup) {
       const session = window.__sessions.find((item) => item.profile.id === "local-shell");
       session.runtime.status = "error";
@@ -1149,11 +1152,39 @@ try {
             sftpError: null,
             sftpProbed: Boolean(args.probeSftp),
           };
-          if (!window.__deferSessionValidation) return result;
-          return new Promise((resolve) => window.__pendingSessionValidation.push({
+          const complete = () => {
+            const runtimeProfile = window.__sshHealthRuntimeProfiles[args.sessionId];
+            const snapshot = (profile) => {
+              if (profile?.connection?.kind !== "ssh" && profile?.connection?.kind !== "tmux") return null;
+              return JSON.stringify({
+                id: profile.id,
+                connection: {
+                  ...profile.connection,
+                  trustedHostKeys: [],
+                  identityPolicy: {
+                    ...profile.connection.identityPolicy,
+                    lastSuccessful: null,
+                  },
+                },
+                terminal: profile.terminal,
+              });
+            };
+            if (runtimeProfile && snapshot(runtimeProfile) !== snapshot(args.expectedProfile)) {
+              throw new Error("SSH 连接配置已更改，请保存并重新连接后再检查健康状态");
+            }
+            return structuredClone(result);
+          };
+          if (!window.__deferSessionValidation) return complete();
+          return new Promise((resolve, reject) => window.__pendingSessionValidation.push({
             command,
             args: structuredClone(args),
-            resolve: () => resolve(structuredClone(result)),
+            resolve: () => {
+              try {
+                resolve(complete());
+              } catch (error) {
+                reject(error);
+              }
+            },
           }));
         }
         if (command === "list_mcp_grants") {
@@ -8893,9 +8924,10 @@ Host staging
   await sessionOperationPage.getByRole("button", { name: "会话设置", exact: true }).click();
   sessionOperationDialog = sessionOperationPage.locator(".session-settings-dialog");
   await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
-  await sessionOperationPage.evaluate(() => {
+  const healthCallBaseline = await sessionOperationPage.evaluate(() => {
     window.__deferSessionValidation = true;
     window.__pendingSessionValidation = [];
+    return window.__invokeCalls.filter((call) => call.command === "check_ssh_health").length;
   });
   const deferredHealth = sessionOperationDialog.getByRole("button", { name: "检查 SSH 健康", exact: true });
   await deferredHealth.evaluate((button) => {
@@ -8904,8 +8936,31 @@ Host staging
   });
   await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
   assert(await deferredHealth.isDisabled(), "a pending SSH health check remained actionable");
+  const initialHealthRequest = await sessionOperationPage.evaluate(() => window.__pendingSessionValidation[0].args);
+  assert(initialHealthRequest.sessionId === "edge-router"
+    && initialHealthRequest.expectedProfile?.connection?.endpoint?.host === "10.0.0.1",
+  `SSH health check omitted its connected Profile snapshot: ${JSON.stringify(initialHealthRequest)}`);
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("new-router.local");
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  assert(!await deferredHealth.isDisabled()
+    && !(await sessionOperationDialog.textContent()).includes("健康 · russh"),
+  "editing an SSH target did not immediately invalidate its pending health report");
   await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
-  await sessionOperationDialog.getByText("健康 · russh · 公钥 · SSH 7 ms · Channel 11 ms · SFTP 13 ms", { exact: true }).waitFor();
+  await sessionOperationPage.waitForTimeout(100);
+  assert(!(await sessionOperationDialog.textContent()).includes("健康 · russh"),
+    "a stale SSH health response restored a report for the previous target");
+  await deferredHealth.click();
+  await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  const changedHealthRequest = await sessionOperationPage.evaluate(() => window.__pendingSessionValidation[0].args);
+  assert(changedHealthRequest.expectedProfile?.connection?.endpoint?.host === "new-router.local",
+    `SSH health retry used a stale Profile snapshot: ${JSON.stringify(changedHealthRequest)}`);
+  await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
+  await sessionOperationDialog.getByText("SSH 连接配置已更改，请保存并重新连接后再检查健康状态", { exact: true }).waitFor();
+
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("10.0.0.1");
+  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
 
   const deferredHostKeyScan = sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true });
   await deferredHostKeyScan.evaluate((button) => {
@@ -8944,8 +8999,11 @@ Host staging
     window.__pendingSessionValidation.shift().resolve();
   });
   await sessionOperationDialog.getByText(/已加入 Profile 草稿 SHA256:scan-first，保存会话后生效/).waitFor();
-  const sessionValidationState = await sessionOperationPage.evaluate(() => ({
-    healthCalls: window.__invokeCalls.filter((call) => call.command === "check_ssh_health").length,
+  const sessionValidationState = await sessionOperationPage.evaluate((baseline) => ({
+    healthHosts: window.__invokeCalls
+      .filter((call) => call.command === "check_ssh_health")
+      .slice(baseline)
+      .map((call) => call.args.expectedProfile.connection.endpoint.host),
     scanHosts: window.__invokeCalls
       .filter((call) => call.command === "scan_ssh_host_key")
       .map((call) => call.args.request.profile.connection.endpoint.host),
@@ -8959,8 +9017,8 @@ Host staging
         trustedHostKeys: profile?.connection.trustedHostKeys.length,
       };
     })(),
-  }));
-  assert(sessionValidationState.healthCalls === 1
+  }), healthCallBaseline);
+  assert(JSON.stringify(sessionValidationState.healthHosts) === JSON.stringify(["10.0.0.1", "new-router.local"])
     && JSON.stringify(sessionValidationState.scanHosts) === JSON.stringify(["10.0.0.1", "new-router.local"])
     && sessionValidationState.draftTrustCalls === 1
     && sessionValidationState.trustCalls === 0

@@ -285,6 +285,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         runtime_id: runtime_id.clone(),
         runtime: SshRuntime {
             runtime_id: runtime_id.clone(),
+            profile_snapshot: ssh_health::ssh_health_profile_snapshot(profile)?,
             backend: SshBackendKind::Russh,
             auth_method,
             handle: Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(

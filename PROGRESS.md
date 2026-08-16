@@ -628,6 +628,8 @@ ProFTPD 1.3.8d `mod_sftp` Alpine 3.21、SFTPGo 2.6.6/2.7.5、rclone 1.74.4、Erl
 4. Linux DEB/RPM/AppImage 打包与逐包检查已完成；`Native CI` 的 Ubuntu job 会在 `desktop:build` 后运行 `npm run test:linux-package`，从新生成的 DEB/RPM/AppImage 提取 sidecar 并运行全语言 MCP 生命周期矩阵。Windows job 已接入 MSI administrative extraction、NSIS 静默安装/卸载以及主程序/sidecar/Apache-2.0/JetBrains Mono OFL 唯一性和 SHA-256 检查；macOS job 已接入直接 app、DMG verify/只读挂载、Info.plist 和相同 payload 检查，未签名二进制必须匹配 release SHA-256，签名副本则必须通过严格 codesign 且与 DMG 副本一致。共享布局逻辑在当前 Linux 主机通过 12 项夹具回归，但两个原生检查仍需对应平台的实际 CI 成功证据；签名和 Apple notarization 也仍是发布前置项。
 5. `RELEASE.md` 已建立版本、测试、签名、权限、迁移、产物校验、发布和回滚 gate；正式发布前仍需在三平台逐项执行并记录证据。
 
+SSH 健康检查现绑定建立连接时的规范化 Profile 快照和精确 runtime 资源：快照覆盖 SSH/Tmux connection 与 terminal 设置，只忽略不会改变既有连接的 Host Key 持久镜像和自动记录的上次成功认证方式。健康命令在同一次 runtime registry 锁内校验预期 Profile、取得 runtime ID/后端/认证状态并克隆 handle/SFTP 资源，目标、代理、Jump Host、认证、terminal 或 Profile ID 已变化时会在 keepalive、exec 和 SFTP 探测前拒绝；连接在探测期间换代仍由结束时的 runtime ID 复核拒绝。Session Settings 会随请求发送完整规范化草稿，配置变化立即清空并失效旧报告，迟到成功/错误不能恢复；未保存的新目标会明确要求保存并重新连接。Rust 4 项快照回归、完整前端 116 文件/630 项、生产构建、Workspace UI、release-source、Rustfmt、PortMate all-targets Clippy `-D warnings` 和主应用 469 passed/1 ignored/1 filtered 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

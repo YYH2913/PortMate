@@ -9,18 +9,22 @@ struct SshAuxiliaryResources {
     sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
 }
 
-fn ssh_resources_for_auxiliary_operation(
+fn ssh_resources_for_auxiliary_operation<T>(
     state: &AppState,
     session_id: &str,
-) -> Result<SshAuxiliaryResources, String> {
+    inspect: impl FnOnce(&SshRuntime) -> Result<T, String>,
+) -> Result<(T, SshAuxiliaryResources), String> {
     let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-    connections
+    let runtime = connections
         .get(session_id)
-        .map(|runtime| SshAuxiliaryResources {
+        .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行远端操作".to_string())?;
+    Ok((
+        inspect(runtime)?,
+        SshAuxiliaryResources {
             handle: Arc::clone(&runtime.handle),
             sftp: Arc::clone(&runtime.sftp),
-        })
-        .ok_or_else(|| "需要先连接 SSH/Tmux 会话才能执行远端操作".to_string())
+        },
+    ))
 }
 
 pub(super) struct SshAuxiliaryLease {
@@ -89,13 +93,25 @@ pub(super) fn ssh_auxiliary_lease(
     state: &AppState,
     session_id: &str,
 ) -> Result<SshAuxiliaryLease, String> {
+    ssh_auxiliary_lease_with_runtime(state, session_id, |_| Ok(())).map(|(_, lease)| lease)
+}
+
+pub(super) fn ssh_auxiliary_lease_with_runtime<T>(
+    state: &AppState,
+    session_id: &str,
+    inspect: impl FnOnce(&SshRuntime) -> Result<T, String>,
+) -> Result<(T, SshAuxiliaryLease), String> {
     let slot = acquire_ssh_auxiliary_slot(state)?;
-    let resources = ssh_resources_for_auxiliary_operation(state, session_id)?;
-    Ok(SshAuxiliaryLease {
-        handle: resources.handle,
-        sftp: resources.sftp,
-        _slot: slot,
-    })
+    let (inspection, resources) =
+        ssh_resources_for_auxiliary_operation(state, session_id, inspect)?;
+    Ok((
+        inspection,
+        SshAuxiliaryLease {
+            handle: resources.handle,
+            sftp: resources.sftp,
+            _slot: slot,
+        },
+    ))
 }
 
 pub(super) async fn open_sftp_session(

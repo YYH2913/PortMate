@@ -149,6 +149,8 @@ mod session_logging_tests;
 mod session_profile_tests;
 #[path = "shell_runtime_tests.rs"]
 mod shell_runtime_tests;
+#[path = "ssh_health_profile_tests.rs"]
+mod ssh_health_profile_tests;
 #[path = "ssh_policy_tests.rs"]
 mod ssh_policy_tests;
 #[path = "ssh_runtime_tests.rs"]
