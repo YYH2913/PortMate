@@ -173,7 +173,7 @@ pub(super) async fn open_shared_ssh_exec_channel<H: client::Handler>(
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| format!("{label} setup 超时（{} ms）", timeout.as_millis()))?;
 
-    let setup = async { handle.open_exec(command, label).await };
+    let setup = async { handle.open_exec(command, label, remaining).await };
     match bounded_connection_step(setup, remaining).await {
         Ok(channel) => Ok(channel),
         Err(BoundedConnectionStepError::Failed(error)) => Err(error),

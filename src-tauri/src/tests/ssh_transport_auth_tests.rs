@@ -174,7 +174,7 @@ fn libssh_connection_stages_share_one_total_deadline() {
             username,
             secret,
             Some(Duration::from_millis(300)),
-            Some(Duration::from_millis(500)),
+            Some(Duration::from_millis(1700)),
             None,
         )
         .await;
@@ -199,7 +199,7 @@ fn libssh_connection_stages_share_one_total_deadline() {
             &profile,
             Some(secret.to_string()),
             None,
-            Duration::from_millis(600),
+            Duration::from_millis(2000),
             None,
         )
         .await

@@ -688,6 +688,8 @@ libssh 的 Jump/代理与目标连接、认证和 terminal channel setup 现从�
 
 TCP/Telnet 普通输入、modem 数据、Telnet 自动协商回复和 NAWS resize 现把 writer mutex 等待与 socket 写入纳入同一个 10 秒总 deadline；桌面、MCP、OneKey、自定义脚本和 trigger 共用的每会话 outbound lane 也以相同上限有界等待，单个停滞请求不再永久占住后续输入或相关运行任务。超时会返回明确诊断，取消等待不会破坏 lane registry；回归分别持有 writer 与 outbound lane，确认短 deadline 精确失败且释放后同一连接/队列可继续发送。transport runtime 14 项、MCP 28 passed/1 ignored、自定义脚本 7 项、trigger 7 项、完整主应用 500 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+libssh 运行期 keepalive、健康 SFTP probe、SFTP setup、exec、direct-tcpip 和 remote-forward 创建/取消现把各自外层总 deadline 的剩余预算传入阻塞 worker；vendored `libssh-rs` 会在实际取得内部 session mutex 后重新计算剩余时间，过期 worker 不再安装陈旧 timeout 或继续发起协议副作用。每项操作结束后恢复独立的 20 秒运行期 I/O timeout；即使 Tokio 外层先取消 `JoinHandle`，后台 worker 也会按同一 deadline 释放 session mutex，而不是继续占锁到旧 20 秒上限。真实延迟 direct-tcpip 回归将默认协议 timeout 设为 4 秒并确认 100 ms 外层失败后 700 ms 内可重新取得 libssh session；shared setup deadline 测试扩大时序余量但仍区分“剩余预算”与“阶段重置”。libssh-rs 23 项加 2 项 doc-test、libssh transport 9 项、tunnel 18 项、SSH health 8 项、完整主应用 501 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

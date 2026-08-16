@@ -197,14 +197,7 @@ pub(super) async fn open_sftp_session(
                     .map_err(|error| format!("SFTP 初始化失败: {error}"))?;
                 SftpBackendSession::from_russh(session)
             }
-            SshBackendSession::Libssh(session) => {
-                let session = session.clone();
-                tokio::task::spawn_blocking(move || session.sftp())
-                    .await
-                    .map_err(|error| format!("libssh SFTP setup worker failed: {error}"))?
-                    .map(SftpBackendSession::from_libssh)
-                    .map_err(|error| format!("SFTP 初始化失败: {error}"))?
-            }
+            SshBackendSession::Libssh(_) => handle.open_libssh_sftp(remaining).await?,
         };
         sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECONDS);
         Ok::<_, String>(sftp)

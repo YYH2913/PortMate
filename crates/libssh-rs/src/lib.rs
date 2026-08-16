@@ -33,7 +33,7 @@ use std::os::windows::io::RawSocket;
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 extern "C" {
@@ -904,6 +904,34 @@ impl Session {
             Err(err)
         } else {
             Err(Error::fatal("failed to set option"))
+        }
+    }
+
+    /// Set the connection timeout to the time remaining on an absolute deadline.
+    ///
+    /// The remaining duration is calculated only after acquiring libssh's session
+    /// mutex, so a caller waiting behind another blocking operation cannot install
+    /// a stale timeout and start new protocol work after its deadline has elapsed.
+    pub fn set_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
+        let sess = self.lock_session();
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| Error::fatal("libssh operation deadline expired"))?;
+        let micros = duration_micros_c_long(remaining).max(1);
+        let res = unsafe {
+            sys::ssh_options_set(
+                **sess,
+                sys::ssh_options_e::SSH_OPTIONS_TIMEOUT_USEC,
+                &micros as *const _ as _,
+            )
+        };
+        if res == 0 {
+            Ok(remaining)
+        } else if let Some(error) = sess.last_error() {
+            Err(error)
+        } else {
+            Err(Error::fatal("failed to set deadline timeout"))
         }
     }
 
@@ -1888,6 +1916,34 @@ mod test {
         sess.set_option(SshOption::Timeout(huge)).unwrap();
         sess.set_option(SshOption::ProcessConfig(true)).unwrap();
         sess.set_option(SshOption::ProcessConfig(false)).unwrap();
+    }
+
+    #[test]
+    fn deadline_timeout_is_computed_after_the_session_lock_is_acquired() {
+        let session = Session::new().unwrap();
+        let locked_session = Arc::clone(&session.sess);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = locked_session.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+        });
+        locked_rx.recv().unwrap();
+
+        let error = session
+            .set_timeout_until(Instant::now() + Duration::from_millis(20))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Fatal(message) if message.contains("deadline expired")
+        ));
+        holder.join().unwrap();
+
+        let remaining = session
+            .set_timeout_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(!remaining.is_zero());
+        assert!(remaining <= Duration::from_secs(1));
     }
 
     #[test]

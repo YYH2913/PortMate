@@ -96,6 +96,82 @@ fn libssh_backend_exec_normalizes_output_and_exit_status() {
 
 #[cfg(unix)]
 #[test]
+fn libssh_direct_tcpip_worker_releases_the_session_after_its_outer_deadline() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh deadline worker test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = canonical_test_tempdir();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-libssh-worker-deadline-user";
+        let secret = "PortMate libssh worker deadline secret";
+        let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+            &host_key,
+            username,
+            secret,
+            None,
+            None,
+            Some(Duration::from_secs(4)),
+        )
+        .await;
+        let target = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let session = connect_libssh_password_test_session(port, username, secret);
+        session
+            .set_option(libssh_rs::SshOption::Timeout(Duration::from_secs(4)))
+            .unwrap();
+        let session_probe = session.clone();
+        let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::<
+            AcceptAnyTestSshClient,
+        >::from_libssh(session)));
+
+        let started = Instant::now();
+        let error = open_tunnel_direct_tcpip_with_timeout(
+            &handle,
+            "127.0.0.1".to_string(),
+            target_port,
+            "127.0.0.1:40000".parse().unwrap(),
+            "bounded libssh direct-tcpip",
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("direct-tcpip"), "unexpected error: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "libssh direct-tcpip wrapper exceeded its cleanup budget"
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while counters.direct_tcpip_attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("delayed direct-tcpip request never reached the server");
+
+        tokio::time::timeout(
+            Duration::from_millis(700),
+            tokio::task::spawn_blocking(move || {
+                session_probe.set_option(libssh_rs::SshOption::Timeout(Duration::from_secs(4)))
+            }),
+        )
+        .await
+        .expect("timed-out libssh worker kept the session mutex")
+        .expect("libssh session probe worker failed")
+        .expect("libssh session probe failed");
+
+        drop(target);
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn libssh_backend_supports_scp_and_remote_copy_channels() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping libssh transfer test: ssh-keygen is not installed");

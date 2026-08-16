@@ -115,22 +115,37 @@ pub(super) async fn check_ssh_health_for_profile_inner(
     };
 
     let ping_started = Instant::now();
-    let ping = tokio::time::timeout(SSH_HEALTH_PING_TIMEOUT, async {
-        let handle = handle.lock().await;
-        handle
-            .send_ping()
-            .await
-            .map_err(|error| format!("SSH keepalive 往返失败: {error}"))
-    })
-    .await;
+    let ping = match tokio::time::timeout(SSH_HEALTH_PING_TIMEOUT, handle.lock()).await {
+        Ok(handle) => {
+            let remaining = SSH_HEALTH_PING_TIMEOUT
+                .checked_sub(ping_started.elapsed())
+                .filter(|remaining| !remaining.is_zero());
+            match remaining {
+                Some(remaining) => {
+                    bounded_connection_step(
+                        async {
+                            handle
+                                .send_ping(remaining)
+                                .await
+                                .map_err(|error| format!("SSH keepalive 往返失败: {error}"))
+                        },
+                        remaining,
+                    )
+                    .await
+                }
+                None => Err(BoundedConnectionStepError::TimedOut),
+            }
+        }
+        Err(_) => Err(BoundedConnectionStepError::TimedOut),
+    };
     match ping {
-        Ok(Ok(())) => report.transport_round_trip_ms = Some(elapsed_millis(ping_started)),
-        Ok(Err(error)) => {
+        Ok(()) => report.transport_round_trip_ms = Some(elapsed_millis(ping_started)),
+        Err(BoundedConnectionStepError::Failed(error)) => {
             report.status = SshHealthStatus::Unresponsive;
             report.transport_error = Some(bounded_ssh_health_error(&error));
             return finish_health_report(state, runtime_id, report);
         }
-        Err(_) => {
+        Err(BoundedConnectionStepError::TimedOut) => {
             report.status = SshHealthStatus::Unresponsive;
             report.transport_error = Some(format!(
                 "SSH keepalive 往返超过 {} ms",
@@ -227,9 +242,13 @@ async fn probe_sftp_health(
     .map_err(|_| SftpHealthProbeError::TimedOut)?;
 
     if libssh_backend {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(SftpHealthProbeError::TimedOut);
+        }
         return tokio::time::timeout_at(deadline, async {
             let handle = handle.lock().await;
-            handle.probe_libssh_sftp().await
+            handle.probe_libssh_sftp(remaining).await
         })
         .await
         .map_err(|_| SftpHealthProbeError::TimedOut)?

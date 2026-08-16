@@ -280,7 +280,11 @@ pub(super) async fn cancel_remote_tunnel_forward_with_timeout(
                 timeout.as_millis()
             )
         })?;
-    match bounded_connection_step(handle.cancel_remote_forward(bind_host, bind_port), remaining).await
+    match bounded_connection_step(
+        handle.cancel_remote_forward(bind_host, bind_port, remaining),
+        remaining,
+    )
+    .await
     {
         Ok(()) => Ok(()),
         Err(BoundedConnectionStepError::Failed(error)) => {
@@ -414,7 +418,7 @@ pub(super) async fn listen_remote_tunnel_forward_with_timeout(
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
     match bounded_connection_step(
-        handle.listen_remote_forward(bind_host, bind_port),
+        handle.listen_remote_forward(bind_host, bind_port, remaining),
         remaining,
     )
     .await

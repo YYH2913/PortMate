@@ -42,7 +42,13 @@ pub(super) async fn open_tunnel_direct_tcpip_with_timeout<H: client::Handler>(
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
     match bounded_connection_step(
-        handle.open_direct_tcpip(target_host, target_port, peer.ip().to_string(), peer.port()),
+        handle.open_direct_tcpip(
+            target_host,
+            target_port,
+            peer.ip().to_string(),
+            peer.port(),
+            remaining,
+        ),
         remaining,
     )
     .await
