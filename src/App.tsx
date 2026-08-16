@@ -364,9 +364,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [tabColors, setTabColorsState] = useState<Record<string, string>>(initialWorkspace.tabColors);
   const tabColorsRef = useRef(tabColors);
   const credentialResolverRef = useRef<{
+    requestId: number;
     sessionId: string;
     resolve: (credentials: ConnectionCredentials | null) => void;
   } | null>(null);
+  const credentialRequestIdRef = useRef(0);
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const syncInputRef = useRef(false);
@@ -4057,7 +4059,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const ssh = profile.connection;
     const target = describeProfileEndpoint(profile) || profile.name || "SSH";
     const hasPrivateKey = ssh.identityRefs.some((identity) => Boolean(identity.path) || Boolean(identity.secretRef));
+    const requestId = ++credentialRequestIdRef.current;
     const prompt: CredentialPromptState = {
+      requestId,
       target,
       initialUsername: ssh.username || "",
       oneKeys: sshOneKeysForSession(oneKeys, profile.id),
@@ -4069,16 +4073,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     };
 
     return new Promise((resolve) => {
-      credentialResolverRef.current = { sessionId: profile.id, resolve };
+      credentialResolverRef.current = { requestId, sessionId: profile.id, resolve };
       setCredentialPrompt(prompt);
     });
   }
 
-  function completeCredentialPrompt(credentials: ConnectionCredentials | null) {
+  function completeCredentialPrompt(requestId: number, credentials: ConnectionCredentials | null) {
     const credentialRequest = credentialResolverRef.current;
+    if (!credentialRequest || credentialRequest.requestId !== requestId) return;
     credentialResolverRef.current = null;
     setCredentialPrompt(null);
-    credentialRequest?.resolve(credentials);
+    credentialRequest.resolve(credentials);
   }
 
   async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
@@ -4702,7 +4707,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {credentialPrompt && (
         <Suspense fallback={null}>
-          <LazyCredentialDialog request={credentialPrompt} onCancel={() => completeCredentialPrompt(null)} onSubmit={completeCredentialPrompt} />
+          <LazyCredentialDialog
+            key={credentialPrompt.requestId}
+            request={credentialPrompt}
+            onCancel={() => completeCredentialPrompt(credentialPrompt.requestId, null)}
+            onSubmit={(credentials) => completeCredentialPrompt(credentialPrompt.requestId, credentials)}
+          />
         </Suspense>
       )}
       {hostKeyPrompt && (

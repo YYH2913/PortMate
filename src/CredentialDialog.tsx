@@ -14,6 +14,7 @@ export type ConnectionCredentials = {
 };
 
 export type CredentialPromptState = {
+  requestId: number;
   target: string;
   initialUsername: string;
   oneKeys: OneKeySummary[];

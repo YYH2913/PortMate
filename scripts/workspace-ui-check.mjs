@@ -8909,6 +8909,75 @@ Host staging
     `deleted credential prompt browser exceptions: ${JSON.stringify(deletedCredentialPromptErrors)}`);
   await deletedCredentialPromptPage.close();
 
+  const credentialPromptOwnershipPage = await context.newPage();
+  const credentialPromptOwnershipErrors = [];
+  credentialPromptOwnershipPage.on("pageerror", (error) => credentialPromptOwnershipErrors.push(error.message));
+  await credentialPromptOwnershipPage.goto(appUrl);
+  await credentialPromptOwnershipPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
+  await credentialPromptOwnershipPage.getByRole("button", { name: "连接 Edge Router", exact: true }).waitFor();
+  await credentialPromptOwnershipPage.evaluate(() => {
+    const edge = window.__sessions.find((session) => session.profile.id === "edge-router");
+    const backup = structuredClone(edge);
+    backup.profile.id = "backup-router";
+    backup.profile.name = "Backup Router";
+    backup.profile.connection.endpoint.host = "10.0.0.2";
+    backup.profile.connection.username = "backup-admin";
+    backup.runtime.sessionId = "backup-router";
+    backup.runtime.paneId = "backup-router:main";
+    backup.runtime.status = "disconnected";
+    backup.runtime.title = "Backup Router";
+    backup.runtime.connectedSince = null;
+    window.__sessions.push(backup);
+    window.__emitTauriEvent("portmate-session-profile-updated", backup);
+  });
+  await credentialPromptOwnershipPage.getByRole("button", { name: "连接 Edge Router", exact: true }).click();
+  const firstCredentialDialog = credentialPromptOwnershipPage.locator(".credential-dialog");
+  await firstCredentialDialog.waitFor();
+  await firstCredentialDialog.getByLabel("用户名", { exact: true }).fill("edge-admin");
+  await firstCredentialDialog.getByLabel("登录密码", { exact: true }).fill("edge-password");
+  await credentialPromptOwnershipPage.evaluate(() => {
+    const dialog = document.querySelector(".credential-dialog");
+    const buttons = [...dialog.querySelectorAll("button")];
+    const oldSubmit = buttons.find((button) => button.textContent === "连接");
+    const oldCancel = buttons.find((button) => button.textContent === "取消");
+    oldSubmit.click();
+    window.__emitTauriEvent("portmate-detached-pane-command", {
+      action: "connect",
+      requestId: "credential-ownership-connect",
+      windowId: "credential-ownership-window",
+      ownerWindowId: "main",
+      paneId: "credential-ownership-pane",
+      viewId: "credential-ownership-view",
+      sessionId: "backup-router",
+      title: "Backup Router",
+      color: "",
+      keyMode: "remote",
+    });
+    oldCancel.click();
+  });
+  const currentCredentialDialog = credentialPromptOwnershipPage.locator(".credential-dialog");
+  await currentCredentialDialog.waitFor();
+  assert(await currentCredentialDialog.getByLabel("用户名", { exact: true }).inputValue() === "backup-admin"
+    && await currentCredentialDialog.getByLabel("登录密码", { exact: true }).inputValue() === "",
+    "a stale credential dialog completed the next session's credential request");
+  await currentCredentialDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await currentCredentialDialog.waitFor({ state: "detached" });
+  await credentialPromptOwnershipPage.waitForFunction(() => (
+    window.__invokeCalls.some((call) => call.command === "open_session" && call.args.request?.sessionId === "edge-router")
+  ));
+  const credentialPromptOwnershipState = await credentialPromptOwnershipPage.evaluate(() => ({
+    edgeOpens: window.__invokeCalls.filter((call) => call.command === "open_session" && call.args.request?.sessionId === "edge-router").length,
+    backupOpens: window.__invokeCalls.filter((call) => call.command === "open_session" && call.args.request?.sessionId === "backup-router").length,
+    dialogs: document.querySelectorAll(".credential-dialog").length,
+  }));
+  assert(credentialPromptOwnershipState.edgeOpens === 1
+    && credentialPromptOwnershipState.backupOpens === 0
+    && credentialPromptOwnershipState.dialogs === 0,
+  `credential prompt request ownership was not isolated: ${JSON.stringify(credentialPromptOwnershipState)}`);
+  assert(credentialPromptOwnershipErrors.length === 0,
+    `credential prompt ownership browser exceptions: ${JSON.stringify(credentialPromptOwnershipErrors)}`);
+  await credentialPromptOwnershipPage.close();
+
   const deletedConnectionSavePage = await context.newPage();
   const deletedConnectionSaveErrors = [];
   deletedConnectionSavePage.on("pageerror", (error) => deletedConnectionSaveErrors.push(error.message));
