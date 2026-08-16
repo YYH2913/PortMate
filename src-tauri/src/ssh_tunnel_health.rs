@@ -32,13 +32,33 @@ pub(super) fn spawn_remote_tunnel_health_monitor(
     closed: Arc<AtomicBool>,
 ) {
     tauri::async_runtime::spawn(async move {
+        let mut listener_probe_supported = true;
         loop {
             tokio::time::sleep(REMOTE_TUNNEL_HEALTH_INTERVAL).await;
             if closed.load(Ordering::SeqCst) {
                 break;
             }
+            if !listener_probe_supported {
+                match ensure_libssh_remote_forward_acceptor_for_tunnel(&state, &tunnel_id).await {
+                    Ok(true) => continue,
+                    Ok(false) => break,
+                    Err(error) => {
+                        eprintln!("PortMate: remote tunnel acceptor check failed: {error}");
+                        continue;
+                    }
+                }
+            }
             match check_remote_tunnel_health(&state, &tunnel_id).await {
-                Ok(RemoteTunnelHealth::Unsupported) => break,
+                Ok(RemoteTunnelHealth::Unsupported) => {
+                    match ensure_libssh_remote_forward_acceptor_for_tunnel(&state, &tunnel_id).await
+                    {
+                        Ok(true) => listener_probe_supported = false,
+                        Ok(false) => break,
+                        Err(error) => {
+                            eprintln!("PortMate: remote tunnel acceptor check failed: {error}");
+                        }
+                    }
+                }
                 Ok(RemoteTunnelHealth::Healthy | RemoteTunnelHealth::Restored) => {}
                 Err(error) => {
                     eprintln!("PortMate: remote tunnel health check failed: {error}");
@@ -46,6 +66,62 @@ pub(super) fn spawn_remote_tunnel_health_monitor(
             }
         }
     });
+}
+
+async fn ensure_libssh_remote_forward_acceptor_for_tunnel(
+    state: &AppState,
+    tunnel_id: &str,
+) -> Result<bool, String> {
+    let runtime = {
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .get(tunnel_id)
+            .cloned()
+            .ok_or_else(|| format!("tunnel not found: {tunnel_id}"))?
+    };
+    if runtime.closed.load(Ordering::SeqCst) {
+        return Err(format!("remote tunnel is closed: {tunnel_id}"));
+    }
+    let (handle, remote_forwards, started, ssh_runtime_closed) = {
+        let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+        let ssh = connections
+            .get(&runtime.session_id)
+            .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
+            .ok_or_else(|| format!("SSH runtime is unavailable for {}", runtime.session_id))?;
+        if ssh.backend != SshBackendKind::Libssh {
+            return Ok(false);
+        }
+        (
+            Arc::clone(&ssh.handle),
+            Arc::clone(&ssh.remote_forwards),
+            Arc::clone(&ssh.remote_forward_acceptor_started),
+            Arc::clone(&ssh.closed),
+        )
+    };
+    let session = remote_forward_libssh_session(&handle).await?;
+    ensure_libssh_remote_forward_acceptor(
+        Some(session),
+        remote_forwards,
+        ssh_runtime_closed,
+        started,
+    );
+    Ok(true)
+}
+
+async fn remote_forward_libssh_session(
+    handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+) -> Result<libssh_rs::Session, String> {
+    let handle = tokio::time::timeout(REMOTE_TUNNEL_HEALTH_TIMEOUT, handle.lock())
+        .await
+        .map_err(|_| {
+            format!(
+                "libssh remote forward handle lock timed out after {}ms",
+                REMOTE_TUNNEL_HEALTH_TIMEOUT.as_millis()
+            )
+        })?;
+    handle
+        .libssh_forward_session()
+        .ok_or_else(|| "libssh runtime does not expose a libssh forward session".to_string())
 }
 
 pub(super) async fn check_remote_tunnel_health(
@@ -132,12 +208,26 @@ pub(super) async fn probe_remote_tunnel_health(
     if runtime.closed.load(Ordering::SeqCst) {
         return Err("tunnel closed before listener probe".to_string());
     }
-    let (handle, remote_forwards) = {
+    let (
+        handle,
+        remote_forwards,
+        remote_forward_acceptor_started,
+        ssh_runtime_closed,
+        ssh_backend,
+    ) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
             .get(&runtime.session_id)
             .filter(|ssh| ssh.runtime_id == runtime.ssh_runtime_id)
-            .map(|ssh| (Arc::clone(&ssh.handle), Arc::clone(&ssh.remote_forwards)))
+            .map(|ssh| {
+                (
+                    Arc::clone(&ssh.handle),
+                    Arc::clone(&ssh.remote_forwards),
+                    Arc::clone(&ssh.remote_forward_acceptor_started),
+                    Arc::clone(&ssh.closed),
+                    ssh.backend,
+                )
+            })
             .ok_or_else(|| format!("SSH runtime is unavailable for {}", runtime.session_id))?
     };
 
@@ -157,6 +247,17 @@ pub(super) async fn probe_remote_tunnel_health(
             routing_restored = true;
         }
     }
+    let libssh_session = if ssh_backend == SshBackendKind::Libssh {
+        Some(remote_forward_libssh_session(&handle).await?)
+    } else {
+        None
+    };
+    ensure_libssh_remote_forward_acceptor(
+        libssh_session,
+        Arc::clone(&remote_forwards),
+        ssh_runtime_closed,
+        remote_forward_acceptor_started,
+    );
 
     let probe_started = Instant::now();
     let probe = match exec_ssh_command_capture(

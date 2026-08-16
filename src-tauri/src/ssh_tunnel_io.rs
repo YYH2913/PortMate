@@ -94,12 +94,49 @@ pub(super) async fn handle_remote_tunnel_client(
     pipe_ssh_channel_to_tcp(channel, local_stream, tunnel, metrics).await
 }
 
-pub(super) fn spawn_libssh_remote_forward_acceptor(
+struct LibsshRemoteForwardAcceptorRegistration {
+    started: Arc<AtomicBool>,
+}
+
+impl Drop for LibsshRemoteForwardAcceptorRegistration {
+    fn drop(&mut self) {
+        self.started.store(false, Ordering::SeqCst);
+    }
+}
+
+pub(super) fn ensure_libssh_remote_forward_acceptor(
+    session: Option<libssh_rs::Session>,
+    remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
+    runtime_closed: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+) -> bool {
+    let Some(session) = session else {
+        return false;
+    };
+    if runtime_closed.load(Ordering::SeqCst)
+        || started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+    {
+        return false;
+    }
+    spawn_libssh_remote_forward_acceptor(
+        session,
+        remote_forwards,
+        runtime_closed,
+        started,
+    );
+    true
+}
+
+fn spawn_libssh_remote_forward_acceptor(
     session: libssh_rs::Session,
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     runtime_closed: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
 ) {
     tauri::async_runtime::spawn(async move {
+        let _registration = LibsshRemoteForwardAcceptorRegistration { started };
         while !runtime_closed.load(Ordering::SeqCst) {
             let has_routes = match remote_forwards.lock() {
                 Ok(forwards) => !forwards.is_empty(),

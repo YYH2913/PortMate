@@ -666,6 +666,8 @@ MCP `close_session` 现区分两个不可混淆的授权提交点：在取消 pe
 
 Remote tunnel 动态端口故障现与 registry 安装失败共用同一未提交 runtime 回滚：服务端接受 `tcpip-forward` 的端口 `0` 请求却没有返回分配端口时，不再直接遗留未知 forward，而是执行有界 `cancel-tcpip-forward`、清理 route map，并把 cancel 失败并入原始诊断。真实 russh 故障夹具分别触发 MCP 撤权和缺失动态端口两条路径，确认两次 forward 与两次 cancel 严格成对，且 runtime、route、Profile 和事件均无残留；tunnel 相关 20 项（含正常真实 OpenSSH 三模式端到端）、完整主应用 491 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+libssh remote-forward acceptor 现由单实例注册守卫管理，worker 正常退出、异常返回、panic unwind 或任务取消都会释放 `remote_forward_acceptor_started`，不再留下“标记仍运行但实际无人接收”的假健康状态。Remote tunnel 健康检查会补启动缺失的 libssh acceptor；当远端不支持 Linux/BSD/macOS/Windows listener probe 时，只停止昂贵的远端探测并保留轻量 acceptor 看门，russh backend 仍按原行为结束不支持的探测。回归覆盖重复启动抑制、runtime 关闭后注册释放、关闭期间拒绝启动和再次启动；tunnel 专项 21 项（含真实 OpenSSH 三模式端到端）、完整主应用 492 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

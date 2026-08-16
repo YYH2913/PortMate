@@ -1,4 +1,59 @@
 #[test]
+fn libssh_remote_forward_acceptor_registration_recovers_after_worker_exit() {
+    tauri::async_runtime::block_on(async {
+        let session = libssh_rs::Session::new().unwrap();
+        let remote_forwards = Arc::new(Mutex::new(HashMap::new()));
+        let runtime_closed = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+
+        assert!(ensure_libssh_remote_forward_acceptor(
+            Some(session.clone()),
+            Arc::clone(&remote_forwards),
+            Arc::clone(&runtime_closed),
+            Arc::clone(&started),
+        ));
+        assert!(started.load(Ordering::SeqCst));
+        assert!(!ensure_libssh_remote_forward_acceptor(
+            Some(session.clone()),
+            Arc::clone(&remote_forwards),
+            Arc::clone(&runtime_closed),
+            Arc::clone(&started),
+        ));
+
+        runtime_closed.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while started.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("libssh remote forward acceptor did not release its registration");
+        assert!(!ensure_libssh_remote_forward_acceptor(
+            Some(session.clone()),
+            Arc::clone(&remote_forwards),
+            Arc::clone(&runtime_closed),
+            Arc::clone(&started),
+        ));
+
+        runtime_closed.store(false, Ordering::SeqCst);
+        assert!(ensure_libssh_remote_forward_acceptor(
+            Some(session),
+            remote_forwards,
+            Arc::clone(&runtime_closed),
+            Arc::clone(&started),
+        ));
+        runtime_closed.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while started.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("restarted libssh remote forward acceptor did not stop");
+    });
+}
+
+#[test]
 fn remote_tunnel_listener_probe_parses_linux_bsd_macos_and_unsupported_outputs() {
     let proc_output = "__PORTMATE_PROC__\n  0: 0100007F:0016 00000000:0000 0A 00000000:00000000\n  1: 0100007F:2710 00000000:0000 01 00000000:00000000\n";
     assert_eq!(

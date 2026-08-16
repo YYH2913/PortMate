@@ -159,18 +159,12 @@ pub(super) async fn start_tunnel_runtime_with_validation(
             )
             .await);
         }
-        if let Some(session) = libssh_session {
-            if remote_forward_acceptor_started
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                spawn_libssh_remote_forward_acceptor(
-                    session,
-                    Arc::clone(&remote_forwards),
-                    ssh_runtime_closed,
-                );
-            }
-        }
+        ensure_libssh_remote_forward_acceptor(
+            libssh_session,
+            Arc::clone(&remote_forwards),
+            ssh_runtime_closed,
+            remote_forward_acceptor_started,
+        );
         spawn_remote_tunnel_health_monitor(state.clone(), tunnel.id.clone(), Arc::clone(&closed));
         return Ok((tunnel, None, owner));
     }
