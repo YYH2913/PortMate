@@ -17,99 +17,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let native_smoke = native_smoke_config().map_err(std::io::Error::other)?;
-            let (data_root, data_dir) = match &native_smoke {
-                Some(config) => {
-                    fs::create_dir_all(&config.data_dir)?;
-                    (config.data_root.clone(), config.data_dir.clone())
-                }
-                None => (app.path().data_dir()?, app.path().app_data_dir()?),
-            };
-            migrate_legacy_app_data_dir(&data_root, &data_dir).map_err(std::io::Error::other)?;
-            PORTABLE_VAULT
-                .set(PortableVaultContext {
-                    snapshot_path: data_dir.join(PORTABLE_VAULT_FILE_NAME),
-                    salt_path: data_dir.join(PORTABLE_VAULT_SALT_FILE_NAME),
-                    stronghold: Mutex::new(None),
-                })
-                .map_err(|_| std::io::Error::other("portable vault initialized twice"))?;
-            let store_path = data_dir.join(STORE_FILE_NAME);
-            let store = load_store(&store_path).map_err(std::io::Error::other)?;
-            let retention_store_path = store_path.clone();
-            let retention_profiles = store.profiles.clone();
-            std::thread::spawn(move || {
-                for profile in retention_profiles {
-                    if let Err(error) =
-                        maybe_prune_expired_log_shards(&retention_store_path, &profile)
-                    {
-                        eprintln!(
-                            "PortMate: startup log retention failed for {}: {error}",
-                            profile.id
-                        );
-                    }
-                }
-            });
-            let state = AppState {
-                app_handle: Some(app.handle().clone()),
-                store: Arc::new(Mutex::new(store)),
-                credential_ops: Arc::new(Mutex::new(())),
-                credential_lock_path: data_dir.join("credentials.lock"),
-                session_credentials: Arc::new(Mutex::new(SessionCredentialRegistry::default())),
-                system_event_sink: Arc::new(Mutex::new(None)),
-                session_open_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_CONCURRENT_SESSION_OPENS,
-                )),
-                ssh: Arc::new(Mutex::new(HashMap::new())),
-                ssh_auxiliary_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS,
-                )),
-                tmux_controls: Arc::new(Mutex::new(HashMap::new())),
-                tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
-                shell: Arc::new(Mutex::new(HashMap::new())),
-                tcp: Arc::new(Mutex::new(HashMap::new())),
-                serial: Arc::new(Mutex::new(HashMap::new())),
-                serial_captures: Arc::new(Mutex::new(HashMap::new())),
-                active_commands: Arc::new(Mutex::new(HashMap::new())),
-                tunnels: Arc::new(Mutex::new(HashMap::new())),
-                tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_TUNNEL_CONNECTIONS,
-                )),
-                transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
-                mcp_content_transfer_staging: Arc::new(Mutex::new(HashMap::new())),
-                transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_ACTIVE_TRANSFER_TASKS,
-                )),
-                transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
-                sysmon_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_CONCURRENT_SYSMON_REFRESHES,
-                )),
-                trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_TRIGGER_COMMAND_CONCURRENCY,
-                )),
-                trigger_send_batch_slots: Arc::new(tokio::sync::Semaphore::new(
-                    MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
-                )),
-                pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
-                mcp_http_process: Arc::new(Mutex::new(McpHttpProcessRegistry::default())),
-                one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
-                ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
-                #[cfg(test)]
-                ssh_reconnect_install_error: Arc::new(Mutex::new(None)),
-                store_path,
-            };
-            install_system_event_sink(&state).map_err(std::io::Error::other)?;
-            start_ipc_server(
-                state.clone(),
-                data_dir.join("portmate-ipc.json"),
-                Uuid::new_v4().to_string(),
-            );
-            app.manage(state);
-            if let Some(config) = native_smoke {
-                let app_handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(config.exit_after);
-                    app_handle.exit(0);
-                });
+            if let Err(error) = initialize_application(app) {
+                eprintln!("PortMate: startup failed: {error}");
+                std::process::exit(1);
             }
             Ok(())
         })
@@ -247,6 +157,94 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn initialize_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let native_smoke = native_smoke_config().map_err(std::io::Error::other)?;
+    let (data_root, data_dir) = match &native_smoke {
+        Some(config) => {
+            fs::create_dir_all(&config.data_dir)?;
+            (config.data_root.clone(), config.data_dir.clone())
+        }
+        None => (app.path().data_dir()?, app.path().app_data_dir()?),
+    };
+    migrate_legacy_app_data_dir(&data_root, &data_dir).map_err(std::io::Error::other)?;
+    PORTABLE_VAULT
+        .set(PortableVaultContext {
+            snapshot_path: data_dir.join(PORTABLE_VAULT_FILE_NAME),
+            salt_path: data_dir.join(PORTABLE_VAULT_SALT_FILE_NAME),
+            stronghold: Mutex::new(None),
+        })
+        .map_err(|_| std::io::Error::other("portable vault initialized twice"))?;
+    let store_path = data_dir.join(STORE_FILE_NAME);
+    let store = load_store(&store_path).map_err(std::io::Error::other)?;
+    let retention_store_path = store_path.clone();
+    let retention_profiles = store.profiles.clone();
+    std::thread::spawn(move || {
+        for profile in retention_profiles {
+            if let Err(error) = maybe_prune_expired_log_shards(&retention_store_path, &profile) {
+                eprintln!(
+                    "PortMate: startup log retention failed for {}: {error}",
+                    profile.id
+                );
+            }
+        }
+    });
+    let state = AppState {
+        app_handle: Some(app.handle().clone()),
+        store: Arc::new(Mutex::new(store)),
+        credential_ops: Arc::new(Mutex::new(())),
+        credential_lock_path: data_dir.join("credentials.lock"),
+        session_credentials: Arc::new(Mutex::new(SessionCredentialRegistry::default())),
+        system_event_sink: Arc::new(Mutex::new(None)),
+        session_open_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SESSION_OPENS)),
+        ssh: Arc::new(Mutex::new(HashMap::new())),
+        ssh_auxiliary_slots: Arc::new(tokio::sync::Semaphore::new(
+            MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS,
+        )),
+        tmux_controls: Arc::new(Mutex::new(HashMap::new())),
+        tmux_control_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TMUX_CONTROLS)),
+        shell: Arc::new(Mutex::new(HashMap::new())),
+        tcp: Arc::new(Mutex::new(HashMap::new())),
+        serial: Arc::new(Mutex::new(HashMap::new())),
+        serial_captures: Arc::new(Mutex::new(HashMap::new())),
+        active_commands: Arc::new(Mutex::new(HashMap::new())),
+        tunnels: Arc::new(Mutex::new(HashMap::new())),
+        tunnel_connection_slots: Arc::new(tokio::sync::Semaphore::new(MAX_TUNNEL_CONNECTIONS)),
+        transfer_cancellations: Arc::new(Mutex::new(HashMap::new())),
+        mcp_content_transfer_staging: Arc::new(Mutex::new(HashMap::new())),
+        transfer_task_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_TRANSFER_TASKS)),
+        transfer_lanes: Arc::new(Mutex::new(HashMap::new())),
+        sysmon_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SYSMON_REFRESHES)),
+        trigger_command_slots: Arc::new(tokio::sync::Semaphore::new(
+            MAX_TRIGGER_COMMAND_CONCURRENCY,
+        )),
+        trigger_send_batch_slots: Arc::new(tokio::sync::Semaphore::new(
+            MAX_TRIGGER_SEND_BATCH_CONCURRENCY,
+        )),
+        pending_mcp_approvals: Arc::new(Mutex::new(HashMap::new())),
+        mcp_http_process: Arc::new(Mutex::new(McpHttpProcessRegistry::default())),
+        one_time_host_keys: Arc::new(Mutex::new(HashMap::new())),
+        ipc_publication: Arc::new(Mutex::new(IpcPublicationState::default())),
+        #[cfg(test)]
+        ssh_reconnect_install_error: Arc::new(Mutex::new(None)),
+        store_path,
+    };
+    install_system_event_sink(&state).map_err(std::io::Error::other)?;
+    start_ipc_server(
+        state.clone(),
+        data_dir.join("portmate-ipc.json"),
+        Uuid::new_v4().to_string(),
+    );
+    app.manage(state);
+    if let Some(config) = native_smoke {
+        let app_handle = app.handle().clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(config.exit_after);
+            app_handle.exit(0);
+        });
+    }
+    Ok(())
 }
 
 fn native_smoke_config() -> Result<Option<NativeSmokeConfig>, String> {
