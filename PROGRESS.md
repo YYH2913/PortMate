@@ -182,6 +182,8 @@ macOS Telnet TLS 测试身份不再依赖 OpenSSL 3 的版本相关 PKCS#12 默�
 
 SSH 连接凭据弹窗现为每次请求分配单调 request ID，提交/取消只允许完成创建该回调的 resolver；旧 DOM 在同一 task 内不能取消或提交随后由其他会话/独立终端发起的新请求。弹窗组件同时以 request ID 为 React key，新的请求会重建用户名、密码、私钥口令、OneKey 和保存选项 state，不会跨会话残留上一请求的明文。Workspace UI 通过 Edge 旧弹窗提交、同帧 detached Backup connect 和旧取消的连续事件，确认 Backup 显示自身用户名、空密码并保持待确认，Edge 仅打开一次而 Backup 零打开；完整前端 114 文件/626 项、生产构建和 Workspace UI 均通过。
 
+密钥管理器的 Host Key 扫描结果现绑定规范化 SSH Profile 快照：同 ID Profile 在扫描途中改变端点、代理、跳板、认证或 Host Key 策略时会立即清除旧结果、释放 busy 状态，迟到响应不能恢复旧指纹或触发信任写入。后端 `trust_scanned_host_key` 在持久化前再次对照 Store 中的当前连接配置，并核对 observation 的 host、port 和 alias 是否对应最终端点或其中一跳 Jump Host，信任时使用该跳实际扫描策略；仅由并发持久 Host Key 镜像产生的 `trustedHostKeys` 差异不会误拒绝，Profile 删除、路由变化或伪造目标均要求重新扫描。Host Key 专项 14 项、主应用完整 Rust 库回归 462 passed/1 ignored/1 filtered、`portmate` 全目标 Clippy `-D warnings`、前端 114 文件/626 项、生产构建、release-source 和完整 Workspace UI 均通过；Workspace 回归确认旧扫描失效后，新扫描实际使用更新后的 `10.0.0.99` 目标。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

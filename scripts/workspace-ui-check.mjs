@@ -7879,6 +7879,47 @@ Host staging
   }), hostKeyProfileCopyBaseline);
   assert(hostKeyProfileCopyState.pending === 0 && hostKeyProfileCopyState.saveCalls === 1,
     `key-manager Profile copy submitted duplicate writes: ${JSON.stringify(hostKeyProfileCopyState)}`);
+
+  const staleHostKeyTrustBaseline = await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionValidation = true;
+    window.__pendingSessionValidation = [];
+    return window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length;
+  });
+  await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).click();
+  await hostKeyLifecyclePage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
+  await hostKeyLifecyclePage.evaluate(() => {
+    const index = window.__sessions.findIndex((session) => session.profile.id === "edge-router");
+    const updated = structuredClone(window.__sessions[index]);
+    updated.profile.connection.endpoint.host = "10.0.0.99";
+    updated.profile.connection.hostKeyPolicy.alias = null;
+    window.__sessions[index] = updated;
+    window.__emitTauriEvent("portmate-session-profile-updated", updated);
+  });
+  await thirdKeyManager.locator(".host-key-scan-panel > header", { hasText: "10.0.0.99:2222" }).waitFor();
+  await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).waitFor({ state: "visible" });
+  assert(await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).isEnabled(),
+    "a changed SSH Profile left its obsolete Host Key scan busy");
+  await hostKeyLifecyclePage.evaluate(() => {
+    window.__deferSessionValidation = false;
+    window.__pendingSessionValidation.shift().resolve();
+  });
+  await hostKeyLifecyclePage.waitForTimeout(100);
+  const staleHostKeyScanState = await hostKeyLifecyclePage.evaluate((trustBaseline) => ({
+    trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length - trustBaseline,
+    pending: window.__pendingSessionValidation.length,
+  }), staleHostKeyTrustBaseline);
+  assert(await thirdKeyManager.locator(".host-key-scan-result").count() === 0
+    && staleHostKeyScanState.trustCalls === 0
+    && staleHostKeyScanState.pending === 0,
+  `a late Host Key scan survived an SSH target change: ${JSON.stringify(staleHostKeyScanState)}`);
+  await thirdKeyManager.getByRole("button", { name: "扫描", exact: true }).click();
+  await thirdKeyManager.locator(".host-key-scan-result").waitFor();
+  const replacementHostKeyScan = await hostKeyLifecyclePage.evaluate(() => {
+    const call = window.__invokeCalls.filter((item) => item.command === "scan_ssh_host_key").at(-1);
+    return call?.args.request.profile.connection.endpoint.host ?? null;
+  });
+  assert(replacementHostKeyScan === "10.0.0.99",
+    `replacement Host Key scan used an obsolete target: ${JSON.stringify(replacementHostKeyScan)}`);
   assert(hostKeyLifecycleErrors.length === 0,
     `host-key lifecycle browser exceptions: ${JSON.stringify(hostKeyLifecycleErrors)}`);
   await hostKeyLifecyclePage.close();

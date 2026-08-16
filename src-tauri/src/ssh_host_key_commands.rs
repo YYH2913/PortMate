@@ -84,7 +84,11 @@ pub(crate) fn trust_scanned_host_key(
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let profile = normalize_session_profile(request.profile);
     let profile_id = profile.id.clone();
-    let policy = ssh_connection(&profile)?.host_key_policy.clone();
+    let policy = validate_scanned_host_key_profile_snapshot(
+        &store,
+        &profile,
+        &request.observation,
+    )?;
     if request.decision == HostKeyDecision::TrustOnce {
         let trusted =
             temporary_trusted_host_key_for_policy(&profile_id, &policy, &request.observation)?;
@@ -101,6 +105,65 @@ pub(crate) fn trust_scanned_host_key(
             request.decision,
         )
     })
+}
+
+pub(super) fn validate_scanned_host_key_profile_snapshot(
+    store: &SessionStore,
+    scanned_profile: &SessionProfile,
+    observation: &HostKeyObservation,
+) -> Result<portmate_core::HostKeyPolicy, String> {
+    let current_profile = store
+        .profile(&scanned_profile.id)
+        .ok_or_else(|| "Host Key 扫描对应的 Profile 已删除，请重新扫描".to_string())?;
+    let current_profile = normalize_session_profile(current_profile);
+    if host_key_scan_connection_snapshot(&current_profile)?
+        != host_key_scan_connection_snapshot(scanned_profile)?
+    {
+        return Err("SSH 配置已在 Host Key 扫描后变化，请重新扫描".to_string());
+    }
+
+    host_key_scan_policy_for_observation(scanned_profile, observation)
+}
+
+fn host_key_scan_connection_snapshot(profile: &SessionProfile) -> Result<ConnectionConfig, String> {
+    let mut connection = profile.connection.clone();
+    match &mut connection {
+        ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => {
+            // Persistent host-key mirrors may legitimately change after a scan. They do not
+            // alter the endpoint or route that produced the observation.
+            ssh.trusted_host_keys.clear();
+        }
+        _ => return Err(format!("profile is not SSH-backed: {}", profile.id)),
+    }
+    Ok(connection)
+}
+
+fn host_key_scan_policy_for_observation(
+    profile: &SessionProfile,
+    observation: &HostKeyObservation,
+) -> Result<portmate_core::HostKeyPolicy, String> {
+    let ssh = ssh_connection(profile)?;
+    let target_alias = ssh
+        .host_key_policy
+        .alias
+        .as_deref()
+        .unwrap_or(profile.id.as_str());
+    if observation.host == ssh.endpoint.host
+        && observation.port == ssh.endpoint.port
+        && observation.alias.as_deref() == Some(target_alias)
+    {
+        return Ok(ssh.host_key_policy.clone());
+    }
+    for jump in &ssh.jumps {
+        let policy = jump_host_key_policy(ssh, jump);
+        if observation.host == jump.host
+            && observation.port == jump.port
+            && observation.alias.as_deref() == policy.alias.as_deref()
+        {
+            return Ok(policy);
+        }
+    }
+    Err("Host Key 扫描结果与当前 SSH 目标或 Jump Host 不匹配，请重新扫描".to_string())
 }
 
 #[tauri::command]

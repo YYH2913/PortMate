@@ -107,3 +107,100 @@ fn concurrent_host_key_edits_merge_fields_and_reject_conflicts() {
             .contains("不是同一个 host key")
     );
 }
+
+#[test]
+fn scanned_host_key_trust_is_bound_to_the_current_ssh_connection_snapshot() {
+    let scanned = normalize_session_profile(test_ssh_profile());
+    let ssh = ssh_connection(&scanned).unwrap();
+    let observation = HostKeyObservation {
+        host: ssh.endpoint.host.clone(),
+        port: ssh.endpoint.port,
+        alias: ssh.host_key_policy.alias.clone(),
+        algorithm: "ssh-ed25519".to_string(),
+        public_key_base64: "YWJj".to_string(),
+    };
+    let mut store = SessionStore::default();
+    store.upsert_profile(scanned.clone());
+
+    assert_eq!(
+        validate_scanned_host_key_profile_snapshot(&store, &scanned, &observation).unwrap(),
+        ssh.host_key_policy
+    );
+
+    let mut scanned_with_jump = scanned.clone();
+    ssh_connection_mut(&mut scanned_with_jump)
+        .unwrap()
+        .jumps
+        .push(portmate_core::JumpHop {
+            host: "jump.example".to_string(),
+            port: 2222,
+            username: "operator".to_string(),
+            password_secret_ref: None,
+            passphrase_secret_ref: None,
+            identity_ref: None,
+            host_key_policy: None,
+        });
+    let scanned_with_jump = normalize_session_profile(scanned_with_jump);
+    let jump_ssh = ssh_connection(&scanned_with_jump).unwrap();
+    let jump_policy = jump_host_key_policy(jump_ssh, &jump_ssh.jumps[0]);
+    let jump_observation = HostKeyObservation {
+        host: "jump.example".to_string(),
+        port: 2222,
+        alias: jump_policy.alias.clone(),
+        algorithm: "ssh-ed25519".to_string(),
+        public_key_base64: "YWJj".to_string(),
+    };
+    store.upsert_profile(scanned_with_jump.clone());
+    assert_eq!(
+        validate_scanned_host_key_profile_snapshot(
+            &store,
+            &scanned_with_jump,
+            &jump_observation,
+        )
+        .unwrap(),
+        jump_policy
+    );
+
+    store.upsert_profile(scanned.clone());
+    let mut mirrored = store.profile(&scanned.id).unwrap();
+    let mirrored_ssh = ssh_connection_mut(&mut mirrored).unwrap();
+    mirrored_ssh.trusted_host_keys.push(TrustedHostKey {
+        id: "concurrent-host-key".to_string(),
+        profile_id: Some(scanned.id.clone()),
+        alias: observation.alias.clone().unwrap(),
+        host: observation.host.clone(),
+        port: observation.port,
+        algorithm: observation.algorithm.clone(),
+        fingerprint_sha256: "SHA256:concurrent".to_string(),
+        public_key_base64: "ZGVm".to_string(),
+        scope: HostKeyScope::Profile,
+        label: None,
+        first_seen: Utc::now(),
+        last_seen: Utc::now(),
+    });
+    store.upsert_profile(mirrored);
+    validate_scanned_host_key_profile_snapshot(&store, &scanned, &observation).unwrap();
+
+    let mut changed = store.profile(&scanned.id).unwrap();
+    ssh_connection_mut(&mut changed).unwrap().endpoint.host = "changed.example".to_string();
+    store.upsert_profile(changed);
+    let error = validate_scanned_host_key_profile_snapshot(&store, &scanned, &observation)
+        .unwrap_err();
+    assert!(error.contains("SSH 配置已在 Host Key 扫描后变化"), "{error}");
+
+    store.upsert_profile(scanned.clone());
+    let mut wrong_observation = observation.clone();
+    wrong_observation.host = "other.example".to_string();
+    let error = validate_scanned_host_key_profile_snapshot(
+        &store,
+        &scanned,
+        &wrong_observation,
+    )
+    .unwrap_err();
+    assert!(error.contains("当前 SSH 目标或 Jump Host 不匹配"), "{error}");
+
+    store.delete_profile(&scanned.id).unwrap();
+    let error = validate_scanned_host_key_profile_snapshot(&store, &scanned, &observation)
+        .unwrap_err();
+    assert!(error.contains("Profile 已删除"), "{error}");
+}

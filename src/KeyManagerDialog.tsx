@@ -202,6 +202,7 @@ export default function KeyManagerDialog({
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyScanResult | null>(null);
   const [hostKeyScanBusy, setHostKeyScanBusy] = useState(false);
   const [hostKeyScanError, setHostKeyScanError] = useState("");
+  const hostKeyScanProfileKeyRef = useRef("");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const refreshGate = useRef(new KeyedRequestGate<"agent-keys" | "vault" | "recovery" | "host-scan">());
@@ -209,6 +210,11 @@ export default function KeyManagerDialog({
   const credentialSyncRevisionRef = useRef(credentialSyncRevision);
 
   const selectedProfile = sshSessions.find((session) => session.profile.id === profileId)?.profile ?? null;
+  const selectedProfileScanKey = selectedProfile
+    ? JSON.stringify(prepareProfile(selectedProfile))
+    : "";
+  const selectedProfileScanKeyRef = useRef(selectedProfileScanKey);
+  selectedProfileScanKeyRef.current = selectedProfileScanKey;
   const editingKey = hostKeys.keys.find((key) => key.id === editingKeyId) ?? null;
   const visibleHostKeys = hostKeys.keys.filter((key) => (
     (keyScopeFilter === "all" || key.scope === keyScopeFilter)
@@ -291,10 +297,11 @@ export default function KeyManagerDialog({
 
   useEffect(() => {
     refreshGate.current.invalidate("host-scan");
+    hostKeyScanProfileKeyRef.current = "";
     setHostKeyScan(null);
     setHostKeyScanError("");
     setHostKeyScanBusy(false);
-  }, [profileId]);
+  }, [selectedProfileScanKey]);
 
   useEffect(() => {
     if (editingKeyId && !hostKeys.keys.some((key) => key.id === editingKeyId)) {
@@ -739,16 +746,20 @@ export default function KeyManagerDialog({
     if (!selectedProfile) return;
     const token = refreshGate.current.begin("host-scan");
     if (token === null) return;
+    const pendingProfile = prepareProfile(selectedProfile);
+    const pendingProfileKey = selectedProfileScanKey;
     setHostKeyScanBusy(true);
     setHostKeyScanError("");
     try {
       const scan = await invokeBackend<HostKeyScanResult>("scan_ssh_host_key", {
         request: {
-          profile: prepareProfile(selectedProfile),
+          profile: pendingProfile,
           credentialHandle: null,
         },
       });
-      if (!refreshGate.current.isCurrent("host-scan", token)) return;
+      if (!refreshGate.current.isCurrent("host-scan", token)
+        || selectedProfileScanKeyRef.current !== pendingProfileKey) return;
+      hostKeyScanProfileKeyRef.current = pendingProfileKey;
       setHostKeyScan(scan);
     } catch (error) {
       if (refreshGate.current.isCurrent("host-scan", token)) {
@@ -763,10 +774,15 @@ export default function KeyManagerDialog({
   }
 
   async function trustHostKeyScan(decision: "append-to-profile" | "append-to-project" | "replace-for-profile") {
-    if (hostKeyMutationBusy || !selectedProfile || !hostKeyScan) return;
+    if (hostKeyMutationBusy
+      || !selectedProfile
+      || !hostKeyScan
+      || hostKeyScanProfileKeyRef.current !== selectedProfileScanKey) return;
     const writeToken = beginHostKeyWrite();
     if (writeToken === null) return;
     const mutationToken = onHostKeyMutationStart();
+    const pendingProfile = prepareProfile(selectedProfile);
+    const pendingObservation = hostKeyScan.observation;
     refreshGate.current.invalidate("host-scan");
     setHostKeyScanBusy(true);
     setHostKeyScanError("");
@@ -775,8 +791,8 @@ export default function KeyManagerDialog({
     try {
       await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
         request: {
-          profile: prepareProfile(selectedProfile),
-          observation: hostKeyScan.observation,
+          profile: pendingProfile,
+          observation: pendingObservation,
           decision,
         },
       });
