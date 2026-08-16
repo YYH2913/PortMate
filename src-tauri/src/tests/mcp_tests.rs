@@ -2266,6 +2266,55 @@ fn managed_mcp_http_runtime_reports_ready_stops_and_retains_bounded_failures() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn stale_mcp_http_owner_cannot_stop_a_replacement_process() {
+    let _guard = shared_runtime_test_guard();
+    let root = std::env::temp_dir().join(format!("portmate-mcp-runtime-owner-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+    let reserve_address = || {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        address
+    };
+
+    let first_address = reserve_address();
+    let mut first_fixture = managed_mcp_http_fixture_command(first_address, false);
+    let first_owner = install_test_mcp_http_process(
+        &state,
+        &mut first_fixture,
+        format!("http://{first_address}/mcp"),
+        first_address,
+    )
+    .unwrap();
+    stop_mcp_http_runtime_inner(&state).unwrap();
+
+    let replacement_address = reserve_address();
+    let mut replacement_fixture = managed_mcp_http_fixture_command(replacement_address, false);
+    let replacement_owner = install_test_mcp_http_process(
+        &state,
+        &mut replacement_fixture,
+        format!("http://{replacement_address}/mcp"),
+        replacement_address,
+    )
+    .unwrap();
+    assert_ne!(first_owner, replacement_owner);
+
+    assert!(!stop_mcp_http_runtime_if_owned(&state, first_owner).unwrap());
+    let running = wait_for_managed_mcp_http_phase(&state, McpHttpRuntimePhase::Running);
+    assert_eq!(
+        running.endpoint.as_deref(),
+        Some(format!("http://{replacement_address}/mcp").as_str())
+    );
+    assert!(mcp_http_runtime_status_for_owner(&state, replacement_owner)
+        .unwrap()
+        .is_some());
+
+    stop_mcp_http_runtime_inner(&state).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
 fn managed_mcp_http_fixture_command(address: std::net::SocketAddr, fail: bool) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command

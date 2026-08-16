@@ -16,6 +16,12 @@ pub(super) struct McpHttpProcessRegistry {
     failure: Option<McpHttpProcessFailure>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct McpHttpProcessOwner {
+    pid: u32,
+    started_at: DateTime<Utc>,
+}
+
 struct ManagedMcpHttpProcess {
     child: std::process::Child,
     endpoint: String,
@@ -26,6 +32,7 @@ struct ManagedMcpHttpProcess {
 }
 
 struct McpHttpProcessFailure {
+    pid: u32,
     endpoint: String,
     started_at: DateTime<Utc>,
     exit_status: String,
@@ -40,6 +47,24 @@ impl Drop for ManagedMcpHttpProcess {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
             }
+        }
+    }
+}
+
+impl ManagedMcpHttpProcess {
+    fn owner(&self) -> McpHttpProcessOwner {
+        McpHttpProcessOwner {
+            pid: self.child.id(),
+            started_at: self.started_at,
+        }
+    }
+}
+
+impl McpHttpProcessFailure {
+    fn owner(&self) -> McpHttpProcessOwner {
+        McpHttpProcessOwner {
+            pid: self.pid,
+            started_at: self.started_at,
         }
     }
 }
@@ -87,13 +112,71 @@ pub(super) fn mcp_http_runtime_status_inner(
     Ok(stopped_mcp_http_runtime_status())
 }
 
+pub(super) fn mcp_http_runtime_status_for_owner(
+    state: &AppState,
+    owner: McpHttpProcessOwner,
+) -> Result<Option<McpHttpRuntimeStatus>, String> {
+    let pending_probe = {
+        let mut registry = state
+            .mcp_http_process
+            .lock()
+            .map_err(|error| error.to_string())?;
+        reap_mcp_http_process(&mut registry)?;
+        if let Some(process) = registry
+            .process
+            .as_ref()
+            .filter(|process| process.owner() == owner)
+        {
+            if process.ready {
+                return Ok(Some(active_mcp_http_runtime_status(process)));
+            }
+            process.connect_address
+        } else if let Some(failure) = registry
+            .failure
+            .as_ref()
+            .filter(|failure| failure.owner() == owner)
+        {
+            return Ok(Some(failed_mcp_http_runtime_status(failure)));
+        } else {
+            return Ok(None);
+        }
+    };
+
+    let ready = probe_mcp_http_ready(pending_probe);
+    let mut registry = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
+    reap_mcp_http_process(&mut registry)?;
+    if let Some(process) = registry
+        .process
+        .as_mut()
+        .filter(|process| process.owner() == owner)
+    {
+        if ready {
+            process.ready = true;
+        }
+        return Ok(Some(active_mcp_http_runtime_status(process)));
+    }
+    if let Some(failure) = registry
+        .failure
+        .as_ref()
+        .filter(|failure| failure.owner() == owner)
+    {
+        return Ok(Some(failed_mcp_http_runtime_status(failure)));
+    }
+    Ok(None)
+}
+
 pub(super) async fn start_mcp_http_runtime_inner(
     state: &AppState,
 ) -> Result<McpHttpRuntimeStatus, String> {
-    start_mcp_http_process(state)?;
+    let owner = start_mcp_http_process(state)?;
     let deadline = Instant::now() + MCP_HTTP_STARTUP_TIMEOUT;
     loop {
-        let status = mcp_http_runtime_status_inner(state)?;
+        let Some(status) = mcp_http_runtime_status_for_owner(state, owner)? else {
+            return Err("MCP HTTP sidecar 启动已被停止或新的托管实例替换".to_string());
+        };
         match status.phase {
             McpHttpRuntimePhase::Running => return Ok(status),
             McpHttpRuntimePhase::Failed => {
@@ -107,7 +190,7 @@ pub(super) async fn start_mcp_http_runtime_inner(
             McpHttpRuntimePhase::Starting => {}
         }
         if Instant::now() >= deadline {
-            let _ = stop_mcp_http_runtime_inner(state);
+            let _ = stop_mcp_http_runtime_if_owned(state, owner);
             return Err(format!(
                 "MCP HTTP sidecar 未能在 {} 秒内开始监听",
                 MCP_HTTP_STARTUP_TIMEOUT.as_secs()
@@ -125,30 +208,63 @@ pub(super) fn stop_mcp_http_runtime_inner(
         .lock()
         .map_err(|error| error.to_string())?;
     registry.failure = None;
-    if let Some(mut process) = registry.process.take() {
-        let running = process
-            .child
-            .try_wait()
-            .map_err(|error| format!("无法检查 MCP HTTP sidecar: {error}"))?
-            .is_none();
-        if running {
-            if let Err(kill_error) = process.child.kill() {
-                let exited = process
-                    .child
-                    .try_wait()
-                    .map_err(|error| format!("无法重新检查 MCP HTTP sidecar: {error}"))?
-                    .is_some();
-                if !exited {
-                    return Err(format!("无法停止 MCP HTTP sidecar: {kill_error}"));
-                }
-            }
-        }
-        process
-            .child
-            .wait()
-            .map_err(|error| format!("无法回收 MCP HTTP sidecar: {error}"))?;
+    if let Some(process) = registry.process.take() {
+        stop_mcp_http_process(process)?;
     }
     Ok(stopped_mcp_http_runtime_status())
+}
+
+pub(super) fn stop_mcp_http_runtime_if_owned(
+    state: &AppState,
+    owner: McpHttpProcessOwner,
+) -> Result<bool, String> {
+    let mut registry = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
+    reap_mcp_http_process(&mut registry)?;
+    if registry
+        .failure
+        .as_ref()
+        .is_some_and(|failure| failure.owner() == owner)
+    {
+        return Ok(true);
+    }
+    if registry
+        .process
+        .as_ref()
+        .is_none_or(|process| process.owner() != owner)
+    {
+        return Ok(false);
+    }
+    let process = registry.process.take().expect("owned MCP process present");
+    stop_mcp_http_process(process)?;
+    Ok(true)
+}
+
+fn stop_mcp_http_process(mut process: ManagedMcpHttpProcess) -> Result<(), String> {
+    let running = process
+        .child
+        .try_wait()
+        .map_err(|error| format!("无法检查 MCP HTTP sidecar: {error}"))?
+        .is_none();
+    if running {
+        if let Err(kill_error) = process.child.kill() {
+            let exited = process
+                .child
+                .try_wait()
+                .map_err(|error| format!("无法重新检查 MCP HTTP sidecar: {error}"))?
+                .is_some();
+            if !exited {
+                return Err(format!("无法停止 MCP HTTP sidecar: {kill_error}"));
+            }
+        }
+    }
+    process
+        .child
+        .wait()
+        .map_err(|error| format!("无法回收 MCP HTTP sidecar: {error}"))?;
+    Ok(())
 }
 
 pub(super) fn lock_stopped_mcp_http_runtime<'a>(
@@ -172,7 +288,7 @@ pub(super) fn shutdown_mcp_http_runtime(state: &AppState) {
     }
 }
 
-fn start_mcp_http_process(state: &AppState) -> Result<(), String> {
+fn start_mcp_http_process(state: &AppState) -> Result<McpHttpProcessOwner, String> {
     let mut registry = state
         .mcp_http_process
         .lock()
@@ -223,13 +339,12 @@ fn start_mcp_http_process(state: &AppState) -> Result<(), String> {
     let child = command
         .spawn()
         .map_err(|error| format!("无法启动 MCP HTTP sidecar: {error}"))?;
-    install_mcp_http_process(
+    Ok(install_mcp_http_process(
         &mut registry,
         child,
         config.endpoint,
         connect_address,
-    );
-    Ok(())
+    ))
 }
 
 fn install_mcp_http_process(
@@ -237,21 +352,27 @@ fn install_mcp_http_process(
     mut child: std::process::Child,
     endpoint: String,
     connect_address: std::net::SocketAddr,
-) {
+) -> McpHttpProcessOwner {
     let diagnostics = child
         .stderr
         .take()
         .map(capture_mcp_http_process_diagnostics)
         .unwrap_or_else(|| Arc::new(Mutex::new(VecDeque::new())));
+    let started_at = Utc::now();
+    let owner = McpHttpProcessOwner {
+        pid: child.id(),
+        started_at,
+    };
     registry.failure = None;
     registry.process = Some(ManagedMcpHttpProcess {
         child,
         endpoint,
         connect_address,
-        started_at: Utc::now(),
+        started_at,
         ready: false,
         diagnostics,
     });
+    owner
 }
 
 pub(super) fn mcp_http_process_command(
@@ -305,7 +426,7 @@ pub(super) fn install_test_mcp_http_process(
     command: &mut Command,
     endpoint: String,
     connect_address: std::net::SocketAddr,
-) -> Result<(), String> {
+) -> Result<McpHttpProcessOwner, String> {
     let mut registry = state
         .mcp_http_process
         .lock()
@@ -321,8 +442,12 @@ pub(super) fn install_test_mcp_http_process(
     let child = command
         .spawn()
         .map_err(|error| format!("failed to start MCP HTTP test process: {error}"))?;
-    install_mcp_http_process(&mut registry, child, endpoint, connect_address);
-    Ok(())
+    Ok(install_mcp_http_process(
+        &mut registry,
+        child,
+        endpoint,
+        connect_address,
+    ))
 }
 
 fn capture_mcp_http_process_diagnostics(
@@ -359,6 +484,7 @@ fn reap_mcp_http_process(registry: &mut McpHttpProcessRegistry) -> Result<(), St
         .map_err(|error| format!("无法检查 MCP HTTP sidecar: {error}"))?;
     if let Some(status) = status {
         registry.failure = Some(McpHttpProcessFailure {
+            pid: process.child.id(),
             endpoint: process.endpoint.clone(),
             started_at: process.started_at,
             exit_status: status.to_string(),
