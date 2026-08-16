@@ -76,6 +76,7 @@ pub fn run() {
             mcp_commands::save_mcp_grant,
             mcp_commands::revoke_mcp_grant,
             mcp_commands::mcp_http_config,
+            mcp_commands::mcp_http_access_config,
             mcp_commands::preview_mcp_http_config,
             mcp_commands::save_mcp_http_settings,
             mcp_commands::rotate_mcp_http_token,

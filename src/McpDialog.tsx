@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CalendarClock, Copy, Dices, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
+import { CalendarClock, Check, Copy, Dices, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
@@ -8,6 +8,7 @@ import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGran
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
+  ccSwitchServerIdForGrant,
   defaultMcpHttpSettings,
   formatCcSwitchMcpJson,
   formatMcpHttpOrigins,
@@ -18,7 +19,7 @@ import {
   mcpHttpSettingsFromConfig,
   parseMcpHttpOrigins,
 } from "./mcp-http-state";
-import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
+import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpAccessResponse, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
 const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts"];
 const mcpHttpListenOptions = [
@@ -68,6 +69,7 @@ export default function McpDialog({
   const [ccSwitchServerId, setCcSwitchServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
   const [ccSwitchToolTimeout, setCcSwitchToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
   const [ccSwitchCopied, setCcSwitchCopied] = useState(false);
+  const [grantCcSwitchCopiedClientId, setGrantCcSwitchCopiedClientId] = useState<string | null>(null);
   const [httpCommandCopied, setHttpCommandCopied] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
@@ -82,6 +84,7 @@ export default function McpDialog({
   const expiryDateInputRef = useRef<HTMLInputElement>(null);
   const httpListenInputRef = useRef<HTMLInputElement>(null);
   const activeTabRef = useRef(tab);
+  const httpAccessPromiseRef = useRef<Promise<McpHttpAccessResponse> | null>(null);
   const httpRuntimeActionRef = useRef(false);
   const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "http-runtime-status" | "http-runtime-action" | "audit">());
   activeTabRef.current = tab;
@@ -117,11 +120,29 @@ export default function McpDialog({
     token: httpToken,
     toolTimeoutSeconds: ccSwitchToolTimeout,
   }), [ccSwitchServerId, ccSwitchToolTimeout, httpSettings, httpToken]);
+  const selectedGrantCcSwitchJson = draft
+    && editingClientId === draft.clientId
+    && !draft.revokedAt
+    && httpConfig
+    && !httpDirty
+    ? formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(httpConfig), {
+        serverId: ccSwitchServerIdForGrant(draft.clientId),
+        token: httpToken,
+        toolTimeoutSeconds: ccSwitchToolTimeout,
+      })
+    : "";
+  const selectedGrantIsHttpClient = Boolean(
+    draft && editingClientId === draft.clientId && httpConfig?.clientId === draft.clientId,
+  );
 
   useEffect(() => {
-    if (tab !== "http" || httpConfig || !isBackendAvailable()) return;
-    void loadHttpConfig();
-  }, [httpConfig, tab]);
+    if (httpConfig || !isBackendAvailable()) return;
+    void loadHttpAccess();
+  }, [httpConfig]);
+
+  useEffect(() => {
+    if (isBackendAvailable()) void loadHttpRuntime();
+  }, []);
 
   useEffect(() => {
     if (tab !== "http") {
@@ -180,14 +201,21 @@ export default function McpDialog({
     return () => window.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, [Boolean(expiryEditor)]);
 
-  async function loadHttpConfig() {
+  async function loadHttpAccess() {
     const token = requestGateRef.current.begin("http");
     if (token === null) return;
     setHttpBusy(true);
     try {
-      const next = await invokeBackend<McpHttpConfig>("mcp_http_config", {});
-      if (requestGateRef.current.isCurrent("http", token)) applyHttpConfig(next);
+      const request = httpAccessPromiseRef.current
+        ?? invokeBackend<McpHttpAccessResponse>("mcp_http_access_config", {});
+      httpAccessPromiseRef.current = request;
+      const response = await request;
+      if (requestGateRef.current.isCurrent("http", token)) {
+        applyHttpConfig(response.config);
+        setHttpToken(response.token ?? "");
+      }
     } catch (nextError) {
+      httpAccessPromiseRef.current = null;
       if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
     } finally {
       if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
@@ -344,6 +372,70 @@ export default function McpDialog({
       setError("");
     } catch (nextError) {
       setError(formatError(nextError));
+    }
+  }
+
+  function grantCcSwitchActionDisabled(grant: McpGrant): boolean {
+    const requiresHttpMutation = !httpToken || httpConfig?.clientId !== grant.clientId;
+    return grantBusy
+      || httpBusy
+      || httpDirty
+      || !httpConfig
+      || Boolean(grant.revokedAt)
+      || (httpRuntimeActive && requiresHttpMutation);
+  }
+
+  function grantCcSwitchActionLabel(grant: McpGrant): string {
+    const label = grant.name.trim() || grant.clientId;
+    if (grantCcSwitchCopiedClientId === grant.clientId) return `已复制 ${label} 的 CC Switch JSON`;
+    return httpConfig?.clientId === grant.clientId && httpToken
+      ? `复制 ${label} 的 CC Switch JSON`
+      : `应用并复制 ${label} 的 CC Switch JSON`;
+  }
+
+  async function copyGrantCcSwitch(grant: McpGrant) {
+    if (grantCcSwitchActionDisabled(grant) || !httpConfig) return;
+    const requestToken = requestGateRef.current.begin("http");
+    if (requestToken === null) return;
+    setError("");
+    setHttpBusy(true);
+    setGrantCcSwitchCopiedClientId(null);
+    try {
+      let config = httpConfig;
+      let tokenValue = httpToken;
+      if (config.clientId !== grant.clientId) {
+        config = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
+          settings: {
+            ...mcpHttpSettingsFromConfig(config),
+            clientId: grant.clientId,
+          },
+        });
+        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
+        applyHttpConfig(config);
+      }
+      if (!tokenValue) {
+        const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
+        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
+        config = response.config;
+        tokenValue = response.token;
+        applyHttpConfig(config);
+        setHttpToken(tokenValue);
+      }
+      const json = formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(config), {
+        serverId: ccSwitchServerIdForGrant(grant.clientId),
+        token: tokenValue,
+        toolTimeoutSeconds: ccSwitchToolTimeout,
+      });
+      if (!json) throw new Error("无法生成当前授权的 CC Switch JSON");
+      await writeClipboardText(json);
+      if (requestGateRef.current.isCurrent("http", requestToken)) {
+        setGrantCcSwitchCopiedClientId(grant.clientId);
+        setError("");
+      }
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("http", requestToken)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("http", requestToken)) setHttpBusy(false);
     }
   }
 
@@ -567,10 +659,22 @@ export default function McpDialog({
                 </button>
               ) : null}
               {grants.map((grant) => (
-                <button key={grant.clientId} type="button" disabled={grantBusy} className={grant.clientId === editingClientId ? "active" : ""} onClick={() => selectGrant(grant)}>
-                  <strong>{grant.name || grant.clientId}</strong>
-                  <span>{grant.scopes.join(", ") || "read-only"}</span>
-                </button>
+                <div key={grant.clientId} className="mcp-grant-row">
+                  <button type="button" disabled={grantBusy} className={`mcp-grant-select ${grant.clientId === editingClientId ? "active" : ""}`} onClick={() => selectGrant(grant)}>
+                    <strong>{grant.name || grant.clientId}</strong>
+                    <span>{grant.scopes.join(", ") || "read-only"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={grantCcSwitchCopiedClientId === grant.clientId ? "mcp-grant-copy copied" : "mcp-grant-copy"}
+                    title={grantCcSwitchActionLabel(grant)}
+                    aria-label={grantCcSwitchActionLabel(grant)}
+                    disabled={grantCcSwitchActionDisabled(grant)}
+                    onClick={() => void copyGrantCcSwitch(grant)}
+                  >
+                    {grantCcSwitchCopiedClientId === grant.clientId ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
               ))}
               {!grants.length && !draft ? <div className="empty-pane top">没有授权规则</div> : null}
             </aside>
@@ -631,6 +735,28 @@ export default function McpDialog({
                   <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
                   <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
                 </div>
+                {editingClientId === draft.clientId && !draft.revokedAt ? (
+                  <section className="mcp-grant-cc-switch" aria-labelledby="mcp-grant-cc-switch-title">
+                    <header>
+                      <div>
+                        <strong id="mcp-grant-cc-switch-title">CC Switch</strong>
+                        <span>{selectedGrantIsHttpClient ? "当前 HTTP 授权" : "待应用到 HTTP"}</span>
+                      </div>
+                      <button
+                        type="button"
+                        title={grantCcSwitchActionLabel(draft)}
+                        aria-label={grantCcSwitchActionLabel(draft)}
+                        disabled={grantCcSwitchActionDisabled(draft)}
+                        onClick={() => void copyGrantCcSwitch(draft)}
+                      >
+                        {grantCcSwitchCopiedClientId === draft.clientId ? <Check size={14} /> : <Copy size={14} />}
+                        <span>{grantCcSwitchCopiedClientId === draft.clientId ? "已复制" : selectedGrantIsHttpClient && httpToken ? "复制 JSON" : "应用并复制"}</span>
+                      </button>
+                    </header>
+                    <div className="mcp-grant-token"><span>Bearer Token</span><code>{httpToken || "未生成"}</code></div>
+                    <textarea readOnly aria-label="授权 CC Switch MCP JSON" value={selectedGrantCcSwitchJson} />
+                  </section>
+                ) : null}
               </section>
             ) : (
               <section className="mcp-editor mcp-editor-empty">
@@ -699,7 +825,6 @@ export default function McpDialog({
                 {httpRuntime?.startedAt ? <time>{formatDateTime(httpRuntime.startedAt)}</time> : null}
                 {httpRuntime?.message ? <small>{httpRuntime.message}</small> : null}
               </div>
-              {httpToken ? <div className="mcp-http-token"><span>新 Token</span><code>{httpToken}</code></div> : null}
               <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-http-command stale" : "mcp-http-command"} readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? ""} />
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">

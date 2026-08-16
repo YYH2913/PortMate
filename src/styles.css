@@ -11306,6 +11306,34 @@ fieldset label {
   text-align: left;
 }
 
+.mcp-grant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mcp-grants .mcp-grant-copy {
+  display: grid;
+  width: 32px;
+  min-height: 0;
+  place-items: center;
+  padding: 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.mcp-grants .mcp-grant-copy:hover:not(:disabled),
+.mcp-grants .mcp-grant-copy.copied {
+  border-color: rgba(94, 234, 212, 0.5);
+  color: var(--cyan);
+}
+
+.mcp-grants .mcp-grant-copy:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .mcp-grants button.active {
   border-color: rgba(94, 234, 212, 0.5);
   background: rgba(20, 184, 166, 0.08);
@@ -11567,6 +11595,88 @@ fieldset label {
 .mcp-actions button:hover,
 .mcp-grants button:hover {
   background: var(--control-hover);
+}
+
+.mcp-grant-cc-switch {
+  display: grid;
+  gap: 9px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.mcp-grant-cc-switch header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcp-grant-cc-switch header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.mcp-grant-cc-switch header strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mcp-grant-cc-switch header span,
+.mcp-grant-token > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-grant-cc-switch header > button {
+  display: inline-flex;
+  min-width: 112px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.mcp-grant-cc-switch header > button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.mcp-grant-cc-switch header > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mcp-grant-token {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.mcp-grant-token code {
+  overflow-wrap: anywhere;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.mcp-grant-cc-switch textarea {
+  width: 100%;
+  min-height: 142px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: #d7e1eb;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .mcp-http-view {

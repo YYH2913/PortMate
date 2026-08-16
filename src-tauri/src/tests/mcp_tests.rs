@@ -1,4 +1,5 @@
 use super::*;
+use crate::mcp_commands::mcp_http_token_from_probe;
 
 #[test]
 fn invalid_mcp_identifiers_are_bounded_before_audit() {
@@ -1971,6 +1972,32 @@ fn log_query_limit_matches_mcp_schema_bounds() {
     assert_eq!(bounded_log_query_limit(Some(0)), 1);
     assert_eq!(bounded_log_query_limit(Some(600)), 600);
     assert_eq!(bounded_log_query_limit(Some(u64::MAX)), 1000);
+}
+
+#[test]
+fn mcp_http_existing_token_display_distinguishes_missing_invalid_and_unavailable_values() {
+    assert_eq!(
+        mcp_http_token_from_probe(SecretProbeResult::Present(Zeroizing::new(
+            "existing-token".to_string()
+        )))
+        .unwrap(),
+        Some("existing-token".to_string())
+    );
+    assert_eq!(
+        mcp_http_token_from_probe(SecretProbeResult::Missing).unwrap(),
+        None
+    );
+    assert!(
+        mcp_http_token_from_probe(SecretProbeResult::Present(Zeroizing::new("\n".to_string())))
+            .unwrap_err()
+            .contains("Token 无效")
+    );
+    let error = mcp_http_token_from_probe(SecretProbeResult::Unavailable(
+        "native keyring unavailable".to_string(),
+    ))
+    .unwrap_err();
+    assert!(error.contains("读取已保存"), "{error}");
+    assert!(error.contains("native keyring unavailable"), "{error}");
 }
 
 #[test]

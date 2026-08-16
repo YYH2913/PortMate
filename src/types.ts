@@ -600,6 +600,11 @@ export interface McpHttpTokenResponse {
   token: string;
 }
 
+export interface McpHttpAccessResponse {
+  config: McpHttpConfig;
+  token: string | null;
+}
+
 export type McpHttpRuntimePhase = "stopped" | "starting" | "running" | "failed";
 
 export interface McpHttpRuntimeStatus {

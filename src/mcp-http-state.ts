@@ -104,6 +104,18 @@ export function formatCcSwitchMcpJson(
   }, null, 2);
 }
 
+export function ccSwitchServerIdForGrant(clientId: string): string {
+  const suffix = clientId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "");
+  if (!suffix) return CC_SWITCH_DEFAULT_SERVER_ID;
+  return `${CC_SWITCH_DEFAULT_SERVER_ID}-${suffix}`
+    .slice(0, 64)
+    .replace(/[._-]+$/g, "") || CC_SWITCH_DEFAULT_SERVER_ID;
+}
+
 function normalizeMcpHttpClientHost(value: string): string | null {
   const host = value.trim().replace(/^\[|\]$/g, "");
   if (!host || /[\s/?#@]/.test(host)) return null;

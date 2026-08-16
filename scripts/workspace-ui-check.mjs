@@ -448,6 +448,7 @@ try {
     window.__deferCustomScriptRuns = false;
     window.__pendingCustomScriptRuns = [];
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
+    window.__mcpHttpToken = "portmate-existing-token";
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
     window.__pendingMcpHttpRuntimeStatuses = [];
@@ -1552,6 +1553,10 @@ try {
           if (!window.__deferMcpHttpConfig) return structuredClone(window.__mcpHttpConfig);
           return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
         }
+        if (command === "mcp_http_access_config") return {
+          config: structuredClone(window.__mcpHttpConfig),
+          token: window.__mcpHttpToken,
+        };
         if (command === "preview_mcp_http_config") return window.__buildMcpHttpConfig(args.settings);
         if (command === "save_mcp_http_settings") {
           window.__mcpHttpConfig = window.__buildMcpHttpConfig(args.settings);
@@ -1603,7 +1608,10 @@ try {
           if (!window.__deferGrantMutations) return result;
           return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
-        if (command === "rotate_mcp_http_token") return { config: structuredClone(window.__mcpHttpConfig), token: "portmate-test-token" };
+        if (command === "rotate_mcp_http_token") {
+          window.__mcpHttpToken = "portmate-test-token";
+          return { config: structuredClone(window.__mcpHttpConfig), token: window.__mcpHttpToken };
+        }
         if (command === "export_mcp_audit") {
           return {
             path: "/tmp/portmate-mcp-audit.jsonl",
@@ -6002,7 +6010,7 @@ Host staging
     && await mcpDialog.locator(".mcp-http-view").count() === 0
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP grant page renders inactive task content");
-  assert(await mcpDialog.locator(".mcp-grants > button").count() === mcpGrants.length + 1,
+  assert(await mcpDialog.locator(".mcp-grant-select").count() === mcpGrants.length,
     "MCP grants did not load into the compact grant workspace");
   assert(await mcpDialog.getByRole("checkbox", { name: "写操作每次确认", exact: true }).isChecked(),
     "MCP write confirmation setting did not load for the selected grant");
@@ -6011,6 +6019,23 @@ Host staging
     "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts",
     "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts",
   ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
+  const savedGrantCcSwitch = mcpDialog.getByRole("textbox", { name: "授权 CC Switch MCP JSON", exact: true });
+  await page.waitForFunction(() => document.querySelector('[aria-label="授权 CC Switch MCP JSON"]')?.value.includes("portmate-existing-token"));
+  const savedGrantCcSwitchJson = await savedGrantCcSwitch.inputValue();
+  const parsedSavedGrantCcSwitch = JSON.parse(savedGrantCcSwitchJson);
+  const savedGrantCcSwitchAction = mcpDialog.locator(".mcp-grant-cc-switch")
+    .getByRole("button", { name: `应用并复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true });
+  await savedGrantCcSwitchAction.click();
+  await mcpDialog.locator(".mcp-grant-cc-switch")
+    .getByRole("button", { name: `已复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true })
+    .waitFor();
+  const savedGrantHttpSelection = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings.clientId);
+  assert(parsedSavedGrantCcSwitch["portmate-ops-console"]?.headers?.Authorization === "Bearer portmate-existing-token"
+    && parsedSavedGrantCcSwitch["portmate-ops-console"]?.url === "http://127.0.0.1:8787/mcp"
+    && await page.evaluate(() => window.__clipboardText) === savedGrantCcSwitchJson
+    && savedGrantHttpSelection === mcpGrants[0].clientId,
+  `saved MCP grant did not expose and apply a complete CC Switch configuration: ${savedGrantCcSwitchJson}`);
   await mcpDialog.locator(".mcp-new").click();
   const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
   await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
@@ -6032,7 +6057,7 @@ Host staging
       return false;
     };
   });
-  await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
+  await mcpDialog.locator(".mcp-grant-select", { hasText: mcpGrants[0].name }).click();
   assert(await newGrantClientId.inputValue() === generatedClientId
     && await mcpDialog.locator(".mcp-grant-draft.active").count() === 1,
   "MCP grant switch discarded a new unsaved draft after cancellation");
@@ -6042,7 +6067,7 @@ Host staging
       return true;
     };
   });
-  await mcpDialog.locator(".mcp-grants > button", { hasText: mcpGrants[0].name }).click();
+  await mcpDialog.locator(".mcp-grant-select", { hasText: mcpGrants[0].name }).click();
   const mcpGrantDiscardPrompts = await page.evaluate(() => {
     window.confirm = window.__originalMcpConfirm;
     return window.__mcpGrantDiscardPrompts;
@@ -6075,7 +6100,7 @@ Host staging
     };
   });
   for (const grant of mcpGrants) {
-    const grantRow = mcpDialog.locator(".mcp-grants > button", { hasText: grant.name });
+    const grantRow = mcpDialog.locator(".mcp-grant-select", { hasText: grant.name });
     await grantRow.click();
     await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "撤销", exact: true }).click();
     await grantRow.waitFor({ state: "detached" });
@@ -6131,7 +6156,7 @@ Host staging
   await grantExpiryEditor.getByLabel("MCP 授权到期时刻", { exact: true }).fill("06:07");
   await grantExpiryEditor.getByRole("button", { name: "确定", exact: true }).click();
   await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
-  await mcpDialog.locator(".mcp-grants > button", { hasText: "Empty Store Client" }).waitFor();
+  await mcpDialog.locator(".mcp-grant-select", { hasText: "Empty Store Client" }).waitFor();
   const emptyStoreGrantSave = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "save_mcp_grant" && call.args.grant.clientId === "empty-store-client")
     .at(-1));
@@ -6141,7 +6166,6 @@ Host staging
     `MCP new grant action did not save from an empty store: ${JSON.stringify(emptyStoreGrantSave)}`);
 
   await page.evaluate(() => {
-    window.__deferMcpHttpConfig = true;
     window.__deferMcpHttpRuntimeStatus = true;
   });
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
@@ -6149,20 +6173,16 @@ Host staging
   assert(await mcpDialog.locator(".mcp-content").count() === 0
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP HTTP page renders inactive task content");
-  await page.waitForFunction(() => window.__pendingMcpHttpConfig.length === 1
-    && window.__pendingMcpHttpRuntimeStatuses.length === 1);
-  assert(await mcpDialog.getByRole("button", { name: "生成 Token", exact: true }).isDisabled(),
-    "MCP token generation stayed enabled while HTTP configuration was loading");
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 1);
+  assert(await mcpDialog.getByLabel("CC Switch Bearer Token", { exact: true }).inputValue() === "portmate-existing-token"
+    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isEnabled(),
+  "MCP HTTP page did not reuse the existing saved Token");
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
   await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 2);
-  assert(await page.evaluate(() => window.__pendingMcpHttpConfig.length) === 1,
-    "switching back to MCP HTTP started an overlapping configuration request");
-  await page.evaluate((config) => {
-    for (const pending of window.__pendingMcpHttpConfig) pending.resolve(config);
-    window.__pendingMcpHttpConfig = [];
-    window.__deferMcpHttpConfig = false;
-  }, mcpHttpConfig);
+  assert(await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "mcp_http_access_config").length) === 1,
+  "switching MCP tasks redundantly exposed the saved HTTP Token");
   assert(await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).isDisabled(),
     "MCP HTTP start was enabled before the managed runtime status loaded");
   await page.evaluate(() => {
@@ -6177,7 +6197,7 @@ Host staging
   assert(mcpHttpText.includes(mcpHttpConfig.endpoint)
     && mcpHttpText.includes(mcpHttpConfig.executable)
     && mcpHttpText.includes(mcpHttpConfig.storePath)
-    && await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue() === mcpHttpConfig.startCommand
+    && (await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue()).includes("PORTMATE_MCP_CLIENT_ID='ops-console'")
     && !mcpHttpText.includes("cargo run"),
   "MCP HTTP packaged executable/store configuration did not load");
   const mcpListenHost = mcpDialog.getByLabel("MCP HTTP 监听 IP", { exact: true });
@@ -6256,11 +6276,12 @@ Host staging
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
   const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
-  assert(await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue() === ""
-    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled(),
-  "CC Switch JSON exposed a stored Token before an explicit generation or rotation action");
+  const existingCcSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
+  assert(existingCcSwitchJson.includes("portmate-existing-token")
+    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isEnabled(),
+  "CC Switch JSON did not reuse the saved Token after HTTP settings changed");
   await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
-  await mcpDialog.getByText("portmate-test-token", { exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-label="CC Switch Bearer Token"]')?.value === "portmate-test-token");
   const ccSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
   const parsedCcSwitchJson = JSON.parse(ccSwitchJson);
   await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
@@ -7151,7 +7172,7 @@ Host staging
   await startupMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").fill("startup-hydration-client");
   await startupMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Startup Hydration Client");
   await startupMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
-  await startupMcpDialog.locator(".mcp-grants button", { hasText: "Startup Hydration Client" }).waitFor();
+  await startupMcpDialog.locator(".mcp-grant-select", { hasText: "Startup Hydration Client" }).waitFor();
 
   await startupDomainPage.evaluate(() => {
     for (const pending of window.__pendingTransferLists.splice(0)) pending.resolve(pending.result);
@@ -7169,7 +7190,7 @@ Host staging
     grantReplacement.resolve(grantReplacement.result);
   });
   await startupDomainPage.waitForTimeout(200);
-  const startupGrantLabels = await startupMcpDialog.locator(".mcp-grants button strong").allTextContents();
+  const startupGrantLabels = await startupMcpDialog.locator(".mcp-grant-select strong").allTextContents();
   assert(startupGrantLabels.includes("Startup Hydration Client")
     && startupGrantLabels.includes("Operations Console")
     && startupGrantLabels.includes("Audit Reader"),
@@ -7353,7 +7374,7 @@ Host staging
   await grantLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
   await grantLifecyclePage.getByRole("button", { name: "MCP Bridge", exact: true }).click();
   const reopenedMcpDialog = grantLifecyclePage.locator(".mcp-dialog");
-  await reopenedMcpDialog.locator(".mcp-grants button", { hasText: "Late Close Client" }).waitFor();
+  await reopenedMcpDialog.locator(".mcp-grant-select", { hasText: "Late Close Client" }).waitFor();
   const grantLifecycleState = await grantLifecyclePage.evaluate(() => ({
     backend: window.__mcpGrants.map((grant) => grant.clientId),
     pending: window.__pendingGrantMutations.length,

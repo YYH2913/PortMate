@@ -25,6 +25,13 @@ pub struct McpHttpTokenResponse {
     pub token: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpHttpAccessResponse {
+    pub config: McpHttpConfig,
+    pub token: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpHttpRuntimePhase {

@@ -177,6 +177,45 @@ pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfi
 }
 
 #[tauri::command]
+pub(crate) fn mcp_http_access_config(
+    state: State<'_, AppState>,
+) -> Result<McpHttpAccessResponse, String> {
+    let settings = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_http_settings
+        .clone();
+    let token = mcp_http_token_from_probe(probe_secret_from_keyring(MCP_HTTP_TOKEN_REF))?;
+    let config = build_mcp_http_config_for_request(
+        token.is_some(),
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+        settings,
+    )?;
+    Ok(McpHttpAccessResponse { config, token })
+}
+
+pub(super) fn mcp_http_token_from_probe(
+    probe: SecretProbeResult,
+) -> Result<Option<String>, String> {
+    match probe {
+        SecretProbeResult::Present(token) => {
+            let token = token.as_str();
+            if token.trim().is_empty() || token.len() > 4_096 || token.chars().any(char::is_control)
+            {
+                return Err("已保存的 MCP HTTP Token 无效，请轮换 Token".to_string());
+            }
+            Ok(Some(token.to_string()))
+        }
+        SecretProbeResult::Missing => Ok(None),
+        SecretProbeResult::Unavailable(error) => {
+            Err(format!("读取已保存的 MCP HTTP Token 失败: {error}"))
+        }
+    }
+}
+
+#[tauri::command]
 pub(crate) fn preview_mcp_http_config(
     state: State<'_, AppState>,
     settings: McpHttpSettings,

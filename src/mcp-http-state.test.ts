@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ccSwitchServerIdForGrant,
   defaultMcpHttpOrigins,
   defaultMcpHttpSettings,
   formatCcSwitchMcpJson,
@@ -41,6 +42,13 @@ describe("MCP HTTP settings", () => {
     });
     expect(json).not.toContain("mcpServers");
     expect(formatCcSwitchMcpJson({ clientHost: "192.168.33.222", port: 8787 })).toBe("");
+  });
+
+  it("derives stable import IDs for saved grants", () => {
+    expect(ccSwitchServerIdForGrant("ops-console")).toBe("portmate-ops-console");
+    expect(ccSwitchServerIdForGrant("  Lab Operator / Router  ")).toBe("portmate-lab-operator-router");
+    expect(ccSwitchServerIdForGrant("中文授权")).toBe("portmate");
+    expect(ccSwitchServerIdForGrant("x".repeat(128))).toHaveLength(64);
   });
 
   it("formats IPv6 client endpoints and rejects listener wildcard addresses", () => {
