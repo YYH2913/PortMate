@@ -263,3 +263,97 @@ fn tunnel_client_failure_events_require_the_exact_runtime_generation() {
             .is_some_and(|text| text.contains("stale generation failure"))
     }));
 }
+
+#[test]
+fn stale_listener_failure_cannot_disable_a_replacement_tunnel() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let mut profile = test_ssh_profile();
+        let spec = TunnelSpec {
+            id: "listener-failure-generation".to_string(),
+            label: "listener failure generation".to_string(),
+            mode: TunnelMode::Local,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10_022,
+            target_host: "127.0.0.1".to_string(),
+            target_port: 22,
+            route_rules: Vec::new(),
+            enabled: true,
+        };
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
+            panic!("expected SSH profile");
+        };
+        ssh.tunnels.push(spec.clone());
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        let first = TunnelRuntime {
+            session_id: profile.id.clone(),
+            ssh_runtime_id: "shared-ssh-runtime".to_string(),
+            spec: spec.clone(),
+            metrics: Arc::new(TunnelMetrics::default()),
+            closed: Arc::new(AtomicBool::new(false)),
+            listener_worker: TunnelListenerWorker::completed(),
+        };
+        let first_owner = first.owner();
+        state
+            .tunnels
+            .lock()
+            .unwrap()
+            .insert(spec.id.clone(), first);
+
+        let lane = tunnel_lifecycle_lane(&state, &spec.id).unwrap();
+        let guard = lane.lock().await;
+        let failure_state = state.clone();
+        let tunnel_id = spec.id.clone();
+        let session_id = profile.id.clone();
+        let failed_spec = spec.clone();
+        let failure = tokio::spawn(async move {
+            fail_tunnel_listener_if_owned(
+                &failure_state,
+                &tunnel_id,
+                &first_owner,
+                &session_id,
+                &failed_spec,
+                "stale listener failure",
+            )
+            .await
+            .unwrap()
+        });
+        tokio::task::yield_now().await;
+        assert!(!failure.is_finished());
+
+        let replacement = TunnelRuntime {
+            session_id: profile.id.clone(),
+            ssh_runtime_id: "shared-ssh-runtime".to_string(),
+            spec: spec.clone(),
+            metrics: Arc::new(TunnelMetrics::default()),
+            closed: Arc::new(AtomicBool::new(false)),
+            listener_worker: TunnelListenerWorker::completed(),
+        };
+        let replacement_owner = replacement.owner();
+        state
+            .tunnels
+            .lock()
+            .unwrap()
+            .insert(spec.id.clone(), replacement);
+        drop(guard);
+
+        assert!(!failure.await.unwrap());
+        let tunnels = state.tunnels.lock().unwrap();
+        assert!(tunnels
+            .get(&spec.id)
+            .is_some_and(|runtime| replacement_owner.owns(runtime)));
+        drop(tunnels);
+        let store = state.store.lock().unwrap();
+        let saved = store.profile(&profile.id).unwrap();
+        let ConnectionConfig::Ssh(ssh) = saved.connection else {
+            panic!("expected SSH profile");
+        };
+        assert!(ssh.tunnels.iter().any(|tunnel| tunnel.id == spec.id && tunnel.enabled));
+        assert!(!store.events.iter().any(|event| {
+            event
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("stale listener failure"))
+        }));
+    });
+}

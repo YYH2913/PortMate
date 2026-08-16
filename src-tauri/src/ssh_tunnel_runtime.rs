@@ -256,6 +256,7 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     let store = Arc::clone(&state.store);
     let store_path = state.store_path.clone();
     let tunnel_registry = Arc::clone(&state.tunnels);
+    let listener_state = state.clone();
     let tunnel_for_task = tunnel.clone();
     let owner_for_task = owner.clone();
     tauri::async_runtime::spawn(async move {
@@ -333,36 +334,18 @@ pub(super) async fn start_tunnel_runtime_with_validation(
                 }
                 Some(Err(error)) => {
                     let message = format!("SSH tunnel accept failed: {error}");
-                    let removed = match fail_tunnel_runtime_if_owned(
-                        &tunnel_registry,
+                    if let Err(registry_error) = fail_tunnel_listener_if_owned(
+                        &listener_state,
                         &tunnel_for_task.id,
                         &owner_for_task,
+                        &session_id,
+                        &tunnel_for_task,
                         &message,
-                    ) {
-                        Ok(Some(_)) => true,
-                        Ok(None) => false,
-                        Err(registry_error) => {
-                            closed.store(true, Ordering::SeqCst);
-                            metrics.record_error(&format!("{message}; {registry_error}"));
-                            false
-                        }
-                    };
-                    if removed {
-                        if let Ok(mut store) = store.lock() {
-                            let mut stopped = tunnel_for_task.clone();
-                            stopped.enabled = false;
-                            mark_tunnel_stopped_in_store(&mut store, &session_id, &stopped);
-                            store.record_system_event(&session_id, format!("PortMate: {message}"));
-                            if let Err(error) = persist_applied_store(
-                                &store,
-                                &store_path,
-                                "failed tunnel listener state",
-                            ) {
-                                eprintln!(
-                                    "PortMate: failed to persist tunnel listener failure: {error}"
-                                );
-                            }
-                        }
+                    )
+                    .await
+                    {
+                        closed.store(true, Ordering::SeqCst);
+                        metrics.record_error(&format!("{message}; {registry_error}"));
                     }
                     break;
                 }
@@ -372,6 +355,33 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     });
 
     Ok((tunnel, Some(local_addr), owner))
+}
+
+pub(super) async fn fail_tunnel_listener_if_owned(
+    state: &AppState,
+    tunnel_id: &str,
+    owner: &TunnelRuntimeOwner,
+    session_id: &str,
+    tunnel: &TunnelSpec,
+    message: &str,
+) -> Result<bool, String> {
+    let lifecycle_lane = tunnel_lifecycle_lane(state, tunnel_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    if fail_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, owner, message)?.is_none() {
+        return Ok(false);
+    }
+
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let mut stopped = tunnel.clone();
+    stopped.enabled = false;
+    mark_tunnel_stopped_in_store(&mut store, session_id, &stopped);
+    store.record_system_event(session_id, format!("PortMate: {message}"));
+    if let Err(error) =
+        persist_applied_store(&store, &state.store_path, "failed tunnel listener state")
+    {
+        eprintln!("PortMate: failed to persist tunnel listener failure: {error}");
+    }
+    Ok(true)
 }
 
 pub(super) fn record_tunnel_client_failure_if_owned(
