@@ -257,9 +257,13 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             }],
             enabled: true,
         }];
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
         let root = std::env::temp_dir().join(format!("portmate-trigger-order-{}", Uuid::new_v4()));
         let store_path = root.join("portmate-store.sqlite3");
-        let state = test_app_state(profile.clone(), store_path);
+        let state = test_app_state(profile.clone(), store_path.clone());
         let stream = TcpStream::connect(address).await.unwrap();
         let (_reader, writer) = stream.into_split();
         let (tap, _) = broadcast::channel(8);
@@ -304,6 +308,42 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             .get_mut(&profile.id)
             .unwrap()
             .runtime_id = "runtime-replacement".to_string();
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let runtimes = io.runtimes.clone();
+            let session_id = profile.id.clone();
+            scope.spawn(move || {
+                assert_eq!(
+                    with_current_session_runtime_generation(
+                        &runtimes,
+                        &session_id,
+                        "runtime-replacement",
+                        || {
+                            entered_tx.send(()).unwrap();
+                            release_rx.recv().unwrap();
+                        },
+                    )
+                    .unwrap(),
+                    Some(())
+                );
+            });
+            entered_rx.recv().unwrap();
+            assert!(matches!(
+                io.runtimes.tcp.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            release_tx.send(()).unwrap();
+        });
+        state
+            .tcp
+            .lock()
+            .unwrap()
+            .get_mut(&profile.id)
+            .unwrap()
+            .runtime_id = "runtime-newest".to_string();
+
         let error = send_trigger_text_inner(&io, &profile.id, "runtime-current", "stale")
             .await
             .unwrap_err();
@@ -316,7 +356,23 @@ fn trigger_send_text_preserves_batch_order_and_rejects_stale_runtime() {
             b"STALE",
             "STALE".to_string(),
         );
-        assert!(state.store.lock().unwrap().timeline.is_empty());
+        let store = state.store.lock().unwrap();
+        assert!(store.timeline.is_empty());
+        assert!(!store.events.iter().any(|event| {
+            event.session_id == profile.id && event.text.as_deref() == Some("STALE")
+        }));
+        assert!(!store
+            .screen(&profile.id)
+            .is_some_and(|screen| screen.contains("STALE")));
+        drop(store);
+        for extension in ["raw", "txt", "jsonl"] {
+            let path = log_shard_path(&store_path, &profile, extension).unwrap();
+            if let Ok(contents) = fs::read(path) {
+                assert!(!contents
+                    .windows(b"STALE".len())
+                    .any(|part| part == b"STALE"));
+            }
+        }
 
         state.tcp.lock().unwrap().remove(&profile.id);
         let _ = fs::remove_dir_all(root);

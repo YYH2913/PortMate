@@ -35,6 +35,42 @@ pub(super) fn record_channel_bytes(
     raw_bytes: &[u8],
     text: String,
 ) {
+    let Some(source_runtime_id) = source_runtime_id else {
+        record_accepted_channel_bytes(io, session_id, None, stream, raw_bytes, text);
+        return;
+    };
+    match with_current_session_runtime_generation(
+        &io.runtimes,
+        session_id,
+        source_runtime_id,
+        || {
+            record_accepted_channel_bytes(
+                io,
+                session_id,
+                Some(source_runtime_id),
+                stream,
+                raw_bytes,
+                text,
+            );
+        },
+    ) {
+        Ok(Some(())) | Ok(None) => {}
+        Err(error) => {
+            eprintln!(
+                "PortMate: runtime registry unavailable; dropping channel bytes for {session_id}: {error}"
+            );
+        }
+    }
+}
+
+fn record_accepted_channel_bytes(
+    io: &SessionIo,
+    session_id: &str,
+    source_runtime_id: Option<&str>,
+    stream: EventStream,
+    raw_bytes: &[u8],
+    text: String,
+) {
     let command_id = active_command_id(io, session_id);
     let PendingEventLogs {
         profile,
@@ -105,24 +141,7 @@ pub(super) fn record_channel_bytes(
             let _ = app_handle.emit("portmate-session-event", event);
         }
     }
-    let source_is_current = match source_runtime_id {
-        Some(source_runtime_id) => {
-            match session_runtime_generation_is_current(&io.runtimes, session_id, source_runtime_id)
-            {
-                Ok(current) => current,
-                Err(error) => {
-                    eprintln!(
-                        "PortMate: runtime registry unavailable; dropping trigger actions for {session_id}: {error}"
-                    );
-                    false
-                }
-            }
-        }
-        None => true,
-    };
-    let trigger_dispatch = if !source_is_current {
-        TriggerDispatch::default()
-    } else if let Ok(mut store) = io.store.lock() {
+    let trigger_dispatch = if let Ok(mut store) = io.store.lock() {
         let (trigger_dispatch, trigger_changed_store) =
             apply_trigger_actions_locked(&mut store, session_id, &text);
         if trigger_changed_store {
@@ -161,36 +180,48 @@ pub(super) fn record_channel_bytes(
     }
 }
 
-fn session_runtime_generation_is_current(
+pub(super) fn with_current_session_runtime_generation<T>(
     runtimes: &RuntimeRegistry,
     session_id: &str,
     runtime_id: &str,
-) -> Result<bool, String> {
-    let ssh_matches = runtimes
-        .ssh
-        .lock()
-        .map_err(|error| error.to_string())?
+    operation: impl FnOnce() -> T,
+) -> Result<Option<T>, String> {
+    let mut operation = Some(operation);
+    let ssh = runtimes.ssh.lock().map_err(|error| error.to_string())?;
+    if ssh
         .get(session_id)
-        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
-    let shell_matches = runtimes
-        .shell
-        .lock()
-        .map_err(|error| error.to_string())?
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+    {
+        return Ok(operation.take().map(|operation| operation()));
+    }
+    drop(ssh);
+
+    let shell = runtimes.shell.lock().map_err(|error| error.to_string())?;
+    if shell
         .get(session_id)
-        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
-    let tcp_matches = runtimes
-        .tcp
-        .lock()
-        .map_err(|error| error.to_string())?
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+    {
+        return Ok(operation.take().map(|operation| operation()));
+    }
+    drop(shell);
+
+    let tcp = runtimes.tcp.lock().map_err(|error| error.to_string())?;
+    if tcp
         .get(session_id)
-        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
-    let serial_matches = runtimes
-        .serial
-        .lock()
-        .map_err(|error| error.to_string())?
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+    {
+        return Ok(operation.take().map(|operation| operation()));
+    }
+    drop(tcp);
+
+    let serial = runtimes.serial.lock().map_err(|error| error.to_string())?;
+    if serial
         .get(session_id)
-        .is_some_and(|runtime| runtime.runtime_id == runtime_id);
-    Ok(ssh_matches || shell_matches || tcp_matches || serial_matches)
+        .is_some_and(|runtime| runtime.runtime_id == runtime_id)
+    {
+        return Ok(operation.take().map(|operation| operation()));
+    }
+    Ok(None)
 }
 
 pub(super) fn publish_system_event(
