@@ -192,9 +192,17 @@ fn session_open_registration_is_single_flight_and_releases_its_slot() {
     );
     assert!(first.is_cancelled());
 
-    drop(first);
     let replacement = register_session_open_cancellation(&state, &profile.id).unwrap();
     assert!(!replacement.is_cancelled());
+    assert_eq!(
+        state.session_open_slots.available_permits(),
+        MAX_CONCURRENT_SESSION_OPENS - 2
+    );
+    drop(first);
+    assert_eq!(
+        state.session_open_slots.available_permits(),
+        MAX_CONCURRENT_SESSION_OPENS - 1
+    );
     drop(replacement);
     assert_eq!(
         state.session_open_slots.available_permits(),
@@ -226,6 +234,92 @@ fn session_open_saturation_rejects_before_store_side_effects() {
         assert!(store.events.is_empty());
         assert_eq!(
             store.summaries()[0].runtime.status,
+            SessionStatus::Disconnected
+        );
+    });
+}
+
+#[test]
+fn session_prepare_cancellation_drops_late_resources_without_installing_a_runtime() {
+    #[derive(Debug)]
+    struct LatePreparedResource(Arc<AtomicBool>);
+
+    impl Drop for LatePreparedResource {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+        let cancellation = register_session_open_cancellation(&state, &profile.id).unwrap();
+        let lifecycle_lane = session_lifecycle_lane(&state, &profile.id).unwrap();
+        let _lifecycle_guard = lifecycle_lane.lock().await;
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let task = spawn_session_prepare(&cancellation, move || {
+            let _ = started_sender.send(());
+            release_receiver.recv().unwrap();
+            Ok(LatePreparedResource(task_dropped))
+        });
+        started_receiver.await.unwrap();
+
+        cancellation.cancel();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_session_prepare(
+                &state,
+                &profile.id,
+                &cancellation,
+                task,
+                "test prepare failed",
+            ),
+        )
+        .await
+        .expect("cancelled prepare waited for its blocking worker")
+        .unwrap_err();
+
+        assert!(error.contains("connection was cancelled"), "{error}");
+        assert!(!dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS - 1
+        );
+        assert!(state.shell.lock().unwrap().is_empty());
+        assert_eq!(
+            state.store.lock().unwrap().summaries()[0].runtime.status,
+            SessionStatus::Disconnected
+        );
+
+        release_sender.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("late prepared resource was not dropped");
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS - 1
+        );
+        drop(cancellation);
+        assert_eq!(
+            state.session_open_slots.available_permits(),
+            MAX_CONCURRENT_SESSION_OPENS
+        );
+        assert!(state.shell.lock().unwrap().is_empty());
+        assert_eq!(
+            state.store.lock().unwrap().summaries()[0].runtime.status,
             SessionStatus::Disconnected
         );
     });

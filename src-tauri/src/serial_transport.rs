@@ -4,6 +4,14 @@ use super::*;
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;
 pub(super) type SerialPortPair = (SerialPortHandle, SerialPortHandle);
 
+pub(super) struct PreparedSerialSession {
+    profile: SessionProfile,
+    serial: portmate_core::SerialConnection,
+    port_name: String,
+    port: SerialPortHandle,
+    reader: SerialPortHandle,
+}
+
 pub(super) struct SerialRuntime {
     pub(super) runtime_id: String,
     pub(super) writer: Option<Arc<Mutex<SerialPortHandle>>>,
@@ -58,27 +66,47 @@ pub(super) fn open_configured_serial_port(
     Ok((port, reader))
 }
 
+#[cfg(test)]
 pub(super) fn open_serial_session(
     state: &AppState,
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
+    install_serial_session(state, prepare_serial_session(profile)?)
+}
+
+pub(super) fn prepare_serial_session(
+    profile: SessionProfile,
+) -> Result<PreparedSerialSession, String> {
     let (serial, port_name) = serial_connection_details(&profile)?;
-
-    if let Some(existing) = {
-        let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id)
-    } {
-        existing.closed.store(true, Ordering::SeqCst);
-    }
-
     let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
+    Ok(PreparedSerialSession {
+        profile,
+        serial,
+        port_name,
+        port,
+        reader,
+    })
+}
+
+pub(super) fn install_serial_session(
+    state: &AppState,
+    prepared: PreparedSerialSession,
+) -> Result<SessionSummary, String> {
+    let PreparedSerialSession {
+        profile,
+        serial,
+        port_name,
+        port,
+        reader,
+    } = prepared;
+
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
     let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
     let writer = Arc::new(Mutex::new(port));
     let capture = serial_capture_for_session(&state.serial_captures, &profile.id)?;
-    {
+    let existing = {
         let mut connections = state.serial.lock().map_err(|error| error.to_string())?;
         connections.insert(
             profile.id.clone(),
@@ -89,7 +117,10 @@ pub(super) fn open_serial_session(
                 closed: Arc::clone(&closed),
                 capture: Arc::clone(&capture),
             },
-        );
+        )
+    };
+    if let Some(existing) = existing {
+        existing.closed.store(true, Ordering::SeqCst);
     }
 
     if let Err(error) = spawn_serial_reader(SerialReadTask {

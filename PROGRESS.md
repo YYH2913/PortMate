@@ -696,6 +696,8 @@ libssh SFTP 的目录枚举、canonicalize、stat/lstat、open、mkdir/rmdir、u
 
 libssh 的协议 timeout 是整个 SSH session 的共享状态；终端 channel、SFTP、exec/tunnel 与 Agent forwarding 过去会分别“设置 timeout 后再执行”，并发时可能在两次内部 mutex 获取之间互相覆盖。vendored `libssh-rs` 现为同一 Session 派生的 `Session`、`Channel` 和 `Sftp` 句柄共享独立的 deadline-aware operation gate，取得 gate 不需要先等待 native session mutex；所有 PortMate timeout 事务在同一 gate 内设置剩余预算、完成 FFI 并恢复 20 秒运行期 timeout，等待 gate 本身也计入原绝对期限。libssh Agent response 的分段写入会逐次复核同一 250 ms deadline，flush、EOF、容量拒绝 close 均有界，停用 Agent callback 改由 blocking worker 执行而不占住 Tokio executor。共享 gate 回归验证 SFTP 与 Session 之间的互斥、占用超时、释放恢复及已过期操作无副作用；真实 OpenSSH Agent forwarding、libssh transport/SFTP 11 项、vendored libssh-rs 24 项加 2 项 doc-test、完整主应用 503 passed/1 ignored、Rustfmt 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Serial 与本地 Shell 会话打开现拆成无状态的资源准备和受 session lifecycle lane 保护的 runtime 安装两阶段：串口驱动打开、PTY/子进程创建卡住时，关闭会话会立即取消等待并提交本地 Disconnected 状态，迟到的串口句柄只会被释放，迟到的 Shell 预备对象会主动终止子进程，不再后台注册 runtime 或覆盖 Store。取消后仍在运行的 blocking worker 会继续占用全局 open slot，防止反复打开/取消绕过 64 路并发上限；已取消的同会话 token 则不阻止新的显式连接请求排队。回归验证 2 秒内取消、迟到资源销毁、Shell 子进程终止、许可归还、正常 Shell 生命周期、提交失败回滚和真实 socat 串口二进制 loopback；完整主应用 505 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

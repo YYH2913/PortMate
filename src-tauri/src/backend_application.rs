@@ -45,6 +45,7 @@ use session_events::{append_logging_error, append_logging_errors, sync_stored_ev
 use session_open::{
     apply_session_open_profile_credentials, cancel_pending_session_opens,
     open_session_inner, register_session_open_cancellation, session_lifecycle_lane,
+    spawn_session_prepare, wait_for_session_prepare,
 };
 use session_open::{
     open_session_inner_with_validation, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,

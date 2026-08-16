@@ -6,6 +6,43 @@ use super::*;
 
 pub(super) const MAX_CONCURRENT_SESSION_OPENS: usize = 64;
 
+pub(super) fn spawn_session_prepare<T, Prepare>(
+    cancellation: &Arc<SessionOpenCancellation>,
+    prepare: Prepare,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    Prepare: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let worker_lease = Arc::clone(cancellation);
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = prepare();
+        drop(worker_lease);
+        result
+    })
+}
+
+pub(super) async fn wait_for_session_prepare<T: Send + 'static>(
+    state: &AppState,
+    session_id: &str,
+    cancellation: &SessionOpenCancellation,
+    task: tauri::async_runtime::JoinHandle<Result<T, String>>,
+    task_failure: &str,
+) -> Result<Result<T, String>, String> {
+    tokio::select! {
+        biased;
+        () = cancellation.wait() => {
+            Err(cancel_session_open_under_lifecycle_lock(state, session_id).await)
+        }
+        result = task => {
+            Ok(match result {
+                Ok(result) => result,
+                Err(error) => Err(format!("{task_failure}: {error}")),
+            })
+        }
+    }
+}
+
 pub(super) fn session_lifecycle_lane(
     state: &AppState,
     session_id: &str,
@@ -40,7 +77,11 @@ pub(super) fn register_session_open_cancellation(
         .lock()
         .map_err(|_| "session open cancellation registry poisoned".to_string())?;
     cancellations.retain(|_, pending| {
-        pending.retain(|cancellation| cancellation.strong_count() > 0);
+        pending.retain(|cancellation| {
+            cancellation
+                .upgrade()
+                .is_some_and(|cancellation| !cancellation.is_cancelled())
+        });
         !pending.is_empty()
     });
     if cancellations.contains_key(&key) {
@@ -269,14 +310,34 @@ pub(super) async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Serial(_)) {
+        let prepare = spawn_session_prepare(&cancellation, move || prepare_serial_session(profile));
+        let prepared = match wait_for_session_prepare(
+            &state,
+            &session_id,
+            &cancellation,
+            prepare,
+            "串口打开任务失败",
+        )
+        .await
+        {
+            Err(error) => return Err(error),
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(error)) => {
+                record_connection_failure(&state, &session_id, &error);
+                return Err(error);
+            }
+        };
+        if cancellation.is_cancelled() {
+            return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+        }
         let opening_state = state.clone();
         let result = match tauri::async_runtime::spawn_blocking(move || {
-            open_serial_session(&opening_state, profile)
+            install_serial_session(&opening_state, prepared)
         })
         .await
         {
             Ok(result) => result,
-            Err(error) => Err(format!("串口打开任务失败: {error}")),
+            Err(error) => Err(format!("串口安装任务失败: {error}")),
         };
         if cancellation.is_cancelled() {
             return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
@@ -291,14 +352,34 @@ pub(super) async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Shell(_)) {
+        let prepare = spawn_session_prepare(&cancellation, move || prepare_shell_session(profile));
+        let prepared = match wait_for_session_prepare(
+            &state,
+            &session_id,
+            &cancellation,
+            prepare,
+            "Shell 启动任务失败",
+        )
+        .await
+        {
+            Err(error) => return Err(error),
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(error)) => {
+                record_connection_failure(&state, &session_id, &error);
+                return Err(error);
+            }
+        };
+        if cancellation.is_cancelled() {
+            return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);
+        }
         let opening_state = state.clone();
         let result = match tauri::async_runtime::spawn_blocking(move || {
-            open_shell_session(&opening_state, profile)
+            install_shell_session(&opening_state, prepared)
         })
         .await
         {
             Ok(result) => result,
-            Err(error) => Err(format!("Shell 启动任务失败: {error}")),
+            Err(error) => Err(format!("Shell 安装任务失败: {error}")),
         };
         if cancellation.is_cancelled() {
             return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);

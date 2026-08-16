@@ -11,6 +11,23 @@ pub(super) struct ShellRuntime {
     pub(super) closed: Arc<AtomicBool>,
 }
 
+pub(super) struct PreparedShellSession {
+    profile: SessionProfile,
+    program: String,
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
+    reader: Option<Box<dyn Read + Send>>,
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+impl Drop for PreparedShellSession {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ShellLaunchPaths {
     pub(super) program: PathBuf,
@@ -89,10 +106,17 @@ fn validate_shell_arguments(shell: &portmate_core::ShellConnection) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn open_shell_session(
     state: &AppState,
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
+    install_shell_session(state, prepare_shell_session(profile)?)
+}
+
+pub(super) fn prepare_shell_session(
+    profile: SessionProfile,
+) -> Result<PreparedShellSession, String> {
     let shell = match &profile.connection {
         ConnectionConfig::Shell(shell) => shell.clone(),
         _ => return Err("profile is not shell-backed".to_string()),
@@ -106,16 +130,6 @@ pub(super) fn open_shell_session(
         }
     }
     let program = launch.program.to_string_lossy().into_owned();
-
-    if let Some(existing) = {
-        let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
-        connections.remove(&profile.id)
-    } {
-        existing.closed.store(true, Ordering::SeqCst);
-        if let Ok(mut child) = existing.child.lock() {
-            let _ = child.kill();
-        }
-    }
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -140,35 +154,81 @@ pub(super) fn open_shell_session(
         .map_err(|error| format!("Shell 启动失败 {program}: {error}"))?;
     drop(pair.slave);
 
-    let reader = pair
-        .master
+    let mut prepared = PreparedShellSession {
+        profile,
+        program,
+        master: Some(pair.master),
+        writer: None,
+        reader: None,
+        child: Some(child),
+    };
+    prepared.reader = Some(
+        prepared
+            .master
+            .as_ref()
+            .expect("prepared Shell session owns its PTY master")
         .try_clone_reader()
-        .map_err(|error| format!("Shell PTY reader 创建失败: {error}"))?;
-    let writer = pair
+            .map_err(|error| format!("Shell PTY reader 创建失败: {error}"))?,
+    );
+    prepared.writer = Some(
+        prepared
+            .master
+            .as_ref()
+            .expect("prepared Shell session owns its PTY master")
+            .take_writer()
+            .map_err(|error| format!("Shell PTY writer 创建失败: {error}"))?,
+    );
+    Ok(prepared)
+}
+
+pub(super) fn install_shell_session(
+    state: &AppState,
+    mut prepared: PreparedShellSession,
+) -> Result<SessionSummary, String> {
+    let profile = prepared.profile.clone();
+    let program = prepared.program.clone();
+    let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
+    let master = prepared
         .master
-        .take_writer()
-        .map_err(|error| format!("Shell PTY writer 创建失败: {error}"))?;
+        .take()
+        .expect("prepared Shell session owns its PTY master");
+    let writer = prepared
+        .writer
+        .take()
+        .expect("prepared Shell session owns its PTY writer");
+    let reader = prepared
+        .reader
+        .take()
+        .expect("prepared Shell session owns its PTY reader");
+    let child = prepared
+        .child
+        .take()
+        .expect("prepared Shell session owns its child process");
 
     let runtime_id = Uuid::new_v4().to_string();
     let closed = Arc::new(AtomicBool::new(false));
     let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
     let child = Arc::new(Mutex::new(child));
-    let master = Arc::new(Mutex::new(pair.master));
+    let master = Arc::new(Mutex::new(master));
     let writer = Arc::new(Mutex::new(writer));
-    {
-        let mut connections = state.shell.lock().map_err(|error| error.to_string())?;
-        connections.insert(
-            profile.id.clone(),
-            ShellRuntime {
-                runtime_id: runtime_id.clone(),
-                master,
-                writer,
-                tap: tap.clone(),
-                child: Arc::clone(&child),
-                closed: Arc::clone(&closed),
-            },
-        );
+    let existing = connections.insert(
+        profile.id.clone(),
+        ShellRuntime {
+            runtime_id: runtime_id.clone(),
+            master,
+            writer,
+            tap: tap.clone(),
+            child: Arc::clone(&child),
+            closed: Arc::clone(&closed),
+        },
+    );
+    drop(connections);
+    if let Some(existing) = existing {
+        existing.closed.store(true, Ordering::SeqCst);
+        if let Ok(mut child) = existing.child.lock() {
+            let _ = child.kill();
+        }
     }
 
     if let Err(error) = std::thread::Builder::new()

@@ -135,6 +135,67 @@ fn shell_open_rejects_a_non_directory_cwd_before_installing_a_runtime() {
     assert!(!state.shell.lock().unwrap().contains_key(&profile.id));
 }
 
+#[cfg(unix)]
+#[test]
+fn dropping_a_prepared_shell_session_terminates_its_child_without_installing_a_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_path = temp.path().join("prepared-shell.pid");
+    let mut profile = test_shell_profile();
+    let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+        panic!("expected Shell profile");
+    };
+    shell.args = vec![
+        "-c".to_string(),
+        "printf '%s' \"$$\" > \"$1\"; while :; do sleep 1; done".to_string(),
+        "portmate-shell-test".to_string(),
+        pid_path.display().to_string(),
+    ];
+    let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+
+    let prepared = prepare_shell_session(profile.clone()).unwrap();
+    let started = Instant::now();
+    while !pid_path.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "prepared Shell child did not publish its PID"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid = fs::read_to_string(&pid_path)
+        .unwrap()
+        .parse::<libc::pid_t>()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+    assert!(state.shell.lock().unwrap().is_empty());
+    assert_eq!(
+        state.store.lock().unwrap().summaries()[0].runtime.status,
+        SessionStatus::Disconnected
+    );
+
+    drop(prepared);
+
+    let stopped = Instant::now();
+    loop {
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            break;
+        }
+        assert!(
+            stopped.elapsed() < Duration::from_secs(3),
+            "dropping the prepared Shell session left its child running"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(state.shell.lock().unwrap().is_empty());
+    assert_eq!(
+        state.store.lock().unwrap().summaries()[0].runtime.status,
+        SessionStatus::Disconnected
+    );
+}
+
 #[test]
 fn shell_profile_path_validation_rejects_the_foreign_platform_before_save() {
     let mut profile = test_shell_profile();
