@@ -1,6 +1,85 @@
 use super::*;
 
 const MAX_LIBSSH_AGENT_FORWARD_CHANNELS: usize = 16;
+const LIBSSH_AGENT_CHANNEL_IO_TIMEOUT: Duration = Duration::from_millis(250);
+
+fn run_libssh_agent_channel_operation<T>(
+    channel: &libssh_rs::Channel,
+    timeout: Duration,
+    label: &str,
+    operation: impl FnOnce(&libssh_rs::Channel, Instant) -> Result<T, String>,
+) -> Result<T, String> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{label} deadline is outside the supported range"))?;
+    channel
+        .with_session_operation_until(deadline, || {
+            channel
+                .set_session_timeout_until(deadline)
+                .map_err(|error| format!("{label} deadline setup failed: {error}"))?;
+            let result = operation(channel, deadline);
+            let restored = channel
+                .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
+                .map_err(|error| format!("{label} runtime timeout restore failed: {error}"));
+            match (result, restored) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+            }
+        })
+        .map_err(|error| format!("{label} operation gate failed: {error}"))?
+}
+
+fn write_libssh_agent_channel(
+    channel: &libssh_rs::Channel,
+    mut data: &[u8],
+) -> Result<(), String> {
+    run_libssh_agent_channel_operation(
+        channel,
+        LIBSSH_AGENT_CHANNEL_IO_TIMEOUT,
+        "SSH agent channel write",
+        |channel, deadline| {
+            while !data.is_empty() {
+                channel
+                    .set_session_timeout_until(deadline)
+                    .map_err(|error| error.to_string())?;
+                let mut stdin = channel.stdin();
+                match std::io::Write::write(&mut stdin, data) {
+                    Ok(0) => return Err("SSH agent channel write returned zero bytes".to_string()),
+                    Ok(written) => data = &data[written..],
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(format!("write SSH agent response failed: {error}")),
+                }
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| "SSH agent channel write timed out".to_string())?;
+            channel
+                .flush(Some(remaining))
+                .map_err(|error| format!("flush SSH agent response failed: {error}"))
+        },
+    )
+}
+
+fn close_libssh_agent_channel(channel: &libssh_rs::Channel) -> Result<(), String> {
+    run_libssh_agent_channel_operation(
+        channel,
+        LIBSSH_AGENT_CHANNEL_IO_TIMEOUT,
+        "SSH agent channel close",
+        |channel, _| channel.close().map_err(|error| error.to_string()),
+    )
+}
+
+fn eof_libssh_agent_channel(channel: &libssh_rs::Channel) -> Result<(), String> {
+    run_libssh_agent_channel_operation(
+        channel,
+        LIBSSH_AGENT_CHANNEL_IO_TIMEOUT,
+        "SSH agent channel EOF",
+        |channel, _| channel.send_eof().map_err(|error| error.to_string()),
+    )
+}
 
 pub(super) async fn start_russh_jump_transport_bridge(
     channel: Channel<client::Msg>,
@@ -82,7 +161,11 @@ pub(super) fn start_libssh_agent_forwarder(
                         "PortMate: rejected libssh agent forward channel at the {} channel limit",
                         MAX_LIBSSH_AGENT_FORWARD_CHANNELS
                     );
-                    let _ = tokio::task::spawn_blocking(move || channel.close()).await;
+                    let closed = tokio::task::spawn_blocking(move || {
+                        close_libssh_agent_channel(&channel)
+                    })
+                    .await;
+                    report_libssh_agent_bridge_result(closed);
                 }
                 Ok(Some(channel)) => {
                     let socket_path = agent_socket_path.clone();
@@ -98,7 +181,14 @@ pub(super) fn start_libssh_agent_forwarder(
                 }
             }
         }
-        session.enable_accept_agent_forward(false);
+        let disable_session = session.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            disable_session.enable_accept_agent_forward(false)
+        })
+        .await
+        {
+            eprintln!("PortMate: libssh agent forward disable worker failed: {error}");
+        }
         while let Some(result) = bridges.join_next().await {
             report_libssh_agent_bridge_result(result);
         }
@@ -172,24 +262,17 @@ fn bridge_libssh_agent_channel(
 
         match socket.read(&mut socket_buffer) {
             Ok(0) => {
-                let _ = channel.send_eof();
+                let _ = eof_libssh_agent_channel(&channel);
                 break;
             }
             Ok(read) => {
-                let mut stdin = channel.stdin();
-                stdin
-                    .write_all(&socket_buffer[..read])
-                    .map_err(|error| format!("write SSH agent response failed: {error}"))?;
-                drop(stdin);
-                channel
-                    .flush(Some(Duration::from_millis(250)))
-                    .map_err(|error| format!("flush SSH agent response failed: {error}"))?;
+                write_libssh_agent_channel(&channel, &socket_buffer[..read])?;
             }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(error) => return Err(format!("read SSH agent response failed: {error}")),
         }
     }
-    let _ = channel.close();
+    let _ = close_libssh_agent_channel(&channel);
     Ok(())
 }
 

@@ -32,7 +32,7 @@ use std::os::unix::io::RawFd as RawSocket;
 use std::os::windows::io::RawSocket;
 use std::ptr::null_mut;
 use std::sync::LazyLock;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -204,6 +204,56 @@ pub(crate) struct SessionHolder {
 }
 unsafe impl Send for SessionHolder {}
 
+pub(crate) struct SessionOperationGate {
+    occupied: Mutex<bool>,
+    available: Condvar,
+}
+
+struct SessionOperationGuard<'a> {
+    gate: &'a SessionOperationGate,
+}
+
+impl SessionOperationGate {
+    fn new() -> Self {
+        Self {
+            occupied: Mutex::new(false),
+            available: Condvar::new(),
+        }
+    }
+
+    fn lock_until(&self, deadline: Instant) -> SshResult<SessionOperationGuard<'_>> {
+        if deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .is_none()
+        {
+            return Err(Error::fatal("libssh session operation deadline expired"));
+        }
+        let mut occupied = self.occupied.lock().unwrap();
+        while *occupied {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| Error::fatal("libssh session operation deadline expired"))?;
+            let (next, timeout) = self.available.wait_timeout(occupied, remaining).unwrap();
+            occupied = next;
+            if timeout.timed_out() && *occupied {
+                return Err(Error::fatal("libssh session operation deadline expired"));
+            }
+        }
+        *occupied = true;
+        Ok(SessionOperationGuard { gate: self })
+    }
+}
+
+impl Drop for SessionOperationGuard<'_> {
+    fn drop(&mut self) {
+        let mut occupied = self.gate.occupied.lock().unwrap();
+        *occupied = false;
+        self.gate.available.notify_one();
+    }
+}
+
 impl std::ops::Deref for SessionHolder {
     type Target = sys::ssh_session;
     fn deref(&self) -> &sys::ssh_session {
@@ -328,6 +378,15 @@ impl SessionHolder {
     }
 }
 
+pub(crate) fn with_session_operation_until<T>(
+    gate: &SessionOperationGate,
+    deadline: Instant,
+    operation: impl FnOnce() -> T,
+) -> SshResult<T> {
+    let _operation = gate.lock_until(deadline)?;
+    Ok(operation())
+}
+
 /// A Session represents the state needed to make a connection to
 /// a remote host.
 ///
@@ -346,12 +405,14 @@ impl SessionHolder {
 /// and this can lead to blocking in surprising situations.
 pub struct Session {
     sess: Arc<Mutex<SessionHolder>>,
+    operation_gate: Arc<SessionOperationGate>,
 }
 
 impl Clone for Session {
     fn clone(&self) -> Self {
         Self {
             sess: Arc::clone(&self.sess),
+            operation_gate: Arc::clone(&self.operation_gate),
         }
     }
 }
@@ -375,6 +436,7 @@ impl Session {
                 channel_open_request_auth_agent_function: None,
                 channel_open_request_forwarded_tcpip_function: None,
             };
+            let operation_gate = Arc::new(SessionOperationGate::new());
             let sess = Arc::new(Mutex::new(SessionHolder {
                 sess,
                 callbacks,
@@ -396,7 +458,10 @@ impl Session {
                 }
             }
 
-            Ok(Self { sess })
+            Ok(Self {
+                sess,
+                operation_gate,
+            })
         }
     }
 
@@ -559,7 +624,7 @@ impl Session {
     pub fn accept_agent_forward(&self) -> Option<Channel> {
         let mut sess = self.lock_session();
         let chan = sess.pending_agent_forward_channels.pop()?;
-        Channel::new(&self.sess, chan).ok()
+        Channel::new(&self.sess, &self.operation_gate, chan).ok()
     }
 
     /// Create a new channel.
@@ -574,7 +639,7 @@ impl Session {
                 Err(Error::fatal("ssh_channel_new failed"))
             }
         } else {
-            Channel::new(&self.sess, chan)
+            Channel::new(&self.sess, &self.operation_gate, chan)
         }
     }
 
@@ -935,6 +1000,16 @@ impl Session {
     pub fn set_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
         let sess = self.lock_session();
         sess.set_timeout_until(deadline)
+    }
+
+    /// Run a compound operation after acquiring the shared session gate before
+    /// `deadline`.
+    pub fn with_session_operation_until<T>(
+        &self,
+        deadline: Instant,
+        operation: impl FnOnce() -> T,
+    ) -> SshResult<T> {
+        with_session_operation_until(&self.operation_gate, deadline, operation)
     }
 
     /// Configure a pre-connected TCP stream and retain ownership until the session is freed.
@@ -1362,7 +1437,7 @@ impl Session {
                     return Err(error);
                 }
             };
-            let channel = Channel::new(&self.sess, chan)?;
+            let channel = Channel::new(&self.sess, &self.operation_gate, chan)?;
 
             Ok((destination_port, channel))
         }
@@ -1414,7 +1489,11 @@ impl Session {
                 };
             }
 
-            Sftp::new(Arc::clone(&self.sess), sftp)
+            Sftp::new(
+                Arc::clone(&self.sess),
+                Arc::clone(&self.operation_gate),
+                sftp,
+            )
         };
 
         sftp.init()?;
@@ -1946,6 +2025,67 @@ mod test {
             .unwrap();
         assert!(!remaining.is_zero());
         assert!(remaining <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn timeout_scoped_operations_share_a_gate_across_session_handles() {
+        let session = Session::new().unwrap();
+        let sftp = Sftp::new(
+            Arc::clone(&session.sess),
+            Arc::clone(&session.operation_gate),
+            std::ptr::null_mut(),
+        );
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder_session = session.clone();
+        let holder = std::thread::spawn(move || {
+            holder_session
+                .with_session_operation_until(Instant::now() + Duration::from_secs(1), || {
+                    holder_session
+                        .set_timeout_until(Instant::now() + Duration::from_secs(1))
+                        .unwrap();
+                    held_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .unwrap();
+        });
+        held_rx.recv().unwrap();
+
+        let error = sftp
+            .with_session_operation_until(Instant::now() + Duration::from_millis(20), || ())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Fatal(message) if message.contains("session operation deadline expired")
+        ));
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            sftp.with_session_operation_until(Instant::now() + Duration::from_secs(1), || {
+                entered_tx.send(()).unwrap()
+            })
+            .unwrap();
+        });
+        assert!(entered_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        release_tx.send(()).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        holder.join().unwrap();
+        waiter.join().unwrap();
+
+        let mut expired_operation_ran = false;
+        let expired = session
+            .with_session_operation_until(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap(),
+                || expired_operation_ran = true,
+            )
+            .unwrap_err();
+        assert!(!expired_operation_ran);
+        assert!(matches!(
+            expired,
+            Error::Fatal(message) if message.contains("session operation deadline expired")
+        ));
     }
 
     #[test]

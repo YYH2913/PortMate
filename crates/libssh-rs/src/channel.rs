@@ -1,6 +1,7 @@
 use crate::{
     checked_c_int, duration_millis_c_int, duration_millis_u32, ffi_io_count, opt_cstring_to_cstr,
-    opt_str_to_cstring, Error, SessionHolder, SshResult,
+    opt_str_to_cstring, with_session_operation_until, Error, SessionHolder, SessionOperationGate,
+    SshResult,
 };
 use libssh_rs_sys as sys;
 use std::ffi::{CStr, CString};
@@ -35,6 +36,7 @@ use std::time::{Duration, Instant};
 /// and this can lead to blocking in surprising situations.
 pub struct Channel {
     pub(crate) sess: Arc<Mutex<SessionHolder>>,
+    pub(crate) operation_gate: Arc<SessionOperationGate>,
     pub(crate) chan_inner: sys::ssh_channel,
     _callbacks: Box<sys::ssh_channel_callbacks_struct>,
     callback_state: Box<CallbackState>,
@@ -140,11 +142,15 @@ impl Channel {
         if chan.is_null() {
             None
         } else {
-            Self::new(&self.sess, chan).ok()
+            Self::new(&self.sess, &self.operation_gate, chan).ok()
         }
     }
 
-    pub(crate) fn new(sess: &Arc<Mutex<SessionHolder>>, chan: sys::ssh_channel) -> SshResult<Self> {
+    pub(crate) fn new(
+        sess: &Arc<Mutex<SessionHolder>>,
+        operation_gate: &Arc<SessionOperationGate>,
+        chan: sys::ssh_channel,
+    ) -> SshResult<Self> {
         let callback_state = Box::new(CallbackState {
             signal_state: Mutex::new(None),
         });
@@ -181,6 +187,7 @@ impl Channel {
 
         Ok(Self {
             sess: Arc::clone(&sess),
+            operation_gate: Arc::clone(operation_gate),
             chan_inner: chan,
             callback_state,
             _callbacks: callbacks,
@@ -203,6 +210,16 @@ impl Channel {
     pub fn set_session_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
         let (session, _) = self.lock_session();
         session.set_timeout_until(deadline)
+    }
+
+    /// Run a compound operation after acquiring the shared session gate before
+    /// `deadline`.
+    pub fn with_session_operation_until<T>(
+        &self,
+        deadline: Instant,
+        operation: impl FnOnce() -> T,
+    ) -> SshResult<T> {
+        with_session_operation_until(&self.operation_gate, deadline, operation)
     }
 
     /// Close a channel.
@@ -764,7 +781,11 @@ mod tests {
     fn channel_construction_rejects_callback_registration_failure() {
         let session = crate::Session::new().unwrap();
         assert!(matches!(
-            Channel::new(&session.sess, std::ptr::null_mut()),
+            Channel::new(
+                &session.sess,
+                &session.operation_gate,
+                std::ptr::null_mut(),
+            ),
             Err(Error::Fatal(message)) if message.contains("register libssh channel callbacks")
         ));
     }

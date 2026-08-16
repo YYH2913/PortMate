@@ -15,22 +15,25 @@ fn run_libssh_sftp_file_operation<T>(
         Instant,
     ) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    session
-        .set_session_timeout_until(deadline)
-        .map_err(std::io::Error::other)?;
-    let result = operation(session, file, deadline);
-    let restored = session
-        .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
-        .map_err(std::io::Error::other);
-    match (result, restored) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore_error)) => Err(sftp_file_operation_error(
-            error.kind(),
-            format!("{error}; {label} libssh runtime timeout restore failed: {restore_error}"),
-        )),
-    }
+    let result = session.with_session_operation_until(deadline, || {
+        session
+            .set_session_timeout_until(deadline)
+            .map_err(std::io::Error::other)?;
+        let result = operation(session, file, deadline);
+        let restored = session
+            .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
+            .map_err(std::io::Error::other);
+        match (result, restored) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(restore_error)) => Err(sftp_file_operation_error(
+                error.kind(),
+                format!("{error}; {label} libssh runtime timeout restore failed: {restore_error}"),
+            )),
+        }
+    });
+    result.map_err(std::io::Error::other)?
 }
 
 async fn run_libssh_sftp_file_operation_with_timeout<T, F>(

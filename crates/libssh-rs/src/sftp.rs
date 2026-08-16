@@ -1,4 +1,4 @@
-use crate::{Error, SessionHolder, SshResult};
+use crate::{with_session_operation_until, Error, SessionHolder, SessionOperationGate, SshResult};
 use libssh_rs_sys as sys;
 use std::convert::TryInto;
 use std::ffi::{CStr, CString};
@@ -47,6 +47,7 @@ impl SftpError {
 
 struct SftpInner {
     sess: Arc<Mutex<SessionHolder>>,
+    operation_gate: Arc<SessionOperationGate>,
     sftp_inner: sys::sftp_session,
 }
 
@@ -69,9 +70,17 @@ pub struct Sftp {
 }
 
 impl Sftp {
-    pub(crate) fn new(sess: Arc<Mutex<SessionHolder>>, sftp_inner: sys::sftp_session) -> Self {
+    pub(crate) fn new(
+        sess: Arc<Mutex<SessionHolder>>,
+        operation_gate: Arc<SessionOperationGate>,
+        sftp_inner: sys::sftp_session,
+    ) -> Self {
         Self {
-            inner: Arc::new(SftpInner { sess, sftp_inner }),
+            inner: Arc::new(SftpInner {
+                sess,
+                operation_gate,
+                sftp_inner,
+            }),
         }
     }
 
@@ -91,6 +100,16 @@ impl Sftp {
     pub fn set_session_timeout_until(&self, deadline: Instant) -> SshResult<Duration> {
         let (session, _) = self.lock_session();
         session.set_timeout_until(deadline)
+    }
+
+    /// Run a compound operation after acquiring the shared session gate before
+    /// `deadline`.
+    pub fn with_session_operation_until<T>(
+        &self,
+        deadline: Instant,
+        operation: impl FnOnce() -> T,
+    ) -> SshResult<T> {
+        with_session_operation_until(&self.inner.operation_gate, deadline, operation)
     }
 
     pub(crate) fn init(&self) -> SshResult<()> {
@@ -818,7 +837,11 @@ mod tests {
     #[test]
     fn file_handles_keep_the_sftp_session_alive() {
         let session = crate::Session::new().unwrap();
-        let sftp = Sftp::new(Arc::clone(&session.sess), std::ptr::null_mut());
+        let sftp = Sftp::new(
+            Arc::clone(&session.sess),
+            Arc::clone(&session.operation_gate),
+            std::ptr::null_mut(),
+        );
         let owner = Arc::downgrade(&sftp.inner);
         let file = SftpFile {
             file_inner: std::ptr::null_mut(),

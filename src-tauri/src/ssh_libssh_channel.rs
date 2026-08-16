@@ -6,19 +6,22 @@ fn run_libssh_channel_operation<T>(
     label: &str,
     operation: impl FnOnce(&libssh_rs::Channel) -> Result<T, String>,
 ) -> Result<T, String> {
-    channel
-        .set_session_timeout_until(deadline)
-        .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
-    let result = operation(channel);
-    let restored = channel
-        .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
-        .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
-    match (result, restored) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
-    }
+    let result = channel.with_session_operation_until(deadline, || {
+        channel
+            .set_session_timeout_until(deadline)
+            .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
+        let result = operation(channel);
+        let restored = channel
+            .set_session_timeout(SSH_RUNTIME_OPERATION_TIMEOUT)
+            .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
+        match (result, restored) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+        }
+    });
+    result.map_err(|error| format!("{label} libssh operation gate failed: {error}"))?
 }
 
 pub(super) async fn run_libssh_channel_operation_with_timeout<T, F>(

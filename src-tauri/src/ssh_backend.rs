@@ -27,21 +27,24 @@ fn run_libssh_runtime_operation<T>(
     label: &str,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    session
-        .set_timeout_until(deadline)
-        .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
-    let result = operation();
-    let restored = session
-        .set_option(libssh_rs::SshOption::Timeout(
-            SSH_RUNTIME_OPERATION_TIMEOUT,
-        ))
-        .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
-    match (result, restored) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
-    }
+    let result = session.with_session_operation_until(deadline, || {
+        session
+            .set_timeout_until(deadline)
+            .map_err(|error| format!("{label} libssh deadline setup failed: {error}"))?;
+        let result = operation();
+        let restored = session
+            .set_option(libssh_rs::SshOption::Timeout(
+                SSH_RUNTIME_OPERATION_TIMEOUT,
+            ))
+            .map_err(|error| format!("{label} libssh runtime timeout restore failed: {error}"));
+        match (result, restored) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+        }
+    });
+    result.map_err(|error| format!("{label} libssh operation gate failed: {error}"))?
 }
 
 impl<H> SshBackendSession<H>

@@ -694,6 +694,8 @@ SSH 终端 data/EOF/close/resize 现把外层 writer/channel mutex 等待与 rus
 
 libssh SFTP 的目录枚举、canonicalize、stat/lstat、open、mkdir/rmdir、unlink、rename、setstat 以及远端文件 read/read_exact/write/flush/seek/shutdown 现把 Tokio SFTP session/file mutex 等待与底层协议操作纳入同一个 20 秒总 deadline；vendored `libssh-rs` 为 `Sftp` 提供取得内部 session mutex 后复核绝对 deadline 的 timeout 控制，每个远端文件保留所属 SFTP session gate，统一按 session→file 顺序串行设置 timeout、执行 FFI 和恢复运行期预算，避免并发文件覆盖全局 libssh timeout。目录枚举、read_exact 和 write_all 的每次部分操作都会重新复核同一绝对 deadline，外层取消不会留下通过多轮调用继续运行或无限排队的 worker；远端文件 shutdown 保持重复调用幂等，并在最终 flush/handle 析构期间沿用剩余预算。真实 libssh SFTP 回归占用 session mutex，确认 30 ms 精确超时、释放后同一 session 立即恢复，随后完整通过 exclusive create、重复 shutdown、上传、下载、远端复制、目录、属性与 seek；vendored libssh-rs 23 项加 2 项 doc-test、SSH transport 11 项、完整主应用 503 passed/1 ignored、Rustfmt 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+libssh 的协议 timeout 是整个 SSH session 的共享状态；终端 channel、SFTP、exec/tunnel 与 Agent forwarding 过去会分别“设置 timeout 后再执行”，并发时可能在两次内部 mutex 获取之间互相覆盖。vendored `libssh-rs` 现为同一 Session 派生的 `Session`、`Channel` 和 `Sftp` 句柄共享独立的 deadline-aware operation gate，取得 gate 不需要先等待 native session mutex；所有 PortMate timeout 事务在同一 gate 内设置剩余预算、完成 FFI 并恢复 20 秒运行期 timeout，等待 gate 本身也计入原绝对期限。libssh Agent response 的分段写入会逐次复核同一 250 ms deadline，flush、EOF、容量拒绝 close 均有界，停用 Agent callback 改由 blocking worker 执行而不占住 Tokio executor。共享 gate 回归验证 SFTP 与 Session 之间的互斥、占用超时、释放恢复及已过期操作无副作用；真实 OpenSSH Agent forwarding、libssh transport/SFTP 11 项、vendored libssh-rs 24 项加 2 项 doc-test、完整主应用 503 passed/1 ignored、Rustfmt 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
