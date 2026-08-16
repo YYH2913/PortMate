@@ -490,6 +490,34 @@ fn queued_transfer_rechecks_latest_protocol_settings_before_running() {
 }
 
 #[test]
+fn planned_file_batch_rejects_a_missing_ssh_runtime_before_queueing() {
+    tauri::async_runtime::block_on(async {
+        let profile = test_ssh_profile();
+        let state = test_app_state(
+            profile.clone(),
+            PathBuf::from("transfer-runtime-constraint-test.sqlite3"),
+        );
+
+        let error = start_transfer_inner_for_ssh_runtime(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id,
+                protocol: TransferProtocol::Sftp,
+                source: "input.bin".to_string(),
+                destination: "remote:/tmp/input.bin".to_string(),
+            },
+            "planned-runtime",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("文件批次规划后已变化"), "{error}");
+        assert!(state.store.lock().unwrap().transfers.is_empty());
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
 fn ssh_file_transfer_rejects_non_ssh_profiles_before_queueing() {
     tauri::async_runtime::block_on(async {
         let profile = test_shell_profile();

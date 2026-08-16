@@ -46,6 +46,20 @@ pub(crate) fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
+    finish_transfer_task_for_runtime(
+        state, task_id, session_id, status, message, bytes, None,
+    );
+}
+
+pub(crate) fn finish_transfer_task_for_runtime(
+    state: &AppState,
+    task_id: &str,
+    session_id: &str,
+    mut status: TransferStatus,
+    message: String,
+    mut bytes: Option<u64>,
+    expected_ssh_runtime_id: Option<&str>,
+) {
     cleanup_mcp_content_transfer_staging(state, task_id);
     match state.transfer_cancellations.lock() {
         Ok(mut cancellations) => {
@@ -53,8 +67,22 @@ pub(crate) fn finish_transfer_task(
         }
         Err(error) => eprintln!("PortMate: failed to clean up transfer cancellation: {error}"),
     }
-    let mut status = status;
     let mut message = truncate_for_log(&message, 2_000);
+    let ssh_runtimes = if status == TransferStatus::Completed
+        && expected_ssh_runtime_id.is_some()
+    {
+        match state.ssh.lock() {
+            Ok(runtimes) => Some(runtimes),
+            Err(error) => {
+                status = TransferStatus::Failed;
+                bytes = None;
+                message = format!("无法复核 SSH 文件传输 runtime: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let task = {
         let mut store = match state.store.lock() {
             Ok(store) => store,
@@ -63,6 +91,26 @@ pub(crate) fn finish_transfer_task(
                 return;
             }
         };
+        if status == TransferStatus::Completed {
+            if let Some(expected_runtime_id) = expected_ssh_runtime_id {
+                let runtime_current = ssh_runtimes.as_ref().is_some_and(|runtimes| {
+                    runtimes.get(session_id).is_some_and(|runtime| {
+                        runtime.runtime_id == expected_runtime_id
+                            && !runtime.closed.load(Ordering::SeqCst)
+                    })
+                }) && store.runtimes.iter().any(|runtime| {
+                    runtime.session_id == session_id
+                        && runtime.status == SessionStatus::Connected
+                });
+                if !runtime_current {
+                    status = TransferStatus::Failed;
+                    bytes = None;
+                    message =
+                        "SSH runtime 在文件传输完成提交前已变化或断开，请刷新后重试"
+                            .to_string();
+                }
+            }
+        }
         let task = match store.transfers.iter_mut().find(|item| item.id == task_id) {
             Some(task) => task,
             None => return,

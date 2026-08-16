@@ -5,6 +5,8 @@ pub(super) const MAX_CONCURRENT_SSH_AUXILIARY_OPERATIONS: usize = 256;
 pub(super) const SSH_AUXILIARY_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct SshAuxiliaryResources {
+    session_id: String,
+    runtime_id: String,
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
 }
@@ -21,6 +23,8 @@ fn ssh_resources_for_auxiliary_operation<T>(
     Ok((
         inspect(runtime)?,
         SshAuxiliaryResources {
+            session_id: session_id.to_string(),
+            runtime_id: runtime.runtime_id.clone(),
             handle: Arc::clone(&runtime.handle),
             sftp: Arc::clone(&runtime.sftp),
         },
@@ -28,12 +32,45 @@ fn ssh_resources_for_auxiliary_operation<T>(
 }
 
 pub(super) struct SshAuxiliaryLease {
+    session_id: String,
+    runtime_id: String,
     handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     sftp: Arc<tokio::sync::Mutex<Option<SftpBackendSession>>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl SshAuxiliaryLease {
+    pub(super) fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    pub(super) fn ensure_current(
+        &self,
+        state: &AppState,
+        operation: &str,
+    ) -> Result<(), String> {
+        ensure_ssh_runtime_current_for_operation(
+            state,
+            &self.session_id,
+            &self.runtime_id,
+            operation,
+        )
+    }
+
+    pub(super) fn ensure_expected_current(
+        &self,
+        state: &AppState,
+        expected_runtime_id: Option<&str>,
+        operation: &str,
+    ) -> Result<(), String> {
+        if expected_runtime_id.is_some_and(|expected| expected != self.runtime_id) {
+            return Err(format!(
+                "SSH runtime 在{operation}排队后已变化，请刷新后重试"
+            ));
+        }
+        self.ensure_current(state, operation)
+    }
+
     pub(super) fn handle(&self) -> Arc<tokio::sync::Mutex<SshBackendSession>> {
         Arc::clone(&self.handle)
     }
@@ -89,6 +126,21 @@ pub(super) fn acquire_ssh_auxiliary_slot(
         })
 }
 
+pub(super) fn ensure_ssh_runtime_current_for_operation(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+    operation: &str,
+) -> Result<(), String> {
+    if ssh_runtime_connected(state, session_id, runtime_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "SSH runtime 在{operation}期间已变化或断开，请刷新后重试"
+        ))
+    }
+}
+
 pub(super) fn ssh_auxiliary_lease(
     state: &AppState,
     session_id: &str,
@@ -107,6 +159,8 @@ pub(super) fn ssh_auxiliary_lease_with_runtime<T>(
     Ok((
         inspection,
         SshAuxiliaryLease {
+            session_id: resources.session_id,
+            runtime_id: resources.runtime_id,
             handle: resources.handle,
             sftp: resources.sftp,
             _slot: slot,

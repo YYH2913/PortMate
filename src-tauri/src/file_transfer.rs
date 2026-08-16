@@ -3,6 +3,7 @@ pub(super) async fn transfer_file_via_sftp(
     state: &AppState,
     request: &StartTransferRequest,
     progress: &TransferProgressContext,
+    expected_ssh_runtime_id: Option<&str>,
 ) -> Result<u64, String> {
     let source_remote = remote_path(&request.source);
     let destination_remote = remote_path(&request.destination);
@@ -19,6 +20,11 @@ pub(super) async fn transfer_file_via_sftp(
         }
         remote_paths => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SFTP 文件传输",
+            )?;
             let sftp = auxiliary.sftp().await?;
             let transfer = async {
                 match remote_paths {
@@ -35,6 +41,12 @@ pub(super) async fn transfer_file_via_sftp(
                 }
             };
             let result = await_sftp_transfer_with_cancellation(transfer, progress).await;
+            drop(sftp);
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SFTP 文件传输",
+            )?;
             result
         }
     }
@@ -63,6 +75,7 @@ pub(super) async fn transfer_file_via_local_or_scp(
     state: &AppState,
     request: &StartTransferRequest,
     progress: &TransferProgressContext,
+    expected_ssh_runtime_id: Option<&str>,
 ) -> Result<u64, String> {
     progress.check_cancelled()?;
     let source_remote = remote_path(&request.source);
@@ -80,18 +93,51 @@ pub(super) async fn transfer_file_via_local_or_scp(
         }
         (None, Some(remote_destination)) => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SCP 文件上传",
+            )?;
             let handle = auxiliary.handle();
-            scp_upload(handle, &request.source, remote_destination, progress).await
+            let result = scp_upload(handle, &request.source, remote_destination, progress).await;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SCP 文件上传",
+            )?;
+            result
         }
         (Some(remote_source), None) => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SCP 文件下载",
+            )?;
             let handle = auxiliary.handle();
-            scp_download(handle, remote_source, &request.destination, progress).await
+            let result = scp_download(handle, remote_source, &request.destination, progress).await;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SCP 文件下载",
+            )?;
+            result
         }
         (Some(remote_source), Some(remote_destination)) => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SSH 远端文件复制",
+            )?;
             let handle = auxiliary.handle();
-            remote_copy(handle, remote_source, remote_destination, progress).await
+            let result = remote_copy(handle, remote_source, remote_destination, progress).await;
+            auxiliary.ensure_expected_current(
+                state,
+                expected_ssh_runtime_id,
+                "SSH 远端文件复制",
+            )?;
+            result
         }
     }
 }

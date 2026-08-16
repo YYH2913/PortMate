@@ -94,6 +94,7 @@ pub(super) async fn delete_paths_inner(
             .as_deref()
             .ok_or_else(|| "remote batch delete requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        auxiliary.ensure_current(state, "远端批量删除")?;
         let sftp = auxiliary.sftp().await?;
         let result = async {
             let plan = prepare_remote_delete_paths(&sftp, &request.paths).await?;
@@ -123,6 +124,8 @@ pub(super) async fn delete_paths_inner(
             Ok(())
         }
         .await;
+        drop(sftp);
+        auxiliary.ensure_current(state, "远端批量删除")?;
         result
     } else {
         let plan = prepare_local_delete_paths(&request.paths)?;

@@ -105,10 +105,13 @@ pub(super) async fn start_external_drop_inner(
     };
     let mut plan = plan_external_drop(&request.paths, local_destination.as_deref())?;
     let mut resolved_remote_destination = None;
+    let mut planned_ssh_runtime_id = None;
 
     if request.remote {
         if !plan.directories.is_empty() || !plan.files.is_empty() {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+            auxiliary.ensure_current(state, "远端拖放规划")?;
+            planned_ssh_runtime_id = Some(auxiliary.runtime_id().to_string());
             let sftp = auxiliary.sftp().await?;
             let result = async {
                 let destination =
@@ -133,6 +136,8 @@ pub(super) async fn start_external_drop_inner(
                 Ok::<(), String>(())
             }
             .await;
+            drop(sftp);
+            auxiliary.ensure_current(state, "远端拖放规划")?;
             result?;
         }
     } else if let Some(destination) = &local_destination {
@@ -181,18 +186,17 @@ pub(super) async fn start_external_drop_inner(
                 .display()
                 .to_string()
         };
-        tasks.push(
-            start_transfer_inner(
-                state,
-                StartTransferRequest {
-                    session_id: request.session_id.clone(),
-                    protocol: TransferProtocol::Sftp,
-                    source,
-                    destination,
-                },
-            )
-            .await?,
-        );
+        let transfer = StartTransferRequest {
+            session_id: request.session_id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source,
+            destination,
+        };
+        tasks.push(if let Some(runtime_id) = planned_ssh_runtime_id.as_deref() {
+            start_transfer_inner_for_ssh_runtime(state, transfer, runtime_id).await?
+        } else {
+            start_transfer_inner(state, transfer).await?
+        });
     }
 
     Ok(ExternalDropResult {

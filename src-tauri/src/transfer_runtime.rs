@@ -81,13 +81,30 @@ pub(super) async fn start_transfer_inner(
     state: &AppState,
     request: StartTransferRequest,
 ) -> Result<TransferTask, String> {
-    start_transfer_inner_with_staging(state, request, None).await
+    start_transfer_inner_with_context(state, request, None, None).await
 }
 
 pub(super) async fn start_transfer_inner_with_staging(
     state: &AppState,
     request: StartTransferRequest,
     staging_path: Option<PathBuf>,
+) -> Result<TransferTask, String> {
+    start_transfer_inner_with_context(state, request, staging_path, None).await
+}
+
+pub(super) async fn start_transfer_inner_for_ssh_runtime(
+    state: &AppState,
+    request: StartTransferRequest,
+    expected_ssh_runtime_id: &str,
+) -> Result<TransferTask, String> {
+    start_transfer_inner_with_context(state, request, None, Some(expected_ssh_runtime_id)).await
+}
+
+async fn start_transfer_inner_with_context(
+    state: &AppState,
+    request: StartTransferRequest,
+    staging_path: Option<PathBuf>,
+    required_ssh_runtime_id: Option<&str>,
 ) -> Result<TransferTask, String> {
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -96,6 +113,8 @@ pub(super) async fn start_transfer_inner_with_staging(
             .ok_or_else(|| format!("unknown session: {}", request.session_id))?
     };
     let request = prepare_transfer_request(&profile, request)?;
+    let expected_ssh_runtime_id =
+        transfer_ssh_runtime_id(state, &request, required_ssh_runtime_id)?;
     let task_permit = Arc::clone(&state.transfer_task_slots)
         .try_acquire_owned()
         .map_err(|_| format!("transfer runner limit reached ({MAX_ACTIVE_TRANSFER_TASKS})"))?;
@@ -180,10 +199,57 @@ pub(super) async fn start_transfer_inner_with_staging(
     let task_id = task.id.clone();
     tauri::async_runtime::spawn(async move {
         let _task_permit = task_permit;
-        run_queued_transfer(runner_state, request, task_id, cancel, lane).await;
+        run_queued_transfer(
+            runner_state,
+            request,
+            task_id,
+            cancel,
+            lane,
+            expected_ssh_runtime_id,
+        )
+        .await;
     });
 
     Ok(task)
+}
+
+fn transfer_ssh_runtime_id(
+    state: &AppState,
+    request: &StartTransferRequest,
+    required_runtime_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    if !transfer_uses_ssh_files(request) {
+        return Ok(None);
+    }
+
+    let current_runtime_id = state
+        .ssh
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&request.session_id)
+        .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+        .map(|runtime| runtime.runtime_id.clone());
+    if let Some(required_runtime_id) = required_runtime_id {
+        if current_runtime_id.as_deref() != Some(required_runtime_id)
+            || !ssh_runtime_connected(state, &request.session_id, required_runtime_id)
+        {
+            return Err(
+                "SSH runtime 在文件批次规划后已变化或断开，请刷新目录后重试".to_string(),
+            );
+        }
+        return Ok(Some(required_runtime_id.to_string()));
+    }
+
+    Ok(current_runtime_id.filter(|runtime_id| {
+        ssh_runtime_connected(state, &request.session_id, runtime_id)
+    }))
+}
+
+fn transfer_uses_ssh_files(request: &StartTransferRequest) -> bool {
+    matches!(
+        request.protocol,
+        TransferProtocol::Sftp | TransferProtocol::Scp
+    ) && (remote_path(&request.source).is_some() || remote_path(&request.destination).is_some())
 }
 
 pub(super) fn cleanup_mcp_content_transfer_staging(state: &AppState, task_id: &str) {
@@ -243,6 +309,7 @@ pub(super) async fn run_queued_transfer(
     task_id: String,
     cancel: Arc<TransferCancellation>,
     lane: Arc<tokio::sync::Mutex<()>>,
+    mut expected_ssh_runtime_id: Option<String>,
 ) {
     let lane_guard = tokio::select! {
         guard = lane.lock() => Some(guard),
@@ -271,6 +338,25 @@ pub(super) async fn run_queued_transfer(
         return;
     }
 
+    if let Some(runtime_id) = expected_ssh_runtime_id.as_deref() {
+        if let Err(error) = ensure_ssh_runtime_current_for_operation(
+            &state,
+            &request.session_id,
+            runtime_id,
+            "文件传输等待",
+        ) {
+            finish_transfer_task(
+                &state,
+                &task_id,
+                &request.session_id,
+                TransferStatus::Failed,
+                error,
+                None,
+            );
+            return;
+        }
+    }
+
     if let Err(error) = validate_current_transfer_protocol(&state, &request) {
         finish_transfer_task(
             &state,
@@ -281,6 +367,34 @@ pub(super) async fn run_queued_transfer(
             None,
         );
         return;
+    }
+
+    if transfer_uses_ssh_files(&request) && expected_ssh_runtime_id.is_none() {
+        match transfer_ssh_runtime_id(&state, &request, None) {
+            Ok(Some(runtime_id)) => expected_ssh_runtime_id = Some(runtime_id),
+            Ok(None) => {
+                finish_transfer_task(
+                    &state,
+                    &task_id,
+                    &request.session_id,
+                    TransferStatus::Failed,
+                    "需要先连接 SSH/Tmux 会话才能执行远端文件传输".to_string(),
+                    None,
+                );
+                return;
+            }
+            Err(error) => {
+                finish_transfer_task(
+                    &state,
+                    &task_id,
+                    &request.session_id,
+                    TransferStatus::Failed,
+                    error,
+                    None,
+                );
+                return;
+            }
+        }
     }
 
     let progress = TransferProgressContext {
@@ -307,8 +421,24 @@ pub(super) async fn run_queued_transfer(
     }
 
     let result = match request.protocol {
-        TransferProtocol::Sftp => transfer_file_via_sftp(&state, &request, &progress).await,
-        TransferProtocol::Scp => transfer_file_via_local_or_scp(&state, &request, &progress).await,
+        TransferProtocol::Sftp => {
+            transfer_file_via_sftp(
+                &state,
+                &request,
+                &progress,
+                expected_ssh_runtime_id.as_deref(),
+            )
+            .await
+        }
+        TransferProtocol::Scp => {
+            transfer_file_via_local_or_scp(
+                &state,
+                &request,
+                &progress,
+                expected_ssh_runtime_id.as_deref(),
+            )
+            .await
+        }
         TransferProtocol::Xmodem => transfer_file_via_xmodem(&state, &request, &progress).await,
         TransferProtocol::Ymodem => transfer_file_via_ymodem(&state, &request, &progress).await,
         TransferProtocol::Zmodem => transfer_file_via_zmodem(&state, &request, &progress).await,
@@ -330,13 +460,14 @@ pub(super) async fn run_queued_transfer(
         }
         Err(error) => (TransferStatus::Failed, error, None),
     };
-    finish_transfer_task(
+    finish_transfer_task_for_runtime(
         &state,
         &task_id,
         &request.session_id,
         status,
         message,
         bytes,
+        expected_ssh_runtime_id.as_deref(),
     );
 }
 

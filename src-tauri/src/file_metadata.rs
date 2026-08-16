@@ -201,8 +201,12 @@ pub(super) async fn list_files_inner(
             .as_deref()
             .ok_or_else(|| "remote file list requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        auxiliary.ensure_current(state, "远端文件列表")?;
         let sftp = auxiliary.sftp().await?;
-        list_remote_files(&sftp, &request.path).await
+        let result = list_remote_files(&sftp, &request.path).await;
+        drop(sftp);
+        auxiliary.ensure_current(state, "远端文件列表")?;
+        result
     } else {
         list_local_files(&request.path)
     }
@@ -221,8 +225,11 @@ pub(super) async fn file_properties_inner(
             .as_deref()
             .ok_or_else(|| "remote file properties require sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        auxiliary.ensure_current(state, "远端文件属性读取")?;
         let sftp = auxiliary.sftp().await?;
         let result = remote_file_properties(&sftp, &request.path).await;
+        drop(sftp);
+        auxiliary.ensure_current(state, "远端文件属性读取")?;
         result
     } else {
         local_file_properties(&request.path)

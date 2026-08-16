@@ -48,6 +48,8 @@ pub(super) async fn start_file_batch_inner(
     }
 
     let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+    auxiliary.ensure_current(state, "远端文件批次规划")?;
+    let planned_ssh_runtime_id = auxiliary.runtime_id().to_string();
     let sftp = auxiliary.sftp().await?;
     let result = async {
         let mut plan = if request.source_remote {
@@ -172,6 +174,8 @@ pub(super) async fn start_file_batch_inner(
         ))
     }
     .await;
+    drop(sftp);
+    auxiliary.ensure_current(state, "远端文件批次规划")?;
     let (prepared_files, directories_prepared, mut skipped, total_bytes) = result?;
 
     let mut tasks = Vec::with_capacity(prepared_files.len());
@@ -187,7 +191,7 @@ pub(super) async fn start_file_batch_inner(
             target
         };
         tasks.push(
-            start_transfer_inner(
+            start_transfer_inner_for_ssh_runtime(
                 state,
                 StartTransferRequest {
                     session_id: request.session_id.clone(),
@@ -195,6 +199,7 @@ pub(super) async fn start_file_batch_inner(
                     source,
                     destination,
                 },
+                &planned_ssh_runtime_id,
             )
             .await?,
         );

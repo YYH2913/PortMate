@@ -281,6 +281,34 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
         assert_eq!(state.ssh_auxiliary_slots.available_permits(), 1);
         assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 5);
 
+        let mut current_transfer = test_transfer_task(&profile.id, TransferStatus::Running);
+        current_transfer.id = "runtime-bound-current-transfer".to_string();
+        state.store.lock().unwrap().transfers.push(current_transfer);
+        finish_transfer_task_for_runtime(
+            &state,
+            "runtime-bound-current-transfer",
+            &profile.id,
+            TransferStatus::Completed,
+            "completed".to_string(),
+            Some(7),
+            Some("tmux-lease-runtime"),
+        );
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id("runtime-bound-current-transfer")
+                .unwrap()
+                .status,
+            TransferStatus::Completed
+        );
+
+        let stale_file_lease = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+        assert_eq!(stale_file_lease.runtime_id(), "tmux-lease-runtime");
+        stale_file_lease
+            .ensure_current(&state, "远端文件回归")
+            .unwrap();
         state
             .ssh
             .lock()
@@ -288,6 +316,36 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
             .get_mut(&profile.id)
             .unwrap()
             .runtime_id = "replacement-runtime".to_string();
+        let stale_file_error = stale_file_lease
+            .ensure_current(&state, "远端文件回归")
+            .unwrap_err();
+        assert!(
+            stale_file_error.contains("远端文件回归期间已变化"),
+            "{stale_file_error}"
+        );
+        let mut stale_transfer = test_transfer_task(&profile.id, TransferStatus::Running);
+        stale_transfer.id = "runtime-bound-stale-transfer".to_string();
+        state.store.lock().unwrap().transfers.push(stale_transfer);
+        finish_transfer_task_for_runtime(
+            &state,
+            "runtime-bound-stale-transfer",
+            &profile.id,
+            TransferStatus::Completed,
+            "completed".to_string(),
+            Some(7),
+            Some("tmux-lease-runtime"),
+        );
+        let stale_transfer = state
+            .store
+            .lock()
+            .unwrap()
+            .transfer_by_id("runtime-bound-stale-transfer")
+            .unwrap();
+        assert_eq!(stale_transfer.status, TransferStatus::Failed);
+        assert!(stale_transfer
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("完成提交前已变化")));
         let stale_error =
             ensure_tmux_runtime_current(&state, &profile.id, "tmux-lease-runtime").unwrap_err();
         assert!(stale_error.contains("Tmux 操作期间已变化"), "{stale_error}");

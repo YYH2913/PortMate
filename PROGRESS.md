@@ -634,6 +634,8 @@ SSH 健康检查现绑定建立连接时的规范化 Profile 快照和精确 run
 
 Tmux 查询、mutation 和 pane sync 现绑定取得辅助 SSH handle 时的精确 runtime ID，并在状态刷新完成后复核父 runtime，断线或自动重连换代时不再返回旧连接上的 Tmux 状态。Control mode watcher 同样记录父 SSH runtime ID：旧 runtime 的同 target watcher 不再被误判为可复用，安装 watcher 时会原子复核 SSH registry、Store Connected 状态与 control registry，运行期间检测到父 runtime 换代会自动停止并向前端报告。Tmux workflow、tmux 3.1c/3.3a/3.5a/3.7b 兼容矩阵、完整主应用 472 passed/1 ignored/1 filtered、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+远端文件命令和 SFTP/SCP 传输现绑定精确 SSH runtime：辅助 lease 保存 session/runtime 身份，文件列表、属性、创建、删除、移动、重命名、chmod、外部拖放和双栏批次均在操作前后复核当前 Connected runtime，重连换代后不再把旧设备结果显示为当前结果。批次规划取得的 runtime 会约束每个子传输，普通队列在入队或实际开跑时绑定 runtime；等待期间换代会在远端 I/O 前失败，传输完成状态则在同一 SSH registry + Store 锁边界复核并提交，不能把旧连接结果记为新连接上的 Completed。新增无副作用拒绝、旧 lease 失效和完成提交回归，完整主应用 473 passed/1 ignored/1 filtered（含真实 OpenSSH SFTP/SCP/断线恢复综合回归）、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

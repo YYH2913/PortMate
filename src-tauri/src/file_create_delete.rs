@@ -57,6 +57,7 @@ pub(super) async fn file_operation_inner(
             .ok_or_else(|| "remote file operation requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+        auxiliary.ensure_current(state, "远端文件变更")?;
         let sftp = auxiliary.sftp().await?;
         let result = async {
             match operation {
@@ -86,6 +87,8 @@ pub(super) async fn file_operation_inner(
             }
         }
         .await;
+        drop(sftp);
+        auxiliary.ensure_current(state, "远端文件变更")?;
         result
     } else {
         match operation {
