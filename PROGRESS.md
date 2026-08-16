@@ -642,6 +642,8 @@ X/Y/ZModem 传输现绑定任务启动时的精确 SSH/Shell/TCP/Serial runtime 
 
 SSH/Shell/TCP/Serial reader 的入站事件现先取得精确 runtime generation guard，再执行 raw shard、Store event/screen、terminal byte publication、text/JSONL shard、前端事件和 trigger 副作用；旧 reader 在快速断线重连后的残留缓冲不会再显示、记录或触发新连接动作。guard 持有到整次事件提交结束，runtime replacement 不能在一次已接受事件的检查与写入之间插入；registry 不可用时同样 fail-closed。新增回归覆盖提交期间 replacement 被 guard 阻止，以及 stale bytes 不进入 timeline、Store/screen 和 raw/text/JSONL 日志；日志专项 17 项、trigger 专项 8 项、runtime 相关 75 项、完整主应用 477 passed/1 ignored/1 filtered、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+串口分析器的共享 capture buffer 写入已并入相同的入站 runtime generation guard：旧串口 reader 的收尾字节仍可留在其专属 protocol tap 供旧传输取消/收敛，但不会在重连后污染新设备的文本/Hex 分析帧。新增无物理串口 runtime 夹具同时断言 stale generation 不产生 capture frame 或 Store event、当前 generation 原子产生两者；串口专项 13 项、runtime 相关 76 项、完整主应用 478 passed/1 ignored/1 filtered 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

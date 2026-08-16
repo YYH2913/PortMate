@@ -36,6 +36,84 @@ fn serial_capture_buffer_bounds_and_incremental_snapshots() {
 }
 
 #[test]
+fn serial_capture_and_event_reject_stale_runtime_input_together() {
+    let root = std::env::temp_dir().join(format!(
+        "portmate-serial-capture-runtime-{}",
+        Uuid::new_v4()
+    ));
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+    let capture = serial_capture_for_session(&state.serial_captures, &profile.id).unwrap();
+    let (tap, _) = broadcast::channel(8);
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "serial-current".to_string(),
+            writer: None,
+            tap,
+            closed: Arc::new(AtomicBool::new(false)),
+            capture: Arc::clone(&capture),
+        },
+    );
+    let io = state.session_io();
+
+    record_channel_bytes_with_accepted_side_effect(
+        &io,
+        &profile.id,
+        Some("serial-stale"),
+        EventStream::Stdout,
+        b"stale",
+        "stale".to_string(),
+        || record_serial_capture(&capture, EventDirection::Inbound, b"stale"),
+    );
+    assert!(capture.lock().unwrap().frames.is_empty());
+    assert!(!state
+        .store
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .any(|event| event.text.as_deref() == Some("stale")));
+
+    record_channel_bytes_with_accepted_side_effect(
+        &io,
+        &profile.id,
+        Some("serial-current"),
+        EventStream::Stdout,
+        b"current",
+        "current".to_string(),
+        || record_serial_capture(&capture, EventDirection::Inbound, b"current"),
+    );
+    let capture = capture.lock().unwrap();
+    assert_eq!(capture.frames.len(), 1);
+    assert_eq!(capture.frames[0].bytes, b"current");
+    drop(capture);
+    assert!(state
+        .store
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .any(|event| event.text.as_deref() == Some("current")));
+
+    state.serial.lock().unwrap().remove(&profile.id);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn serial_capture_export_is_atomic_filtered_and_checksummed() {
     let root =
         std::env::temp_dir().join(format!("portmate-serial-capture-export-{}", Uuid::new_v4()));

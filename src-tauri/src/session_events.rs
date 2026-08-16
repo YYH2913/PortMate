@@ -35,7 +35,28 @@ pub(super) fn record_channel_bytes(
     raw_bytes: &[u8],
     text: String,
 ) {
+    record_channel_bytes_with_accepted_side_effect(
+        io,
+        session_id,
+        source_runtime_id,
+        stream,
+        raw_bytes,
+        text,
+        || {},
+    );
+}
+
+pub(super) fn record_channel_bytes_with_accepted_side_effect(
+    io: &SessionIo,
+    session_id: &str,
+    source_runtime_id: Option<&str>,
+    stream: EventStream,
+    raw_bytes: &[u8],
+    text: String,
+    accepted_side_effect: impl FnOnce(),
+) {
     let Some(source_runtime_id) = source_runtime_id else {
+        accepted_side_effect();
         record_accepted_channel_bytes(io, session_id, None, stream, raw_bytes, text);
         return;
     };
@@ -44,6 +65,7 @@ pub(super) fn record_channel_bytes(
         session_id,
         source_runtime_id,
         || {
+            accepted_side_effect();
             record_accepted_channel_bytes(
                 io,
                 session_id,

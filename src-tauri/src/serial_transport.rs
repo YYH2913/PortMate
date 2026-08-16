@@ -204,15 +204,15 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 Ok(size) => {
                     last_received_at = Instant::now();
                     let bytes = buffer[..size].to_vec();
-                    record_serial_capture(&capture, EventDirection::Inbound, &bytes);
                     let _ = tap.send(bytes.clone());
-                    record_channel_bytes(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
                         &bytes,
                         String::from_utf8_lossy(&bytes).to_string(),
+                        || record_serial_capture(&capture, EventDirection::Inbound, &bytes),
                     );
                     has_unpersisted_stream = true;
                 }
