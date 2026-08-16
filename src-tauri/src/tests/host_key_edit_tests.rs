@@ -251,3 +251,81 @@ fn legacy_host_key_decisions_require_the_same_scanned_profile_snapshot() {
     .unwrap_err();
     assert!(stale.contains("扫描后变化"), "{stale}");
 }
+
+#[test]
+fn unsaved_profile_host_key_drafts_append_and_replace_without_store_state() {
+    let mut profile = normalize_session_profile(test_ssh_profile());
+    let ssh = ssh_connection(&profile).unwrap();
+    let first_observation = HostKeyObservation {
+        host: ssh.endpoint.host.clone(),
+        port: ssh.endpoint.port,
+        alias: ssh.host_key_policy.alias.clone(),
+        algorithm: "ssh-ed25519".to_string(),
+        public_key_base64: "YWJj".to_string(),
+    };
+
+    let appended = prepare_scanned_host_key_draft_inner(TrustScannedHostKeyRequest {
+        profile: profile.clone(),
+        observation: first_observation.clone(),
+        decision: HostKeyDecision::AppendToProfile,
+    })
+    .unwrap();
+    assert_eq!(appended.trusted.scope, HostKeyScope::Profile);
+    assert_eq!(appended.trusted.profile_id.as_deref(), Some(profile.id.as_str()));
+    assert_eq!(appended.trusted_host_keys, vec![appended.trusted.clone()]);
+
+    ssh_connection_mut(&mut profile)
+        .unwrap()
+        .trusted_host_keys = appended.trusted_host_keys;
+    let mut replacement_observation = first_observation;
+    replacement_observation.public_key_base64 = "ZGVm".to_string();
+    let replaced = prepare_scanned_host_key_draft_inner(TrustScannedHostKeyRequest {
+        profile,
+        observation: replacement_observation,
+        decision: HostKeyDecision::ReplaceForProfile,
+    })
+    .unwrap();
+    assert_eq!(replaced.trusted_host_keys, vec![replaced.trusted.clone()]);
+    assert_ne!(replaced.trusted.id, appended.trusted.id);
+    assert_ne!(
+        replaced.trusted.fingerprint_sha256,
+        appended.trusted.fingerprint_sha256
+    );
+}
+
+#[test]
+fn unsaved_profile_host_key_drafts_reject_non_profile_or_wrong_target_decisions() {
+    let profile = normalize_session_profile(test_ssh_profile());
+    let ssh = ssh_connection(&profile).unwrap();
+    let observation = HostKeyObservation {
+        host: ssh.endpoint.host.clone(),
+        port: ssh.endpoint.port,
+        alias: ssh.host_key_policy.alias.clone(),
+        algorithm: "ssh-ed25519".to_string(),
+        public_key_base64: "YWJj".to_string(),
+    };
+
+    for decision in [
+        HostKeyDecision::TrustOnce,
+        HostKeyDecision::AppendToProject,
+        HostKeyDecision::Reject,
+    ] {
+        let error = prepare_scanned_host_key_draft_inner(TrustScannedHostKeyRequest {
+            profile: profile.clone(),
+            observation: observation.clone(),
+            decision,
+        })
+        .unwrap_err();
+        assert!(error.contains("只支持 Profile 范围"), "{error}");
+    }
+
+    let mut wrong_target = observation;
+    wrong_target.host = "other.example".to_string();
+    let error = prepare_scanned_host_key_draft_inner(TrustScannedHostKeyRequest {
+        profile,
+        observation: wrong_target,
+        decision: HostKeyDecision::AppendToProfile,
+    })
+    .unwrap_err();
+    assert!(error.contains("目标或 Jump Host 不匹配"), "{error}");
+}

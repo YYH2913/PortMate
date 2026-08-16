@@ -134,6 +134,42 @@ pub(crate) fn trust_scanned_host_key(
     })
 }
 
+#[tauri::command]
+pub(crate) fn prepare_scanned_host_key_draft(
+    request: TrustScannedHostKeyRequest,
+) -> Result<DraftHostKeyDecisionResponse, String> {
+    prepare_scanned_host_key_draft_inner(request)
+}
+
+pub(super) fn prepare_scanned_host_key_draft_inner(
+    request: TrustScannedHostKeyRequest,
+) -> Result<DraftHostKeyDecisionResponse, String> {
+    if !matches!(
+        request.decision,
+        HostKeyDecision::AppendToProfile | HostKeyDecision::ReplaceForProfile
+    ) {
+        return Err("会话设置草稿只支持 Profile 范围的 Host Key 信任".to_string());
+    }
+    let profile = normalize_session_profile(request.profile);
+    let policy = host_key_scan_policy_for_observation(&profile, &request.observation)?;
+    let mut host_keys = HostKeyStore {
+        keys: ssh_connection(&profile)?.trusted_host_keys.clone(),
+    };
+    let trusted = host_keys
+        .apply_decision(
+            &profile.id,
+            &policy,
+            &request.observation,
+            request.decision,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Host Key 草稿决策未生成持久信任记录".to_string())?;
+    Ok(DraftHostKeyDecisionResponse {
+        trusted,
+        trusted_host_keys: host_keys.keys,
+    })
+}
+
 pub(super) fn validate_scanned_host_key_profile_snapshot(
     store: &SessionStore,
     scanned_profile: &SessionProfile,

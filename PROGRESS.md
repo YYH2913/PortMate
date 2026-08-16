@@ -188,6 +188,8 @@ SSH 连接凭据弹窗现为每次请求分配单调 request ID，提交/取消�
 
 普通 SSH 连接失败后的 Host Key 确认提示也已绑定规范化连接快照：扫描、Profile update、决策提交和打开验证设置都会对照当前端点、代理、Jump Host、认证及 Host Key 策略，Profile 同 ID 但连接配置变化时立即撤销旧提示和在途操作；仅持久 Host Key 镜像变化不会误撤销。仍保留用于兼容的 `apply_host_key_decision` 后端命令现要求显式 `expectedProfile`，并在一次性或持久信任前复用服务端扫描快照及 observation 目标/Jump Host 校验，缺失快照、ID 不一致或 Store 配置变化均 fail-closed。Workspace UI 在 Profile update 与旧确认按钮点击的同一 task 内验证零 `trust_scanned_host_key` 写入、零旧设置/凭据弹窗；Host Key 专项 15 项、前端 115 文件/628 项、主应用完整库回归 463 passed/1 ignored/1 filtered、生产构建、Workspace UI、Rustfmt、all-targets Clippy `-D warnings` 和 diff whitespace gate 均通过。
 
+会话设置中的 Host Key 扫描信任不再错误调用只接受已持久 Store 快照的 `trust_scanned_host_key`：新建 Profile 或修改未保存 SSH 目标后，服务端现通过无 Store 副作用的 `prepare_scanned_host_key_draft` 校验 observation 确实属于目标或 Jump Host，并生成 Profile 范围的追加/替换结果；前端把完整 key 列表留在草稿，只有用户保存会话时才与目标配置一起提交。一次性信任和 Project 级立即写入不再出现在草稿编辑器，继续由连接失败提示和密钥管理器承担，取消设置不会遗留全局信任。Workspace UI 验证修改目标后草稿命令单次调用、旧持久命令零调用、保存前 Store Profile/全局 key 不变，以及保存后新目标和单个扫描 key 同时进入 Profile；Host Key 专项 17 项、前端 115 文件/628 项、主应用 465 passed/1 ignored/1 filtered、生产构建、Workspace UI、release-source、Rustfmt、all-targets Clippy `-D warnings` 和 diff whitespace gate 均通过。
+
 ## 当前实现快照
 
 ### 前端桌面工作台

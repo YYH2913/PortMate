@@ -149,6 +149,7 @@ pub fn run() {
             ssh_host_key_commands::apply_host_key_decision,
             ssh_host_key_commands::scan_ssh_host_key,
             ssh_host_key_commands::trust_scanned_host_key,
+            ssh_host_key_commands::prepare_scanned_host_key_draft,
             ssh_host_key_commands::import_known_hosts,
             ssh_host_key_commands::export_known_hosts,
             ssh_host_key_commands::delete_host_key,

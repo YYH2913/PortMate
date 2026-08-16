@@ -1339,6 +1339,45 @@ try {
             resolve: () => resolve(structuredClone(result)),
           }));
         }
+        if (command === "prepare_scanned_host_key_draft") {
+          const complete = () => {
+            const { profile, observation, decision } = args.request;
+            let trustedHostKeys = structuredClone(profile.connection.trustedHostKeys);
+            if (decision === "replace-for-profile") {
+              trustedHostKeys = trustedHostKeys.filter((key) => !(
+                key.profileId === profile.id
+                  && key.alias === observation.alias
+                  && key.port === observation.port
+                  && key.algorithm === observation.algorithm
+              ));
+            }
+            const now = new Date().toISOString();
+            const trusted = {
+              id: `host-key-${++window.__hostKeySequence}`,
+              profileId: profile.id,
+              alias: observation.alias || profile.connection.hostKeyPolicy.alias || profile.id,
+              host: observation.host,
+              port: observation.port,
+              algorithm: observation.algorithm,
+              fingerprintSha256: observation.publicKeyBase64 === "U0NBTi1TRUNPTkQ="
+                ? "SHA256:scan-second"
+                : "SHA256:scan-first",
+              publicKeyBase64: observation.publicKeyBase64,
+              scope: "profile",
+              label: "scanned host key draft",
+              firstSeen: now,
+              lastSeen: now,
+            };
+            trustedHostKeys.push(trusted);
+            return { trusted: structuredClone(trusted), trustedHostKeys };
+          };
+          if (!window.__deferSessionValidation) return complete();
+          return new Promise((resolve) => window.__pendingSessionValidation.push({
+            command,
+            args: structuredClone(args),
+            resolve: () => resolve(structuredClone(complete())),
+          }));
+        }
         if (command === "trust_scanned_host_key") {
           const complete = () => {
             const { profile, observation, decision } = args.request;
@@ -8895,30 +8934,59 @@ Host staging
     button.click();
   });
   await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
-  assert(await sessionOperationDialog.locator(".dialog-title button").isDisabled()
-    && await sessionOperationDialog.getByRole("button", { name: "保存", exact: true }).isDisabled()
-    && await sessionOperationDialog.locator(".session-form").evaluate((form) => form.inert),
-  "a pending Host Key trust write did not lock Session Settings");
+  assert(await trustScannedHostKey.isDisabled()
+    && await sessionOperationDialog.getByRole("button", { name: "替换 Profile", exact: true }).isDisabled()
+    && !await sessionOperationDialog.getByRole("button", { name: "保存", exact: true }).isDisabled()
+    && !await sessionOperationDialog.locator(".session-form").evaluate((form) => form.inert),
+  "a pending Host Key draft decision was duplicated or blocked unrelated draft editing");
   await sessionOperationPage.evaluate(() => {
     window.__deferSessionValidation = false;
     window.__pendingSessionValidation.shift().resolve();
   });
-  await sessionOperationDialog.getByText(/已信任 SHA256:scan-first/).waitFor();
+  await sessionOperationDialog.getByText(/已加入 Profile 草稿 SHA256:scan-first，保存会话后生效/).waitFor();
   const sessionValidationState = await sessionOperationPage.evaluate(() => ({
     healthCalls: window.__invokeCalls.filter((call) => call.command === "check_ssh_health").length,
     scanHosts: window.__invokeCalls
       .filter((call) => call.command === "scan_ssh_host_key")
       .map((call) => call.args.request.profile.connection.endpoint.host),
+    draftTrustCalls: window.__invokeCalls.filter((call) => call.command === "prepare_scanned_host_key_draft").length,
     trustCalls: window.__invokeCalls.filter((call) => call.command === "trust_scanned_host_key").length,
     trustedHosts: window.__hostKeys.map((key) => key.host),
+    persistedProfile: (() => {
+      const profile = window.__sessions.find((session) => session.profile.id === "edge-router")?.profile;
+      return {
+        host: profile?.connection.endpoint.host,
+        trustedHostKeys: profile?.connection.trustedHostKeys.length,
+      };
+    })(),
   }));
   assert(sessionValidationState.healthCalls === 1
     && JSON.stringify(sessionValidationState.scanHosts) === JSON.stringify(["10.0.0.1", "new-router.local"])
-    && sessionValidationState.trustCalls === 1
-    && JSON.stringify(sessionValidationState.trustedHosts) === JSON.stringify(["new-router.local"]),
+    && sessionValidationState.draftTrustCalls === 1
+    && sessionValidationState.trustCalls === 0
+    && JSON.stringify(sessionValidationState.trustedHosts) === JSON.stringify([])
+    && sessionValidationState.persistedProfile.host === "10.0.0.1"
+    && sessionValidationState.persistedProfile.trustedHostKeys === 0,
   `Session Settings validation operations were duplicated or used stale targets: ${JSON.stringify(sessionValidationState)}`);
-  await sessionOperationDialog.getByRole("button", { name: "取消", exact: true }).click();
+  await sessionOperationDialog.getByRole("button", { name: "保存", exact: true }).click();
   await sessionOperationDialog.waitFor({ state: "detached" });
+  const savedDraftHostKeyState = await sessionOperationPage.evaluate(() => {
+    const savedRequest = window.__invokeCalls.findLast((call) => call.command === "save_session_profile")?.args.profile;
+    const persisted = window.__sessions.find((session) => session.profile.id === "edge-router")?.profile;
+    return {
+      requestHost: savedRequest?.connection.endpoint.host,
+      requestKeys: savedRequest?.connection.trustedHostKeys.map((key) => ({ host: key.host, scope: key.scope })),
+      persistedHost: persisted?.connection.endpoint.host,
+      persistedKeys: persisted?.connection.trustedHostKeys.map((key) => ({ host: key.host, scope: key.scope })),
+      globalKeys: window.__hostKeys.length,
+    };
+  });
+  assert(savedDraftHostKeyState.requestHost === "new-router.local"
+    && JSON.stringify(savedDraftHostKeyState.requestKeys) === JSON.stringify([{ host: "new-router.local", scope: "profile" }])
+    && savedDraftHostKeyState.persistedHost === "new-router.local"
+    && JSON.stringify(savedDraftHostKeyState.persistedKeys) === JSON.stringify([{ host: "new-router.local", scope: "profile" }])
+    && savedDraftHostKeyState.globalKeys === 0,
+  `a staged Host Key draft was not committed with its SSH Profile: ${JSON.stringify(savedDraftHostKeyState)}`);
   assert(sessionOperationErrors.length === 0,
     `Session Settings operation lifecycle browser exceptions: ${JSON.stringify(sessionOperationErrors)}`);
   await sessionOperationPage.close();

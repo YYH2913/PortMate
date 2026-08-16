@@ -83,7 +83,11 @@ import type {
   TrustedHostKey,
 } from "./types";
 
-type HostKeyDecisionValue = "trust-once" | "append-to-profile" | "append-to-project" | "replace-for-profile";
+type DraftHostKeyDecisionValue = "append-to-profile" | "replace-for-profile";
+type DraftHostKeyDecisionResponse = {
+  trusted: TrustedHostKey;
+  trustedHostKeys: TrustedHostKey[];
+};
 
 export default function SessionSettingsDialog({
   draft,
@@ -1434,46 +1438,38 @@ function SshAdvancedFields({
         if (requestGate.current.finish("host-key", token)) setHostKeyBusy(false);
       }
     };
-    const trustHostKey = async (decision: HostKeyDecisionValue) => {
+    const trustHostKey = async (decision: DraftHostKeyDecisionValue) => {
       if (!hostKeyScan || writeBusy) return;
       const token = requestGate.current.begin("host-key");
       if (token === null) return;
-      const writeToken = onWriteStart();
-      if (writeToken === null) {
-        requestGate.current.finish("host-key", token);
-        return;
-      }
       const requestKey = hostKeyRequestKeyRef.current;
       const scan = hostKeyScan;
       const profile = prepareProfile(draftRef.current);
       setHostKeyBusy(true);
       setHostKeyStatus("");
       try {
-        const trusted = await invokeBackend<TrustedHostKey | null>("trust_scanned_host_key", {
+        const response = await invokeBackend<DraftHostKeyDecisionResponse>("prepare_scanned_host_key_draft", {
           request: { profile, observation: scan.observation, decision },
         });
         if (!requestGate.current.isCurrent("host-key", token) || hostKeyRequestKeyRef.current !== requestKey) return;
-        if (trusted) {
-          const currentDraft = draftRef.current;
-          if (currentDraft.connection.kind !== "ssh" && currentDraft.connection.kind !== "tmux") return;
-          onDraftChange({
-            ...currentDraft,
-            kind: currentDraft.connection.kind,
-            connection: {
-              ...currentDraft.connection,
-              trustedHostKeys: [trusted, ...currentDraft.connection.trustedHostKeys.filter((key) => key.id !== trusted.id)],
-            },
-          });
-        }
+        const currentDraft = draftRef.current;
+        if (currentDraft.connection.kind !== "ssh" && currentDraft.connection.kind !== "tmux") return;
+        onDraftChange({
+          ...currentDraft,
+          kind: currentDraft.connection.kind,
+          connection: {
+            ...currentDraft.connection,
+            trustedHostKeys: response.trustedHostKeys,
+          },
+        });
         setHostKeyScan(null);
-        setHostKeyStatus(decision === "trust-once" ? "已临时信任，下一次连接有效" : trusted ? `已信任 ${trusted.fingerprintSha256}` : "未写入配置");
+        setHostKeyStatus(`已加入 Profile 草稿 ${response.trusted.fingerprintSha256}，保存会话后生效`);
       } catch (error) {
         if (requestGate.current.isCurrent("host-key", token) && hostKeyRequestKeyRef.current === requestKey) {
           setHostKeyStatus(formatError(error));
         }
       } finally {
         if (requestGate.current.finish("host-key", token)) setHostKeyBusy(false);
-        onWriteFinish(writeToken);
       }
     };
     return (
@@ -1523,9 +1519,7 @@ function SshAdvancedFields({
         {hostKeyScan ? (
           <DialogField label="处理:" group>
             <div className="inline-actions">
-              <button type="button" onClick={() => void trustHostKey("trust-once")} disabled={hostKeyBusy || writeBusy}>仅本次</button>
               <button type="button" onClick={() => void trustHostKey("append-to-profile")} disabled={hostKeyBusy || writeBusy}>加入 Profile</button>
-              <button type="button" onClick={() => void trustHostKey("append-to-project")} disabled={hostKeyBusy || writeBusy}>加入 Project</button>
               <button type="button" onClick={() => void trustHostKey("replace-for-profile")} disabled={hostKeyBusy || writeBusy}>替换 Profile</button>
             </div>
           </DialogField>

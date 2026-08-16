@@ -98,3 +98,10 @@ pub struct TrustScannedHostKeyRequest {
     pub observation: HostKeyObservation,
     pub decision: HostKeyDecision,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftHostKeyDecisionResponse {
+    pub trusted: TrustedHostKey,
+    pub trusted_host_keys: Vec<TrustedHostKey>,
+}
