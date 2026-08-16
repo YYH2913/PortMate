@@ -33,7 +33,9 @@ use profile_commands::{
     validate_expected_proxy_password, validate_profile_transport_change, validate_profile_tunnels,
 };
 use profile_normalization::*;
+#[cfg(test)]
 use session_close::close_session_inner;
+use session_close::{close_session_inner_with_validation, SessionCloseValidations};
 #[cfg(test)]
 use session_close::session_has_registered_runtime;
 use session_commands::{mark_session_connected_with_events, profile_requires_runtime};

@@ -290,7 +290,22 @@ async fn execute_ipc_request_inner(
         }
         "close_session" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            let summary = close_session_inner(&state, session_id).await?;
+            let validations = SessionCloseValidations {
+                before_pending_open_cancel: mcp_commit_validation(
+                    &state,
+                    &request,
+                    execution_context,
+                    authorization_context,
+                )?,
+                before_runtime_disconnect: mcp_commit_validation(
+                    &state,
+                    &request,
+                    execution_context,
+                    authorization_context,
+                )?,
+            };
+            let summary =
+                close_session_inner_with_validation(&state, session_id, Some(validations)).await?;
             serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
         }
         "start_transfer" => {

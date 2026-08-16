@@ -173,6 +173,68 @@ fn staged_session_credentials_reject_invalid_values_and_profile_changes() {
 }
 
 #[test]
+fn rejected_validated_session_close_keeps_staged_credentials() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let profile = test_ssh_profile();
+        let state = test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
+        let now = Instant::now();
+        let staged = {
+            let store = state.store.lock().unwrap();
+            stage_session_credentials_for_owner(
+                &state.session_credentials,
+                &store,
+                "settings-window",
+                StageSessionCredentialsRequest {
+                    session_id: profile.id.clone(),
+                    password: Some("still-owned-password".to_string()),
+                    passphrase: None,
+                },
+                now,
+            )
+            .unwrap()
+        };
+        let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let close_state = state.clone();
+        let close_session_id = profile.id.clone();
+        let close = tokio::spawn(async move {
+            close_session_inner_with_validation(
+                &close_state,
+                close_session_id,
+                Some(SessionCloseValidations {
+                    before_pending_open_cancel: Box::new(|| Ok(())),
+                    before_runtime_disconnect: Box::new(|| {
+                        Err("authorization revoked before disconnect".to_string())
+                    }),
+                }),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&lane) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validated close did not enter the lifecycle queue");
+        drop(lane_guard);
+
+        let error = close.await.unwrap().unwrap_err();
+        assert!(error.contains("authorization revoked"), "{error}");
+        let consumed = consume_session_credentials_for_owner(
+            &state.session_credentials,
+            "settings-window",
+            &profile.id,
+            &staged.credential_handle,
+            now,
+        )
+        .unwrap();
+        assert_eq!(consumed.password.as_deref(), Some("still-owned-password"));
+    });
+}
+
+#[test]
 fn desktop_open_session_contract_cannot_deserialize_inline_secrets() {
     let request: OpenSessionRequest = serde_json::from_value(serde_json::json!({
         "sessionId": "ssh-session-1",

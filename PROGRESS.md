@@ -662,6 +662,8 @@ MCP `start_transfer`、内联/分块内容传输、`cancel_transfer` 和 `retry_
 
 MCP `create_tunnel` 现把首次授权快照带到 tunnel runtime 的实际安装点：Local/Dynamic 在监听端口绑定成功、但尚未注册 listener worker 前复核 grant，Remote 在服务端 forward 创建成功、但尚未写入路由和 runtime registry 前复核；撤权、删除、缩小或到期会 fail-closed，Local/Dynamic 立即释放暂存 listener，Remote 主动取消已创建的服务端 forward。真实 russh 回归同时证明端口可立即重绑、remote forward/cancel 成对发生，且 Profile、事件、forward route 与 runtime registry 均无残留；桌面和重连恢复路径继续使用无授权 wrapper。MCP 专项 49 passed/1 ignored、tunnel 相关 20 项（含真实 OpenSSH SFTP/SCP/三模式 tunnel 综合端到端）、完整主应用 488 passed/1 ignored、locked workspace、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+MCP `close_session` 现区分两个不可混淆的授权提交点：在取消 pending open 前先复核 grant；若确实发出取消，该动作即视为已经提交，关闭必须等待 lifecycle lane 并一致收敛，不能因随后撤权留下半关闭状态；若没有 pending open 副作用，则在取得 lane 后、清理桌面暂存凭据或移除 transport runtime 前再次复核。排队期间撤权会保留已连接 Shell runtime、Connected Store 状态和原窗口临时 SSH 凭据，并把审计收敛为 `failed`；已授权取消 pending open 后的晚到撤权则继续完成关闭并记为 `succeeded`。桌面 close wrapper 仍保持立即取消卡住 SSH 握手的原行为。MCP 专项 51 passed/1 ignored、session lifecycle 10 项、完整主应用 491 passed/1 ignored、locked workspace 全 crate/integration/doc tests、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

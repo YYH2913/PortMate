@@ -1,6 +1,11 @@
 use super::session_open::{cancel_pending_session_opens, session_lifecycle_lane};
 use super::*;
 
+pub(super) struct SessionCloseValidations {
+    pub(super) before_pending_open_cancel: CommitValidation,
+    pub(super) before_runtime_disconnect: CommitValidation,
+}
+
 pub(super) fn session_has_registered_runtime(
     state: &AppState,
     session_id: &str,
@@ -120,10 +125,34 @@ pub(super) async fn close_session_inner(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
-    clear_session_credentials(state, &session_id);
-    cancel_pending_session_opens(state, &session_id)?;
+    close_session_inner_with_validation(state, session_id, None).await
+}
+
+pub(super) async fn close_session_inner_with_validation(
+    state: &AppState,
+    session_id: String,
+    validations: Option<SessionCloseValidations>,
+) -> Result<SessionSummary, String> {
+    // Cancelling an in-flight open commits the close; otherwise revalidate after the lane wait.
+    let before_runtime_disconnect = if let Some(validations) = validations {
+        (validations.before_pending_open_cancel)()?;
+        if cancel_pending_session_opens(state, &session_id)? > 0 {
+            clear_session_credentials(state, &session_id);
+            None
+        } else {
+            Some(validations.before_runtime_disconnect)
+        }
+    } else {
+        clear_session_credentials(state, &session_id);
+        cancel_pending_session_opens(state, &session_id)?;
+        None
+    };
     let lifecycle_lane = session_lifecycle_lane(state, &session_id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;
+    if let Some(validate) = before_runtime_disconnect {
+        validate()?;
+        clear_session_credentials(state, &session_id);
+    }
     close_session_under_lifecycle_lock(state, session_id).await
 }
 
