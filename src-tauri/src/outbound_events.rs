@@ -169,27 +169,6 @@ pub(super) async fn run_command_inner_with_annotations(
     .await
 }
 
-pub(super) async fn run_command_inner_with_annotations_and_display_text(
-    io: SessionIo,
-    session_id: String,
-    text: String,
-    display_text: String,
-    actor: &str,
-    audit_action: Option<&str>,
-    additional_annotations: BTreeMap<String, String>,
-) -> Result<SessionEvent, String> {
-    run_command_inner_with_annotations_impl(
-        io,
-        session_id,
-        text,
-        Some(display_text),
-        actor,
-        audit_action,
-        additional_annotations,
-    )
-    .await
-}
-
 async fn run_command_inner_with_annotations_impl(
     io: SessionIo,
     session_id: String,
@@ -197,40 +176,93 @@ async fn run_command_inner_with_annotations_impl(
     display_text: Option<String>,
     actor: &str,
     audit_action: Option<&str>,
-    mut additional_annotations: BTreeMap<String, String>,
+    additional_annotations: BTreeMap<String, String>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
-    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
-    let command_id = Uuid::new_v4().to_string();
-    set_active_command(&io, &session_id, &command_id);
-    if let Err(error) = write_session_bytes(
-        &io.store,
-        &io.runtimes.ssh,
-        &io.runtimes.shell,
-        &io.runtimes.tcp,
-        &io.runtimes.serial,
+    run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
+        &io,
         &session_id,
+        &text,
+        RunCommandContext {
+            display_text: display_text.as_deref(),
+            actor,
+            audit_action,
+            additional_annotations,
+            expected_runtime_id: None,
+        },
+    )
+    .await
+}
+
+pub(super) struct RunCommandContext<'a> {
+    pub(super) display_text: Option<&'a str>,
+    pub(super) actor: &'a str,
+    pub(super) audit_action: Option<&'a str>,
+    pub(super) additional_annotations: BTreeMap<String, String>,
+    pub(super) expected_runtime_id: Option<&'a str>,
+}
+
+pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
+    io: &SessionIo,
+    session_id: &str,
+    text: &str,
+    context: RunCommandContext<'_>,
+) -> Result<SessionEvent, String> {
+    let RunCommandContext {
+        display_text,
+        actor,
+        audit_action,
+        mut additional_annotations,
+        expected_runtime_id,
+    } = context;
+    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, session_id, text)?;
+    let command_id = Uuid::new_v4().to_string();
+    set_active_command(io, session_id, &command_id);
+    if let Err(error) = write_session_bytes_for_runtime(
+        &io.store,
+        &io.runtimes,
+        session_id,
         wire_text.as_bytes(),
+        expected_runtime_id,
     )
     .await
     {
-        clear_active_command_if(&io, &session_id, &command_id);
+        clear_active_command_if(io, session_id, &command_id);
         return Err(error);
     }
     additional_annotations.extend([
-        ("commandId".to_string(), command_id),
+        ("commandId".to_string(), command_id.clone()),
         ("commandState".to_string(), "started".to_string()),
     ]);
-    Ok(record_outbound_user_event_with_display_text(
-        &io,
-        &session_id,
-        display_text.as_deref().unwrap_or(&text),
-        wire_text.as_bytes(),
-        actor,
-        audit_action,
-        additional_annotations,
-    ))
+    let record = || {
+        record_outbound_user_event_with_display_text(
+            io,
+            session_id,
+            display_text.unwrap_or(text),
+            wire_text.as_bytes(),
+            actor,
+            audit_action,
+            additional_annotations,
+        )
+    };
+    match expected_runtime_id {
+        Some(runtime_id) => {
+            match with_current_session_runtime_generation(
+                &io.runtimes,
+                session_id,
+                runtime_id,
+                record,
+            )? {
+                Some(event) => Ok(event),
+                None => {
+                    clear_active_command_if(io, session_id, &command_id);
+                    Err("命令来源连接已关闭或被新连接替换".to_string())
+                }
+            }
+        }
+        None => Ok(record()),
+    }
 }
 
 pub(super) async fn send_bytes_inner(

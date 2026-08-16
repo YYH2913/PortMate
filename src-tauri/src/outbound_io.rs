@@ -31,6 +31,68 @@ pub(super) fn clear_outbound_lane(store_path: &Path, session_id: &str) {
     }
 }
 
+pub(super) fn current_session_runtime_id(
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    fn merge_runtime_id(
+        current: &mut Option<String>,
+        candidate: Option<String>,
+    ) -> Result<(), String> {
+        let Some(candidate) = candidate else {
+            return Ok(());
+        };
+        if current.is_some() {
+            return Err("会话存在多个活动连接，拒绝发送输入".to_string());
+        }
+        *current = Some(candidate);
+        Ok(())
+    }
+
+    let mut current = None;
+    merge_runtime_id(
+        &mut current,
+        runtimes
+            .ssh
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+            .map(|runtime| runtime.runtime_id.clone()),
+    )?;
+    merge_runtime_id(
+        &mut current,
+        runtimes
+            .shell
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+            .map(|runtime| runtime.runtime_id.clone()),
+    )?;
+    merge_runtime_id(
+        &mut current,
+        runtimes
+            .tcp
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+            .map(|runtime| runtime.runtime_id.clone()),
+    )?;
+    merge_runtime_id(
+        &mut current,
+        runtimes
+            .serial
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(session_id)
+            .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+            .map(|runtime| runtime.runtime_id.clone()),
+    )?;
+    Ok(current)
+}
+
 pub(super) async fn write_session_bytes(
     store: &Arc<Mutex<SessionStore>>,
     ssh: &Arc<Mutex<HashMap<String, SshRuntime>>>,

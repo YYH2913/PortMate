@@ -140,6 +140,28 @@ pub(super) async fn run_custom_script_inner(
     audit_action: Option<&str>,
     require_mcp_enabled: bool,
 ) -> Result<SessionEvent, String> {
+    let io = state.session_io();
+    let initial_updated_at = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        custom_script_for_session(
+            &store,
+            &request.script_id,
+            &request.session_id,
+            require_mcp_enabled,
+        )?
+        .updated_at
+    };
+    if initial_updated_at != request.expected_updated_at {
+        return Err(if require_mcp_enabled {
+            "MCP custom script changed after authorization; review and approve it again".to_string()
+        } else {
+            "custom script changed in another window; refresh and try again".to_string()
+        });
+    }
+    let expected_runtime_id = current_session_runtime_id(&io.runtimes, &request.session_id)?
+        .ok_or_else(|| "会话尚未连接，无法运行自定义脚本".to_string())?;
+    let lane = outbound_lane(&io.store_path, &request.session_id)?;
+    let _lane_guard = lane.lock().await;
     let script = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         custom_script_for_session(
@@ -160,14 +182,17 @@ pub(super) async fn run_custom_script_inner(
         script.content,
         is_telnet_session(&state.store, &request.session_id)?,
     );
-    run_command_inner_with_annotations_and_display_text(
-        state.session_io(),
-        request.session_id,
-        text,
-        CUSTOM_SCRIPT_EVENT_TEXT.to_string(),
-        actor,
-        audit_action,
-        BTreeMap::from([("customScriptId".to_string(), script.id)]),
+    run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
+        &io,
+        &request.session_id,
+        &text,
+        RunCommandContext {
+            display_text: Some(CUSTOM_SCRIPT_EVENT_TEXT),
+            actor,
+            audit_action,
+            additional_annotations: BTreeMap::from([("customScriptId".to_string(), script.id)]),
+            expected_runtime_id: Some(&expected_runtime_id),
+        },
     )
     .await
 }

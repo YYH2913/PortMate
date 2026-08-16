@@ -275,6 +275,190 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
 }
 
 #[test]
+fn queued_custom_script_revalidates_the_script_before_writing() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::time::timeout(Duration::from_millis(300), socket.read_u8()).await
+        });
+
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!("portmate-script-queue-{}", Uuid::new_v4()));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let stream = TcpStream::connect(address).await.unwrap();
+        let (_reader, writer) = stream.into_split();
+        let (tap, _) = broadcast::channel(8);
+        state.tcp.lock().unwrap().insert(
+            profile.id.clone(),
+            TcpRuntime {
+                runtime_id: Uuid::new_v4().to_string(),
+                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
+                tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+        let script = stored_script(&profile.id, true);
+        state
+            .store
+            .lock()
+            .unwrap()
+            .custom_scripts
+            .push(script.clone());
+
+        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let run_state = state.clone();
+        let run_script = script.clone();
+        let run_session_id = profile.id.clone();
+        let run = tokio::spawn(async move {
+            run_custom_script_inner(
+                &run_state,
+                RunCustomScriptRequest {
+                    script_id: run_script.id,
+                    session_id: run_session_id,
+                    expected_updated_at: run_script.updated_at,
+                },
+                "desktop-user",
+                Some("run_custom_script"),
+                false,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&lane) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("custom script did not enter the outbound queue");
+
+        {
+            let mut store = state.store.lock().unwrap();
+            store.custom_scripts[0].content = "changed-while-queued".to_string();
+            store.custom_scripts[0].updated_at = script.updated_at + chrono::Duration::seconds(1);
+        }
+        drop(lane_guard);
+
+        assert!(run
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("changed in another window"));
+        assert!(server.await.unwrap().is_err());
+        assert!(state.store.lock().unwrap().events.is_empty());
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn queued_custom_script_rejects_a_replacement_runtime() {
+    tauri::async_runtime::block_on(async {
+        let original_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let original_address = original_listener.local_addr().unwrap();
+        let original_server = tokio::spawn(async move {
+            let (mut socket, _) = original_listener.accept().await.unwrap();
+            let _ = socket.read_u8().await;
+        });
+        let replacement_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let replacement_address = replacement_listener.local_addr().unwrap();
+        let replacement_server = tokio::spawn(async move {
+            let (mut socket, _) = replacement_listener.accept().await.unwrap();
+            tokio::time::timeout(Duration::from_millis(300), socket.read_u8()).await
+        });
+
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: original_address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root =
+            std::env::temp_dir().join(format!("portmate-script-runtime-queue-{}", Uuid::new_v4()));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let original_stream = TcpStream::connect(original_address).await.unwrap();
+        let (_reader, original_writer) = original_stream.into_split();
+        let (original_tap, _) = broadcast::channel(8);
+        let original_runtime_id = Uuid::new_v4().to_string();
+        state.tcp.lock().unwrap().insert(
+            profile.id.clone(),
+            TcpRuntime {
+                runtime_id: original_runtime_id,
+                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(original_writer))),
+                tap: original_tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+        let script = stored_script(&profile.id, true);
+        state
+            .store
+            .lock()
+            .unwrap()
+            .custom_scripts
+            .push(script.clone());
+
+        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let run_state = state.clone();
+        let run_script = script.clone();
+        let run_session_id = profile.id.clone();
+        let run = tokio::spawn(async move {
+            run_custom_script_inner(
+                &run_state,
+                RunCustomScriptRequest {
+                    script_id: run_script.id,
+                    session_id: run_session_id,
+                    expected_updated_at: run_script.updated_at,
+                },
+                "desktop-user",
+                Some("run_custom_script"),
+                false,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&lane) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("custom script did not enter the outbound queue");
+
+        let replacement_stream = TcpStream::connect(replacement_address).await.unwrap();
+        let (_reader, replacement_writer) = replacement_stream.into_split();
+        let (replacement_tap, _) = broadcast::channel(8);
+        state.tcp.lock().unwrap().insert(
+            profile.id.clone(),
+            TcpRuntime {
+                runtime_id: Uuid::new_v4().to_string(),
+                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(
+                    replacement_writer,
+                ))),
+                tap: replacement_tap,
+                closed: Arc::new(AtomicBool::new(false)),
+                telnet: None,
+            },
+        );
+        drop(lane_guard);
+
+        assert!(run.await.unwrap().unwrap_err().contains("被新连接替换"));
+        assert!(replacement_server.await.unwrap().is_err());
+        assert!(state.store.lock().unwrap().events.is_empty());
+        original_server.abort();
+        let _ = original_server.await;
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

@@ -650,6 +650,8 @@ TCP/Telnet、Serial 和 Shell reader 的结束状态现使用统一的 `runtime 
 
 Modem 协议 tap 和 outbound control/capture 现同样通过精确 runtime generation 验收：SSH/Shell/TCP/Serial 的旧 reader 不再向旧 Modem worker 发布 replacement 后的残留字节，旧 Modem writer 也不会把 control event 或串口 outbound frame 记到新连接。已通过 generation 验收并排队的末尾 ACK/marker 会先于随后到达的断线状态被协议 reader 消费，修复 TCP 对端发送 EOT ACK 后立即关闭时传输误报失败；取消发生在任务进入 Running 与绑定 runtime 之间时也会可靠发送 CAN。新增末尾 ACK、取消竞态及 stale/current outbound capture 回归；Modem 相关 22 项并连续重复关键 runtime 3 轮，完整主应用 479 passed/1 ignored/1 filtered、release-source 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+自定义脚本执行现先绑定请求进入时的精确 SSH/Shell/TCP/Serial runtime generation，再进入每会话 outbound lane；取得 lane 后会重新读取并复核脚本存在性、会话边界、MCP 暴露状态和 `updatedAt`，等待期间被编辑、删除、禁用或改目标的旧正文不会发送。实际命令写入及结构化事件提交也按同一 generation 验收，断线重连不能让排队的旧脚本落到新设备或把旧连接结果记到新会话。两个真实 TCP 回归分别占用 outbound lane 后修改脚本和替换 runtime，确认新旧 socket 均无误写且 Store 不产生出站事件；自定义脚本专项 7 项、完整主应用 482 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
