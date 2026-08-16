@@ -680,6 +680,8 @@ SSH 会话关闭、自动重连中未安装 runtime 的回收、连接提交失�
 
 libssh runtime 在连接、Host Key 状态/验证/持久化、凭据读取、认证、agent proxy、forwarding 校验、终端 setup 和 profile snapshot 任一阶段失败时，现统一标记关闭并执行有界 libssh disconnect、Jump transport bridge 等待及上游 russh Jump Host 断开；失败清理不再无限等待，也不会在错误返回后遗留仍运行的桥接链。同步 Host Key mutex 的 guard 会在异步清理前明确释放，保持建立 future 可跨线程调度；成功路径仍完整移交 bridge receiver 和 Jump sessions。真实两级 OpenSSH Jump Host、libssh 认证矩阵、完整主应用 495 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+Local/Dynamic tunnel 的 `direct-tcpip` 打开现把 backend mutex 等待和服务端 channel 回复纳入同一个 10 秒总 deadline，不再各自消耗完整预算而实际卡住近 20 秒；协议请求超时后仍按既有策略主动断开后端，避免晚到 channel 被本地遗漏。真实 russh 回归先占用 backend 锁 350 ms、再延迟服务端回复，确认 500 ms 测试预算不会被分段重置；24 项 tunnel 专项、完整主应用 496 passed/1 ignored、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

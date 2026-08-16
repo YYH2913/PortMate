@@ -2,24 +2,48 @@ use super::*;
 
 pub(super) const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) async fn open_tunnel_direct_tcpip(
-    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession>>,
+pub(super) async fn open_tunnel_direct_tcpip<H: client::Handler>(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
     target_host: String,
     target_port: u16,
     peer: std::net::SocketAddr,
     label: &str,
 ) -> Result<SshBackendChannel, String> {
-    let handle = tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, shared_handle.lock())
+    open_tunnel_direct_tcpip_with_timeout(
+        shared_handle,
+        target_host,
+        target_port,
+        peer,
+        label,
+        TUNNEL_CONNECT_TIMEOUT,
+    )
+    .await
+}
+
+pub(super) async fn open_tunnel_direct_tcpip_with_timeout<H: client::Handler>(
+    shared_handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
+    target_host: String,
+    target_port: u16,
+    peer: std::net::SocketAddr,
+    label: &str,
+    timeout: Duration,
+) -> Result<SshBackendChannel, String> {
+    let started = Instant::now();
+    let handle = tokio::time::timeout(timeout, shared_handle.lock())
         .await
         .map_err(|_| {
             format!(
                 "{label} handle lock timed out after {} ms",
-                TUNNEL_CONNECT_TIMEOUT.as_millis()
+                timeout.as_millis()
             )
         })?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
     match bounded_connection_step(
         handle.open_direct_tcpip(target_host, target_port, peer.ip().to_string(), peer.port()),
-        TUNNEL_CONNECT_TIMEOUT,
+        remaining,
     )
     .await
     {
@@ -35,7 +59,7 @@ pub(super) async fn open_tunnel_direct_tcpip(
             .unwrap_or_default();
             Err(format!(
                 "{label} timed out after {} ms{cleanup_warning}",
-                TUNNEL_CONNECT_TIMEOUT.as_millis()
+                timeout.as_millis()
             ))
         }
     }

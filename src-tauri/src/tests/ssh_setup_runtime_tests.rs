@@ -174,6 +174,88 @@ fn direct_tcpip_open_timeout_disconnects_a_stalled_russh_session() {
 
 #[cfg(unix)]
 #[test]
+fn tunnel_direct_tcpip_open_shares_one_lock_and_protocol_deadline() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping tunnel direct-tcpip deadline test: ssh-keygen is not installed");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let host_key = root.path().join("ssh_host_ed25519_key");
+    generate_ed25519_test_key(&host_key);
+
+    tauri::async_runtime::block_on(async {
+        let username = "portmate-tunnel-deadline-user";
+        let secret = "PortMate tunnel deadline secret";
+        let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
+            &host_key,
+            username,
+            secret,
+            None,
+            None,
+            Some(Duration::from_millis(900)),
+        )
+        .await;
+        let mut session = client::connect(
+            Arc::new(client::Config::default()),
+            ("127.0.0.1", port),
+            AcceptAnyTestSshClient,
+        )
+        .await
+        .unwrap();
+        assert!(session
+            .authenticate_password(username, secret)
+            .await
+            .unwrap()
+            .success());
+        let handle = Arc::new(tokio::sync::Mutex::new(SshBackendSession::from_russh(
+            session,
+        )));
+        let guard = handle.lock().await;
+        let timeout = Duration::from_millis(500);
+        let started = Instant::now();
+        let opening_handle = Arc::clone(&handle);
+        let opening = tokio::spawn(async move {
+            open_tunnel_direct_tcpip_with_timeout(
+                &opening_handle,
+                "127.0.0.1".to_string(),
+                9,
+                "127.0.0.1:49152".parse().unwrap(),
+                "tunnel direct-tcpip test",
+                timeout,
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        drop(guard);
+        let error = tokio::time::timeout(Duration::from_millis(700), opening)
+            .await
+            .expect("tunnel direct-tcpip exceeded its total deadline")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.contains("tunnel direct-tcpip test timed out after 500 ms"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
+        assert_eq!(counters.direct_tcpip_attempts.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while counters.direct_tcpip_completions.load(Ordering::SeqCst) != 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("delayed tunnel direct-tcpip callback did not finish");
+
+        drop(handle);
+        server_task.abort();
+        let _ = server_task.await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn ssh_authentication_timeout_disconnects_a_stalled_russh_session() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping SSH authentication timeout test: ssh-keygen is not installed");
