@@ -458,7 +458,9 @@ fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed
     let _runtime_guard = shared_runtime_test_guard();
     tauri::async_runtime::block_on(async {
         use native_tls::{Identity, TlsAcceptor};
-        use openssl::{pkcs12::Pkcs12, pkey::PKey, x509::X509};
+        use openssl::{
+            hash::MessageDigest, nid::Nid, pkcs12::Pkcs12, pkey::PKey, x509::X509,
+        };
         use rcgen::generate_simple_self_signed;
         use tokio_native_tls::TlsAcceptor as TokioTlsAcceptor;
 
@@ -469,10 +471,17 @@ fn telnet_tls_rejects_untrusted_certificate_and_connects_when_explicitly_allowed
         .unwrap();
         let cert = X509::from_der(certificate.cert.der()).unwrap();
         let identity_password = "portmate-test";
-        let pkcs12 = Pkcs12::builder()
+        let mut pkcs12_builder = Pkcs12::builder();
+        pkcs12_builder
             .name("PortMate test server")
             .pkey(&key)
             .cert(&cert)
+            // OpenSSL 3 defaults to AES/PBES2, which older Security.framework
+            // releases reject as an unknown PKCS#12 import format.
+            .key_algorithm(Nid::PBE_WITHSHA1AND3_KEY_TRIPLEDES_CBC)
+            .cert_algorithm(Nid::PBE_WITHSHA1AND3_KEY_TRIPLEDES_CBC)
+            .mac_md(MessageDigest::sha1());
+        let pkcs12 = pkcs12_builder
             .build2(identity_password)
             .unwrap()
             .to_der()

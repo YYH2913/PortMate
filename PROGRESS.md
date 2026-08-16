@@ -174,6 +174,8 @@ SSH Host Key 安全提示现与 Session/workspace 一样使用同步最新值边
 
 密钥管理器的 Host Key 导入、扫描信任、单项/批量删除和字段编辑保存现共用弹窗级同步 write gate；同一 React render 内的重复点击会在确认或 IPC 调用前被拒绝，不再依赖尚未提交到 DOM 的 `hostKeyMutationBusy`。App 级 latest-wins token 继续隔离跨窗口迟到列表，弹窗 gate 只负责单次写入所有权，关闭窗口会使旧 UI 操作失效而不覆盖其他窗口。Workspace UI 对延迟 `known_hosts` 导入和扫描信任分别执行同帧双触发，验证各自只有一个 pending 请求、一次后端调用和立即锁定的控件；完整前端 114 文件/625 项、生产构建、Workspace UI、terminal compatibility、release-source 和 diff whitespace gate 均通过。
 
+macOS Telnet TLS 测试身份不再依赖 OpenSSL 3 的版本相关 PKCS#12 默认值：测试夹具把私钥和证书保护算法固定为 SHA-1 + 3DES，并把 MAC 固定为 SHA-1，避免 Security.framework 把 AES/PBES2 归档拒绝为 `Unknown format in import`。生产 TLS 配置和证书验证策略不变。专项 TLS 拒绝/显式允许端到端测试、locked Rust workspace 单线程测试、Rustfmt、workspace all-targets Clippy `-D warnings` 和 diff whitespace gate 均通过；真实 Security.framework 导入仍须 macOS Native runner 复验。
+
 ## 当前实现快照
 
 ### 前端桌面工作台
