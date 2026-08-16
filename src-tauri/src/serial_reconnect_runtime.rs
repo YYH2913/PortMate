@@ -7,10 +7,28 @@ pub(super) fn spawn_serial_reconnect(
     closed: Arc<AtomicBool>,
 ) {
     let thread_name = format!("portmate-serial-reconnect-{session_id}");
+    let worker_io = io.clone();
+    let worker_session_id = session_id.clone();
+    let worker_runtime_id = previous_runtime_id.clone();
+    let worker_closed = Arc::clone(&closed);
     if let Err(error) = std::thread::Builder::new()
         .name(thread_name)
-        .spawn(move || reconnect_serial_session(io, session_id, previous_runtime_id, closed))
+        .spawn(move || {
+            reconnect_serial_session(
+                worker_io,
+                worker_session_id,
+                worker_runtime_id,
+                worker_closed,
+            )
+        })
     {
+        fail_pending_serial_reconnect_install(
+            &io,
+            &session_id,
+            &previous_runtime_id,
+            closed.as_ref(),
+            &format!("reconnect thread start failed: {error}"),
+        );
         eprintln!("PortMate: failed to start serial reconnect thread: {error}");
     }
 }
@@ -127,6 +145,13 @@ fn reconnect_serial_session(
         let capture = match serial_capture_for_session(&io.serial_captures, &session_id) {
             Ok(capture) => capture,
             Err(error) => {
+                fail_pending_serial_reconnect_install(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &format!("capture registry unavailable: {error}"),
+                );
                 eprintln!("PortMate: failed to load serial capture buffer: {error}");
                 return;
             }
