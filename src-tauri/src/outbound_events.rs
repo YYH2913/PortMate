@@ -1,7 +1,5 @@
 use super::*;
 
-pub(super) type OutboundCommitValidation = Box<dyn FnOnce() -> Result<(), String> + Send>;
-
 pub(super) async fn send_one_key_value(
     io: SessionIo,
     session_id: &str,
@@ -97,7 +95,7 @@ pub(super) async fn send_text_inner_with_context_and_validation(
     text: String,
     actor: &str,
     audit_action: Option<&str>,
-    commit_validation: Option<OutboundCommitValidation>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
@@ -186,7 +184,7 @@ pub(super) async fn run_command_inner_with_context_and_validation(
     text: String,
     actor: &str,
     audit_action: Option<&str>,
-    commit_validation: Option<OutboundCommitValidation>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
     run_command_inner_with_annotations_impl(
         io,
@@ -227,7 +225,7 @@ async fn run_command_inner_with_annotations_impl(
     actor: &str,
     audit_action: Option<&str>,
     additional_annotations: BTreeMap<String, String>,
-    commit_validation: Option<OutboundCommitValidation>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
     let lane = outbound_lane(&io.store_path, &session_id)?;
     let _lane_guard = lane.lock().await;
@@ -253,7 +251,7 @@ pub(super) struct RunCommandContext<'a> {
     pub(super) audit_action: Option<&'a str>,
     pub(super) additional_annotations: BTreeMap<String, String>,
     pub(super) expected_runtime_id: Option<&'a str>,
-    pub(super) commit_validation: Option<OutboundCommitValidation>,
+    pub(super) commit_validation: Option<CommitValidation>,
 }
 
 pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(

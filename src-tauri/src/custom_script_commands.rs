@@ -139,7 +139,7 @@ pub(super) async fn run_custom_script_inner(
     actor: &str,
     audit_action: Option<&str>,
     require_mcp_enabled: bool,
-    commit_validation: Option<OutboundCommitValidation>,
+    commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
     let io = state.session_io();
     let initial_updated_at = {

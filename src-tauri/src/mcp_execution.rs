@@ -164,7 +164,7 @@ async fn execute_ipc_request_inner(
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_outbound_commit_validation(
+            let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
@@ -189,7 +189,7 @@ async fn execute_ipc_request_inner(
                 is_telnet_session(&state.store, &session_id)?,
             )?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_outbound_commit_validation(
+            let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
@@ -214,7 +214,7 @@ async fn execute_ipc_request_inner(
                 is_telnet_session(&state.store, &session_id)?,
             );
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_outbound_commit_validation(
+            let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
@@ -241,7 +241,7 @@ async fn execute_ipc_request_inner(
                 })?
                 .custom_script_updated_at(&script_id)?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_outbound_commit_validation(
+            let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
@@ -388,7 +388,14 @@ async fn execute_ipc_request_inner(
         }
         "stop_tunnel" => {
             let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?.to_string();
-            let status = stop_tunnel_inner(&state, &tunnel_id).await?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let status =
+                stop_tunnel_inner_with_validation(&state, &tunnel_id, Some(validation)).await?;
             serde_json::to_value(redact_mcp_tunnel_status(status))
                 .map_err(|error| error.to_string())
         }
@@ -406,7 +413,7 @@ async fn execute_ipc_request_inner(
             let target = ipc_string_arg(&request.args, "target")?.to_string();
             let command = tmux_attach_command(&target)?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_outbound_commit_validation(
+            let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
@@ -433,12 +440,12 @@ async fn execute_ipc_request_inner(
     }
 }
 
-fn mcp_outbound_commit_validation(
+fn mcp_commit_validation(
     state: &AppState,
     request: &IpcRequest,
     execution_context: Option<&McpWriteExecutionContext>,
     authorization_context: Option<&McpWriteAuthorizationContext>,
-) -> Result<OutboundCommitValidation, String> {
+) -> Result<CommitValidation, String> {
     let execution_context = execution_context
         .cloned()
         .ok_or_else(|| "MCP input is missing its execution context".to_string())?;

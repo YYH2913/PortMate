@@ -654,6 +654,8 @@ Modem 协议 tap 和 outbound control/capture 现同样通过精确 runtime gene
 
 MCP `send_text`、`send_key`、`run_command`、`attach_tmux` 和 `run_custom_script` 现把首次授权得到的 scope、session、显式 grant/trusted-bootstrap 模式及脚本版本快照带入 outbound lane，在任何终端字节写入前再次完整复核目标、参数、grant 撤销/到期/会话范围与脚本边界。授权在请求排队期间被删除、撤销、缩小或到期时会 fail-closed，且不会因显式 grant 被删空而意外降级为 trusted bootstrap。表驱动真实 TCP 回归逐条占住五条输入路径的 lane、撤销 grant，并确认 socket 零字节、SessionEvent 零新增和最终 `failed` 审计；MCP 专项 45 passed/1 ignored、完整主应用 483 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+MCP `stop_tunnel` 现把首次授权快照带入 tunnel lifecycle lane，并在取得 lane 后、移除 runtime 或关闭 listener 前重新校验 grant。授权在排队期间被撤销、删除、缩小或到期时会 fail-closed，不会停止仍在运行的隧道；回归占住同一 tunnel lane 后撤销 grant，确认 runtime 仍存在、`closed` 保持 false 且最终审计为 `failed`。MCP 专项 46 passed/1 ignored、tunnel 专项 19 项、完整主应用 484 passed/1 ignored、release-source、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

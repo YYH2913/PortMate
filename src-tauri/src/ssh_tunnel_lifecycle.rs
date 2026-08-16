@@ -132,8 +132,19 @@ pub(super) async fn stop_tunnel_inner(
     state: &AppState,
     tunnel_id: &str,
 ) -> Result<TunnelStatus, String> {
+    stop_tunnel_inner_with_validation(state, tunnel_id, None).await
+}
+
+pub(super) async fn stop_tunnel_inner_with_validation(
+    state: &AppState,
+    tunnel_id: &str,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TunnelStatus, String> {
     let lifecycle_lane = tunnel_lifecycle_lane(state, tunnel_id)?;
     let _lifecycle_guard = lifecycle_lane.lock().await;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     let expected_owner = {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
         tunnels

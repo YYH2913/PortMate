@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) type SerialCaptureMap = Arc<Mutex<HashMap<String, Arc<Mutex<SerialCaptureBuffer>>>>>;
 pub(super) type ActiveCommandMap = Arc<Mutex<HashMap<String, String>>>;
+pub(super) type CommitValidation = Box<dyn FnOnce() -> Result<(), String> + Send>;
 pub(super) type SessionLifecycleLanes =
     Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 pub(super) type SessionOpenCancellations =

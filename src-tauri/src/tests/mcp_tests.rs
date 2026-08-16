@@ -917,6 +917,86 @@ fn mcp_stop_tunnel_authorizes_runtime_owner_and_tunnel_reads_are_scoped() {
 }
 
 #[test]
+fn queued_mcp_stop_tunnel_revalidates_its_grant_before_stopping() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-tunnel-commit-{}", Uuid::new_v4()));
+        let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+        let owner_session = state.store.lock().unwrap().profiles[0].id.clone();
+        let tunnel = TunnelSpec {
+            id: "queued-stop-tunnel".to_string(),
+            label: "Queued stop tunnel".to_string(),
+            mode: TunnelMode::Dynamic,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 10_081,
+            target_host: String::new(),
+            target_port: 0,
+            route_rules: Vec::new(),
+            enabled: true,
+        };
+        let closed = Arc::new(AtomicBool::new(false));
+        state.tunnels.lock().unwrap().insert(
+            tunnel.id.clone(),
+            TunnelRuntime {
+                session_id: owner_session.clone(),
+                ssh_runtime_id: "ssh-runtime-owner".to_string(),
+                spec: tunnel.clone(),
+                metrics: Arc::new(TunnelMetrics::default()),
+                closed: Arc::clone(&closed),
+                listener_worker: TunnelListenerWorker::completed(),
+            },
+        );
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "queued-tunnel-client".to_string(),
+            name: "Queued tunnel client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: vec![owner_session],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let lane = tunnel_lifecycle_lane(&state, &tunnel.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let request = IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "queued-tunnel-client".to_string(),
+            trusted_write: false,
+            command: "stop_tunnel".to_string(),
+            args: serde_json::json!({ "tunnelId": tunnel.id }),
+        };
+        let run_state = state.clone();
+        let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&lane) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("stop_tunnel did not enter the lifecycle queue");
+
+        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+        drop(lane_guard);
+
+        let error = run.await.unwrap().unwrap_err();
+        assert!(error.contains("grant changed"), "{error}");
+        assert!(!closed.load(Ordering::SeqCst));
+        assert!(state.tunnels.lock().unwrap().contains_key(&tunnel.id));
+        let store = state.store.lock().unwrap();
+        assert_eq!(
+            store
+                .audit
+                .iter()
+                .find(|record| record.action == "stop_tunnel")
+                .map(|record| record.decision.as_str()),
+            Some("failed")
+        );
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
