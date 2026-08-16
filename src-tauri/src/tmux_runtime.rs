@@ -8,8 +8,34 @@ pub(super) async fn list_tmux_state_inner(
     state: &AppState,
     session_id: &str,
 ) -> Result<TmuxState, String> {
-    let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-    list_tmux_state_with_handle(auxiliary.handle()).await
+    let (runtime_id, auxiliary) = tmux_auxiliary_lease(state, session_id)?;
+    let tmux_state = list_tmux_state_with_handle(auxiliary.handle()).await?;
+    ensure_tmux_runtime_current(state, session_id, &runtime_id)?;
+    Ok(tmux_state)
+}
+
+fn tmux_auxiliary_lease(
+    state: &AppState,
+    session_id: &str,
+) -> Result<(String, SshAuxiliaryLease), String> {
+    let (runtime_id, auxiliary) =
+        ssh_auxiliary_lease_with_runtime(state, session_id, |runtime| {
+            Ok(runtime.runtime_id.clone())
+        })?;
+    ensure_tmux_runtime_current(state, session_id, &runtime_id)?;
+    Ok((runtime_id, auxiliary))
+}
+
+pub(super) fn ensure_tmux_runtime_current(
+    state: &AppState,
+    session_id: &str,
+    runtime_id: &str,
+) -> Result<(), String> {
+    if ssh_runtime_connected(state, session_id, runtime_id) {
+        Ok(())
+    } else {
+        Err("SSH runtime 在 Tmux 操作期间已变化，请重试".to_string())
+    }
 }
 
 async fn list_tmux_state_with_handle(
@@ -74,7 +100,7 @@ pub(super) async fn set_tmux_pane_sync_inner(
     target: &str,
     enabled: bool,
 ) -> Result<TmuxState, String> {
-    let auxiliary = ssh_auxiliary_lease(state, session_id)?;
+    let (runtime_id, auxiliary) = tmux_auxiliary_lease(state, session_id)?;
     let handle = auxiliary.handle();
     let command = tmux_pane_sync_command(target, enabled)?;
     let event_message = format!(
@@ -89,7 +115,9 @@ pub(super) async fn set_tmux_pane_sync_inner(
         event_message,
         "tmux pane synchronization",
     );
-    list_tmux_state_with_handle(handle).await
+    let tmux_state = list_tmux_state_with_handle(handle).await?;
+    ensure_tmux_runtime_current(state, session_id, &runtime_id)?;
+    Ok(tmux_state)
 }
 
 pub(super) async fn mutate_tmux_inner(
@@ -102,9 +130,11 @@ pub(super) async fn mutate_tmux_inner(
         tmux_mutation_label(request.action),
         tmux_mutation_event_scope(&request)?
     );
-    let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
+    let (runtime_id, auxiliary) = tmux_auxiliary_lease(state, &request.session_id)?;
     let handle = auxiliary.handle();
     exec_ssh_command_capture(Arc::clone(&handle), &command, Duration::from_secs(8)).await?;
     record_applied_system_event(state, &request.session_id, event_message, "tmux mutation");
-    list_tmux_state_with_handle(handle).await
+    let tmux_state = list_tmux_state_with_handle(handle).await?;
+    ensure_tmux_runtime_current(state, &request.session_id, &runtime_id)?;
+    Ok(tmux_state)
 }

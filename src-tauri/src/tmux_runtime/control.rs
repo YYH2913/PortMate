@@ -5,12 +5,14 @@ pub(crate) const MAX_TMUX_CONTROLS_PER_SESSION: usize = 64;
 const MAX_TMUX_CONTROL_STDERR_BYTES: usize = 64 * 1024;
 const TMUX_CONTROL_EVENT_DEBOUNCE: Duration = Duration::from_millis(120);
 const TMUX_CONTROL_EVENT_MAX_LATENCY: Duration = Duration::from_secs(1);
+const TMUX_CONTROL_PARENT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) type TmuxControlMap = Arc<Mutex<HashMap<(String, String), TmuxControlRuntime>>>;
 
 #[derive(Clone)]
 pub(crate) struct TmuxControlRuntime {
     pub(crate) runtime_id: String,
+    pub(crate) ssh_runtime_id: String,
     pub(crate) target: String,
     pub(crate) cancel: Arc<AtomicBool>,
 }
@@ -84,7 +86,10 @@ pub(crate) fn install_tmux_control_runtime(
 ) -> Result<TmuxControlInstall, String> {
     if let Some(existing) = controls
         .get(control_key)
-        .filter(|existing| !existing.cancel.load(Ordering::SeqCst))
+        .filter(|existing| {
+            existing.ssh_runtime_id == runtime.ssh_runtime_id
+                && !existing.cancel.load(Ordering::SeqCst)
+        })
     {
         return Ok(TmuxControlInstall::Existing(existing.clone()));
     }
@@ -101,15 +106,20 @@ pub(crate) async fn start_tmux_control_inner(
 ) -> Result<TmuxControlStatus, String> {
     let target = normalize_tmux_target(target)?.to_string();
     let control_key = (session_id.to_string(), target.clone());
-    {
+    let existing = {
         let controls = state
             .tmux_controls
             .lock()
             .map_err(|error| error.to_string())?;
-        if let Some(runtime) = controls
+        let existing = controls
             .get(&control_key)
             .filter(|runtime| !runtime.cancel.load(Ordering::SeqCst))
-        {
+            .cloned();
+        ensure_tmux_control_capacity(&controls, &control_key)?;
+        existing
+    };
+    if let Some(runtime) = existing {
+        if ensure_tmux_runtime_current(state, session_id, &runtime.ssh_runtime_id).is_ok() {
             return Ok(TmuxControlStatus {
                 session_id: session_id.to_string(),
                 target,
@@ -117,21 +127,31 @@ pub(crate) async fn start_tmux_control_inner(
                 runtime_id: Some(runtime.runtime_id.clone()),
             });
         }
-        ensure_tmux_control_capacity(&controls, &control_key)?;
+        runtime.cancel.store(true, Ordering::SeqCst);
     }
 
     let control_slot = Arc::clone(&state.tmux_control_slots)
         .try_acquire_owned()
         .map_err(|_| format!("tmux control watcher limit reached ({MAX_ACTIVE_TMUX_CONTROLS})"))?;
-    {
+    let (ssh_runtime_id, auxiliary_lease) =
+        ssh_auxiliary_lease_with_runtime(state, session_id, |runtime| {
+            Ok(runtime.runtime_id.clone())
+        })?;
+    ensure_tmux_runtime_current(state, session_id, &ssh_runtime_id)?;
+    let existing = {
         let controls = state
             .tmux_controls
             .lock()
             .map_err(|error| error.to_string())?;
-        if let Some(runtime) = controls
+        let existing = controls
             .get(&control_key)
             .filter(|runtime| !runtime.cancel.load(Ordering::SeqCst))
-        {
+            .cloned();
+        ensure_tmux_control_capacity(&controls, &control_key)?;
+        existing
+    };
+    if let Some(runtime) = existing {
+        if runtime.ssh_runtime_id == ssh_runtime_id {
             return Ok(TmuxControlStatus {
                 session_id: session_id.to_string(),
                 target,
@@ -139,10 +159,9 @@ pub(crate) async fn start_tmux_control_inner(
                 runtime_id: Some(runtime.runtime_id.clone()),
             });
         }
-        ensure_tmux_control_capacity(&controls, &control_key)?;
+        runtime.cancel.store(true, Ordering::SeqCst);
     }
 
-    let auxiliary_lease = ssh_auxiliary_lease(state, session_id)?;
     let handle = auxiliary_lease.handle();
     let command = format!(
         "tmux -C attach-session -t {}",
@@ -158,18 +177,35 @@ pub(crate) async fn start_tmux_control_inner(
 
     let runtime_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
-    let install_result = match state.tmux_controls.lock() {
-        Ok(mut controls) => install_tmux_control_runtime(
+    let install_result = (|| {
+        let ssh_runtimes = state.ssh.lock().map_err(|error| error.to_string())?;
+        ssh_runtimes
+            .get(session_id)
+            .filter(|runtime| {
+                runtime.runtime_id == ssh_runtime_id && !runtime.closed.load(Ordering::SeqCst)
+            })
+            .ok_or_else(|| "SSH runtime 在启动 Tmux control-mode 期间已变化，请重试".to_string())?;
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        if !store.runtimes.iter().any(|runtime| {
+            runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+        }) {
+            return Err("SSH runtime 在启动 Tmux control-mode 期间已变化，请重试".to_string());
+        }
+        let mut controls = state
+            .tmux_controls
+            .lock()
+            .map_err(|error| error.to_string())?;
+        install_tmux_control_runtime(
             &mut controls,
             &control_key,
             TmuxControlRuntime {
                 runtime_id: runtime_id.clone(),
+                ssh_runtime_id: ssh_runtime_id.clone(),
                 target: target.clone(),
                 cancel: Arc::clone(&cancel),
             },
-        ),
-        Err(error) => Err(error.to_string()),
-    };
+        )
+    })();
     let previous = match install_result {
         Ok(TmuxControlInstall::Installed(previous)) => previous,
         Ok(TmuxControlInstall::Existing(existing)) => {
@@ -191,6 +227,7 @@ pub(crate) async fn start_tmux_control_inner(
     }
 
     let app_handle = state.app_handle.clone();
+    let runtime_state = state.clone();
     let controls = Arc::clone(&state.tmux_controls);
     let event_context = TmuxControlEventContext {
         session_id: session_id.to_string(),
@@ -207,9 +244,23 @@ pub(crate) async fn start_tmux_control_inner(
         let mut stopped_error = None;
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut parent_ticker = tokio::time::interval(TMUX_CONTROL_PARENT_CHECK_INTERVAL);
+        parent_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
+                _ = parent_ticker.tick() => {
+                    if !ssh_runtime_connected(
+                        &runtime_state,
+                        &event_context.session_id,
+                        &ssh_runtime_id,
+                    ) {
+                        stopped_error = Some(
+                            "SSH runtime 在 Tmux control-mode 运行期间已变化".to_string(),
+                        );
+                        break;
+                    }
+                }
                 _ = ticker.tick() => {
                     if cancel.load(Ordering::SeqCst) {
                         break;

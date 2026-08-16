@@ -253,6 +253,12 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
                 reader_finished,
             },
         );
+        state
+            .store
+            .lock()
+            .unwrap()
+            .set_runtime_status(&profile.id, SessionStatus::Connected)
+            .unwrap();
 
         let state_after_mutation = mutate_tmux_inner(
             &state,
@@ -274,6 +280,17 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
         assert!(state_after_mutation.panes.is_empty());
         assert_eq!(state.ssh_auxiliary_slots.available_permits(), 1);
         assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 5);
+
+        state
+            .ssh
+            .lock()
+            .unwrap()
+            .get_mut(&profile.id)
+            .unwrap()
+            .runtime_id = "replacement-runtime".to_string();
+        let stale_error =
+            ensure_tmux_runtime_current(&state, &profile.id, "tmux-lease-runtime").unwrap_err();
+        assert!(stale_error.contains("Tmux 操作期间已变化"), "{stale_error}");
 
         state.ssh.lock().unwrap().remove(&profile.id);
         let handle = handle.lock().await;

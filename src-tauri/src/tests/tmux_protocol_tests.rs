@@ -296,6 +296,7 @@ fn tmux_control_parser_ignores_output_and_tracks_fragmented_state_events() {
 fn tmux_control_capacity_bounds_registry_and_rechecks_installation() {
     let runtime = |runtime_id: String, target: String| TmuxControlRuntime {
         runtime_id,
+        ssh_runtime_id: "ssh-runtime".to_string(),
         target,
         cancel: Arc::new(AtomicBool::new(false)),
     };
@@ -354,6 +355,28 @@ fn tmux_control_capacity_bounds_registry_and_rechecks_installation() {
     assert_eq!(
         session_controls.get(&existing_key).unwrap().runtime_id,
         "replacement"
+    );
+    {
+        let stale = session_controls.get_mut(&existing_key).unwrap();
+        stale.ssh_runtime_id = "stale-ssh-runtime".to_string();
+        stale.cancel.store(false, Ordering::SeqCst);
+    }
+    match install_tmux_control_runtime(
+        &mut session_controls,
+        &existing_key,
+        runtime("current-parent".to_string(), "target-0".to_string()),
+    )
+    .unwrap()
+    {
+        TmuxControlInstall::Installed(Some(previous)) => {
+            assert_eq!(previous.runtime_id, "replacement");
+            assert_eq!(previous.ssh_runtime_id, "stale-ssh-runtime");
+        }
+        _ => panic!("a watcher from an earlier SSH runtime must be replaced"),
+    }
+    assert_eq!(
+        session_controls.get(&existing_key).unwrap().ssh_runtime_id,
+        "ssh-runtime"
     );
 
     let mut app_controls = HashMap::new();
@@ -417,6 +440,7 @@ fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
             (session_id.to_string(), target.to_string()),
             TmuxControlRuntime {
                 runtime_id: runtime_id.to_string(),
+                ssh_runtime_id: "ssh-runtime".to_string(),
                 target: target.to_string(),
                 cancel,
             },
@@ -446,6 +470,7 @@ fn tmux_control_runtime_cancel_is_exact_and_session_cleanup_is_bounded() {
         ("session:1".to_string(), "ops".to_string()),
         TmuxControlRuntime {
             runtime_id: "control-4".to_string(),
+            ssh_runtime_id: "ssh-runtime".to_string(),
             target: "ops".to_string(),
             cancel: Arc::clone(&ops_cancel),
         },
