@@ -239,10 +239,7 @@ pub(super) async fn cancel_remote_tunnel_forward(
         tunnel.bind_host.clone(),
         tunnel.bind_port,
         REMOTE_TUNNEL_HEALTH_TIMEOUT,
-        &format!(
-            "remote SSH tunnel cancel {}:{}",
-            tunnel.bind_host, tunnel.bind_port
-        ),
+        "remote SSH tunnel cancel",
     )
     .await
     {
@@ -265,21 +262,30 @@ pub(super) async fn cancel_remote_tunnel_forward_with_timeout(
     label: &str,
 ) -> Result<(), String> {
     let started = Instant::now();
+    let target = format!("{bind_host}:{bind_port}");
     let handle = tokio::time::timeout(timeout, shared_handle.lock())
         .await
         .map_err(|_| {
             format!(
-                "{label} handle lock timed out after {} ms",
+                "{label} handle lock timed out for {target} after {} ms",
                 timeout.as_millis()
             )
         })?;
     let remaining = timeout
         .checked_sub(started.elapsed())
         .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| format!("{label} timed out after {} ms", timeout.as_millis()))?;
-    match bounded_connection_step(handle.cancel_remote_forward(bind_host, bind_port), remaining).await {
+        .ok_or_else(|| {
+            format!(
+                "{label} timed out for {target} after {} ms",
+                timeout.as_millis()
+            )
+        })?;
+    match bounded_connection_step(handle.cancel_remote_forward(bind_host, bind_port), remaining).await
+    {
         Ok(()) => Ok(()),
-        Err(BoundedConnectionStepError::Failed(error)) => Err(format!("{label} failed: {error}")),
+        Err(BoundedConnectionStepError::Failed(error)) => {
+            Err(format!("{label} failed for {target}: {error}"))
+        }
         Err(BoundedConnectionStepError::TimedOut) => {
             // A timed-out global cancel can still be accepted after its reply waiter is dropped.
             let cleanup_warning = request_backend_disconnect_with_timeout(
@@ -290,7 +296,7 @@ pub(super) async fn cancel_remote_tunnel_forward_with_timeout(
             .map(|warning| format!("; {warning}"))
             .unwrap_or_default();
             Err(format!(
-                "{label} timed out after {} ms{cleanup_warning}",
+                "{label} timed out for {target} after {} ms{cleanup_warning}",
                 timeout.as_millis()
             ))
         }

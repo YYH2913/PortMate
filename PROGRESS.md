@@ -676,6 +676,8 @@ Remote-forward 的 `cancel-tcpip-forward` 现与创建请求使用相同的总 d
 
 SSH 会话关闭、自动重连中未安装 runtime 的回收、连接提交失败回滚和 Host Key 扫描成功清理现不再直接无限等待共享 backend/Jump Host mutex 或 disconnect 回复：锁获取与断开协议各有 1 秒 deadline，超时以有界 warning 收敛，russh reader 仍按既有 5 秒完成预算等待；libssh backend 类型直接来自已建立 runtime，不再为了判断类型先取得可能被占用的 handle。真实 russh 回归持有 backend mutex，确认共享断开在锁 deadline 后返回，释放后正常 disconnect；经 Jump Host 的真实 Host Key 扫描、完整主应用 496 项、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+远端隧道取消的有界 helper 现保持既有稳定诊断前缀，并把目标地址作为独立上下文附加到锁等待、协议失败和协议超时错误；OpenSSH 综合矩阵不再因 `failed` 与地址词序变化丢失预期故障状态。真实 OpenSSH SFTP/SCP/三模式 tunnel 综合端到端及延迟取消故障回归均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：
