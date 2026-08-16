@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TransferRuntimeExpectations<'a> {
+    pub(crate) ssh_runtime_id: Option<&'a str>,
+    pub(crate) modem_binding: Option<&'a ModemRuntimeBinding>,
+}
+
 pub(crate) fn mark_transfer_running(
     state: &AppState,
     task_id: &str,
@@ -55,11 +61,38 @@ pub(crate) fn finish_transfer_task_for_runtime(
     state: &AppState,
     task_id: &str,
     session_id: &str,
+    status: TransferStatus,
+    message: String,
+    bytes: Option<u64>,
+    expected_ssh_runtime_id: Option<&str>,
+) {
+    finish_transfer_task_for_generations(
+        state,
+        task_id,
+        session_id,
+        status,
+        message,
+        bytes,
+        TransferRuntimeExpectations {
+            ssh_runtime_id: expected_ssh_runtime_id,
+            modem_binding: None,
+        },
+    );
+}
+
+pub(crate) fn finish_transfer_task_for_generations(
+    state: &AppState,
+    task_id: &str,
+    session_id: &str,
     mut status: TransferStatus,
     message: String,
     mut bytes: Option<u64>,
-    expected_ssh_runtime_id: Option<&str>,
+    expectations: TransferRuntimeExpectations<'_>,
 ) {
+    let TransferRuntimeExpectations {
+        ssh_runtime_id: expected_ssh_runtime_id,
+        modem_binding: expected_modem_binding,
+    } = expectations;
     cleanup_mcp_content_transfer_staging(state, task_id);
     match state.transfer_cancellations.lock() {
         Ok(mut cancellations) => {
@@ -68,6 +101,27 @@ pub(crate) fn finish_transfer_task_for_runtime(
         Err(error) => eprintln!("PortMate: failed to clean up transfer cancellation: {error}"),
     }
     let mut message = truncate_for_log(&message, 2_000);
+    if status == TransferStatus::Completed
+        && expected_ssh_runtime_id.is_some()
+        && expected_modem_binding.is_some()
+    {
+        status = TransferStatus::Failed;
+        bytes = None;
+        message = "传输完成提交不能同时绑定 SSH 文件和 Modem runtime".to_string();
+    }
+    let modem_runtime = if status == TransferStatus::Completed {
+        expected_modem_binding.and_then(|binding| match binding.completion_guard() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                status = TransferStatus::Failed;
+                bytes = None;
+                message = format!("无法复核 Modem 传输 runtime: {error}");
+                None
+            }
+        })
+    } else {
+        None
+    };
     let ssh_runtimes = if status == TransferStatus::Completed
         && expected_ssh_runtime_id.is_some()
     {
@@ -92,6 +146,17 @@ pub(crate) fn finish_transfer_task_for_runtime(
             }
         };
         if status == TransferStatus::Completed {
+            if let Some(binding) = expected_modem_binding {
+                let runtime_current = modem_runtime
+                    .as_ref()
+                    .is_some_and(|guard| guard.permits_completion(binding, session_id));
+                if !runtime_current {
+                    status = TransferStatus::Failed;
+                    bytes = None;
+                    message =
+                        "Modem runtime 在传输完成提交前已变化或断开，请重试".to_string();
+                }
+            }
             if let Some(expected_runtime_id) = expected_ssh_runtime_id {
                 let runtime_current = ssh_runtimes.as_ref().is_some_and(|runtimes| {
                     runtimes.get(session_id).is_some_and(|runtime| {

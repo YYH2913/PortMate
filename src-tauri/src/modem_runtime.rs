@@ -25,6 +25,13 @@ enum ModemRuntimeKind {
     Serial,
 }
 
+pub(super) enum ModemRuntimeCompletionGuard<'a> {
+    Ssh(MutexGuard<'a, HashMap<String, SshRuntime>>),
+    Shell(MutexGuard<'a, HashMap<String, ShellRuntime>>),
+    Tcp(MutexGuard<'a, HashMap<String, TcpRuntime>>),
+    Serial(MutexGuard<'a, HashMap<String, SerialRuntime>>),
+}
+
 impl ModemRuntimeBinding {
     pub(super) fn runtime_id(&self) -> &str {
         &self.runtime_id
@@ -51,6 +58,33 @@ impl ModemRuntimeBinding {
         self.watch.ensure_current()
     }
 
+    pub(super) fn completion_guard(&self) -> Result<ModemRuntimeCompletionGuard<'_>, String> {
+        let runtimes = self
+            .watch
+            .runtimes
+            .as_ref()
+            .ok_or_else(|| "Modem runtime binding 缺少 runtime registry".to_string())?;
+        let guard = match self
+            .watch
+            .runtime_kind
+            .ok_or_else(|| "Modem runtime binding 缺少 transport 类型".to_string())?
+        {
+            ModemRuntimeKind::Ssh => ModemRuntimeCompletionGuard::Ssh(
+                runtimes.ssh.lock().map_err(|error| error.to_string())?,
+            ),
+            ModemRuntimeKind::Shell => ModemRuntimeCompletionGuard::Shell(
+                runtimes.shell.lock().map_err(|error| error.to_string())?,
+            ),
+            ModemRuntimeKind::Tcp => ModemRuntimeCompletionGuard::Tcp(
+                runtimes.tcp.lock().map_err(|error| error.to_string())?,
+            ),
+            ModemRuntimeKind::Serial => ModemRuntimeCompletionGuard::Serial(
+                runtimes.serial.lock().map_err(|error| error.to_string())?,
+            ),
+        };
+        Ok(guard)
+    }
+
     pub(super) async fn write_runtime_bytes(
         &self,
         state: &AppState,
@@ -64,6 +98,32 @@ impl ModemRuntimeBinding {
             Some(&self.runtime_id),
         )
         .await
+    }
+}
+
+impl ModemRuntimeCompletionGuard<'_> {
+    pub(super) fn permits_completion(
+        &self,
+        binding: &ModemRuntimeBinding,
+        session_id: &str,
+    ) -> bool {
+        if binding.session_id != session_id {
+            return false;
+        }
+        match self {
+            Self::Ssh(runtimes) => runtimes
+                .get(session_id)
+                .is_none_or(|runtime| runtime.runtime_id == binding.runtime_id),
+            Self::Shell(runtimes) => runtimes
+                .get(session_id)
+                .is_none_or(|runtime| runtime.runtime_id == binding.runtime_id),
+            Self::Tcp(runtimes) => runtimes
+                .get(session_id)
+                .is_none_or(|runtime| runtime.runtime_id == binding.runtime_id),
+            Self::Serial(runtimes) => runtimes
+                .get(session_id)
+                .is_none_or(|runtime| runtime.runtime_id == binding.runtime_id),
+        }
     }
 }
 

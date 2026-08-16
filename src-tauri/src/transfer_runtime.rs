@@ -465,7 +465,7 @@ pub(super) async fn run_queued_transfer(
         TransferProtocol::Zmodem => transfer_file_via_zmodem(&state, &request, &progress).await,
     };
 
-    let (status, message, bytes) = match result {
+    let (mut status, mut message, mut bytes) = match result {
         Ok(bytes) if cancel.is_cancelled() => (
             TransferStatus::Cancelled,
             "cancelled".to_string(),
@@ -481,14 +481,41 @@ pub(super) async fn run_queued_transfer(
         }
         Err(error) => (TransferStatus::Failed, error, None),
     };
-    finish_transfer_task_for_runtime(
+    let modem_binding = if status == TransferStatus::Completed
+        && matches!(
+            request.protocol,
+            TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
+        )
+    {
+        match cancel.modem_runtime_binding() {
+            Ok(Some(binding)) => Some(binding),
+            Ok(None) => {
+                status = TransferStatus::Failed;
+                message = "Modem 传输完成时缺少 runtime binding".to_string();
+                bytes = None;
+                None
+            }
+            Err(error) => {
+                status = TransferStatus::Failed;
+                message = format!("无法读取 Modem 传输 runtime binding: {error}");
+                bytes = None;
+                None
+            }
+        }
+    } else {
+        None
+    };
+    finish_transfer_task_for_generations(
         &state,
         &task_id,
         &request.session_id,
         status,
         message,
         bytes,
-        expected_ssh_runtime_id.as_deref(),
+        TransferRuntimeExpectations {
+            ssh_runtime_id: expected_ssh_runtime_id.as_deref(),
+            modem_binding: modem_binding.as_ref(),
+        },
     );
 }
 

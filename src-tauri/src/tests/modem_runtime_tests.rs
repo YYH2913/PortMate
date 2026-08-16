@@ -336,6 +336,35 @@ fn modem_binding_rejects_replaced_tcp_runtime_without_writing_the_replacement() 
             .await
             .unwrap_err();
         assert!(write_error.contains("替换"), "{write_error}");
+
+        let mut task = test_transfer_task(&profile.id, TransferStatus::Running);
+        task.id = "stale-modem-completion".to_string();
+        task.protocol = TransferProtocol::Xmodem;
+        state.store.lock().unwrap().record_transfer(task);
+        finish_transfer_task_for_generations(
+            &state,
+            "stale-modem-completion",
+            &profile.id,
+            TransferStatus::Completed,
+            "completed".to_string(),
+            Some(23),
+            TransferRuntimeExpectations {
+                ssh_runtime_id: None,
+                modem_binding: Some(&binding),
+            },
+        );
+        let stale_completion = state
+            .store
+            .lock()
+            .unwrap()
+            .transfer_by_id("stale-modem-completion")
+            .unwrap();
+        assert_eq!(stale_completion.status, TransferStatus::Failed);
+        assert_eq!(stale_completion.bytes_done, 0);
+        assert!(stale_completion
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("完成提交前已变化")));
         assert_eq!(server.await.unwrap(), None);
 
         close_session_inner(&state, profile.id.clone())
