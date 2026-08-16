@@ -686,6 +686,8 @@ TCP/Telnet runtime 的替换、手动关闭、连接状态提交失败回滚和�
 
 libssh 的 Jump/代理与目标连接、认证和 terminal channel setup 现从入口共享同一个连接 deadline，每阶段同时把 libssh 内部协议 timeout 调整为总预算剩余时间，不再把 20 秒配置逐阶段重置成最坏约 60 秒。libssh 因内部 deadline 返回的 `TryAgain` 会归一化为具体 terminal setup 超时；shell 完整建立后再恢复独立的 20 秒运行期 I/O timeout，慢 Jump/代理建连不会把很短的剩余预算永久带入后续 SFTP、exec 和 tunnel。延迟 russh 服务端回归确认密码认证完成后 terminal 请求只能消费剩余预算；libssh transport 8 项、完整主应用 498 passed/1 ignored、Rustfmt 和 PortMate all-targets Clippy `-D warnings` 均通过。
 
+TCP/Telnet 普通输入、modem 数据、Telnet 自动协商回复和 NAWS resize 现把 writer mutex 等待与 socket 写入纳入同一个 10 秒总 deadline；桌面、MCP、OneKey、自定义脚本和 trigger 共用的每会话 outbound lane 也以相同上限有界等待，单个停滞请求不再永久占住后续输入或相关运行任务。超时会返回明确诊断，取消等待不会破坏 lane registry；回归分别持有 writer 与 outbound lane，确认短 deadline 精确失败且释放后同一连接/队列可继续发送。transport runtime 14 项、MCP 28 passed/1 ignored、自定义脚本 7 项、trigger 7 项、完整主应用 500 passed/1 ignored、Rustfmt、diff whitespace gate 和 PortMate all-targets Clippy `-D warnings` 均通过。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

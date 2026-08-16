@@ -3,6 +3,7 @@ use super::*;
 type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()>>>>;
 
 static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
+const OUTBOUND_LANE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) fn outbound_lane(
     store_path: &Path,
@@ -20,6 +21,24 @@ pub(super) fn outbound_lane(
     let lane = Arc::new(tokio::sync::Mutex::new(()));
     lanes.insert(key, Arc::downgrade(&lane));
     Ok(lane)
+}
+
+pub(super) async fn acquire_outbound_lane_with_timeout(
+    store_path: &Path,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let lane = outbound_lane(store_path, session_id)?;
+    tokio::time::timeout(timeout, lane.lock_owned())
+        .await
+        .map_err(|_| format!("出站队列等待超时（{} ms）", timeout.as_millis()))
+}
+
+pub(super) async fn acquire_outbound_lane(
+    store_path: &Path,
+    session_id: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    acquire_outbound_lane_with_timeout(store_path, session_id, OUTBOUND_LANE_WAIT_TIMEOUT).await
 }
 
 pub(super) fn clear_outbound_lane(store_path: &Path, session_id: &str) {
@@ -163,11 +182,7 @@ pub(super) async fn write_session_bytes_for_runtime(
                     .map(|runtime| Arc::clone(&runtime.writer))
             };
             if let Some(writer) = writer {
-                let mut writer = writer.lock().await;
-                writer
-                    .write_all(bytes)
-                    .await
-                    .map_err(|error| format!("TCP/Telnet 写入失败: {error}"))?;
+                write_tcp_bytes(&writer, bytes, "TCP/Telnet 写入").await?;
             } else {
                 let serial_writer = {
                     let connections = runtimes.serial.lock().map_err(|error| error.to_string())?;
@@ -268,8 +283,7 @@ pub(super) async fn write_runtime_bytes_for_runtime(
     expected_runtime_id: Option<&str>,
 ) -> Result<(), String> {
     let io = state.session_io();
-    let lane = outbound_lane(&io.store_path, session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
     let wire_bytes = outbound_bytes_for_session(&io.store, session_id, bytes)?;
     clear_active_command(&io, session_id);
     let ssh_writer = {
@@ -338,11 +352,7 @@ pub(super) async fn write_runtime_bytes_for_runtime(
             .map(|runtime| Arc::clone(&runtime.writer))
     };
     if let Some(writer) = tcp_writer {
-        let mut writer = writer.lock().await;
-        writer
-            .write_all(&wire_bytes)
-            .await
-            .map_err(|error| format!("TCP/Telnet modem 写入失败: {error}"))?;
+        write_tcp_bytes(&writer, &wire_bytes, "TCP/Telnet modem 写入").await?;
         record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
             &io,
             session_id,

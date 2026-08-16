@@ -161,8 +161,7 @@ pub(super) async fn run_custom_script_inner(
     }
     let expected_runtime_id = current_session_runtime_id(&io.runtimes, &request.session_id)?
         .ok_or_else(|| "会话尚未连接，无法运行自定义脚本".to_string())?;
-    let lane = outbound_lane(&io.store_path, &request.session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &request.session_id).await?;
     let script = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         custom_script_for_session(

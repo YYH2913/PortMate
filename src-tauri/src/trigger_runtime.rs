@@ -327,8 +327,7 @@ pub(super) async fn send_trigger_text_inner(
     source_runtime_id: &str,
     text: &str,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
     send_text_under_outbound_lane(
         io,
         session_id,

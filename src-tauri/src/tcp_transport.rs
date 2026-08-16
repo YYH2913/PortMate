@@ -1,4 +1,6 @@
-use super::transport_timing::{STREAM_PERSIST_INTERVAL, TCP_RUNTIME_SHUTDOWN_TIMEOUT};
+use super::transport_timing::{
+    STREAM_PERSIST_INTERVAL, TCP_RUNTIME_SHUTDOWN_TIMEOUT, TCP_RUNTIME_WRITE_TIMEOUT,
+};
 use super::*;
 
 pub(super) struct TcpRuntime {
@@ -25,6 +27,28 @@ pub(super) async fn shutdown_tcp_writer(
         )
     })?
     .map_err(|error| format!("{label} socket shutdown failed: {error}"))
+}
+
+pub(super) async fn write_tcp_bytes_with_timeout(
+    writer: &Arc<tokio::sync::Mutex<TcpWriteHalf>>,
+    bytes: &[u8],
+    timeout: Duration,
+    label: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(timeout, async {
+        writer.lock().await.write_all(bytes).await
+    })
+    .await
+    .map_err(|_| format!("{label}超时（{} ms）", timeout.as_millis()))?
+    .map_err(|error| format!("{label}失败: {error}"))
+}
+
+pub(super) async fn write_tcp_bytes(
+    writer: &Arc<tokio::sync::Mutex<TcpWriteHalf>>,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), String> {
+    write_tcp_bytes_with_timeout(writer, bytes, TCP_RUNTIME_WRITE_TIMEOUT, label).await
 }
 
 pub(super) async fn open_tcp_session(
@@ -155,9 +179,9 @@ pub(super) fn read_tcp_stream(
             match read_half.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(size) => {
-                    let telnet_lane = if telnet.is_some() {
-                        match outbound_lane(&io.store_path, &session_id) {
-                            Ok(lane) => Some(lane),
+                    let _telnet_lane_guard = if telnet.is_some() {
+                        match acquire_outbound_lane(&io.store_path, &session_id).await {
+                            Ok(guard) => Some(guard),
                             Err(error) => {
                                 disconnect_reason = Some(format!(
                                     "{label} Telnet negotiation outbound lane failed: {error}"
@@ -168,11 +192,6 @@ pub(super) fn read_tcp_stream(
                                 break 'read_loop;
                             }
                         }
-                    } else {
-                        None
-                    };
-                    let _telnet_lane_guard = if let Some(lane) = telnet_lane.as_ref() {
-                        Some(lane.lock().await)
                     } else {
                         None
                     };
@@ -199,13 +218,10 @@ pub(super) fn read_tcp_stream(
                         has_unpersisted_stream = true;
                     }
                     for reply in replies {
-                        let write_result = {
-                            let mut writer = writer.lock().await;
-                            writer.write_all(&reply).await
-                        };
+                        let write_result =
+                            write_tcp_bytes(&writer, &reply, "Telnet 协商回复写入").await;
                         if let Err(error) = write_result {
-                            let reason =
-                                format!("{label} Telnet negotiation reply failed: {error}");
+                            let reason = format!("{label} {error}");
                             disconnect_reason = Some(reason.clone());
                             disconnect_reason_recorded = record_runtime_system_event(
                                 &io,

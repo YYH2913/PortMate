@@ -135,18 +135,12 @@ pub(super) async fn resize_session_inner(
     };
     if let Some((writer, telnet)) = telnet_target {
         let io = state.session_io();
-        let lane = outbound_lane(&io.store_path, &session_id)?;
-        let _lane_guard = lane.lock().await;
+        let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
         telnet.cols.store(cols, Ordering::SeqCst);
         telnet.rows.store(rows, Ordering::SeqCst);
         if telnet.naws_negotiated.load(Ordering::SeqCst) {
             let message = telnet_naws_message(cols, rows);
-            writer
-                .lock()
-                .await
-                .write_all(&message)
-                .await
-                .map_err(|error| format!("Telnet NAWS resize failed: {error}"))?;
+            write_tcp_bytes(&writer, &message, "Telnet NAWS resize 写入").await?;
             record_outbound_control_event(&io, &session_id, &message, "telnet-naws", None, true);
         }
     }

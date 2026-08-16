@@ -8,8 +8,7 @@ pub(super) async fn send_one_key_value(
     prompt_event_id: Option<&str>,
     prompt_validation: Option<&OneKeyPromptValidation>,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
     if let Some(validation) = prompt_validation {
         let store = io.store.lock().map_err(|error| error.to_string())?;
         let one_key = store
@@ -97,8 +96,7 @@ pub(super) async fn send_text_inner_with_context_and_validation(
     audit_action: Option<&str>,
     commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, &session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     if let Some(validate) = commit_validation {
         validate()?;
     }
@@ -113,8 +111,7 @@ pub(super) async fn send_text_inner_for_runtime(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, &session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     send_text_under_outbound_lane(
         &io,
         &session_id,
@@ -227,8 +224,7 @@ async fn run_command_inner_with_annotations_impl(
     additional_annotations: BTreeMap<String, String>,
     commit_validation: Option<CommitValidation>,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, &session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
         &io,
         &session_id,
@@ -325,8 +321,7 @@ pub(super) async fn send_bytes_inner(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
-    let lane = outbound_lane(&io.store_path, &session_id)?;
-    let _lane_guard = lane.lock().await;
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
     clear_active_command(&io, &session_id);
     write_session_bytes(

@@ -177,6 +177,76 @@ fn tcp_close_does_not_wait_forever_for_an_occupied_writer() {
     });
 }
 
+#[test]
+fn tcp_write_deadline_includes_the_writer_lock_and_recovers_after_timeout() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut byte = [0_u8; 1];
+            socket.read_exact(&mut byte).await.unwrap();
+            byte[0]
+        });
+        let stream = TcpStream::connect(address).await.unwrap();
+        let (_reader, writer) = stream.into_split();
+        let writer = Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer)));
+        let guard = writer.lock().await;
+
+        let error = write_tcp_bytes_with_timeout(
+            &writer,
+            b"x",
+            Duration::from_millis(30),
+            "TCP test write",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "TCP test write超时（30 ms）");
+        drop(guard);
+
+        write_tcp_bytes_with_timeout(
+            &writer,
+            b"y",
+            Duration::from_secs(1),
+            "TCP test write",
+        )
+        .await
+        .unwrap();
+        assert_eq!(server.await.unwrap(), b'y');
+    });
+}
+
+#[test]
+fn outbound_lane_deadline_recovers_after_timeout() {
+    tauri::async_runtime::block_on(async {
+        let store_path = canonical_test_temp_path("portmate-outbound-lane-timeout")
+            .join("portmate-store.sqlite3");
+        let session_id = Uuid::new_v4().to_string();
+        let lane = outbound_lane(&store_path, &session_id).unwrap();
+        let guard = lane.lock().await;
+
+        let error = acquire_outbound_lane_with_timeout(
+            &store_path,
+            &session_id,
+            Duration::from_millis(30),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "出站队列等待超时（30 ms）");
+        drop(guard);
+
+        let recovered = acquire_outbound_lane_with_timeout(
+            &store_path,
+            &session_id,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("outbound lane did not recover after a timed-out waiter");
+        drop(recovered);
+        clear_outbound_lane(&store_path, &session_id);
+    });
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn tcp_read_failure_preserves_the_socket_error_as_the_disconnect_reason() {
