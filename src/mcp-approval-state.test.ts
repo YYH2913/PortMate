@@ -22,6 +22,12 @@ describe("MCP approval state", () => {
     expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,
+      action: "restart_mcp_http",
+      sessionId: "portmate-host",
+      scope: "manage-mcp",
+    })).not.toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
       action: "create_host_route",
       sessionId: "portmate-host",
       scope: "tunnel",

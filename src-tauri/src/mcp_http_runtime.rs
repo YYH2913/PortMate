@@ -200,6 +200,13 @@ pub(super) async fn start_mcp_http_runtime_inner(
     }
 }
 
+pub(super) async fn restart_mcp_http_runtime_inner(
+    state: &AppState,
+) -> Result<McpHttpRuntimeStatus, String> {
+    stop_mcp_http_runtime_inner(state)?;
+    start_mcp_http_runtime_inner(state).await
+}
+
 pub(super) fn stop_mcp_http_runtime_inner(
     state: &AppState,
 ) -> Result<McpHttpRuntimeStatus, String> {

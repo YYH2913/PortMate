@@ -13,6 +13,30 @@ fn http_json_rpc_initialize_returns_server_info() {
 }
 
 #[test]
+fn tools_list_advertises_bridge_management_surface() {
+    let response = handle_http_json_rpc(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    }))
+    .unwrap()
+    .unwrap();
+    let tools = response["result"]["tools"].as_array().unwrap();
+    for (name, read_only) in [
+        ("mcp_bridge_status", true),
+        ("reload_mcp", true),
+        ("restart_mcp", false),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tools/list omitted {name}"));
+        assert_eq!(tool["annotations"]["readOnlyHint"], read_only, "{name}");
+    }
+}
+
+#[test]
 fn initialize_negotiates_supported_historical_versions_and_falls_back_to_latest() {
     for version in MCP_PROTOCOL_VERSIONS {
         let response = handle_http_json_rpc(json!({

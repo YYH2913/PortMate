@@ -86,11 +86,13 @@ pub(super) fn mcp_scope_label(scope: McpScope) -> &'static str {
         McpScope::ReadTransfers => "read-transfers",
         McpScope::ReadTunnels => "read-tunnels",
         McpScope::ReadScripts => "read-scripts",
+        McpScope::ReadMcp => "read-mcp",
         McpScope::WriteInput => "write-input",
         McpScope::Transfer => "transfer",
         McpScope::Tunnel => "tunnel",
         McpScope::ManageSessions => "manage-sessions",
         McpScope::RunScripts => "run-scripts",
+        McpScope::ManageMcp => "manage-mcp",
     }
 }
 

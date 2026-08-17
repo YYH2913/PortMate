@@ -12,7 +12,7 @@ describe("MCP grant editor state", () => {
     expect(createMcpGrant()).toEqual({
       clientId: "",
       name: "",
-      scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts"],
+      scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp"],
       allowedSessions: [],
       confirmWrites: true,
       expiresAt: null,

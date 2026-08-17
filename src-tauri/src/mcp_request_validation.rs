@@ -166,6 +166,7 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
             Some(McpScope::Tunnel)
         }
         "run_custom_script" => Some(McpScope::RunScripts),
+        "restart_mcp_http" => Some(McpScope::ManageMcp),
         _ => None,
     }
 }
@@ -181,6 +182,7 @@ pub(super) fn ipc_read_scope(command: &str) -> Option<McpScope> {
         "list_transfers" | "get_transfer" => Some(McpScope::ReadTransfers),
         "list_tunnels" | "list_host_routes" => Some(McpScope::ReadTunnels),
         "list_custom_scripts" => Some(McpScope::ReadScripts),
+        "mcp_http_runtime_status" => Some(McpScope::ReadMcp),
         _ => None,
     }
 }
@@ -282,7 +284,7 @@ pub(super) fn validate_ipc_write_args(
         "attach_tmux" => {
             ipc_string_arg(&request.args, "target")?;
         }
-        "open_session" | "close_session" => {}
+        "open_session" | "close_session" | "restart_mcp_http" => {}
         _ => {
             return Err(format!(
                 "unsupported IPC write command: {}",
@@ -307,7 +309,7 @@ pub(super) fn ipc_write_session_id(
     request: &IpcRequest,
 ) -> Result<Option<String>, String> {
     match request.command.as_str() {
-        "create_host_route" | "stop_host_route" => Ok(None),
+        "create_host_route" | "stop_host_route" | "restart_mcp_http" => Ok(None),
         "start_content_upload_transfer" => {
             let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
                 request.args.clone(),

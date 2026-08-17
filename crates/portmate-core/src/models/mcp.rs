@@ -15,11 +15,13 @@ pub enum McpScope {
     ReadTransfers,
     ReadTunnels,
     ReadScripts,
+    ReadMcp,
     WriteInput,
     Transfer,
     Tunnel,
     ManageSessions,
     RunScripts,
+    ManageMcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

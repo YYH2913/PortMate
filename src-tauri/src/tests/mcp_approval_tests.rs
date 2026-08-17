@@ -105,6 +105,14 @@ fn mcp_approval_queue_is_bounded_one_shot_and_times_out_closed() {
 
 #[test]
 fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
+    assert_eq!(
+        ipc_read_scope("mcp_http_runtime_status"),
+        Some(McpScope::ReadMcp)
+    );
+    assert_eq!(
+        ipc_write_scope("restart_mcp_http"),
+        Some(McpScope::ManageMcp)
+    );
     for (action, scope, label) in [
         ("cancel_transfer", McpScope::Transfer, "transfer"),
         ("retry_transfer", McpScope::Transfer, "transfer"),
@@ -114,6 +122,7 @@ fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
             "transfer",
         ),
         ("stop_tunnel", McpScope::Tunnel, "tunnel"),
+        ("restart_mcp_http", McpScope::ManageMcp, "manage-mcp"),
     ] {
         let request = build_mcp_approval_request("ops-client", action, "session-1", scope).unwrap();
         assert_eq!(request.action, action);

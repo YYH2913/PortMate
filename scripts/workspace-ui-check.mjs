@@ -6037,7 +6037,7 @@ Host staging
   const visibleMcpScopes = await mcpDialog.locator(".mcp-check-grid label").allTextContents();
   assert(JSON.stringify(visibleMcpScopes.map((scope) => scope.trim())) === JSON.stringify([
     "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts",
-    "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts",
+    "read-mcp", "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts", "manage-mcp",
   ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
   const savedGrantCcSwitch = mcpDialog.getByRole("textbox", { name: "授权 CC Switch MCP JSON", exact: true });
   await page.waitForFunction(() => document.querySelector('[aria-label="授权 CC Switch MCP JSON"]')?.value.includes("portmate-existing-token"));

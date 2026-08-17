@@ -38,6 +38,13 @@ async fn execute_ipc_request_inner(
     authorization_context: Option<&McpWriteAuthorizationContext>,
 ) -> Result<serde_json::Value, String> {
     match request.command.as_str() {
+        "mcp_http_runtime_status" => {
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            require_mcp_read_scope(&store, &request, McpScope::ReadMcp, None)?;
+            drop(store);
+            serde_json::to_value(mcp_http_runtime_status_inner(&state)?)
+                .map_err(|error| error.to_string())
+        }
         "list_sessions" => {
             let store = state.store.lock().map_err(|error| error.to_string())?;
             require_mcp_read_scope(&store, &request, McpScope::ReadSessions, None)?;
@@ -520,6 +527,17 @@ async fn execute_ipc_request_inner(
             )
             .await?;
             serde_json::to_value(redact_mcp_tunnel_status(status))
+                .map_err(|error| error.to_string())
+        }
+        "restart_mcp_http" => {
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            validation()?;
+            serde_json::to_value(restart_mcp_http_runtime_inner(&state).await?)
                 .map_err(|error| error.to_string())
         }
         "list_tmux_state" => {

@@ -86,6 +86,7 @@ pub fn run() {
             mcp_commands::rotate_mcp_http_token,
             mcp_commands::mcp_http_runtime_status,
             mcp_commands::start_mcp_http,
+            mcp_commands::restart_mcp_http,
             mcp_commands::stop_mcp_http,
             ssh_host_key_commands::list_host_keys,
             ssh_identity_commands::list_ssh_agent_identities,

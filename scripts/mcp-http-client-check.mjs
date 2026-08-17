@@ -268,6 +268,9 @@ try {
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const toolName of [
     "list_sessions",
+    "mcp_bridge_status",
+    "reload_mcp",
+    "restart_mcp",
     "list_transfers",
     "get_transfer",
     "start_transfer",

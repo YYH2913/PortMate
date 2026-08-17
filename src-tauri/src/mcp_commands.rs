@@ -287,6 +287,13 @@ pub(crate) async fn start_mcp_http(
 }
 
 #[tauri::command]
+pub(crate) async fn restart_mcp_http(
+    state: State<'_, AppState>,
+) -> Result<McpHttpRuntimeStatus, String> {
+    restart_mcp_http_runtime_inner(state.inner()).await
+}
+
+#[tauri::command]
 pub(crate) fn stop_mcp_http(
     state: State<'_, AppState>,
 ) -> Result<McpHttpRuntimeStatus, String> {

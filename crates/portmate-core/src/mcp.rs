@@ -82,6 +82,27 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             true,
         ),
         tool(
+            "mcp_bridge_status",
+            "MCP Bridge Status",
+            "Read the PortMate MCP Bridge transport, desktop IPC, store, and managed HTTP sidecar status without exposing tokens or secret values.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+            true,
+        ),
+        tool(
+            "reload_mcp",
+            "Reload MCP Bridge",
+            "Reload the MCP Bridge store and desktop IPC endpoint sources, then return the current Bridge status. This does not restart the process.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+            true,
+        ),
+        tool(
+            "restart_mcp",
+            "Restart MCP Bridge",
+            "Restart the PortMate-managed MCP HTTP sidecar and return its runtime status. A managed HTTP sidecar cannot restart itself from an in-flight request; use a stdio Bridge or the PortMate desktop UI for this operation.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+            false,
+        ),
+        tool(
             "read_screen",
             "Read Screen",
             "Read the current terminal screen snapshot.",
@@ -646,6 +667,21 @@ mod tests {
             .into_iter()
             .find(|definition| definition.name == name)
             .unwrap_or_else(|| panic!("missing MCP tool definition: {name}"))
+    }
+
+    #[test]
+    fn bridge_management_tools_are_advertised_with_safe_schemas() {
+        for name in ["mcp_bridge_status", "reload_mcp", "restart_mcp"] {
+            let definition = definition(name);
+            assert_eq!(definition.input_schema["type"], "object", "{name}");
+            assert_eq!(
+                definition.input_schema["additionalProperties"], false,
+                "{name}"
+            );
+        }
+        assert!(definition("mcp_bridge_status").read_only);
+        assert!(definition("reload_mcp").read_only);
+        assert!(!definition("restart_mcp").read_only);
     }
 
     #[test]

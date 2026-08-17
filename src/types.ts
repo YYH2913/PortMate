@@ -512,7 +512,7 @@ export interface ExportMcpAuditResult {
   records: number;
 }
 
-export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "read-scripts" | "write-input" | "transfer" | "tunnel" | "manage-sessions" | "run-scripts";
+export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "read-scripts" | "read-mcp" | "write-input" | "transfer" | "tunnel" | "manage-sessions" | "run-scripts" | "manage-mcp";
 
 export interface CustomScript {
   id: string;

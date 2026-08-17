@@ -25,6 +25,26 @@ impl PortMateMcp {
         let mut is_error = false;
 
         let output = match name {
+            "mcp_bridge_status" => {
+                self.guard_read_scope(McpScope::ReadMcp, None)?;
+                serde_json::to_string_pretty(&self.bridge_status()?)?
+            }
+            "reload_mcp" => {
+                self.refresh_runtime_sources();
+                self.guard_read_scope(McpScope::ReadMcp, None)?;
+                serde_json::to_string_pretty(&self.bridge_status()?)?
+            }
+            "restart_mcp" => {
+                if is_desktop_managed_http_sidecar() {
+                    is_error = true;
+                    "restart_mcp was NOT executed: a managed HTTP sidecar cannot restart itself in-band. Call restart_mcp from a stdio Bridge or use the PortMate desktop UI.".to_string()
+                } else if let Some(value) = self.call_ipc_value("restart_mcp_http", json!({}))? {
+                    serde_json::to_string_pretty(&value)?
+                } else {
+                    is_error = true;
+                    "restart_mcp was NOT executed: desktop IPC is not available, so no managed MCP HTTP sidecar was restarted.".to_string()
+                }
+            }
             "list_sessions" => {
                 self.guard_read_scope(McpScope::ReadSessions, None)?;
                 let summaries =
@@ -317,6 +337,21 @@ impl PortMateMcp {
         }))
     }
 
+    fn bridge_status(&self) -> Result<Value> {
+        let runtime = self.call_ipc_value("mcp_http_runtime_status", json!({}))?;
+        let desktop_ipc_available = runtime.is_some();
+        let runtime = runtime.unwrap_or_else(
+            || json!({ "phase": "unavailable", "message": "desktop IPC is not available" }),
+        );
+        Ok(json!({
+            "transport": if std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1") { "http" } else { "stdio" },
+            "managedByDesktop": is_desktop_managed_http_sidecar(),
+            "storePath": self.store_path.as_ref().map(|path| path.display().to_string()),
+            "desktopIpcAvailable": desktop_ipc_available,
+            "managedHttp": runtime,
+        }))
+    }
+
     fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
         if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
             let event = serde_json::from_value::<SessionEvent>(value)
@@ -327,6 +362,11 @@ impl PortMateMcp {
         }
         Ok(None)
     }
+}
+
+fn is_desktop_managed_http_sidecar() -> bool {
+    std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1")
+        && std::env::var_os("PORTMATE_MCP_PARENT_PID").is_some()
 }
 
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
