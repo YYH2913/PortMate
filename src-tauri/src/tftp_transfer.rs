@@ -426,12 +426,12 @@ mod tests {
         assert_eq!(negotiation.block_size, TFTP_MAX_BLOCK_SIZE);
         assert_eq!(negotiation.retry_timeout, Duration::from_secs(5));
         let option_ack = negotiation.option_ack.unwrap();
-        assert!(option_ack.windows(b"blksize\01468\0".len()).any(|window| {
-            window == b"blksize\01468\0"
-        }));
         assert!(option_ack
-            .windows(b"tsize\04096\0".len())
-            .any(|window| window == b"tsize\04096\0"));
+            .windows(b"blksize\x001468\x00".len())
+            .any(|window| window == b"blksize\x001468\x00"));
+        assert!(option_ack
+            .windows(b"tsize\x004096\x00".len())
+            .any(|window| window == b"tsize\x004096\x00"));
     }
 
     #[test]
