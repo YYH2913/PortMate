@@ -64,7 +64,7 @@ describe("CI command logging", () => {
       "target/native-ci/native-keyring.log npm run test:native-keyring",
     );
     expect(workflow).toContain(
-      "target/native-ci/workspace-tests.log",
+      "target/native-ci/workspace-tests.log node scripts/native-rust-tests.mjs workspace",
     );
     expect(workflow).toContain(
       "target/native-ci/libssh-gssapi-build.log npm run test:libssh-gssapi-build",
@@ -99,7 +99,11 @@ describe("CI command logging", () => {
         `target/native-ci/mcp-${client}-client.log npm run test:mcp-${client}-client`,
       );
     }
-    expect(workflow).toContain("--test-threads=1");
+    const nativeRustTests = readFileSync(
+      resolve(import.meta.dirname, "native-rust-tests.mjs"),
+      "utf8",
+    );
+    expect(nativeRustTests).toContain('"--test-threads=1"');
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow).not.toContain("dtolnay/rust-toolchain@");
     expect(workflow.match(/name: Install pinned Rust toolchain/g)).toHaveLength(4);

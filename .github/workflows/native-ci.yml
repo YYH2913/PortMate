@@ -213,11 +213,7 @@ jobs:
       - name: Verify portable vault fault matrix
         run: node scripts/ci-command-log.mjs target/native-ci/portable-vault.log npm run test:portable-vault
       - name: Verify workspace Rust tests
-        run: >
-          node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log
-          cargo test --locked --workspace --no-default-features --
-          --test-threads=1
-          --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
+        run: node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log node scripts/native-rust-tests.mjs workspace
       - name: Verify workspace Clippy
         run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Verify native keyring lifecycle and faults

@@ -23,8 +23,12 @@ describe("Rust command lock boundary", () => {
   it("locks native CI, sidecar, Tauri, and compatibility workspace commands", () => {
     const expectedPatterns = new Map([
       [".github/workflows/native-ci.yml", [
-        /cargo test --locked --workspace --no-default-features/,
+        /native-rust-tests\.mjs workspace/,
         /cargo clippy --locked --workspace/,
+      ]],
+      ["scripts/native-rust-tests.mjs", [
+        /"test",\s*"--locked"/,
+        /"--workspace",\s*"--no-default-features"/,
       ]],
       ["scripts/prepare-sidecar.mjs", [/\["build", "--locked", "-p", "portmate-mcp"\]/]],
       ["scripts/desktop-dev.mjs", [/"dev",\s*"--",\s*"--locked"/]],
