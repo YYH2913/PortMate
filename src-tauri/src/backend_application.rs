@@ -1,5 +1,6 @@
 // Included from lib.rs so the existing crate-root module paths stay stable.
 
+#[cfg(feature = "desktop")]
 mod app_bootstrap;
 mod app_data_migration;
 mod command_history_commands;
@@ -47,9 +48,9 @@ use session_open::{
     open_session_inner, register_session_open_cancellation, session_lifecycle_lane,
     spawn_session_prepare, wait_for_session_prepare,
 };
-use session_open::{
-    open_session_inner_with_validation, SessionOpenCredentials, MAX_CONCURRENT_SESSION_OPENS,
-};
+use session_open::{open_session_inner_with_validation, SessionOpenCredentials};
+#[cfg(any(feature = "desktop", test))]
+use session_open::MAX_CONCURRENT_SESSION_OPENS;
 #[cfg(test)]
 use session_profile_delete::delete_session_profile_inner;
 #[cfg(test)]

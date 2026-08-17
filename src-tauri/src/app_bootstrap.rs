@@ -14,6 +14,10 @@ struct NativeSmokeConfig {
 
 pub fn run() {
     webkit_runtime::configure_webkit_runtime();
+    if let Err(error) = preflight_native_smoke_application() {
+        eprintln!("PortMate: startup failed: {error}");
+        std::process::exit(1);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -158,6 +162,16 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn preflight_native_smoke_application() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(config) = native_smoke_config().map_err(std::io::Error::other)? else {
+        return Ok(());
+    };
+    fs::create_dir_all(&config.data_dir)?;
+    migrate_legacy_app_data_dir(&config.data_root, &config.data_dir)
+        .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 fn initialize_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {

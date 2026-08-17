@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use portmate_core::{EventDirection, EventStream};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use crate::AppHandle;
+use tauri::Emitter;
 use uuid::Uuid;
 
 pub(super) const TERMINAL_BYTES_EVENT: &str = "portmate-terminal-bytes";

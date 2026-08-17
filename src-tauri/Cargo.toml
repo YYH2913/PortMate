@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 default-run = "portmate"
 
+[features]
+default = ["desktop"]
+desktop = ["tauri/wry"]
+
 [lib]
 name = "portmate_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -42,7 +46,13 @@ serialport = { version = "4.9", default-features = false }
 socket2 = { version = "0.6.3", features = ["all"] }
 native-tls = "0.2.18"
 tar = "0.4.46"
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.10.3", default-features = false, features = [
+  "compression",
+  "common-controls-v6",
+  "dynamic-acl",
+  "test",
+  "x11",
+] }
 tauri-plugin-dialog = "=2.7.0"
 tempfile = "3.27"
 tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }

@@ -59,12 +59,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tar::{Builder as TarBuilder, Header as TarHeader};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+#[cfg(feature = "desktop")]
+use tauri::Manager;
+use tauri::{Emitter, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+#[cfg(feature = "desktop")]
+type AppRuntime = tauri::Wry;
+#[cfg(not(feature = "desktop"))]
+type AppRuntime = tauri::test::MockRuntime;
+type AppHandle = tauri::AppHandle<AppRuntime>;
+type WebviewWindow = tauri::WebviewWindow<AppRuntime>;
 
 include!("backend_application.rs");
 include!("backend_automation.rs");
@@ -72,7 +81,12 @@ include!("backend_security.rs");
 include!("backend_storage.rs");
 include!("backend_transport.rs");
 
+#[cfg(feature = "desktop")]
 pub use app_bootstrap::run;
+#[cfg(not(feature = "desktop"))]
+pub fn run() {
+    panic!("PortMate desktop runtime was built without the desktop feature");
+}
 pub use command_types::*;
 
 #[cfg(test)]

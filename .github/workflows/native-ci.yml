@@ -208,7 +208,7 @@ jobs:
       - name: Verify workspace Rust tests
         run: >
           node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log
-          cargo test --locked --workspace --
+          cargo test --locked --workspace --no-default-features --
           --test-threads=1
           --skip tests::portable_vault_tests::portable_vault_cross_process_fault_matrix
       - name: Verify workspace Clippy

@@ -695,6 +695,10 @@ pub(super) async fn spawn_mixed_auth_test_server_with_delays(
         auth_rejection_time: Duration::ZERO,
         auth_rejection_time_initial: Some(Duration::ZERO),
         keys: vec![load_secret_key(host_key_path, None).unwrap()],
+        preferred: russh::Preferred {
+            cipher: std::borrow::Cow::Borrowed(&[russh::cipher::AES_256_CTR]),
+            ..Default::default()
+        },
         ..Default::default()
     });
     let task = tokio::spawn(async move {
