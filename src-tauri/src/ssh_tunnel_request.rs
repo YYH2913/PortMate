@@ -1,5 +1,63 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub(super) enum NormalizedMcpTunnelRequest {
+    Ssh(CreateTunnelRequest),
+    PortmateHost(CreateHostRouteRequest),
+}
+
+pub(super) fn normalize_mcp_tunnel_request(
+    request: CreateMcpTunnelRequest,
+) -> Result<NormalizedMcpTunnelRequest, String> {
+    let inferred_egress = if request.session_id.is_some() {
+        TunnelEgress::Ssh
+    } else {
+        TunnelEgress::PortmateHost
+    };
+    match request.egress.unwrap_or(inferred_egress) {
+        TunnelEgress::Ssh => {
+            let session_id = request.session_id.ok_or_else(|| {
+                "SSH tunnel egress requires sessionId; use egress `portmate-host` for a session-independent route"
+                    .to_string()
+            })?;
+            Ok(NormalizedMcpTunnelRequest::Ssh(normalize_tunnel_request(
+                CreateTunnelRequest {
+                    session_id,
+                    egress: TunnelEgress::Ssh,
+                    mode: request.mode,
+                    bind_host: request.bind_host,
+                    bind_port: request.bind_port,
+                    target_host: request.target_host,
+                    target_port: request.target_port,
+                    route_rules: request.route_rules,
+                    allow_remote_bind: request.allow_remote_bind,
+                    label: request.label,
+                },
+            )?))
+        }
+        TunnelEgress::PortmateHost => {
+            if request.session_id.is_some() {
+                return Err(
+                    "PortMate host egress is session-independent and must not include sessionId"
+                        .to_string(),
+                );
+            }
+            Ok(NormalizedMcpTunnelRequest::PortmateHost(
+                normalize_host_route_request(CreateHostRouteRequest {
+                    mode: request.mode,
+                    bind_host: request.bind_host,
+                    bind_port: request.bind_port,
+                    target_host: request.target_host,
+                    target_port: request.target_port,
+                    route_rules: request.route_rules,
+                    allow_remote_bind: request.allow_remote_bind,
+                    label: request.label,
+                })?,
+            ))
+        }
+    }
+}
+
 pub(super) fn normalize_tunnel_request(
     mut request: CreateTunnelRequest,
 ) -> Result<CreateTunnelRequest, String> {

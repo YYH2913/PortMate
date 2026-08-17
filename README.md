@@ -302,13 +302,14 @@ Both workflows stage content in the desktop application's private data directory
 
 ### Route-Specific Forwarding And Proxy
 
-PortMate exposes two separate route boundaries. `create_tunnel`, `list_tunnels`, and `stop_tunnel` operate through one connected, authorized SSH or Tmux session. `create_host_route`, `list_host_routes`, and `stop_host_route` expose TCP targets reachable directly from the machine running PortMate and require no terminal profile or connected session. Neither boundary modifies the operating system routing table.
+`create_tunnel`, `list_tunnels`, and `stop_tunnel` expose both route boundaries. Use `egress: "ssh"` with a connected, authorized SSH or Tmux `sessionId`, or use `egress: "portmate-host"` without a session to reach TCP targets available directly from the machine running PortMate. The older `create_host_route`, `list_host_routes`, and `stop_host_route` names remain compatible aliases. Neither boundary modifies the operating system routing table.
 
 Local forwarding sends one local listener to a fixed target through SSH:
 
 ```json
 {
   "sessionId": "edge-router",
+  "egress": "ssh",
   "mode": "local",
   "bindHost": "127.0.0.1",
   "bindPort": 15432,
@@ -318,11 +319,12 @@ Local forwarding sends one local listener to a fixed target through SSH:
 }
 ```
 
-Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` for a route-specific SOCKS5 proxy; dynamic mode needs no fixed target and supports `bindPort: 0` to request an available local port. `routeRules` is optional: an empty list allows every SOCKS5 target, while a non-empty list allows only matching exact domains, `*.example.com` suffixes, IP addresses, or IPv4/IPv6 CIDRs. A rule can also restrict one port.
+Use `mode: "remote"` for server-side SSH forwarding. Use `mode: "dynamic"` for a route-specific SOCKS5 proxy; dynamic mode needs no fixed target and supports `bindPort: 0` to request an available local port. SSH dynamic routes may omit `routeRules` to allow every target; a non-empty list restricts exact domains, `*.example.com` suffixes, IP addresses, or IPv4/IPv6 CIDRs. A rule can also restrict one port.
 
 ```json
 {
   "sessionId": "edge-router",
+  "egress": "ssh",
   "mode": "dynamic",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
@@ -337,10 +339,11 @@ Use `mode: "remote"` for server-side remote forwarding. Use `mode: "dynamic"` fo
 
 Binding a local listener to a non-loopback address exposes it to that interface. Keep per-write confirmation enabled unless the client and route policy are fully trusted.
 
-Call `create_host_route` to expose a fixed route reachable from the PortMate host. Its arguments intentionally contain neither `sessionId` nor `egress`; host routes support `local` and `dynamic`, but not SSH remote forwarding:
+For a fixed route reachable from the PortMate host, call the same tool with `egress: "portmate-host"`; omit `sessionId`. Host egress supports `local` and `dynamic`, but not SSH remote forwarding:
 
 ```json
 {
+  "egress": "portmate-host",
   "mode": "local",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
@@ -351,10 +354,11 @@ Call `create_host_route` to expose a fixed route reachable from the PortMate hos
 }
 ```
 
-For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host routes are runtime-only and owned by the normalized MCP Client ID: another client cannot list or stop them. They survive terminal session disconnects and stop only through `stop_host_route` or when PortMate exits; they are never restored from a saved profile.
+For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host routes are runtime-only and owned by the normalized MCP Client ID: another client cannot list or stop them. They survive terminal session disconnects and stop through `stop_tunnel` (or the compatible `stop_host_route`) or when PortMate exits; they are never restored from a saved profile.
 
 ```json
 {
+  "egress": "portmate-host",
   "mode": "dynamic",
   "bindHost": "0.0.0.0",
   "bindPort": 1080,

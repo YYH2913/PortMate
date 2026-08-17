@@ -261,9 +261,22 @@ impl PortMateMcp {
                 }
             }
             "list_tunnels" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadTunnels, Some(session_id))?;
-                self.require_known_session(session_id)?;
+                let session_id = arguments.get("sessionId").and_then(Value::as_str);
+                let egress = arguments.get("egress").and_then(Value::as_str);
+                if egress == Some("portmate-host") && session_id.is_some() {
+                    return Err(anyhow!(
+                        "PortMate host route listing is session-independent; omit sessionId"
+                    ));
+                }
+                if egress == Some("ssh") && session_id.is_none() {
+                    return Err(anyhow!(
+                        "SSH tunnel listing requires sessionId; use egress `portmate-host` for host routes"
+                    ));
+                }
+                self.guard_read_scope(McpScope::ReadTunnels, session_id)?;
+                if let Some(session_id) = session_id {
+                    self.require_known_session(session_id)?;
+                }
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     redact_secrets(&ipc_value_to_text(value)?)
                 } else {

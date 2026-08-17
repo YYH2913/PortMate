@@ -74,9 +74,10 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "create_host_route".to_string(),
+                command: "create_tunnel".to_string(),
                 args: serde_json::json!({
                     "mode": "local",
+                    "egress": "portmate-host",
                     "bindHost": "127.0.0.1",
                     "bindPort": 0,
                     "targetHost": "127.0.0.1",
@@ -132,7 +133,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "list_host_routes".to_string(),
+                command: "list_tunnels".to_string(),
                 args: serde_json::json!({}),
             },
         )
@@ -146,7 +147,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
                 token: "authenticated-token".to_string(),
                 client_id: "other-host-client".to_string(),
                 trusted_write: false,
-                command: "list_host_routes".to_string(),
+                command: "list_tunnels".to_string(),
                 args: serde_json::json!({}),
             },
         )
@@ -159,7 +160,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
                 token: "authenticated-token".to_string(),
                 client_id: "other-host-client".to_string(),
                 trusted_write: false,
-                command: "stop_host_route".to_string(),
+                command: "stop_tunnel".to_string(),
                 args: serde_json::json!({ "tunnelId": tunnel.id }),
             },
         )
@@ -179,7 +180,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "stop_host_route".to_string(),
+                command: "stop_tunnel".to_string(),
                 args: serde_json::json!({ "tunnelId": tunnel.id }),
             },
         )
@@ -194,7 +195,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
             .unwrap()
             .audit
             .iter()
-            .find(|record| record.action == "create_host_route")
+            .find(|record| record.action == "create_tunnel")
             .cloned()
             .unwrap();
         assert_eq!(create_audit.session_id, None);
@@ -220,7 +221,7 @@ fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
 }
 
 #[test]
-fn mcp_rejects_host_egress_on_the_session_tunnel_tool() {
+fn mcp_rejects_session_id_on_host_egress() {
     let root = tempfile::tempdir().unwrap();
     let profile = test_shell_profile();
     let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
@@ -243,7 +244,7 @@ fn mcp_rejects_host_egress_on_the_session_tunnel_tool() {
         },
     )
     .unwrap_err();
-    assert!(error.contains("use create_host_route"), "{error}");
+    assert!(error.contains("must not include sessionId"), "{error}");
 }
 
 #[test]
@@ -292,9 +293,16 @@ fn portmate_host_route_capacity_is_isolated_per_owner_at_registration() {
 fn portmate_host_socks5_enforces_route_rules_and_relays_allowed_targets() {
     tauri::async_runtime::block_on(async {
         let root = tempfile::tempdir().unwrap();
-        let profile = test_shell_profile();
-        let session_id = profile.id.clone();
-        let state = test_app_state(profile, root.path().join("store.sqlite3"));
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "host-socks-client".to_string(),
+            name: "Host SOCKS client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
 
         let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let echo_address = echo_listener.local_addr().unwrap();
@@ -306,26 +314,28 @@ fn portmate_host_socks5_enforces_route_rules_and_relays_allowed_targets() {
             stream.write_all(b"pong").await.unwrap();
         });
 
-        let tunnel = create_tunnel_inner(
-            &state,
-            CreateTunnelRequest {
-                session_id: session_id.clone(),
-                egress: TunnelEgress::PortmateHost,
-                mode: TunnelMode::Dynamic,
-                bind_host: "127.0.0.1".to_string(),
-                bind_port: 0,
-                target_host: String::new(),
-                target_port: 0,
-                route_rules: vec![portmate_core::TunnelRouteRule {
-                    host: "127.0.0.1".to_string(),
-                    port: Some(echo_address.port()),
-                }],
-                allow_remote_bind: false,
-                label: None,
+        let tunnel = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "host-socks-client".to_string(),
+                trusted_write: false,
+                command: "create_tunnel".to_string(),
+                args: serde_json::json!({
+                    "egress": "portmate-host",
+                    "mode": "dynamic",
+                    "bindHost": "127.0.0.1",
+                    "bindPort": 0,
+                    "routeRules": [{
+                        "host": "127.0.0.1",
+                        "port": echo_address.port()
+                    }]
+                }),
             },
         )
         .await
         .unwrap();
+        let tunnel = serde_json::from_value::<TunnelSpec>(tunnel).unwrap();
 
         let denied_port = echo_address.port().saturating_add(1).max(1);
         let [denied_high, denied_low] = denied_port.to_be_bytes();
@@ -365,7 +375,19 @@ fn portmate_host_socks5_enforces_route_rules_and_relays_allowed_targets() {
         drop(client);
         echo.await.unwrap();
 
-        let stopped = stop_tunnel_inner(&state, &tunnel.id).await.unwrap();
+        let stopped = handle_ipc_request(
+            state,
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "host-socks-client".to_string(),
+                trusted_write: false,
+                command: "stop_tunnel".to_string(),
+                args: serde_json::json!({ "tunnelId": tunnel.id }),
+            },
+        )
+        .await
+        .unwrap();
+        let stopped = serde_json::from_value::<TunnelStatus>(stopped).unwrap();
         assert!(!stopped.spec.enabled);
     });
 }

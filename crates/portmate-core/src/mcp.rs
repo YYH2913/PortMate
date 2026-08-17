@@ -234,6 +234,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","source","destination"],
+                "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
@@ -299,7 +300,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_content_upload_transfer",
             "Start Uploaded Content Transfer",
-            "Verify the completed upload's declared byte length and SHA-256 digest, then transfer it through SFTP, SCP, XModem, YModem, or ZModem. The desktop prompts for write approval only at this final step.",
+            "Verify the completed upload's declared byte length and SHA-256 digest, then transfer it through SFTP, SCP, TFTP, XModem, YModem, or ZModem. The desktop prompts for write approval only at this final step.",
             json!({
                 "type":"object",
                 "required":["uploadId"],
@@ -336,19 +337,19 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         ),
         tool(
             "create_tunnel",
-            "Create SSH Forward Or Proxy",
-            "Create a forward or dynamic SOCKS5 proxy through an authorized SSH/Tmux session. To expose routes reachable directly from the PortMate machine, use create_host_route instead.",
+            "Create Forward Or Proxy",
+            "Create a fixed TCP forward or dynamic SOCKS5 proxy. Use egress `ssh` with sessionId for a connected SSH/Tmux route, or egress `portmate-host` without sessionId to connect through a target reachable directly from the machine running PortMate. The latter is independent of terminal sessions and requires routeRules for dynamic SOCKS5.",
             json!({
                 "type":"object",
-                "required":["sessionId","mode","bindHost","bindPort"],
+                "required":["mode","bindHost","bindPort"],
                 "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "egress":{"type":"string","enum":["ssh"],"default":"ssh"},
+                    "egress":{"type":"string","enum":["ssh","portmate-host"]},
                     "mode":{"type":"string","enum":["local","remote","dynamic"]},
                     "bindHost":{"type":"string","maxLength":255},
                     "bindPort":{"type":"integer","minimum":0,"maximum":65535},
-                    "allowRemoteBind":{"type":"boolean","const":false,"default":false},
+                    "allowRemoteBind":{"type":"boolean","default":false},
                     "targetHost":{"type":"string","maxLength":255,"default":""},
                     "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
                     "routeRules":{
@@ -389,6 +390,38 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                                 "routeRules":{"type":"array","maxItems":0}
                             }
                         }
+                    },
+                    {
+                        "oneOf":[
+                            {
+                                "required":["sessionId"],
+                                "properties":{
+                                    "egress":{"enum":["ssh"]},
+                                    "allowRemoteBind":{"const":false}
+                                }
+                            },
+                            {
+                                "required":["egress"],
+                                "not":{"required":["sessionId"]},
+                                "properties":{
+                                    "egress":{"const":"portmate-host"},
+                                    "mode":{"enum":["local","dynamic"]}
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "if":{
+                            "properties":{"egress":{"const":"portmate-host"}},
+                            "required":["egress"]
+                        },
+                        "then":{
+                            "if":{"properties":{"mode":{"const":"dynamic"}},"required":["mode"]},
+                            "then":{
+                                "required":["routeRules"],
+                                "properties":{"routeRules":{"minItems":1,"maxItems":64}}
+                            }
+                        }
                     }
                 ]
             }),
@@ -397,8 +430,15 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_tunnels",
             "List Forwards And Proxies",
-            "List active SSH and PortMate-host forwards and SOCKS5 proxies for an authorized session.",
-            session_schema(),
+            "List active forwards and SOCKS5 proxies. Provide sessionId to list SSH/Tmux routes, or omit it (or set egress to `portmate-host`) to list PortMate-host routes owned by this MCP client. No terminal session is required for host routes.",
+            json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "egress":{"type":"string","enum":["ssh","portmate-host"]}
+                }
+            }),
             true,
         ),
         tool(
@@ -753,6 +793,9 @@ mod tests {
                 ["maxLength"],
             MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
         );
+        assert!(definition("start_content_upload_transfer")
+            .description
+            .contains("TFTP"));
         let list = definition("list_transfers");
         assert_eq!(list.input_schema["properties"]["limit"]["maximum"], 1_000);
         assert_eq!(
@@ -770,8 +813,18 @@ mod tests {
         );
         assert_eq!(schema["properties"]["bindPort"]["minimum"], 0);
         assert_eq!(schema["properties"]["bindPort"]["maximum"], 65_535);
-        assert_eq!(schema["properties"]["egress"]["enum"], json!(["ssh"]));
-        assert_eq!(schema["properties"]["allowRemoteBind"]["const"], false);
+        assert_eq!(
+            schema["properties"]["egress"]["enum"],
+            json!(["ssh", "portmate-host"])
+        );
+        assert!(schema["required"].as_array().is_some_and(|required| {
+            !required
+                .iter()
+                .any(|value| value.as_str() == Some("sessionId"))
+        }));
+        assert!(schema["properties"]["allowRemoteBind"]
+            .get("const")
+            .is_none());
 
         let clauses = schema["allOf"].as_array().expect("route schema clauses");
         let target_clause = &clauses[1];
@@ -800,7 +853,11 @@ mod tests {
             target_clause["else"]["properties"]["targetPort"]["minimum"],
             1
         );
-        assert_eq!(clauses.len(), 2);
+        assert_eq!(clauses.len(), 4);
+        assert_eq!(
+            clauses[2]["oneOf"][1]["properties"]["egress"]["const"],
+            "portmate-host"
+        );
 
         let host_schema = definition("create_host_route").input_schema;
         assert_eq!(

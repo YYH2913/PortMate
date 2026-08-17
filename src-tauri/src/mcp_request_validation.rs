@@ -78,11 +78,21 @@ pub(super) fn capture_mcp_write_execution_context(
     state: &AppState,
     request: &IpcRequest,
 ) -> Result<McpWriteExecutionContext, String> {
-    if request.command == "create_host_route" {
-        let route = normalize_host_route_request(
+    let host_route = match request.command.as_str() {
+        "create_host_route" => Some(normalize_host_route_request(
             serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
                 .map_err(|error| format!("invalid host route request: {error}"))?,
-        )?;
+        )?),
+        "create_tunnel" => match normalize_mcp_tunnel_request(
+            serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
+                .map_err(|error| format!("invalid tunnel request: {error}"))?,
+        )? {
+            NormalizedMcpTunnelRequest::PortmateHost(route) => Some(route),
+            NormalizedMcpTunnelRequest::Ssh(_) => None,
+        },
+        _ => None,
+    };
+    if let Some(route) = host_route {
         {
             let target = if route.mode == TunnelMode::Dynamic {
                 let mut routes = route
@@ -263,15 +273,9 @@ pub(super) fn validate_ipc_write_args(
             })?;
         }
         "create_tunnel" => {
-            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+            let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
-            let tunnel = normalize_tunnel_request(tunnel)?;
-            if tunnel.egress != TunnelEgress::Ssh {
-                return Err(
-                    "create_tunnel only supports SSH/Tmux routes; use create_host_route for PortMate host routes"
-                        .to_string(),
-                );
-            }
+            normalize_mcp_tunnel_request(tunnel)?;
         }
         "create_host_route" => {
             let route = serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
@@ -310,6 +314,14 @@ pub(super) fn ipc_write_session_id(
 ) -> Result<Option<String>, String> {
     match request.command.as_str() {
         "create_host_route" | "stop_host_route" | "restart_mcp_http" => Ok(None),
+        "create_tunnel" => {
+            let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
+                .map_err(|error| format!("invalid tunnel request: {error}"))?;
+            match normalize_mcp_tunnel_request(tunnel)? {
+                NormalizedMcpTunnelRequest::Ssh(tunnel) => Ok(Some(tunnel.session_id)),
+                NormalizedMcpTunnelRequest::PortmateHost(_) => Ok(None),
+            }
+        }
         "start_content_upload_transfer" => {
             let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
                 request.args.clone(),
@@ -337,15 +349,23 @@ pub(super) fn ipc_write_session_id(
         "stop_tunnel" => {
             let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?;
             validate_mcp_operation_id(tunnel_id, "tunnel")?;
-            state
+            let tunnels = state
                 .tunnels
                 .lock()
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            let runtime = tunnels
                 .get(tunnel_id)
                 .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
-                .map(|runtime| runtime.session_id.clone())
-                .map(Some)
-                .ok_or_else(|| "unknown or unavailable tunnel".to_string())
+                .ok_or_else(|| "unknown or unavailable tunnel".to_string())?;
+            if runtime.spec.egress == TunnelEgress::PortmateHost {
+                let owner = mcp_host_route_owner_id(&request.client_id)?;
+                if runtime.session_id != owner {
+                    return Err("host route not found or owned by another MCP client".to_string());
+                }
+                Ok(None)
+            } else {
+                Ok(Some(runtime.session_id.clone()))
+            }
         }
         _ => Ok(Some(
             ipc_string_arg(&request.args, "sessionId")?.to_string(),

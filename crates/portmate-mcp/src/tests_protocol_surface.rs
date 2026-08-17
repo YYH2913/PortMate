@@ -37,6 +37,44 @@ fn tools_list_advertises_bridge_management_surface() {
 }
 
 #[test]
+fn tools_list_advertises_tftp_and_session_independent_routes() {
+    let response = handle_http_json_rpc(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    }))
+    .unwrap()
+    .unwrap();
+    let tools = response["result"]["tools"].as_array().unwrap();
+    let transfer = tools
+        .iter()
+        .find(|tool| tool["name"] == "start_transfer")
+        .unwrap();
+    assert!(transfer["inputSchema"]["properties"]["protocol"]["enum"]
+        .as_array()
+        .is_some_and(|protocols| protocols.iter().any(|protocol| protocol == "tftp")));
+    let tunnel = tools
+        .iter()
+        .find(|tool| tool["name"] == "create_tunnel")
+        .unwrap();
+    assert!(tunnel["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("independent of terminal sessions")));
+    assert!(tunnel["inputSchema"]["properties"]["egress"]["enum"]
+        .as_array()
+        .is_some_and(|egresses| egresses.iter().any(|egress| egress == "portmate-host")));
+    assert!(tunnel["inputSchema"]["required"]
+        .as_array()
+        .is_some_and(|required| !required.iter().any(|value| value == "sessionId")));
+    let list = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_tunnels")
+        .unwrap();
+    assert!(list["inputSchema"]["required"].is_null());
+}
+
+#[test]
 fn initialize_negotiates_supported_historical_versions_and_falls_back_to_latest() {
     for version in MCP_PROTOCOL_VERSIONS {
         let response = handle_http_json_rpc(json!({

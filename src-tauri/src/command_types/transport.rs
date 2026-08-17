@@ -92,6 +92,27 @@ pub struct CreateTunnelRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateMcpTunnelRequest {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub egress: Option<TunnelEgress>,
+    pub mode: TunnelMode,
+    pub bind_host: String,
+    pub bind_port: u16,
+    #[serde(default)]
+    pub target_host: String,
+    #[serde(default)]
+    pub target_port: u16,
+    #[serde(default)]
+    pub route_rules: Vec<TunnelRouteRule>,
+    #[serde(default)]
+    pub allow_remote_bind: bool,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateHostRouteRequest {
     pub mode: TunnelMode,
     pub bind_host: String,

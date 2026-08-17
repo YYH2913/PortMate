@@ -440,7 +440,7 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
-            let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
+            let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
             let validation = mcp_commit_validation(
                 &state,
@@ -448,25 +448,63 @@ async fn execute_ipc_request_inner(
                 execution_context,
                 authorization_context,
             )?;
-            let spec =
-                create_tunnel_inner_with_validation(&state, tunnel, Some(validation)).await?;
+            let spec = match normalize_mcp_tunnel_request(tunnel)? {
+                NormalizedMcpTunnelRequest::Ssh(tunnel) => {
+                    create_tunnel_inner_with_validation(&state, tunnel, Some(validation)).await?
+                }
+                NormalizedMcpTunnelRequest::PortmateHost(route) => {
+                    create_host_route_inner_with_validation(
+                        &state,
+                        &request.client_id,
+                        route,
+                        Some(validation),
+                    )
+                    .await?
+                }
+            };
             serde_json::to_value(redact_mcp_tunnel_spec(spec)).map_err(|error| error.to_string())
         }
         "list_tunnels" => {
-            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            {
-                let store = state.store.lock().map_err(|error| error.to_string())?;
-                require_mcp_read_scope(
-                    &store,
-                    &request,
-                    McpScope::ReadTunnels,
-                    Some(&session_id),
-                )?;
+            let session_id = request
+                .args
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str);
+            let egress = request
+                .args
+                .get("egress")
+                .and_then(serde_json::Value::as_str);
+            if egress == Some("portmate-host") && session_id.is_some() {
+                return Err(
+                    "PortMate host route listing is session-independent; omit sessionId".to_string(),
+                );
             }
-            let statuses = list_tunnels_inner(&state, Some(&session_id))?
-                .into_iter()
-                .map(redact_mcp_tunnel_status)
-                .collect::<Vec<_>>();
+            if egress == Some("ssh") && session_id.is_none() {
+                return Err(
+                    "SSH tunnel listing requires sessionId; use egress `portmate-host` for host routes"
+                        .to_string(),
+                );
+            }
+            let statuses = if let Some(session_id) = session_id {
+                {
+                    let store = state.store.lock().map_err(|error| error.to_string())?;
+                    require_mcp_read_scope(
+                        &store,
+                        &request,
+                        McpScope::ReadTunnels,
+                        Some(session_id),
+                    )?;
+                }
+                list_tunnels_inner(&state, Some(session_id))?
+            } else {
+                {
+                    let store = state.store.lock().map_err(|error| error.to_string())?;
+                    require_mcp_read_scope(&store, &request, McpScope::ReadTunnels, None)?;
+                }
+                list_host_routes_inner(&state, &request.client_id)?
+            }
+            .into_iter()
+            .map(redact_mcp_tunnel_status)
+            .collect::<Vec<_>>();
             serde_json::to_value(statuses).map_err(|error| error.to_string())
         }
         "stop_tunnel" => {
@@ -477,8 +515,23 @@ async fn execute_ipc_request_inner(
                 execution_context,
                 authorization_context,
             )?;
-            let status =
-                stop_tunnel_inner_with_validation(&state, &tunnel_id, Some(validation)).await?;
+            let host_route = {
+                let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+                tunnels.get(&tunnel_id).is_some_and(|runtime| {
+                    runtime.spec.egress == TunnelEgress::PortmateHost
+                })
+            };
+            let status = if host_route {
+                stop_host_route_inner_with_validation(
+                    &state,
+                    &request.client_id,
+                    &tunnel_id,
+                    Some(validation),
+                )
+                .await?
+            } else {
+                stop_tunnel_inner_with_validation(&state, &tunnel_id, Some(validation)).await?
+            };
             serde_json::to_value(redact_mcp_tunnel_status(status))
                 .map_err(|error| error.to_string())
         }

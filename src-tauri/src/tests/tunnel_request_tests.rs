@@ -208,6 +208,51 @@ fn tunnel_requests_are_normalized_and_validate_targets_early() {
 }
 
 #[test]
+fn mcp_tunnel_request_selects_session_or_host_egress_without_ambiguous_fallback() {
+    let ssh = normalize_mcp_tunnel_request(
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "ssh-session-1",
+            "mode": "local",
+            "bindHost": "127.0.0.1",
+            "bindPort": 0,
+            "targetHost": "device.internal",
+            "targetPort": 22,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(ssh, NormalizedMcpTunnelRequest::Ssh(_)));
+
+    let host = normalize_mcp_tunnel_request(
+        serde_json::from_value(serde_json::json!({
+            "egress": "portmate-host",
+            "mode": "dynamic",
+            "bindHost": "127.0.0.1",
+            "bindPort": 0,
+            "routeRules": [{"host": "10.0.0.0/8"}],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(host, NormalizedMcpTunnelRequest::PortmateHost(_)));
+
+    let error = normalize_mcp_tunnel_request(
+        serde_json::from_value(serde_json::json!({
+            "egress": "portmate-host",
+            "sessionId": "ssh-session-1",
+            "mode": "local",
+            "bindHost": "127.0.0.1",
+            "bindPort": 0,
+            "targetHost": "device.internal",
+            "targetPort": 22,
+        }))
+        .unwrap(),
+    )
+    .unwrap_err();
+    assert!(error.contains("must not include sessionId"), "{error}");
+}
+
+#[test]
 fn tunnel_connection_slots_bound_and_release_concurrency() {
     let metrics = TunnelMetrics::default();
     let slots = Arc::new(tokio::sync::Semaphore::new(1));

@@ -302,13 +302,14 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 ### 指定路由转发与代理
 
-PortMate 提供两个彼此独立的路由边界。`create_tunnel`、`list_tunnels`、`stop_tunnel` 通过一个已连接且已授权的 SSH/Tmux 会话工作；`create_host_route`、`list_host_routes`、`stop_host_route` 则直接暴露运行 PortMate 的主机可达的 TCP 目标，不要求存在终端配置或已连接会话。两类能力都不会修改操作系统路由表。
+`create_tunnel`、`list_tunnels`、`stop_tunnel` 现在统一提供两类路由。使用 `egress: "ssh"` 加已连接且已授权的 SSH/Tmux `sessionId`，或使用 `egress: "portmate-host"` 且不填写 sessionId，直接访问 PortMate 运行主机可达的 TCP 目标。旧的 `create_host_route`、`list_host_routes`、`stop_host_route` 名称仍作为兼容别名保留。两类能力都不会修改操作系统路由表。
 
 本地转发把一个本地监听端口经 SSH 送到固定目标：
 
 ```json
 {
   "sessionId": "edge-router",
+  "egress": "ssh",
   "mode": "local",
   "bindHost": "127.0.0.1",
   "bindPort": 15432,
@@ -318,11 +319,12 @@ PortMate 提供两个彼此独立的路由边界。`create_tunnel`、`list_tunne
 }
 ```
 
-服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理使用 `mode: "dynamic"`，不需要固定目标，并可把 `bindPort` 设为 `0` 自动选择可用的本地端口。`routeRules` 是可选项：空数组允许全部 SOCKS5 目标，非空数组只允许匹配的精确域名、`*.example.com` 后缀、IP 地址或 IPv4/IPv6 CIDR；每条规则还可限制一个端口。
+SSH 服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理使用 `mode: "dynamic"`，不需要固定目标，并可把 `bindPort` 设为 `0` 自动选择可用的本地端口。SSH 动态模式可以省略 `routeRules` 以允许全部目标；非空数组只允许匹配的精确域名、`*.example.com` 后缀、IP 地址或 IPv4/IPv6 CIDR；每条规则还可限制一个端口。
 
 ```json
 {
   "sessionId": "edge-router",
+  "egress": "ssh",
   "mode": "dynamic",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
@@ -337,10 +339,11 @@ PortMate 提供两个彼此独立的路由边界。`create_tunnel`、`list_tunne
 
 把本地监听绑定到非回环地址会向对应网络接口开放代理或转发。在完全信任 MCP 客户端和路由策略之前，应保留写操作逐次确认。
 
-调用 `create_host_route` 可暴露 PortMate 主机可达的固定路由。其参数特意不包含 `sessionId` 和 `egress`；主机路由支持 `local` 和 `dynamic`，不支持 SSH 服务端远程转发：
+要暴露 PortMate 主机可达的固定路由，使用同一个工具并设置 `egress: "portmate-host"`，不要填写 `sessionId`。主机路由支持 `local` 和 `dynamic`，不支持 SSH 服务端远程转发：
 
 ```json
 {
+  "egress": "portmate-host",
   "mode": "local",
   "bindHost": "127.0.0.1",
   "bindPort": 0,
@@ -351,10 +354,11 @@ PortMate 提供两个彼此独立的路由边界。`create_tunnel`、`list_tunne
 }
 ```
 
-使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机路由只在当前运行期有效，并按规范化后的 MCP Client ID 隔离，其他 Client 不能列出或停止。终端会话断开不会影响它；只有调用 `stop_host_route` 或退出 PortMate 才会停止，也不会从已保存的会话配置自动恢复。
+使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机路由只在当前运行期有效，并按规范化后的 MCP Client ID 隔离，其他 Client 不能列出或停止。终端会话断开不会影响它；可调用 `stop_tunnel`（或兼容的 `stop_host_route`）或退出 PortMate 停止，也不会从已保存的会话配置自动恢复。
 
 ```json
 {
+  "egress": "portmate-host",
   "mode": "dynamic",
   "bindHost": "0.0.0.0",
   "bindPort": 1080,

@@ -284,9 +284,20 @@ try {
     "create_tunnel",
     "list_tunnels",
     "stop_tunnel",
+    "create_host_route",
+    "list_host_routes",
+    "stop_host_route",
   ]) {
     assert(toolNames.has(toolName), `tools/list omitted ${toolName}`);
   }
+  const startTransfer = tools.tools.find((tool) => tool.name === "start_transfer");
+  assert(startTransfer?.inputSchema?.properties?.protocol?.enum?.includes("tftp"),
+    "start_transfer schema omitted TFTP");
+  const createTunnel = tools.tools.find((tool) => tool.name === "create_tunnel");
+  assert(createTunnel?.inputSchema?.properties?.egress?.enum?.includes("portmate-host"),
+    "create_tunnel schema omitted PortMate-host egress");
+  assert(!createTunnel?.inputSchema?.required?.includes("sessionId"),
+    "create_tunnel still requires an SSH/Tmux session for every route");
   const resources = await client.listResources();
   assert(resources.resources.some((resource) => resource.uri === "portmate://sessions"), "resources/list omitted portmate://sessions");
   const templates = await client.listResourceTemplates();
