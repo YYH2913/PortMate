@@ -21,7 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup default 1.97.1
 
       - uses: actions/setup-node@v7
         with:
@@ -43,9 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          targets: x86_64-pc-windows-gnu,aarch64-apple-darwin,x86_64-unknown-freebsd
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup target add --toolchain 1.97.1 x86_64-pc-windows-gnu aarch64-apple-darwin x86_64-unknown-freebsd
+          rustup default 1.97.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -73,9 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          components: clippy, rustfmt
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup component add --toolchain 1.97.1 clippy rustfmt
+          rustup default 1.97.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -325,7 +332,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup default 1.97.1
 
       - uses: Swatinem/rust-cache@v2
 
