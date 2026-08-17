@@ -81,7 +81,7 @@ pub(super) async fn transfer_file_to_device_modem(
             )
             .await
         }
-        TransferProtocol::Sftp | TransferProtocol::Scp => {
+        TransferProtocol::Sftp | TransferProtocol::Scp | TransferProtocol::Tftp => {
             unreachable!("load endpoint validation excludes non-Modem protocols")
         }
     };

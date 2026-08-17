@@ -209,13 +209,13 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start an SFTP, SCP, XModem, YModem, or ZModem transfer. At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint; unprefixed paths are local to the PortMate desktop host. For a device-side Modem receiver, use destination `load:loadx`, `load:loady`, or `load:loadz`, optionally with validated `address` and `baud` query parameters. SFTP/SCP also support same-session remote-to-remote copy.",
+            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer. At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint; unprefixed paths are local to the PortMate desktop host. TFTP uses a one-shot server with destination `load:tftpboot`; Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. SFTP/SCP also support same-session remote-to-remote copy.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","source","destination"],
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
+                    "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
                     "source":{"type":"string","minLength":1,"maxLength":32768},
                     "destination":{"type":"string","minLength":1,"maxLength":32768}
                 }
@@ -225,14 +225,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_content_transfer",
             "Start Content Transfer",
-            "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 4 MiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. The destination must be a remote:/ssh: endpoint or a constrained load: Modem receiver.",
+            "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 4 MiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. TFTP starts a one-shot server on the PortMate host and drives U-Boot through the connected session; poll get_transfer for final bytesDone, status, and message. The destination must be a remote:/ssh: endpoint or a constrained load: receiver.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","fileName","contentBase64","destination"],
                 "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
+                    "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
                     "fileName":{"type":"string","minLength":1,"maxLength":255},
                     "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
                     "destination":{"type":"string","minLength":1,"maxLength":32768}
@@ -250,7 +250,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                 "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "protocol":{"type":"string","enum":["sftp","scp","xmodem","ymodem","zmodem"]},
+                    "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
                     "fileName":{"type":"string","minLength":1,"maxLength":255},
                     "sizeBytes":{"type":"integer","minimum":1,"maximum":MAX_MCP_CONTENT_UPLOAD_BYTES},
                     "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
@@ -702,6 +702,12 @@ mod tests {
             MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
         );
         assert!(content_transfer.description.contains("limited to 4 MiB"));
+        assert!(content_transfer.description.contains("one-shot server"));
+        assert!(
+            content_transfer.input_schema["properties"]["protocol"]["enum"]
+                .as_array()
+                .is_some_and(|protocols| protocols.contains(&json!("tftp")))
+        );
         assert_eq!(
             definition("begin_content_upload").input_schema["properties"]["sizeBytes"]["maximum"],
             MAX_MCP_CONTENT_UPLOAD_BYTES

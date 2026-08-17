@@ -489,6 +489,7 @@ pub(super) async fn run_queued_transfer(
             )
             .await
         }
+        TransferProtocol::Tftp => transfer_file_via_tftp(&state, &request, &progress).await,
         TransferProtocol::Xmodem => transfer_file_via_xmodem(&state, &request, &progress).await,
         TransferProtocol::Ymodem => transfer_file_via_ymodem(&state, &request, &progress).await,
         TransferProtocol::Zmodem => transfer_file_via_zmodem(&state, &request, &progress).await,
@@ -513,7 +514,10 @@ pub(super) async fn run_queued_transfer(
     let modem_binding = if status == TransferStatus::Completed
         && matches!(
             request.protocol,
-            TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
+            TransferProtocol::Tftp
+                | TransferProtocol::Xmodem
+                | TransferProtocol::Ymodem
+                | TransferProtocol::Zmodem
         )
     {
         match cancel.modem_runtime_binding() {

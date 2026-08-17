@@ -227,6 +227,13 @@ fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() 
         destination: "load:loadx".to_string(),
     };
     validate_mcp_content_transfer_request(&valid).unwrap();
+    let mut tftp = valid.clone();
+    tftp.protocol = TransferProtocol::Tftp;
+    tftp.destination =
+        "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69".to_string();
+    validate_mcp_content_transfer_request(&tftp).unwrap();
+    tftp.file_name = "firmware.bin;saveenv".to_string();
+    assert!(validate_mcp_content_transfer_request(&tftp).is_err());
     for file_name in ["../firmware.bin", "nested/firmware.bin", "C:firmware.bin"] {
         let mut invalid = valid.clone();
         invalid.file_name = file_name.to_string();

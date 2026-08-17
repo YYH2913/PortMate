@@ -15,8 +15,8 @@ pub(super) fn validate_mcp_transfer_route(request: &StartTransferRequest) -> Res
     if has_load_receiver_prefix(&request.source) {
         return Err("MCP load: endpoint is only permitted as a Modem upload destination".to_string());
     }
-    let load_receiver = parse_load_receiver_endpoint(&request.destination, &request.protocol)?;
-    if load_receiver.is_some() && has_remote_transfer_prefix(&request.source) {
+    let load_receiver = validate_load_receiver_endpoint(&request.destination, &request.protocol)?;
+    if load_receiver && has_remote_transfer_prefix(&request.source) {
         return Err("MCP load: transfer source must be a local desktop file".to_string());
     }
     let source_remote = is_nonlocal_transfer_endpoint(&request.source);
@@ -51,6 +51,9 @@ pub(super) fn validate_mcp_content_transfer_request(
                 .to_string(),
         );
     }
+    if request.protocol == TransferProtocol::Tftp {
+        validate_tftp_file_name(&request.file_name)?;
+    }
     if request.content_base64.is_empty()
         || request.content_base64.len() > MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
     {
@@ -77,6 +80,9 @@ pub(super) fn validate_mcp_content_transfer_request(
 pub(super) fn validate_mcp_uploaded_content_route(
     metadata: &McpContentUploadMetadata,
 ) -> Result<(), String> {
+    if metadata.protocol == TransferProtocol::Tftp {
+        validate_tftp_file_name(&metadata.file_name)?;
+    }
     validate_mcp_transfer_route(&StartTransferRequest {
         session_id: metadata.session_id.clone(),
         protocol: metadata.protocol.clone(),

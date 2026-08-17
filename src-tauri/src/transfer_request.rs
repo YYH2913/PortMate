@@ -1,4 +1,9 @@
 use super::*;
+use std::net::Ipv4Addr;
+
+pub(super) const DEFAULT_TFTP_PORT: u16 = 69;
+pub(super) const DEFAULT_TFTP_TIMEOUT_SECONDS: u64 = 60;
+pub(super) const MAX_TFTP_TIMEOUT_SECONDS: u64 = 150;
 
 pub(super) fn prepare_transfer_request(
     profile: &SessionProfile,
@@ -22,8 +27,8 @@ pub(super) fn prepare_transfer_request_with_home(
     if has_load_receiver_prefix(&request.source) {
         return Err("load: 设备接收端点只能作为 Modem 上传目标".to_string());
     }
-    let load_receiver = parse_load_receiver_endpoint(&request.destination, &request.protocol)?;
-    if load_receiver.is_some() && has_remote_transfer_prefix(&request.source) {
+    let load_receiver = validate_load_receiver_endpoint(&request.destination, &request.protocol)?;
+    if load_receiver && has_remote_transfer_prefix(&request.source) {
         return Err("load: 设备接收端点只支持从 PortMate 本机文件上传".to_string());
     }
     let accesses_remote = is_nonlocal_transfer_endpoint(&request.source)
@@ -78,6 +83,7 @@ pub(super) fn validate_transfer_protocol(
     let enabled = match protocol {
         TransferProtocol::Sftp => profile.transfer.sftp,
         TransferProtocol::Scp => profile.transfer.scp,
+        TransferProtocol::Tftp => profile.transfer.tftp,
         TransferProtocol::Xmodem => profile.transfer.xmodem,
         TransferProtocol::Ymodem => profile.transfer.ymodem,
         TransferProtocol::Zmodem => profile.transfer.zmodem,
@@ -96,6 +102,7 @@ pub(super) fn transfer_protocol_label(protocol: &TransferProtocol) -> &'static s
     match protocol {
         TransferProtocol::Sftp => "SFTP",
         TransferProtocol::Scp => "SCP",
+        TransferProtocol::Tftp => "TFTP",
         TransferProtocol::Xmodem => "XModem",
         TransferProtocol::Ymodem => "YModem",
         TransferProtocol::Zmodem => "ZModem",
@@ -260,6 +267,19 @@ pub(super) fn is_nonlocal_transfer_endpoint(value: &str) -> bool {
     has_remote_transfer_prefix(value) || has_load_receiver_prefix(value)
 }
 
+pub(super) fn validate_load_receiver_endpoint(
+    value: &str,
+    protocol: &TransferProtocol,
+) -> Result<bool, String> {
+    if !has_load_receiver_prefix(value) {
+        return Ok(false);
+    }
+    match protocol {
+        TransferProtocol::Tftp => parse_tftp_receiver_endpoint(value).map(|spec| spec.is_some()),
+        _ => parse_load_receiver_endpoint(value, protocol).map(|spec| spec.is_some()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LoadReceiverSpec {
     pub(super) command: &'static str,
@@ -303,7 +323,7 @@ pub(super) fn parse_load_receiver_endpoint(
         TransferProtocol::Xmodem => "loadx",
         TransferProtocol::Ymodem => "loady",
         TransferProtocol::Zmodem => "loadz",
-        TransferProtocol::Sftp | TransferProtocol::Scp => {
+        TransferProtocol::Sftp | TransferProtocol::Scp | TransferProtocol::Tftp => {
             return Err("load: 设备接收端点仅支持 X/Y/ZModem".to_string())
         }
     };
@@ -358,4 +378,165 @@ pub(super) fn parse_load_receiver_endpoint(
         address,
         baud_rate,
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TftpReceiverSpec {
+    pub(super) address: Option<String>,
+    pub(super) file_name: Option<String>,
+    pub(super) device_ip: Ipv4Addr,
+    pub(super) server_ip: Option<Ipv4Addr>,
+    pub(super) bind_host: Option<Ipv4Addr>,
+    pub(super) bind_port: u16,
+    pub(super) timeout: Duration,
+}
+
+impl TftpReceiverSpec {
+    pub(super) fn command_lines(
+        &self,
+        file_name: &str,
+        server_ip: Ipv4Addr,
+        server_port: u16,
+    ) -> Result<String, String> {
+        validate_tftp_file_name(file_name)?;
+        let address = self.address.as_deref().unwrap_or("${loadaddr}");
+        let mut commands = format!(
+            "setenv ipaddr {}\rsetenv serverip {server_ip}\r",
+            self.device_ip
+        );
+        if server_port == DEFAULT_TFTP_PORT {
+            commands.push_str("setenv tftpdstp\r");
+        } else {
+            commands.push_str(&format!("setenv tftpdstp {server_port}\r"));
+        }
+        commands.push_str(&format!("tftpboot {address} {file_name}\r"));
+        Ok(commands)
+    }
+}
+
+pub(super) fn parse_tftp_receiver_endpoint(
+    value: &str,
+) -> Result<Option<TftpReceiverSpec>, String> {
+    if !has_load_receiver_prefix(value) {
+        return Ok(None);
+    }
+    if value.starts_with("load://") {
+        return Err("load: TFTP 接收端点不能包含主机部分".to_string());
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|error| format!("load: TFTP 接收端点无效: {error}"))?;
+    if parsed.scheme() != "load" || parsed.path() != "tftpboot" || parsed.fragment().is_some() {
+        return Err("TFTP 传输必须使用 load:tftpboot 接收端点".to_string());
+    }
+
+    let mut address = None;
+    let mut file_name = None;
+    let mut device_ip = None;
+    let mut server_ip = None;
+    let mut bind_host = None;
+    let mut bind_port = None;
+    let mut timeout_seconds = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "address" if address.is_none() => {
+                address = Some(validate_load_address(value.as_ref())?);
+            }
+            "fileName" if file_name.is_none() => {
+                validate_tftp_file_name(value.as_ref())?;
+                file_name = Some(value.into_owned());
+            }
+            "deviceIp" if device_ip.is_none() => {
+                device_ip = Some(parse_tftp_ipv4(value.as_ref(), "deviceIp", false)?);
+            }
+            "serverIp" if server_ip.is_none() => {
+                server_ip = Some(parse_tftp_ipv4(value.as_ref(), "serverIp", false)?);
+            }
+            "bindHost" if bind_host.is_none() => {
+                bind_host = Some(parse_tftp_ipv4(value.as_ref(), "bindHost", true)?);
+            }
+            "bindPort" if bind_port.is_none() => {
+                bind_port = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| "load: TFTP bindPort 必须是 0 到 65535 的整数".to_string())?,
+                );
+            }
+            "timeoutSeconds" if timeout_seconds.is_none() => {
+                let seconds = value.parse::<u64>().map_err(|_| {
+                    "load: TFTP timeoutSeconds 必须是有效的正整数".to_string()
+                })?;
+                if !(5..=MAX_TFTP_TIMEOUT_SECONDS).contains(&seconds) {
+                    return Err(format!(
+                        "load: TFTP timeoutSeconds 必须介于 5 和 {MAX_TFTP_TIMEOUT_SECONDS} 之间"
+                    ));
+                }
+                timeout_seconds = Some(seconds);
+            }
+            "address" | "fileName" | "deviceIp" | "serverIp" | "bindHost" | "bindPort"
+            | "timeoutSeconds" => {
+                return Err(format!("load: TFTP 参数 `{key}` 不能重复"));
+            }
+            _ => return Err(format!("load: TFTP 不支持参数 `{key}`")),
+        }
+    }
+    let device_ip = device_ip.ok_or_else(|| "load: TFTP 必须指定 deviceIp".to_string())?;
+    Ok(Some(TftpReceiverSpec {
+        address,
+        file_name,
+        device_ip,
+        server_ip,
+        bind_host,
+        bind_port: bind_port.unwrap_or(DEFAULT_TFTP_PORT),
+        timeout: Duration::from_secs(
+            timeout_seconds.unwrap_or(DEFAULT_TFTP_TIMEOUT_SECONDS),
+        ),
+    }))
+}
+
+fn validate_load_address(value: &str) -> Result<String, String> {
+    let digits = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    if digits.is_empty()
+        || digits.len() > 16
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(
+            "load: 加载地址必须是最多 16 位的十六进制数，可带 0x 前缀".to_string(),
+        );
+    }
+    Ok(value.to_string())
+}
+
+fn parse_tftp_ipv4(value: &str, name: &str, allow_unspecified: bool) -> Result<Ipv4Addr, String> {
+    let address = value
+        .parse::<Ipv4Addr>()
+        .map_err(|_| format!("load: TFTP {name} 必须是 IPv4 地址"))?;
+    if address.is_multicast()
+        || address == Ipv4Addr::BROADCAST
+        || (!allow_unspecified && address.is_unspecified())
+    {
+        return Err(format!("load: TFTP {name} 不是可用的单播 IPv4 地址"));
+    }
+    Ok(address)
+}
+
+pub(super) fn validate_tftp_file_name(file_name: &str) -> Result<(), String> {
+    if file_name.is_empty()
+        || file_name.len() > 255
+        || file_name.starts_with('/')
+        || file_name
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+        || !file_name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'/')
+        })
+    {
+        return Err(
+            "TFTP fileName 仅支持安全的相对 ASCII 路径（字母、数字、/、点、下划线、加号或连字符），且不能包含空、. 或 .. 分量"
+                .to_string(),
+        );
+    }
+    Ok(())
 }

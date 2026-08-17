@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { deviceLoadEndpoint, isModemTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import { deviceLoadEndpoint, deviceTftpEndpoint, isModemTransferProtocol, isTftpTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
 import type { SessionKind, SessionProfile } from "./types";
 
 describe("transfer capabilities", () => {
   it("offers SSH file transfer and enabled modem protocols for SSH-like profiles", () => {
-    expect(transferProtocolsForProfile(profile("ssh"))).toEqual(["sftp", "scp", "xmodem", "ymodem", "zmodem"]);
-    expect(transferProtocolsForProfile(profile("tmux", { scp: false, ymodem: false }))).toEqual(["sftp", "xmodem", "zmodem"]);
+    expect(transferProtocolsForProfile(profile("ssh"))).toEqual(["sftp", "scp", "xmodem", "ymodem", "zmodem", "tftp"]);
+    expect(transferProtocolsForProfile(profile("tmux", { scp: false, ymodem: false }))).toEqual(["sftp", "xmodem", "zmodem", "tftp"]);
   });
 
   it("does not expose SSH file transfer to non-SSH transports", () => {
     for (const kind of ["serial", "shell", "telnet", "tcp"] as const) {
-      expect(transferProtocolsForProfile(profile(kind))).toEqual(["xmodem", "ymodem", "zmodem"]);
+      expect(transferProtocolsForProfile(profile(kind))).toEqual(["xmodem", "ymodem", "zmodem", "tftp"]);
     }
   });
 
@@ -19,6 +19,7 @@ describe("transfer capabilities", () => {
     expect(transferProtocolsForProfile(profile("ssh", {
       sftp: false,
       scp: false,
+      tftp: false,
       xmodem: false,
       ymodem: false,
       zmodem: false,
@@ -26,9 +27,10 @@ describe("transfer capabilities", () => {
   });
 
   it("uses stable operator-facing protocol labels", () => {
-    expect((["sftp", "scp", "xmodem", "ymodem", "zmodem"] as TransferProtocol[]).map(transferProtocolLabel)).toEqual([
+    expect((["sftp", "scp", "tftp", "xmodem", "ymodem", "zmodem"] as TransferProtocol[]).map(transferProtocolLabel)).toEqual([
       "SFTP",
       "SCP",
+      "TFTP",
       "XModem",
       "YModem",
       "ZModem",
@@ -43,6 +45,16 @@ describe("transfer capabilities", () => {
       "load:loadz?address=0x80000000&baud=115200",
     );
     expect(deviceLoadEndpoint("xmodem", "", "")).toBe("load:loadx");
+    expect(isTftpTransferProtocol("tftp")).toBe(true);
+    expect(deviceTftpEndpoint({
+      address: " 0x81800000 ",
+      fileName: " firmware.bin ",
+      deviceIp: " 192.168.255.1 ",
+      serverIp: "192.168.255.2",
+      bindHost: "0.0.0.0",
+      bindPort: "69",
+      timeoutSeconds: "60",
+    })).toBe("load:tftpboot?address=0x81800000&fileName=firmware.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=69&timeoutSeconds=60");
   });
 });
 
@@ -52,6 +64,7 @@ function profile(kind: SessionKind, patch: Partial<SessionProfile["transfer"]> =
     transfer: {
       sftp: true,
       scp: true,
+      tftp: true,
       xmodem: true,
       ymodem: true,
       zmodem: true,

@@ -37,7 +37,7 @@ PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets
 | Terminal workspace | Tabs, recursive splits, cross-group drag and drop, detached windows, layout restore, Insert/Normal modes with matching cursors, search, line navigation, and text/hex/split views |
 | Interactive workflow | WindTerm-style command completion and parameter hints, semantic command coloring, Quick Commands, scoped custom scripts, OneKeys, free input, and synchronized input |
 | SSH security | Profile-scoped host keys, TOFU and key-change blocking, Host/Client Key Managers, multi-hop Jump Hosts, ssh-agent, password/public-key/keyboard-interactive, and Linux libssh GSSAPI authentication |
-| Files and transfer | SFTP/SCP file management, drag and drop, queues, throttling, cancellation, retry, resumable transfers, and X/Y/ZModem |
+| Files and transfer | SFTP/SCP file management, one-shot TFTP, drag and drop, queues, throttling, cancellation, retry, resumable transfers, and X/Y/ZModem |
 | Operations and diagnostics | SSH health checks, local/remote/dynamic tunnels, persistent Sysmon sidebar and trends, structured logs, triggers, and diagnostic session bundles |
 | Serial tooling | Common baud rates, DTR/RTS/Break, text and hex I/O, exact byte capture, a detached analyzer, and SLIP/COBS/Modbus RTU decoding |
 | MCP | stdio and Streamable HTTP, fine-grained grants, session scopes, write confirmation, audit history, token rotation, and managed sidecar lifecycle |
@@ -211,7 +211,7 @@ Script bodies are stored in the PortMate application Store and may also appear i
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, TFTP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
 
 Upload with SFTP:
 
@@ -238,6 +238,22 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 ```
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
+
+TFTP is also available directly from the desktop Transfer Tasks dialog. It starts a one-shot server on the PortMate host and drives U-Boot through any connected interactive session. The same runtime is exposed to MCP through local-file, inline-content, and resumable-upload transfers:
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "tftp",
+  "fileName": "firmware.bin",
+  "contentBase64": "AAECAwQF...",
+  "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
+}
+```
+
+`deviceIp` is required. `address`, `fileName`, `serverIp`, `bindHost`, `bindPort`, and `timeoutSeconds` are optional: the load address defaults to `${loadaddr}`, the requested name defaults to the local source name, `serverIp` can be inferred from the route to the device, the bind host defaults to the advertised server IP, the port defaults to 69, and the timeout defaults to 60 seconds within a 5-150 second range. `bindPort=0` chooses a free port. PortMate temporarily sends `setenv ipaddr`, `setenv serverip`, and `setenv tftpdstp` followed by `tftpboot`; it never sends `saveenv`.
+
+The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot honors `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
 For content produced on another MCP client, `start_content_transfer` is the small-file shortcut. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 
@@ -276,7 +292,7 @@ Append standard-Base64 chunks in order. `offset` is the decoded byte offset and 
 
 After the response reports `complete: true`, call `start_content_upload_transfer` with `{"uploadId":"..."}`. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
 
-Both workflows stage content in the desktop application's private data directory, validate safe file names and transfer routes, and remove staged content after use. The bytes are not included in MCP audit records or returned as client-supplied paths. SFTP/SCP destinations use `remote:` or `ssh:`, for example `remote:/tmp/firmware.bin`; Modem destinations use constrained `load:` endpoints. Only the final transfer start follows the normal MCP write approval policy, so individual chunks do not create approval prompts. Staged-content tasks cannot be retried after the staging file is removed; start a new upload instead.
+Both workflows stage content in the desktop application's private data directory, validate safe file names and transfer routes, and remove staged content after use. The bytes are not included in MCP audit records or returned as client-supplied paths. SFTP/SCP destinations use `remote:` or `ssh:`, for example `remote:/tmp/firmware.bin`; TFTP and Modem destinations use constrained `load:` endpoints. Only the final transfer start follows the normal MCP write approval policy, so individual chunks do not create approval prompts. Staged-content tasks cannot be retried after the staging file is removed; start a new upload instead.
 
 ### Route-Specific Forwarding And Proxy
 

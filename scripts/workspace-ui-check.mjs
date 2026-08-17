@@ -95,6 +95,7 @@ function createSession(id, name, kind, group, tags, connection) {
       transfer: {
         sftp: kind === "ssh" || kind === "tmux",
         scp: kind === "ssh" || kind === "tmux",
+        tftp: true,
         xmodem: true,
         ymodem: true,
         zmodem: true,
@@ -2313,7 +2314,7 @@ Host staging
   await transferDialog.waitFor();
   const sshTransferOptions = await transferDialog.locator("select").locator("option")
     .evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent })));
-  assert(JSON.stringify(sshTransferOptions.map((option) => option.value)) === JSON.stringify(["sftp", "scp", "xmodem", "ymodem", "zmodem"]),
+  assert(JSON.stringify(sshTransferOptions.map((option) => option.value)) === JSON.stringify(["sftp", "scp", "xmodem", "ymodem", "zmodem", "tftp"]),
     `SSH transfer capabilities are wrong: ${JSON.stringify(sshTransferOptions)}`);
   assert(await transferDialog.locator("select").inputValue() === "sftp",
     "SSH transfer dialog did not select its first enabled protocol");
@@ -3011,7 +3012,7 @@ Host staging
   await page.locator(".transfer-dialog").waitFor();
   const serialTransferOptions = await page.locator(".transfer-dialog select").locator("option")
     .evaluateAll((options) => options.map((option) => option.value));
-  assert(JSON.stringify(serialTransferOptions) === JSON.stringify(["xmodem", "ymodem", "zmodem"])
+  assert(JSON.stringify(serialTransferOptions) === JSON.stringify(["xmodem", "ymodem", "zmodem", "tftp"])
     && await page.locator(".transfer-dialog select").inputValue() === "xmodem",
   `Serial transfer dialog exposes unsupported protocols: ${JSON.stringify(serialTransferOptions)}`);
   assert(await page.locator('.transfer-mode-switch button[aria-pressed="true"]').textContent() === "自动 loadx",
@@ -3049,6 +3050,25 @@ Host staging
   const transferNotice = page.locator(".notice-dialog", { hasText: "xmodem queued" });
   await transferNotice.waitFor();
   await transferNotice.getByRole("button", { name: "确定", exact: true }).click();
+  await page.locator(".transfer-dialog select").selectOption("tftp");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "加载地址:" }).locator("input").fill("0x81800000");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "请求文件名:" }).locator("input").fill("image.bin");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "设备 IP:" }).locator("input").fill("192.168.255.1");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "服务端 IP:" }).locator("input").fill("192.168.255.2");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "绑定地址:" }).locator("input").fill("0.0.0.0");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "监听端口:" }).locator("input").fill("0");
+  await page.locator('.transfer-dialog .dialog-field', { hasText: "总超时(秒):" }).locator("input").fill("75");
+  await page.locator(".transfer-dialog .utility-actions button", { hasText: "开始" }).click();
+  const serialTftpTransfer = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "start_transfer").at(-1)?.args.request);
+  assert(serialTftpTransfer?.sessionId === "bench-uart"
+    && serialTftpTransfer.protocol === "tftp"
+    && serialTftpTransfer.source === "/tmp/firmware.bin"
+    && serialTftpTransfer.destination === "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=0&timeoutSeconds=75",
+  `Serial TFTP transfer request is wrong: ${JSON.stringify(serialTftpTransfer)}`);
+  const tftpNotice = page.locator(".notice-dialog", { hasText: "tftp queued" });
+  await tftpNotice.waitFor();
+  await tftpNotice.getByRole("button", { name: "确定", exact: true }).click();
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "取消" }).click();
   await page.locator(".transfer-dialog").waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();

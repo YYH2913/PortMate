@@ -193,7 +193,7 @@ pub(super) fn runtime_modem_binding(
             )
         });
     }
-    let target = target.ok_or_else(|| "需要先连接会话才能执行 X/Y/ZModem 传输".to_string())?;
+    let target = target.ok_or_else(|| "需要先连接会话才能执行 TFTP 或 X/Y/ZModem 传输".to_string())?;
     if target.3 {
         return Err("Modem 来源连接已关闭或正在重连".to_string());
     }

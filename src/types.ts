@@ -48,6 +48,7 @@ export interface SessionProfile {
   transfer: {
     sftp: boolean;
     scp: boolean;
+    tftp?: boolean;
     xmodem: boolean;
     ymodem: boolean;
     zmodem: boolean;
@@ -434,7 +435,7 @@ export interface ArchiveLogShardsResult {
 export interface TransferTask {
   id: string;
   sessionId: string;
-  protocol: "sftp" | "scp" | "xmodem" | "ymodem" | "zmodem";
+  protocol: "sftp" | "scp" | "tftp" | "xmodem" | "ymodem" | "zmodem";
   source: string;
   destination: string;
   bytesTotal: number;

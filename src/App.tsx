@@ -6187,7 +6187,7 @@ function createSessionDraft(): SessionProfile {
       retentionDays: 0,
     },
     triggers: [],
-    transfer: { sftp: true, scp: true, xmodem: true, ymodem: true, zmodem: true, rateLimitBytesPerSecond: null, defaultLocalDir: null },
+    transfer: { sftp: true, scp: true, tftp: true, xmodem: true, ymodem: true, zmodem: true, rateLimitBytesPerSecond: null, defaultLocalDir: null },
   };
 }
 

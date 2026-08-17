@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub struct TransferSettings {
     pub sftp: bool,
     pub scp: bool,
+    #[serde(default = "transfer_enabled_by_default")]
+    pub tftp: bool,
     pub xmodem: bool,
     pub ymodem: bool,
     pub zmodem: bool,
@@ -19,6 +21,7 @@ impl Default for TransferSettings {
         Self {
             sftp: true,
             scp: true,
+            tftp: true,
             xmodem: true,
             ymodem: true,
             zmodem: true,
@@ -28,11 +31,16 @@ impl Default for TransferSettings {
     }
 }
 
+const fn transfer_enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransferProtocol {
     Sftp,
     Scp,
+    Tftp,
     Xmodem,
     Ymodem,
     Zmodem,

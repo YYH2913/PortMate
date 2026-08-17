@@ -976,6 +976,7 @@ function SessionTransferFields({
     <>
       {sshLike ? <DialogToggleField label="SFTP:" checked={draft.transfer.sftp} onChange={(sftp) => update({ sftp })} /> : null}
       {sshLike ? <DialogToggleField label="SCP:" checked={draft.transfer.scp} onChange={(scp) => update({ scp })} /> : null}
+      <DialogToggleField label="TFTP:" checked={draft.transfer.tftp !== false} onChange={(tftp) => update({ tftp })} />
       <DialogToggleField label="XModem:" checked={draft.transfer.xmodem} onChange={(xmodem) => update({ xmodem })} />
       <DialogToggleField label="YModem:" checked={draft.transfer.ymodem} onChange={(ymodem) => update({ ymodem })} />
       <DialogToggleField label="ZModem:" checked={draft.transfer.zmodem} onChange={(zmodem) => update({ zmodem })} />

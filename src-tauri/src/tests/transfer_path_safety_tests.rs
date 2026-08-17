@@ -228,3 +228,58 @@ fn device_load_endpoint_is_a_local_modem_upload_destination() {
     }
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn tftp_load_endpoints_are_bounded_and_command_injection_safe() {
+    let spec = parse_tftp_receiver_endpoint(
+        "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=1069&timeoutSeconds=90",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(spec.address.as_deref(), Some("0x81800000"));
+    assert_eq!(spec.file_name.as_deref(), Some("image.bin"));
+    assert_eq!(spec.device_ip.to_string(), "192.168.255.1");
+    assert_eq!(spec.server_ip.unwrap().to_string(), "192.168.255.2");
+    assert_eq!(spec.bind_host.unwrap().to_string(), "0.0.0.0");
+    assert_eq!(spec.bind_port, 1_069);
+    assert_eq!(spec.timeout, Duration::from_secs(90));
+    let commands = spec
+        .command_lines("ignored.bin", "192.168.255.2".parse().unwrap(), 1_069)
+        .unwrap();
+    assert_eq!(
+        commands,
+        "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 ignored.bin\r"
+    );
+    assert!(!commands.contains("saveenv"));
+
+    let defaults = parse_tftp_receiver_endpoint(
+        "load:tftpboot?deviceIp=192.168.255.1&bindPort=0",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(defaults.bind_port, 0);
+    assert_eq!(defaults.timeout, Duration::from_secs(60));
+    assert_eq!(
+        defaults
+            .command_lines("firmware.bin", "192.168.255.2".parse().unwrap(), 69)
+            .unwrap(),
+        "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp\rtftpboot ${loadaddr} firmware.bin\r"
+    );
+
+    for endpoint in [
+        "load:tftpboot",
+        "load:tftpboot?deviceIp=0.0.0.0",
+        "load:tftpboot?deviceIp=192.168.1.1&address=1%3Bsaveenv",
+        "load:tftpboot?deviceIp=192.168.1.1&fileName=fw%3Bsaveenv",
+        "load:tftpboot?deviceIp=192.168.1.1&bindPort=70000",
+        "load:tftpboot?deviceIp=192.168.1.1&timeoutSeconds=151",
+        "load:tftpboot?deviceIp=192.168.1.1&unknown=1",
+        "load:tftpboot?deviceIp=192.168.1.1&deviceIp=192.168.1.2",
+        "load:loadx?deviceIp=192.168.1.1",
+    ] {
+        assert!(
+            parse_tftp_receiver_endpoint(endpoint).is_err(),
+            "unsafe TFTP endpoint was accepted: {endpoint}"
+        );
+    }
+}

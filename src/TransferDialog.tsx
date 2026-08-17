@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { X } from "lucide-react";
 import { invokeBackend } from "./api";
-import { deviceLoadEndpoint, isModemTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import { deviceLoadEndpoint, deviceTftpEndpoint, isModemTransferProtocol, isTftpTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
 import { COMMON_SERIAL_BAUD_RATES } from "./serial-connection-settings";
 import { KeyedRequestGate } from "./keyed-request-gate";
@@ -33,6 +33,12 @@ export default function TransferDialog({
   const [modemMode, setModemMode] = useState<"device-load" | "path">(() => session.profile.kind === "serial" ? "device-load" : "path");
   const [loadAddress, setLoadAddress] = useState("");
   const [loadBaudRate, setLoadBaudRate] = useState("");
+  const [tftpFileName, setTftpFileName] = useState("");
+  const [tftpDeviceIp, setTftpDeviceIp] = useState("");
+  const [tftpServerIp, setTftpServerIp] = useState("");
+  const [tftpBindHost, setTftpBindHost] = useState("");
+  const [tftpBindPort, setTftpBindPort] = useState("69");
+  const [tftpTimeoutSeconds, setTftpTimeoutSeconds] = useState("60");
   const [busy, setBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
@@ -45,6 +51,7 @@ export default function TransferDialog({
   const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
   const connected = session.runtime.status === "connected";
   const modemProtocol = isModemTransferProtocol(protocol);
+  const tftpProtocol = isTftpTransferProtocol(protocol);
   const deviceLoadMode = modemProtocol && modemMode === "device-load";
 
   useEffect(() => {
@@ -85,7 +92,17 @@ export default function TransferDialog({
     try {
       const transferDestination = deviceLoadMode
         ? deviceLoadEndpoint(protocol, loadAddress, loadBaudRate)
-        : destination;
+        : tftpProtocol
+          ? deviceTftpEndpoint({
+              address: loadAddress,
+              fileName: tftpFileName,
+              deviceIp: tftpDeviceIp,
+              serverIp: tftpServerIp,
+              bindHost: tftpBindHost,
+              bindPort: tftpBindPort,
+              timeoutSeconds: tftpTimeoutSeconds,
+            })
+          : destination;
       const task = await invokeBackend<TransferTask>("start_transfer", {
         request: { sessionId: session.profile.id, protocol, source, destination: transferDestination },
       });
@@ -202,7 +219,7 @@ export default function TransferDialog({
               </div>
             </DialogField>
           ) : null}
-          <DialogField label={deviceLoadMode ? "本地文件:" : "来源:"}><input value={source} onChange={(event) => setSource(event.target.value)} placeholder={deviceLoadMode ? "/local/firmware.bin" : "/local/file 或 remote:/remote/file"} /></DialogField>
+          <DialogField label={deviceLoadMode || tftpProtocol ? "本地文件:" : "来源:"}><input value={source} onChange={(event) => setSource(event.target.value)} placeholder={deviceLoadMode || tftpProtocol ? "/local/firmware.bin" : "/local/file 或 remote:/remote/file"} /></DialogField>
           {deviceLoadMode ? (
             <>
               <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，例如 0x80000000" spellCheck={false} /></DialogField>
@@ -221,6 +238,16 @@ export default function TransferDialog({
                   {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
                 </datalist>
               </DialogField>
+            </>
+          ) : tftpProtocol ? (
+            <>
+              <DialogField label="设备 IP:"><input value={tftpDeviceIp} onChange={(event) => setTftpDeviceIp(event.target.value)} placeholder="例如 192.168.255.1" spellCheck={false} /></DialogField>
+              <DialogField label="服务端 IP:"><input value={tftpServerIp} onChange={(event) => setTftpServerIp(event.target.value)} placeholder="可选，按到设备的路由自动推断" spellCheck={false} /></DialogField>
+              <DialogField label="绑定地址:"><input value={tftpBindHost} onChange={(event) => setTftpBindHost(event.target.value)} placeholder="可选，例如 0.0.0.0" spellCheck={false} /></DialogField>
+              <DialogField label="监听端口:"><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder="69；0 表示自动分配" /></DialogField>
+              <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，默认 ${loadaddr}" spellCheck={false} /></DialogField>
+              <DialogField label="请求文件名:"><input value={tftpFileName} onChange={(event) => setTftpFileName(event.target.value)} placeholder="可选，默认使用本地文件名" spellCheck={false} /></DialogField>
+              <DialogField label="总超时(秒):"><input type="number" min={5} max={150} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
             </>
           ) : (
             <DialogField label="目标:"><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>
@@ -249,7 +276,7 @@ export default function TransferDialog({
         </section>
         <footer className="utility-actions">
           <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || (!deviceLoadMode && !destination.trim()) || (deviceLoadMode && Boolean(loadBaudRate.trim()) && !loadAddress.trim())}>{busy ? "执行中" : "开始"}</button>
+          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || (!deviceLoadMode && !tftpProtocol && !destination.trim()) || (deviceLoadMode && Boolean(loadBaudRate.trim()) && !loadAddress.trim()) || (tftpProtocol && !tftpDeviceIp.trim())}>{busy ? "执行中" : "开始"}</button>
         </footer>
       </form>
     </div>

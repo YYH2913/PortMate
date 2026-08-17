@@ -227,6 +227,7 @@ function isTransferProfile(value: unknown): boolean {
   return transfer !== null
     && isBoolean(transfer.sftp)
     && isBoolean(transfer.scp)
+    && (transfer.tftp === undefined || isBoolean(transfer.tftp))
     && isBoolean(transfer.xmodem)
     && isBoolean(transfer.ymodem)
     && isBoolean(transfer.zmodem)

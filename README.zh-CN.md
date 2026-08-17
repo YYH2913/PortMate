@@ -37,7 +37,7 @@ PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允�
 | 终端工作区 | 多标签、递归分屏、跨分组拖放、独立窗口、布局恢复、Insert/Normal 模式、对应光标、搜索、行跳转、文本/Hex/二分视图 |
 | 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、会话范围自定义脚本、OneKeys、自由输入、同步输入 |
 | SSH 安全 | Profile 级 Host Key、TOFU 与变更阻断、Host/Client Key Manager、多级 Jump Host、ssh-agent、密码/公钥/keyboard-interactive，以及 Linux libssh GSSAPI 认证 |
-| 文件与传输 | SFTP/SCP 文件管理、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
+| 文件与传输 | SFTP/SCP 文件管理、一次性 TFTP、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
 | 运维与诊断 | SSH 健康检测、local/remote/dynamic tunnel、Sysmon 侧栏与历史趋势、结构化日志、触发器、会话诊断包 |
 | 串口工具 | 常用波特率、DTR/RTS/Break、文本与 Hex 收发、精确字节捕获、独立分析器、SLIP/COBS/Modbus RTU 解码 |
 | MCP | stdio 与 Streamable HTTP、细粒度授权、会话范围、写操作确认、审计、Token 轮换和托管 sidecar 生命周期 |
@@ -211,7 +211,7 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、TFTP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
 
 SFTP 上传示例：
 
@@ -238,6 +238,22 @@ SFTP 上传示例：
 ```
 
 PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
+
+普通桌面模式也可直接在“传输任务”对话框中选择 TFTP。PortMate 会在本机启动一次性服务，并通过任意已连接的交互会话驱动 U-Boot；MCP 的本地文件、内联内容和可续传上传入口复用同一个运行时：
+
+```json
+{
+  "sessionId": "board-uart",
+  "protocol": "tftp",
+  "fileName": "firmware.bin",
+  "contentBase64": "AAECAwQF...",
+  "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
+}
+```
+
+`deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，端口默认 69，总超时默认 60 秒且范围为 5-150 秒。`bindPort=0` 会自动选择空闲端口。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
+
+一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 
 如果内容来自另一台电脑上的 MCP 客户端，`start_content_transfer` 是小文件快捷方式。它直接发送一段标准 Base64，不要求源文件已经位于桌面端电脑；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
 
@@ -276,7 +292,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_content_upload_transfer`。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
 
-两种流程都会在桌面应用的私有数据目录中暂存内容，校验安全文件名与传输路由，并在使用后删除暂存内容。文件字节不会进入 MCP 审计记录，也不会作为客户端提供的路径返回。SFTP/SCP 目标使用 `remote:` 或 `ssh:`，例如 `remote:/tmp/firmware.bin`；Modem 目标使用受约束的 `load:` 端点。只有最终启动传输时才遵循 MCP 写操作审批策略，追加分块不会反复弹出审批。暂存文件被删除后不能直接重试任务，需要重新开始上传。
+两种流程都会在桌面应用的私有数据目录中暂存内容，校验安全文件名与传输路由，并在使用后删除暂存内容。文件字节不会进入 MCP 审计记录，也不会作为客户端提供的路径返回。SFTP/SCP 目标使用 `remote:` 或 `ssh:`，例如 `remote:/tmp/firmware.bin`；TFTP 和 Modem 目标使用受约束的 `load:` 端点。只有最终启动传输时才遵循 MCP 写操作审批策略，追加分块不会反复弹出审批。暂存文件被删除后不能直接重试任务，需要重新开始上传。
 
 ### 指定路由转发与代理
 

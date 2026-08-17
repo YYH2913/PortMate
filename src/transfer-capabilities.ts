@@ -6,6 +6,7 @@ export type ModemTransferProtocol = Extract<TransferProtocol, "xmodem" | "ymodem
 const transferProtocolLabels: Record<TransferProtocol, string> = {
   sftp: "SFTP",
   scp: "SCP",
+  tftp: "TFTP",
   xmodem: "XModem",
   ymodem: "YModem",
   zmodem: "ZModem",
@@ -20,6 +21,7 @@ export function transferProtocolsForProfile(profile: SessionProfile): TransferPr
   if (profile.transfer.xmodem) protocols.push("xmodem");
   if (profile.transfer.ymodem) protocols.push("ymodem");
   if (profile.transfer.zmodem) protocols.push("zmodem");
+  if (profile.transfer.tftp !== false) protocols.push("tftp");
   return protocols;
 }
 
@@ -29,6 +31,10 @@ export function transferProtocolLabel(protocol: TransferProtocol): string {
 
 export function isModemTransferProtocol(protocol: TransferProtocol | ""): protocol is ModemTransferProtocol {
   return protocol === "xmodem" || protocol === "ymodem" || protocol === "zmodem";
+}
+
+export function isTftpTransferProtocol(protocol: TransferProtocol | ""): protocol is "tftp" {
+  return protocol === "tftp";
 }
 
 export function modemLoadCommand(protocol: ModemTransferProtocol): "loadx" | "loady" | "loadz" {
@@ -49,4 +55,23 @@ export function deviceLoadEndpoint(
   if (normalizedBaudRate) query.set("baud", normalizedBaudRate);
   const encoded = query.toString();
   return `load:${modemLoadCommand(protocol)}${encoded ? `?${encoded}` : ""}`;
+}
+
+export interface DeviceTftpEndpointOptions {
+  address: string;
+  fileName: string;
+  deviceIp: string;
+  serverIp: string;
+  bindHost: string;
+  bindPort: string;
+  timeoutSeconds: string;
+}
+
+export function deviceTftpEndpoint(options: DeviceTftpEndpointOptions): string {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(options)) {
+    const normalized = value.trim();
+    if (normalized) query.set(name, normalized);
+  }
+  return `load:tftpboot?${query.toString()}`;
 }
