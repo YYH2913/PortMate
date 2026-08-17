@@ -112,6 +112,33 @@ pub(super) fn normalize_tunnel_request(
     Ok(request)
 }
 
+pub(super) fn normalize_host_route_request(
+    request: CreateHostRouteRequest,
+) -> Result<CreateHostRouteRequest, String> {
+    let normalized = normalize_tunnel_request(CreateTunnelRequest {
+        session_id: "portmate-host".to_string(),
+        egress: TunnelEgress::PortmateHost,
+        mode: request.mode,
+        bind_host: request.bind_host,
+        bind_port: request.bind_port,
+        target_host: request.target_host,
+        target_port: request.target_port,
+        route_rules: request.route_rules,
+        allow_remote_bind: request.allow_remote_bind,
+        label: request.label,
+    })?;
+    Ok(CreateHostRouteRequest {
+        mode: normalized.mode,
+        bind_host: normalized.bind_host,
+        bind_port: normalized.bind_port,
+        target_host: normalized.target_host,
+        target_port: normalized.target_port,
+        route_rules: normalized.route_rules,
+        allow_remote_bind: normalized.allow_remote_bind,
+        label: normalized.label,
+    })
+}
+
 fn is_loopback_tunnel_bind_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host

@@ -3,16 +3,13 @@ use super::*;
 #[test]
 fn portmate_host_proxy_approval_names_routes_and_remote_listener_exposure() {
     let root = tempfile::tempdir().unwrap();
-    let profile = test_shell_profile();
-    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
     let request = IpcRequest {
         token: "authenticated-token".to_string(),
         client_id: "host-proxy-client".to_string(),
         trusted_write: false,
-        command: "create_tunnel".to_string(),
+        command: "create_host_route".to_string(),
         args: serde_json::json!({
-            "sessionId": profile.id,
-            "egress": "portmate-host",
             "mode": "dynamic",
             "bindHost": "0.0.0.0",
             "bindPort": 1080,
@@ -39,21 +36,27 @@ fn portmate_host_proxy_approval_names_routes_and_remote_listener_exposure() {
 }
 
 #[test]
-fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
+fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
     tauri::async_runtime::block_on(async {
         let root = tempfile::tempdir().unwrap();
-        let profile = test_shell_profile();
-        let session_id = profile.id.clone();
-        let state = test_app_state(profile, root.path().join("store.sqlite3"));
-        state.store.lock().unwrap().grants.push(McpGrant {
-            client_id: "host-proxy-client".to_string(),
-            name: "Host proxy client".to_string(),
-            scopes: vec![McpScope::Tunnel],
-            allowed_sessions: vec![session_id.clone()],
-            confirm_writes: false,
-            expires_at: None,
-            revoked_at: None,
-        });
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        {
+            let mut store = state.store.lock().unwrap();
+            store.profiles.clear();
+            store
+                .grants
+                .extend(
+                    ["host-proxy-client", "other-host-client"].map(|client_id| McpGrant {
+                        client_id: client_id.to_string(),
+                        name: client_id.to_string(),
+                        scopes: vec![McpScope::Tunnel],
+                        allowed_sessions: vec!["serial-session-only".to_string()],
+                        confirm_writes: false,
+                        expires_at: None,
+                        revoked_at: None,
+                    }),
+                );
+        }
 
         let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let echo_address = echo_listener.local_addr().unwrap();
@@ -71,10 +74,8 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "create_tunnel".to_string(),
+                command: "create_host_route".to_string(),
                 args: serde_json::json!({
-                    "sessionId": session_id,
-                    "egress": "portmate-host",
                     "mode": "local",
                     "bindHost": "127.0.0.1",
                     "bindPort": 0,
@@ -90,6 +91,11 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
         let tunnel = serde_json::from_value::<TunnelSpec>(response).unwrap();
         assert_eq!(tunnel.egress, TunnelEgress::PortmateHost);
         assert_ne!(tunnel.bind_port, 0);
+        assert!(
+            stop_session_tunnel_runtimes(&state.tunnels, "serial-session-only")
+                .unwrap()
+                .is_empty()
+        );
 
         let mut client = TcpStream::connect(("127.0.0.1", tunnel.bind_port))
             .await
@@ -103,7 +109,7 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
 
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let status = list_tunnels_inner(&state, Some(&session_id))
+                let status = list_host_routes_inner(&state, "host-proxy-client")
                     .unwrap()
                     .into_iter()
                     .find(|status| status.spec.id == tunnel.id)
@@ -126,13 +132,46 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "list_tunnels".to_string(),
-                args: serde_json::json!({ "sessionId": session_id }),
+                command: "list_host_routes".to_string(),
+                args: serde_json::json!({}),
             },
         )
         .await
         .unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let other_list = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "other-host-client".to_string(),
+                trusted_write: false,
+                command: "list_host_routes".to_string(),
+                args: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(other_list, serde_json::json!([]));
+        let other_stop_error = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "other-host-client".to_string(),
+                trusted_write: false,
+                command: "stop_host_route".to_string(),
+                args: serde_json::json!({ "tunnelId": tunnel.id }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(other_stop_error.contains("owned by another MCP client"));
+        assert_eq!(
+            list_host_routes_inner(&state, "host-proxy-client")
+                .unwrap()
+                .len(),
+            1
+        );
 
         let stopped = handle_ipc_request(
             state.clone(),
@@ -140,7 +179,7 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
                 token: "authenticated-token".to_string(),
                 client_id: "host-proxy-client".to_string(),
                 trusted_write: false,
-                command: "stop_tunnel".to_string(),
+                command: "stop_host_route".to_string(),
                 args: serde_json::json!({ "tunnelId": tunnel.id }),
             },
         )
@@ -148,30 +187,17 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
         .unwrap();
         assert_eq!(stopped["spec"]["egress"], "portmate-host");
         assert!(state.tunnels.lock().unwrap().is_empty());
-        {
-            let store = state.store.lock().unwrap();
-            assert!(store.events.iter().any(|event| event
-                .text
-                .as_deref()
-                .is_some_and(|text| text.contains("host Local proxy listening"))));
-            assert!(store.events.iter().any(|event| event
-                .text
-                .as_deref()
-                .is_some_and(|text| text.contains("host Local proxy stopped"))));
-        }
+        assert!(state.store.lock().unwrap().events.is_empty());
         let create_audit = state
             .store
             .lock()
             .unwrap()
             .audit
             .iter()
-            .find(|record| record.action == "create_tunnel")
+            .find(|record| record.action == "create_host_route")
             .cloned()
             .unwrap();
-        assert_eq!(
-            create_audit.details.get("egress").map(String::as_str),
-            Some("portmate-host")
-        );
+        assert_eq!(create_audit.session_id, None);
         assert_eq!(
             create_audit.details.get("mode").map(String::as_str),
             Some("local")
@@ -191,6 +217,75 @@ fn mcp_creates_a_portmate_host_tcp_proxy_without_an_ssh_runtime() {
             Some("0")
         );
     });
+}
+
+#[test]
+fn mcp_rejects_host_egress_on_the_session_tunnel_tool() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = test_shell_profile();
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let error = validate_ipc_write_args(
+        &state,
+        &IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: "host-proxy-client".to_string(),
+            trusted_write: false,
+            command: "create_tunnel".to_string(),
+            args: serde_json::json!({
+                "sessionId": profile.id,
+                "egress": "portmate-host",
+                "mode": "local",
+                "bindHost": "127.0.0.1",
+                "bindPort": 0,
+                "targetHost": "127.0.0.1",
+                "targetPort": 80
+            }),
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("use create_host_route"), "{error}");
+}
+
+#[test]
+fn portmate_host_route_capacity_is_isolated_per_owner_at_registration() {
+    let owner = mcp_host_route_owner_id("capacity-client").unwrap();
+    let mut tunnels = HashMap::new();
+    for index in 0..MAX_TUNNELS_PER_PROFILE {
+        let id = format!("host-route-{index}");
+        tunnels.insert(
+            id.clone(),
+            TunnelRuntime {
+                session_id: owner.clone(),
+                ssh_runtime_id: format!("host-runtime-{index}"),
+                spec: TunnelSpec {
+                    id,
+                    label: format!("Host route {index}"),
+                    egress: TunnelEgress::PortmateHost,
+                    mode: TunnelMode::Local,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 10_000 + index as u16,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: 80,
+                    route_rules: Vec::new(),
+                    enabled: true,
+                },
+                metrics: Arc::new(TunnelMetrics::default()),
+                closed: Arc::new(AtomicBool::new(false)),
+                listener_worker: TunnelListenerWorker::completed(),
+            },
+        );
+    }
+    assert!(
+        ensure_portmate_host_runtime_slot(&tunnels, &owner, "overflow")
+            .unwrap_err()
+            .contains("for this owner")
+    );
+    assert!(ensure_portmate_host_runtime_slot(
+        &tunnels,
+        &mcp_host_route_owner_id("other-capacity-client").unwrap(),
+        "other-owner-route",
+    )
+    .is_ok());
 }
 
 #[test]

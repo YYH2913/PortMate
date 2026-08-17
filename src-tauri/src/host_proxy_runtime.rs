@@ -12,14 +12,8 @@ pub(super) async fn start_portmate_host_tunnel_runtime_with_validation(
     }
     validate_tunnels(std::slice::from_ref(&tunnel))?;
     {
-        let store = state.store.lock().map_err(|error| error.to_string())?;
-        if store.profile(session_id).is_none() {
-            return Err(format!("unknown session: {session_id}"));
-        }
-    }
-    {
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-        ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
+        ensure_portmate_host_runtime_slot(&tunnels, session_id, &tunnel.id)?;
     }
 
     let listener = TcpListener::bind((tunnel.bind_host.clone(), tunnel.bind_port))
@@ -58,12 +52,8 @@ pub(super) async fn start_portmate_host_tunnel_runtime_with_validation(
         closed: Arc::clone(&closed),
     };
     {
-        let store = state.store.lock().map_err(|error| error.to_string())?;
-        if store.profile(session_id).is_none() {
-            return Err(format!("unknown session: {session_id}"));
-        }
         let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-        ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
+        ensure_portmate_host_runtime_slot(&tunnels, session_id, &tunnel.id)?;
         tunnels.insert(
             tunnel.id.clone(),
             TunnelRuntime {

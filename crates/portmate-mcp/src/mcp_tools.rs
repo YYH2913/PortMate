@@ -259,6 +259,32 @@ impl PortMateMcp {
                         .to_string()
                 }
             }
+            "create_host_route" => {
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    redact_secrets(&ipc_value_to_text(value)?)
+                } else {
+                    is_error = true;
+                    "create_host_route was NOT executed: desktop IPC is not available, so no PortMate host route was created."
+                        .to_string()
+                }
+            }
+            "list_host_routes" => {
+                self.guard_read_scope(McpScope::ReadTunnels, None)?;
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    redact_secrets(&ipc_value_to_text(value)?)
+                } else {
+                    serde_json::to_string_pretty(&Vec::<Value>::new())?
+                }
+            }
+            "stop_host_route" => {
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    redact_secrets(&ipc_value_to_text(value)?)
+                } else {
+                    is_error = true;
+                    "stop_host_route was NOT executed: desktop IPC is not available, so no PortMate host route was stopped."
+                        .to_string()
+                }
+            }
             "list_tmux_state" => {
                 let session_id = required_string(&arguments, "sessionId")?;
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;

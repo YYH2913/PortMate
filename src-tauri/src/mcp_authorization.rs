@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct McpWriteAuthorizationContext {
     scope: McpScope,
-    session_id: String,
+    session_id: Option<String>,
     trusted_bootstrap: bool,
 }
 
@@ -11,7 +11,15 @@ impl McpWriteAuthorizationContext {
     pub(super) fn new(scope: McpScope, session_id: String, trusted_bootstrap: bool) -> Self {
         Self {
             scope,
-            session_id,
+            session_id: Some(session_id),
+            trusted_bootstrap,
+        }
+    }
+
+    pub(super) fn new_host(scope: McpScope, trusted_bootstrap: bool) -> Self {
+        Self {
+            scope,
+            session_id: None,
             trusted_bootstrap,
         }
     }
@@ -26,7 +34,7 @@ impl McpWriteAuthorizationContext {
             state,
             request,
             self.scope,
-            &self.session_id,
+            self.session_id.as_deref(),
             self.trusted_bootstrap,
             execution_context,
         )
@@ -38,26 +46,26 @@ pub(super) fn mcp_scope_allowed(
     client_id: &str,
     trusted_write: bool,
     scope: McpScope,
-    session_id: &str,
+    session_id: Option<&str>,
 ) -> bool {
     let Ok(client_id) = normalize_mcp_client_id(client_id) else {
         return false;
     };
-    store.mcp_can(&client_id, scope, Some(session_id)) || (trusted_write && store.grants.is_empty())
+    store.mcp_can(&client_id, scope, session_id) || (trusted_write && store.grants.is_empty())
 }
 
 pub(super) fn mcp_write_confirmation_required(
     store: &SessionStore,
     client_id: &str,
     scope: McpScope,
-    session_id: &str,
+    session_id: Option<&str>,
 ) -> bool {
     let client_id = client_id.trim();
     !client_id.is_empty()
         && store.grants.iter().any(|grant| {
             grant.client_id == client_id
                 && grant.confirm_writes
-                && grant.allows(scope, Some(session_id), Utc::now())
+                && grant.allows(scope, session_id, Utc::now())
         })
 }
 
@@ -125,7 +133,10 @@ pub(super) fn mcp_audit_details(
             details.insert("scriptId".to_string(), script_id.to_string());
         }
     }
-    if request.command == "create_tunnel" {
+    if matches!(
+        request.command.as_str(),
+        "create_tunnel" | "create_host_route"
+    ) {
         for (argument, detail) in [
             ("egress", "egress"),
             ("mode", "mode"),
@@ -171,11 +182,11 @@ pub(super) fn revalidate_ipc_write_target(
     state: &AppState,
     request: &IpcRequest,
     scope: McpScope,
-    authorized_session_id: &str,
+    authorized_session_id: Option<&str>,
     trusted_bootstrap: bool,
 ) -> Result<(), String> {
     let current_session_id = ipc_write_session_id(state, request)?;
-    if current_session_id != authorized_session_id {
+    if current_session_id.as_deref() != authorized_session_id {
         return Err(
             "MCP write target changed after authorization; request was not executed".to_string(),
         );
@@ -184,7 +195,7 @@ pub(super) fn revalidate_ipc_write_target(
     let still_allowed = if trusted_bootstrap {
         request.trusted_write && store.grants.is_empty()
     } else {
-        store.mcp_can(&request.client_id, scope, Some(authorized_session_id))
+        store.mcp_can(&request.client_id, scope, authorized_session_id)
     };
     if !still_allowed {
         return Err("MCP grant changed after authorization; request was not executed".to_string());
@@ -197,7 +208,7 @@ pub(super) fn revalidate_ipc_write_target_with_context(
     state: &AppState,
     request: &IpcRequest,
     scope: McpScope,
-    authorized_session_id: &str,
+    authorized_session_id: Option<&str>,
     trusted_bootstrap: bool,
     context: &McpWriteExecutionContext,
 ) -> Result<(), String> {
@@ -246,7 +257,7 @@ fn begin_mcp_write_audit(
     state: &AppState,
     request: &IpcRequest,
     scope: McpScope,
-    session_id: &str,
+    session_id: Option<&str>,
 ) -> Result<McpWriteAuditStart, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let trusted_bootstrap = request.trusted_write && store.grants.is_empty();
@@ -265,7 +276,7 @@ fn begin_mcp_write_audit(
         ts: Utc::now(),
         actor: mcp_audit_actor(&request.client_id),
         action: request.command.clone(),
-        session_id: Some(session_id.to_string()),
+        session_id: session_id.map(str::to_string),
         decision: if approval_required {
             "pending-approval"
         } else if allowed {
@@ -287,8 +298,11 @@ fn begin_mcp_write_audit(
         })
     } else {
         Ok(McpWriteAuditStart::Denied(format!(
-            "MCP grant does not permit {scope:?} for client `{}` on session `{session_id}`",
-            request.client_id
+            "MCP grant does not permit {scope:?} for client `{}`{}",
+            request.client_id,
+            session_id
+                .map(|session_id| format!(" on session `{session_id}`"))
+                .unwrap_or_else(|| " on the PortMate host".to_string())
         )))
     }
 }
@@ -381,11 +395,17 @@ pub(super) async fn handle_ipc_request(
     };
     let session_id = match ipc_write_session_id(&state, &request) {
         Ok(session_id) => {
-            if let Err(error) = validate_mcp_session_id(&session_id) {
-                record_invalid_mcp_write(&state, &request, scope, None).map_err(|audit_error| {
-                    format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
-                })?;
-                return Err(error);
+            if let Some(session_id) = session_id.as_deref() {
+                if let Err(error) = validate_mcp_session_id(session_id) {
+                    record_invalid_mcp_write(&state, &request, scope, None).map_err(
+                        |audit_error| {
+                            format!(
+                                "{error}; failed to save MCP invalid-request audit: {audit_error}"
+                            )
+                        },
+                    )?;
+                    return Err(error);
+                }
             }
             session_id
         }
@@ -401,7 +421,7 @@ pub(super) async fn handle_ipc_request(
     {
         Ok(context) => context,
         Err(error) => {
-            record_invalid_mcp_write(&state, &request, scope, Some(&session_id)).map_err(
+            record_invalid_mcp_write(&state, &request, scope, session_id.as_deref()).map_err(
                 |audit_error| {
                     format!("{error}; failed to save MCP invalid-request audit: {audit_error}")
                 },
@@ -410,7 +430,7 @@ pub(super) async fn handle_ipc_request(
         }
     };
     let (audit_id, approval_required, trusted_bootstrap) =
-        match begin_mcp_write_audit(&state, &request, scope, &session_id)? {
+        match begin_mcp_write_audit(&state, &request, scope, session_id.as_deref())? {
             McpWriteAuditStart::Authorized {
                 audit_id,
                 approval_required,
@@ -423,7 +443,7 @@ pub(super) async fn handle_ipc_request(
             &state,
             &request.client_id,
             &request.command,
-            &session_id,
+            session_id.as_deref().unwrap_or("portmate-host"),
             scope,
             execution_context.approval_target(),
         )
@@ -475,13 +495,17 @@ pub(super) async fn handle_ipc_request(
         &state,
         &request,
         scope,
-        &session_id,
+        session_id.as_deref(),
         trusted_bootstrap,
         &execution_context,
     ) {
         Ok(()) => {
-            let authorization_context =
-                McpWriteAuthorizationContext::new(scope, session_id, trusted_bootstrap);
+            let authorization_context = match session_id {
+                Some(session_id) => {
+                    McpWriteAuthorizationContext::new(scope, session_id, trusted_bootstrap)
+                }
+                None => McpWriteAuthorizationContext::new_host(scope, trusted_bootstrap),
+            };
             execute_ipc_request_with_context(
                 state.clone(),
                 request,

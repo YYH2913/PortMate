@@ -54,6 +54,30 @@ pub(super) fn list_tunnels_inner(
     Ok(statuses)
 }
 
+pub(super) fn list_host_routes_inner(
+    state: &AppState,
+    client_id: &str,
+) -> Result<Vec<TunnelStatus>, String> {
+    let owner_id = mcp_host_route_owner_id(client_id)?;
+    let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+    let mut statuses = tunnels
+        .values()
+        .filter(|runtime| {
+            runtime.session_id == owner_id
+                && runtime.spec.egress == TunnelEgress::PortmateHost
+                && !runtime.closed.load(Ordering::SeqCst)
+        })
+        .map(tunnel_status_from_runtime)
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| {
+        left.spec
+            .label
+            .cmp(&right.spec.label)
+            .then_with(|| left.spec.id.cmp(&right.spec.id))
+    });
+    Ok(statuses)
+}
+
 pub(super) fn fail_tunnel_runtime_if_owned(
     tunnels: &Arc<Mutex<HashMap<String, TunnelRuntime>>>,
     tunnel_id: &str,
@@ -183,6 +207,40 @@ pub(super) async fn stop_tunnel_inner_with_validation(
         return Err(format!(
             "tunnel stopped locally, but the disabled state could not be persisted: {error}"
         ));
+    }
+    Ok(runtime.metrics.snapshot(stopped))
+}
+
+pub(super) async fn stop_host_route_inner_with_validation(
+    state: &AppState,
+    client_id: &str,
+    tunnel_id: &str,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TunnelStatus, String> {
+    let owner_id = mcp_host_route_owner_id(client_id)?;
+    let lifecycle_lane = tunnel_lifecycle_lane(state, tunnel_id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    let expected_owner = {
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .get(tunnel_id)
+            .filter(|runtime| {
+                runtime.session_id == owner_id
+                    && runtime.spec.egress == TunnelEgress::PortmateHost
+                    && !runtime.closed.load(Ordering::SeqCst)
+            })
+            .map(TunnelRuntime::owner)
+            .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?
+    };
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
+    let (runtime, warnings) =
+        stop_tunnel_runtime_effects(state, tunnel_id, &expected_owner).await?;
+    let mut stopped = runtime.spec.clone();
+    stopped.enabled = false;
+    if !warnings.is_empty() {
+        runtime.metrics.record_error(&warnings.join("; "));
     }
     Ok(runtime.metrics.snapshot(stopped))
 }

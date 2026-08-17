@@ -315,19 +315,19 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         ),
         tool(
             "create_tunnel",
-            "Create Forward Or Proxy",
-            "Create a route-specific forward or proxy. `egress: ssh` uses an authorized SSH/Tmux session. `egress: portmate-host` exposes TCP routes reachable from the host running PortMate and supports fixed `local` forwarding or a route-restricted `dynamic` SOCKS5 proxy. Non-loopback listeners require `allowRemoteBind: true`.",
+            "Create SSH Forward Or Proxy",
+            "Create a forward or dynamic SOCKS5 proxy through an authorized SSH/Tmux session. To expose routes reachable directly from the PortMate machine, use create_host_route instead.",
             json!({
                 "type":"object",
                 "required":["sessionId","mode","bindHost","bindPort"],
                 "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "egress":{"type":"string","enum":["ssh","portmate-host"],"default":"ssh"},
+                    "egress":{"type":"string","enum":["ssh"],"default":"ssh"},
                     "mode":{"type":"string","enum":["local","remote","dynamic"]},
                     "bindHost":{"type":"string","maxLength":255},
                     "bindPort":{"type":"integer","minimum":0,"maximum":65535},
-                    "allowRemoteBind":{"type":"boolean","default":false},
+                    "allowRemoteBind":{"type":"boolean","const":false,"default":false},
                     "targetHost":{"type":"string","maxLength":255,"default":""},
                     "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
                     "routeRules":{
@@ -368,24 +368,6 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                                 "routeRules":{"type":"array","maxItems":0}
                             }
                         }
-                    },
-                    {
-                        "if":{"properties":{"egress":{"const":"portmate-host"}},"required":["egress"]},
-                        "then":{"properties":{"mode":{"enum":["local","dynamic"]}}},
-                        "else":{"properties":{"allowRemoteBind":{"const":false}}}
-                    },
-                    {
-                        "if":{
-                            "properties":{
-                                "egress":{"const":"portmate-host"},
-                                "mode":{"const":"dynamic"}
-                            },
-                            "required":["egress","mode"]
-                        },
-                        "then":{
-                            "required":["routeRules"],
-                            "properties":{"routeRules":{"type":"array","minItems":1,"maxItems":64}}
-                        }
                     }
                 ]
             }),
@@ -402,6 +384,75 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             "stop_tunnel",
             "Stop Forward Or Proxy",
             "Stop an active SSH forward or dynamic SOCKS5 proxy by tunnel ID.",
+            tunnel_id_schema(),
+            false,
+        ),
+        tool(
+            "create_host_route",
+            "Create PortMate Host Route",
+            "Expose a TCP route reachable directly from the machine running PortMate. `local` creates a fixed TCP forward; `dynamic` creates a route-restricted SOCKS5 proxy. This tool is independent of terminal sessions. Non-loopback listeners require `allowRemoteBind: true`.",
+            json!({
+                "type":"object",
+                "required":["mode","bindHost","bindPort"],
+                "additionalProperties":false,
+                "properties":{
+                    "mode":{"type":"string","enum":["local","dynamic"]},
+                    "bindHost":{"type":"string","minLength":1,"maxLength":255},
+                    "bindPort":{"type":"integer","minimum":0,"maximum":65535},
+                    "allowRemoteBind":{"type":"boolean","default":false},
+                    "targetHost":{"type":"string","maxLength":255,"default":""},
+                    "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
+                    "routeRules":{
+                        "type":"array",
+                        "maxItems":64,
+                        "default":[],
+                        "items":{
+                            "type":"object",
+                            "required":["host"],
+                            "additionalProperties":false,
+                            "properties":{
+                                "host":{"type":"string","minLength":1,"maxLength":255},
+                                "port":{"type":["integer","null"],"minimum":1,"maximum":65535,"default":null}
+                            }
+                        }
+                    },
+                    "label":{"type":"string","minLength":1,"maxLength":128}
+                },
+                "allOf":[
+                    {
+                        "if":{"properties":{"mode":{"const":"dynamic"}},"required":["mode"]},
+                        "then":{
+                            "required":["routeRules"],
+                            "properties":{
+                                "targetHost":{"type":"string","maxLength":0},
+                                "targetPort":{"const":0},
+                                "routeRules":{"type":"array","minItems":1,"maxItems":64}
+                            }
+                        },
+                        "else":{
+                            "required":["targetHost","targetPort"],
+                            "properties":{
+                                "targetHost":{"type":"string","minLength":1,"maxLength":255},
+                                "targetPort":{"type":"integer","minimum":1,"maximum":65535},
+                                "routeRules":{"type":"array","maxItems":0}
+                            }
+                        }
+                    }
+                ]
+            }),
+            false,
+        ),
+        tool(
+            "list_host_routes",
+            "List PortMate Host Routes",
+            "List active PortMate-host routes owned by this MCP client. No terminal session is required.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
+            true,
+        ),
+        tool(
+            "stop_host_route",
+            "Stop PortMate Host Route",
+            "Stop a PortMate-host route owned by this MCP client.",
             tunnel_id_schema(),
             false,
         ),
@@ -606,11 +657,18 @@ mod tests {
             "retry_transfer",
             "list_tunnels",
             "stop_tunnel",
+            "list_host_routes",
+            "stop_host_route",
         ] {
             let tool = definition(name);
             assert_eq!(tool.input_schema["type"], "object", "{name}");
         }
-        for name in ["list_transfers", "get_transfer", "list_tunnels"] {
+        for name in [
+            "list_transfers",
+            "get_transfer",
+            "list_tunnels",
+            "list_host_routes",
+        ] {
             assert!(definition(name).read_only, "{name}");
         }
         for name in [
@@ -624,6 +682,8 @@ mod tests {
             "retry_transfer",
             "create_tunnel",
             "stop_tunnel",
+            "create_host_route",
+            "stop_host_route",
         ] {
             assert!(!definition(name).read_only, "{name}");
         }
@@ -668,11 +728,8 @@ mod tests {
         );
         assert_eq!(schema["properties"]["bindPort"]["minimum"], 0);
         assert_eq!(schema["properties"]["bindPort"]["maximum"], 65_535);
-        assert_eq!(
-            schema["properties"]["egress"]["enum"],
-            json!(["ssh", "portmate-host"])
-        );
-        assert_eq!(schema["properties"]["allowRemoteBind"]["default"], false);
+        assert_eq!(schema["properties"]["egress"]["enum"], json!(["ssh"]));
+        assert_eq!(schema["properties"]["allowRemoteBind"]["const"], false);
 
         let clauses = schema["allOf"].as_array().expect("route schema clauses");
         let target_clause = &clauses[1];
@@ -701,12 +758,16 @@ mod tests {
             target_clause["else"]["properties"]["targetPort"]["minimum"],
             1
         );
-        let host_egress_clause = &clauses[2];
+        assert_eq!(clauses.len(), 2);
+
+        let host_schema = definition("create_host_route").input_schema;
         assert_eq!(
-            host_egress_clause["then"]["properties"]["mode"]["enum"],
+            host_schema["properties"]["mode"]["enum"],
             json!(["local", "dynamic"])
         );
-        let host_dynamic_clause = &clauses[3];
+        assert!(host_schema["properties"].get("sessionId").is_none());
+        assert!(host_schema["properties"].get("egress").is_none());
+        let host_dynamic_clause = &host_schema["allOf"][0];
         assert_eq!(
             host_dynamic_clause["then"]["properties"]["routeRules"]["minItems"],
             1

@@ -8,35 +8,35 @@ fn empty_mcp_grant_store_requires_trusted_bootstrap() {
         "portmate-local",
         false,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(mcp_scope_allowed(
         &store,
         "portmate-local",
         true,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_scope_allowed(
         &store,
         "",
         true,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_scope_allowed(
         &store,
         "bad\nclient",
         true,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_scope_allowed(
         &store,
         &"x".repeat(MAX_MCP_GRANT_CLIENT_ID_BYTES + 1),
         true,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
 
     store.grants.push(McpGrant {
@@ -53,39 +53,53 @@ fn empty_mcp_grant_store_requires_trusted_bootstrap() {
         " granted-client ",
         false,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_scope_allowed(
         &store,
         "ungranted-client",
         true,
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_write_confirmation_required(
         &store,
         "granted-client",
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     store.grants[0].confirm_writes = true;
     assert!(mcp_write_confirmation_required(
         &store,
         " granted-client ",
         McpScope::WriteInput,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_write_confirmation_required(
         &store,
         "granted-client",
         McpScope::ReadLogs,
-        "session-1",
+        Some("session-1"),
     ));
     assert!(!mcp_write_confirmation_required(
         &store,
         "granted-client",
         McpScope::WriteInput,
-        "other-session",
+        Some("other-session"),
+    ));
+    store.grants[0].scopes = vec![McpScope::Tunnel];
+    assert!(mcp_scope_allowed(
+        &store,
+        "granted-client",
+        false,
+        McpScope::Tunnel,
+        None,
+    ));
+    assert!(mcp_write_confirmation_required(
+        &store,
+        "granted-client",
+        McpScope::Tunnel,
+        None,
     ));
 }
 

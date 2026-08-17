@@ -382,6 +382,9 @@ pub(super) async fn fail_tunnel_listener_if_owned(
     if fail_tunnel_runtime_if_owned(&state.tunnels, tunnel_id, owner, message)?.is_none() {
         return Ok(false);
     }
+    if tunnel.egress == TunnelEgress::PortmateHost {
+        return Ok(true);
+    }
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let mut stopped = tunnel.clone();
@@ -405,22 +408,22 @@ pub(super) fn record_tunnel_client_failure_if_owned(
     session_id: &str,
     error: &str,
 ) -> Result<bool, String> {
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    let kind = tunnels
+    let egress = tunnels
         .lock()
         .map_err(|error| error.to_string())?
         .get(tunnel_id)
         .filter(|runtime| owner.owns(runtime) && runtime.session_id == session_id)
-        .map(|runtime| match runtime.spec.egress {
-            TunnelEgress::Ssh => "SSH tunnel",
-            TunnelEgress::PortmateHost => "PortMate host proxy",
-        });
-    let Some(kind) = kind else {
+        .map(|runtime| runtime.spec.egress);
+    let Some(egress) = egress else {
         return Ok(false);
     };
+    if egress == TunnelEgress::PortmateHost {
+        return Ok(true);
+    }
+    let mut store = store.lock().map_err(|error| error.to_string())?;
     store.record_system_event(
         session_id,
-        format!("PortMate: {kind} client failed: {error}"),
+        format!("PortMate: SSH tunnel client failed: {error}"),
     );
     if let Err(error) =
         persist_applied_store(&store, store_path, "tunnel client failure event")
@@ -440,6 +443,29 @@ pub(super) fn ensure_tunnel_runtime_slot(
     if tunnels.len() >= MAX_ACTIVE_TUNNELS {
         return Err(format!(
             "active tunnel count has reached {MAX_ACTIVE_TUNNELS}"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn ensure_portmate_host_runtime_slot(
+    tunnels: &HashMap<String, TunnelRuntime>,
+    owner_id: &str,
+    tunnel_id: &str,
+) -> Result<(), String> {
+    ensure_tunnel_runtime_slot(tunnels, tunnel_id)?;
+    if tunnels
+        .values()
+        .filter(|runtime| {
+            runtime.session_id == owner_id
+                && runtime.spec.egress == TunnelEgress::PortmateHost
+                && !runtime.closed.load(Ordering::SeqCst)
+        })
+        .count()
+        >= MAX_TUNNELS_PER_PROFILE
+    {
+        return Err(format!(
+            "active PortMate host route count has reached {MAX_TUNNELS_PER_PROFILE} for this owner"
         ));
     }
     Ok(())

@@ -78,14 +78,14 @@ pub(super) fn capture_mcp_write_execution_context(
     state: &AppState,
     request: &IpcRequest,
 ) -> Result<McpWriteExecutionContext, String> {
-    if request.command == "create_tunnel" {
-        let tunnel = normalize_tunnel_request(
-            serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
-                .map_err(|error| format!("invalid tunnel request: {error}"))?,
+    if request.command == "create_host_route" {
+        let route = normalize_host_route_request(
+            serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
+                .map_err(|error| format!("invalid host route request: {error}"))?,
         )?;
-        if tunnel.egress == TunnelEgress::PortmateHost {
-            let route = if tunnel.mode == TunnelMode::Dynamic {
-                let mut routes = tunnel
+        {
+            let target = if route.mode == TunnelMode::Dynamic {
+                let mut routes = route
                     .route_rules
                     .iter()
                     .take(2)
@@ -95,14 +95,14 @@ pub(super) fn capture_mcp_write_execution_context(
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                if tunnel.route_rules.len() > 2 {
-                    routes.push_str(&format!(" +{} more", tunnel.route_rules.len() - 2));
+                if route.route_rules.len() > 2 {
+                    routes.push_str(&format!(" +{} more", route.route_rules.len() - 2));
                 }
                 routes
             } else {
-                format!("{}:{}", tunnel.target_host, tunnel.target_port)
+                format!("{}:{}", route.target_host, route.target_port)
             };
-            let proxy_kind = match tunnel.mode {
+            let proxy_kind = match route.mode {
                 TunnelMode::Local => "TCP",
                 TunnelMode::Dynamic => "SOCKS5",
                 TunnelMode::Remote => unreachable!("host egress remote mode was validated"),
@@ -110,10 +110,10 @@ pub(super) fn capture_mcp_write_execution_context(
             return Ok(McpWriteExecutionContext::Tunnel {
                 approval_target: McpApprovalTarget {
                     kind: "portmate-host-proxy".to_string(),
-                    id: format!("{}:{}", tunnel.bind_host, tunnel.bind_port),
+                    id: format!("{}:{}", route.bind_host, route.bind_port),
                     label: format!(
-                        "PortMate host {proxy_kind} proxy to {route}{}",
-                        if tunnel.allow_remote_bind {
+                        "PortMate host {proxy_kind} proxy to {target}{}",
+                        if route.allow_remote_bind {
                             " (remote listener allowed)"
                         } else {
                             ""
@@ -122,7 +122,6 @@ pub(super) fn capture_mcp_write_execution_context(
                 },
             });
         }
-        return Ok(McpWriteExecutionContext::Generic);
     }
     if request.command != "run_custom_script" {
         return Ok(McpWriteExecutionContext::Generic);
@@ -163,7 +162,9 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
         | "start_content_upload_transfer"
         | "cancel_transfer"
         | "retry_transfer" => Some(McpScope::Transfer),
-        "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
+        "create_tunnel" | "stop_tunnel" | "create_host_route" | "stop_host_route" => {
+            Some(McpScope::Tunnel)
+        }
         "run_custom_script" => Some(McpScope::RunScripts),
         _ => None,
     }
@@ -178,7 +179,7 @@ pub(super) fn ipc_read_scope(command: &str) -> Option<McpScope> {
         | "list_tmux_state"
         | "export_session_bundle" => Some(McpScope::ReadLogs),
         "list_transfers" | "get_transfer" => Some(McpScope::ReadTransfers),
-        "list_tunnels" => Some(McpScope::ReadTunnels),
+        "list_tunnels" | "list_host_routes" => Some(McpScope::ReadTunnels),
         "list_custom_scripts" => Some(McpScope::ReadScripts),
         _ => None,
     }
@@ -262,9 +263,20 @@ pub(super) fn validate_ipc_write_args(
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
-            normalize_tunnel_request(tunnel)?;
+            let tunnel = normalize_tunnel_request(tunnel)?;
+            if tunnel.egress != TunnelEgress::Ssh {
+                return Err(
+                    "create_tunnel only supports SSH/Tmux routes; use create_host_route for PortMate host routes"
+                        .to_string(),
+                );
+            }
         }
-        "stop_tunnel" => {
+        "create_host_route" => {
+            let route = serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
+                .map_err(|error| format!("invalid host route request: {error}"))?;
+            normalize_host_route_request(route)?;
+        }
+        "stop_tunnel" | "stop_host_route" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;
         }
         "attach_tmux" => {
@@ -293,19 +305,20 @@ fn validate_mcp_operation_id(value: &str, label: &str) -> Result<(), String> {
 pub(super) fn ipc_write_session_id(
     state: &AppState,
     request: &IpcRequest,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     match request.command.as_str() {
+        "create_host_route" | "stop_host_route" => Ok(None),
         "start_content_upload_transfer" => {
             let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
                 request.args.clone(),
             )
             .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
-            Ok(load_mcp_content_upload_metadata(
+            Ok(Some(load_mcp_content_upload_metadata(
                 state,
                 &request.client_id,
                 &transfer.upload_id,
             )?
-            .session_id)
+            .session_id))
         }
         "cancel_transfer" | "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?;
@@ -316,6 +329,7 @@ pub(super) fn ipc_write_session_id(
                 .map_err(|error| error.to_string())?
                 .transfer_by_id(transfer_id)
                 .map(|transfer| transfer.session_id)
+                .map(Some)
                 .ok_or_else(|| "unknown or unavailable transfer".to_string())
         }
         "stop_tunnel" => {
@@ -328,8 +342,11 @@ pub(super) fn ipc_write_session_id(
                 .get(tunnel_id)
                 .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
                 .map(|runtime| runtime.session_id.clone())
+                .map(Some)
                 .ok_or_else(|| "unknown or unavailable tunnel".to_string())
         }
-        _ => Ok(ipc_string_arg(&request.args, "sessionId")?.to_string()),
+        _ => Ok(Some(
+            ipc_string_arg(&request.args, "sessionId")?.to_string(),
+        )),
     }
 }

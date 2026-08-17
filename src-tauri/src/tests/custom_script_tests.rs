@@ -186,7 +186,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         &request.client_id,
         false,
         McpScope::RunScripts,
-        &session_id,
+        Some(&session_id),
     ));
     let details = mcp_audit_details(&request, McpScope::RunScripts, false, false);
     assert_eq!(
@@ -215,7 +215,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         &state,
         &request,
         McpScope::RunScripts,
-        &session_id,
+        Some(&session_id),
         false,
         &execution_context,
     )
@@ -256,7 +256,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         &state,
         &request,
         McpScope::RunScripts,
-        &session_id,
+        Some(&session_id),
         false,
     )
     .unwrap_err()
@@ -268,7 +268,7 @@ fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
         &state,
         &request,
         McpScope::RunScripts,
-        &session_id,
+        Some(&session_id),
         false,
     )
     .unwrap_err()

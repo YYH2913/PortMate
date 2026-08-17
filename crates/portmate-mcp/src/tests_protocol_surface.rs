@@ -333,12 +333,25 @@ fn tunnel_read_scope_returns_a_stable_empty_list_without_desktop_ipc() {
         }))
         .unwrap();
     assert_eq!(response["content"][0]["text"], "[]");
+    let host_routes = server
+        .tool_call(&json!({
+            "name": "list_host_routes",
+            "arguments": {}
+        }))
+        .unwrap();
+    assert_eq!(host_routes["content"][0]["text"], "[]");
 
     server.store.grants[0].scopes = vec![McpScope::Tunnel];
     assert!(server
         .tool_call(&json!({
             "name": "list_tunnels",
             "arguments": { "sessionId": "refresh-session" }
+        }))
+        .is_ok());
+    assert!(server
+        .tool_call(&json!({
+            "name": "list_host_routes",
+            "arguments": {}
         }))
         .is_ok());
 }

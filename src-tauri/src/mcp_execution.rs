@@ -475,6 +475,53 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(redact_mcp_tunnel_status(status))
                 .map_err(|error| error.to_string())
         }
+        "create_host_route" => {
+            let route = serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
+                .map_err(|error| format!("invalid host route request: {error}"))?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let spec = create_host_route_inner_with_validation(
+                &state,
+                &request.client_id,
+                route,
+                Some(validation),
+            )
+            .await?;
+            serde_json::to_value(redact_mcp_tunnel_spec(spec)).map_err(|error| error.to_string())
+        }
+        "list_host_routes" => {
+            {
+                let store = state.store.lock().map_err(|error| error.to_string())?;
+                require_mcp_read_scope(&store, &request, McpScope::ReadTunnels, None)?;
+            }
+            let statuses = list_host_routes_inner(&state, &request.client_id)?
+                .into_iter()
+                .map(redact_mcp_tunnel_status)
+                .collect::<Vec<_>>();
+            serde_json::to_value(statuses).map_err(|error| error.to_string())
+        }
+        "stop_host_route" => {
+            let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?.to_string();
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let status = stop_host_route_inner_with_validation(
+                &state,
+                &request.client_id,
+                &tunnel_id,
+                Some(validation),
+            )
+            .await?;
+            serde_json::to_value(redact_mcp_tunnel_status(status))
+                .map_err(|error| error.to_string())
+        }
         "list_tmux_state" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             {

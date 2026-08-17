@@ -524,8 +524,14 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
         args: serde_json::json!({ "transferId": transfer.id }),
     };
 
-    revalidate_ipc_write_target(&state, &request, McpScope::Transfer, &owner_session, false)
-        .unwrap();
+    revalidate_ipc_write_target(
+        &state,
+        &request,
+        McpScope::Transfer,
+        Some(&owner_session),
+        false,
+    )
+    .unwrap();
     state
         .store
         .lock()
@@ -539,7 +545,7 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
         &state,
         &request,
         McpScope::Transfer,
-        &owner_session,
+        Some(&owner_session),
         false,
     )
     .unwrap_err()
@@ -559,7 +565,7 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
         &state,
         &request,
         McpScope::Transfer,
-        &owner_session,
+        Some(&owner_session),
         false,
     )
     .unwrap_err()
@@ -577,7 +583,7 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
         &state,
         &trusted_request,
         McpScope::Transfer,
-        &owner_session,
+        Some(&owner_session),
         false,
     )
     .unwrap_err()
@@ -586,7 +592,7 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
         &state,
         &trusted_request,
         McpScope::Transfer,
-        &owner_session,
+        Some(&owner_session),
         true,
     )
     .unwrap();

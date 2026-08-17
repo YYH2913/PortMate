@@ -18,6 +18,8 @@ const approvalActionScopes: Record<string, McpScope> = {
   retry_transfer: "transfer",
   create_tunnel: "tunnel",
   stop_tunnel: "tunnel",
+  create_host_route: "tunnel",
+  stop_host_route: "tunnel",
 };
 
 const approvalIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -48,13 +50,21 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
 }
 
 function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
-  if (action !== "run_custom_script") return value === undefined ? undefined : null;
+  if (action !== "run_custom_script" && action !== "create_host_route") return value === undefined ? undefined : null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
+  if (!validText(source.label, 512)) return null;
+  if (action === "create_host_route") {
+    if (source.kind !== "portmate-host-proxy" || !validText(source.id, 512)) return null;
+    return {
+      kind: "portmate-host-proxy",
+      id: source.id,
+      label: source.label,
+    };
+  }
   if (source.kind !== "custom-script"
     || typeof source.id !== "string"
-    || !approvalIdPattern.test(source.id)
-    || !validText(source.label, 512)) return null;
+    || !approvalIdPattern.test(source.id)) return null;
   return {
     kind: "custom-script",
     id: source.id.toLowerCase(),

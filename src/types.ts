@@ -569,7 +569,7 @@ export interface McpApprovalRequest {
 }
 
 export interface McpApprovalTarget {
-  kind: "custom-script";
+  kind: "custom-script" | "portmate-host-proxy";
   id: string;
   label: string;
 }

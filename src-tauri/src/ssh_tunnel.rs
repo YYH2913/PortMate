@@ -4,6 +4,7 @@ pub(super) const MAX_ACTIVE_TUNNELS: usize = 256;
 pub(super) const MAX_TUNNEL_CONNECTIONS: usize = 256;
 pub(super) const TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX: &str = "tunnel connection limit reached:";
 pub(super) const TUNNEL_LISTENER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const MCP_HOST_ROUTE_OWNER_PREFIX: &str = "\0mcp-host:";
 
 #[derive(Clone)]
 pub(super) struct TunnelListenerWorker {
@@ -302,6 +303,54 @@ pub(super) async fn create_tunnel_inner_with_validation(
     )
     .await?;
     commit_started_tunnel(state, &request.session_id, tunnel, local_addr, &owner).await
+}
+
+pub(super) fn mcp_host_route_owner_id(client_id: &str) -> Result<String, String> {
+    normalize_mcp_client_id(client_id)
+        .map(|client_id| format!("{MCP_HOST_ROUTE_OWNER_PREFIX}{client_id}"))
+}
+
+pub(super) async fn create_host_route_inner_with_validation(
+    state: &AppState,
+    client_id: &str,
+    request: CreateHostRouteRequest,
+    commit_validation: Option<CommitValidation>,
+) -> Result<TunnelSpec, String> {
+    let owner_id = mcp_host_route_owner_id(client_id)?;
+    let request = normalize_host_route_request(request)?;
+    let tunnel = TunnelSpec {
+        id: Uuid::new_v4().to_string(),
+        label: request.label.clone().unwrap_or_else(|| {
+            tunnel_label_for_egress(
+                TunnelEgress::PortmateHost,
+                request.mode,
+                &request.bind_host,
+                request.bind_port,
+                &request.target_host,
+                request.target_port,
+            )
+        }),
+        egress: TunnelEgress::PortmateHost,
+        mode: request.mode,
+        bind_host: request.bind_host,
+        bind_port: request.bind_port,
+        target_host: request.target_host,
+        target_port: request.target_port,
+        route_rules: request.route_rules,
+        enabled: true,
+    };
+    validate_tunnels(std::slice::from_ref(&tunnel))?;
+    let lifecycle_lane = tunnel_lifecycle_lane(state, &tunnel.id)?;
+    let _lifecycle_guard = lifecycle_lane.lock().await;
+    let (tunnel, _, _) = start_portmate_host_tunnel_runtime_with_validation(
+        state,
+        &owner_id,
+        tunnel,
+        request.label.is_none(),
+        commit_validation,
+    )
+    .await?;
+    Ok(tunnel)
 }
 
 pub(super) fn ensure_tunnel_creation_capacity(
