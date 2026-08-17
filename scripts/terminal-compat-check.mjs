@@ -940,6 +940,39 @@ try {
     && timestampAfterScrollbackTrim.timestamps.at(-1) === postTrimTimestamp,
   `scrollback marker eviction lost its retained-row timestamp anchor: ${JSON.stringify(timestampAfterScrollbackTrim)}`);
 
+  const terminalInput = page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea');
+  await terminalInput.focus();
+  for (let pageOffset = 0; pageOffset < 4; pageOffset += 1) {
+    await page.keyboard.press("Shift+PageUp");
+  }
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    const viewport = Number(host?.getAttribute("data-terminal-viewport-y") ?? "-1");
+    const base = Number(host?.getAttribute("data-terminal-base-y") ?? "-1");
+    return viewport > 0 && viewport < base;
+  });
+  const viewportBeforeEnter = await activeHost.evaluate((host) => ({
+    viewport: Number(host.dataset.terminalViewportY ?? "-1"),
+    base: Number(host.dataset.terminalBaseY ?? "-1"),
+  }));
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => {
+    const host = document.querySelector('[data-pane-id="pane-a"] .terminal-host');
+    return host?.getAttribute("data-terminal-viewport-y") === host?.getAttribute("data-terminal-base-y");
+  });
+  const viewportAfterEnter = await activeHost.evaluate((host) => ({
+    viewport: Number(host.dataset.terminalViewportY ?? "-1"),
+    base: Number(host.dataset.terminalBaseY ?? "-1"),
+  }));
+  assert(viewportBeforeEnter.viewport > 0
+    && viewportBeforeEnter.viewport < viewportBeforeEnter.base
+    && viewportAfterEnter.base > 0
+    && viewportAfterEnter.viewport === viewportAfterEnter.base,
+  `Enter moved the interactive terminal to the wrong scroll position: ${JSON.stringify({
+    before: viewportBeforeEnter,
+    after: viewportAfterEnter,
+  })}`);
+
   await page.locator('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]').click();
   await page.waitForFunction(() => (
     document.querySelector('[data-pane-id="pane-a"] [data-view-id="view-b"] [role="tab"]')?.getAttribute("aria-selected") === "true"

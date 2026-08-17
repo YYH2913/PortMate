@@ -809,6 +809,7 @@ export default function TerminalCanvas({
       fontFamily: terminalSettings.fontFamily,
       fontSize: terminalSettings.fontSize,
       minimumContrastRatio: 1,
+      scrollOnUserInput: true,
       scrollback: terminalSettings.scrollback,
       theme: terminalTheme(active.profile.terminal.theme, terminalSettings.backgroundOpacity),
     });
@@ -1089,6 +1090,12 @@ export default function TerminalCanvas({
       });
     }
     term.open(host);
+    const recordTerminalViewport = () => {
+      const buffer = term.buffer.active;
+      host.dataset.terminalViewportY = String(buffer.viewportY);
+      host.dataset.terminalBaseY = String(buffer.baseY);
+    };
+    recordTerminalViewport();
     if (!cachedState) {
       registerTimestampRange(0, term.buffer.normal.baseY + term.buffer.normal.cursorY, new Date().toISOString());
     }
@@ -1100,6 +1107,7 @@ export default function TerminalCanvas({
         alternateTimestamps = [];
         alternateLatestTimestamp = null;
       }
+      recordTerminalViewport();
       restoreTimestampMarkers();
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
@@ -1310,6 +1318,7 @@ export default function TerminalCanvas({
       refreshCompletionAnchorRef.current();
     });
     const semanticScrollDisposable = term.onScroll(() => {
+      recordTerminalViewport();
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
     });
@@ -1340,6 +1349,7 @@ export default function TerminalCanvas({
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       if (isTerminalMouseReport(text)
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
+      if (/\r|\n/.test(text)) term.scrollToBottom();
       updateCompletionInput(text);
       dismissOneKeyPrompt();
       pendingInputRef.current += text;
