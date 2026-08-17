@@ -103,6 +103,12 @@ Each session tab has a connection marker. Green means connected; unavailable sta
 
 SSH, Tmux, TCP, Telnet, and Serial reconnect workers reload the latest Profile before the next attempt. Changes to connection settings, authentication policy, reconnect delay, or the reconnect switch do not need to wait for an obsolete retry cycle to finish.
 
+## Desktop File Transfers
+
+SFTP works directly in the desktop application and does not require MCP, an MCP grant, or a running MCP Bridge. Connect an SSH or Tmux session with SFTP enabled, then use either `Workspace -> File Manager` for two-pane browsing, drag and drop, and batch transfers, or `Tools -> Transfer Tasks` for an explicit source and destination.
+
+For an upload, use a local source path and a destination such as `remote:/tmp/file.bin`. For a download, use a source such as `remote:/var/log/messages` and a local destination path. The desktop transfer queue supports cancellation, retry, progress, throttling, and resumable SFTP operations.
+
 ## SSH Trust and Credentials
 
 PortMate manages two distinct types of keys:

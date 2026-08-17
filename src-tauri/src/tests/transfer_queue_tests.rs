@@ -496,6 +496,45 @@ fn transfer_protocol_settings_are_enforced_before_queueing() {
 }
 
 #[test]
+fn desktop_sftp_transfer_does_not_require_an_mcp_grant() {
+    tauri::async_runtime::block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-desktop-sftp-without-mcp-{}",
+            Uuid::new_v4()
+        ));
+        let profile = test_ssh_profile();
+        let state = test_app_state(profile.clone(), root.join("store.sqlite3"));
+        assert!(state.store.lock().unwrap().grants.is_empty());
+        assert!(state.pending_mcp_approvals.lock().unwrap().is_empty());
+
+        let lane = transfer_lane(&state, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let task = start_transfer_inner(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id,
+                protocol: TransferProtocol::Sftp,
+                source: root.join("desktop-upload.bin").display().to_string(),
+                destination: "remote:/tmp/desktop-upload.bin".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(task.status, TransferStatus::Queued);
+        assert!(state.pending_mcp_approvals.lock().unwrap().is_empty());
+        assert_eq!(
+            cancel_transfer_inner(&state, &task.id).unwrap().status,
+            TransferStatus::Cancelled
+        );
+        drop(lane_guard);
+        let finished = wait_for_transfer_terminal_state(&state, &task.id).await;
+        assert_eq!(finished.status, TransferStatus::Cancelled);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn queued_transfer_rechecks_latest_protocol_settings_before_running() {
     tauri::async_runtime::block_on(async {
         let profile = test_ssh_profile();
