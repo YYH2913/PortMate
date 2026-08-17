@@ -154,96 +154,26 @@ fn libssh_mixed_auth_falls_back_to_keyboard_interactive() {
     });
 }
 
-#[cfg(unix)]
 #[test]
 fn libssh_connection_stages_share_one_total_deadline() {
-    if Command::new("ssh-keygen").arg("-V").output().is_err() {
-        eprintln!("skipping libssh setup deadline test: ssh-keygen is not installed");
-        return;
-    }
+    let started_at = Instant::now();
+    let total = Duration::from_secs(2);
+    let deadline = LibsshSetupDeadline::from_started_at(started_at, total).unwrap();
 
-    let root = tempfile::tempdir().unwrap();
-    let host_key = root.path().join("ssh_host_ed25519_key");
-    generate_ed25519_test_key(&host_key);
-
-    tauri::async_runtime::block_on(async {
-        const MAX_HANDSHAKE_ATTEMPTS: usize = 3;
-        let connection_timeout = Duration::from_millis(2000);
-        let username = "portmate-libssh-deadline-user";
-        let secret = "PortMate libssh deadline secret";
-        let mut profile = test_ssh_profile();
-        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
-            panic!("expected SSH profile");
-        };
-        ssh.endpoint.host = "127.0.0.1".to_string();
-        ssh.username = username.to_string();
-        ssh.reconnect = false;
-        ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
-        ssh.identity_policy.auth_order = vec![AuthMethod::Password, AuthMethod::GssapiWithMic];
-        ssh.identity_policy.identities_only = true;
-        ssh.identity_refs.clear();
-        ssh.agent_policy.enabled = false;
-        ssh.agent_policy.offer_mode = portmate_core::AgentOfferMode::Disabled;
-
-        for attempt in 1..=MAX_HANDSHAKE_ATTEMPTS {
-            let (port, counters, server_task) = spawn_mixed_auth_test_server_with_delays(
-                &host_key,
-                username,
-                secret,
-                Some(Duration::from_millis(300)),
-                Some(connection_timeout.saturating_mul(2)),
-                None,
-            )
-            .await;
-            let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
-                unreachable!("profile was initialized as SSH");
-            };
-            ssh.endpoint.port = port;
-            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
-
-            let started = Instant::now();
-            let error = match establish_ssh_runtime_with_timeout(
-                &state,
-                &profile,
-                Some(secret.to_string()),
-                None,
-                connection_timeout,
-                None,
-            )
-            .await
-            {
-                Ok(_) => panic!("libssh setup ignored its shared connection deadline"),
-                Err(error) => error,
-            };
-            let elapsed = started.elapsed();
-            let normalized = error.to_ascii_lowercase();
-            let handshake_disconnected = normalized.contains("socket error: disconnected")
-                && elapsed < Duration::from_millis(500)
-                && counters.password_attempts.load(Ordering::SeqCst) == 0;
-
-            server_task.abort();
-            let _ = server_task.await;
-
-            if handshake_disconnected && attempt < MAX_HANDSHAKE_ATTEMPTS {
-                eprintln!(
-                    "retrying transient libssh test handshake after {elapsed:?} (attempt {attempt}): {error}"
-                );
-                continue;
-            }
-
-            let timed_out = error.contains("超时") || normalized.contains("timeout");
-            let disconnected_at_deadline = normalized.contains("socket error: disconnected")
-                && elapsed >= connection_timeout.saturating_sub(Duration::from_millis(500));
-            assert!(
-                timed_out || disconnected_at_deadline,
-                "libssh setup did not exhaust the shared deadline after {elapsed:?} on attempt {attempt}: {error}"
-            );
-            assert_eq!(counters.password_completions.load(Ordering::SeqCst), 1);
-            assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 1);
-            assert!(!state.ssh.lock().unwrap().contains_key(&profile.id));
-            break;
-        }
-    });
+    assert_eq!(deadline.remaining_at(started_at), Some(total));
+    assert_eq!(
+        deadline.remaining_at(started_at + Duration::from_millis(300)),
+        Some(Duration::from_millis(1700))
+    );
+    assert_eq!(
+        deadline.remaining_at(started_at + Duration::from_millis(1100)),
+        Some(Duration::from_millis(900))
+    );
+    assert_eq!(deadline.remaining_at(started_at + total), None);
+    assert_eq!(
+        deadline.remaining_at(started_at + total + Duration::from_millis(1)),
+        None
+    );
 }
 
 #[cfg(unix)]

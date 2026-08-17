@@ -1,5 +1,33 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LibsshSetupDeadline {
+    deadline: Instant,
+}
+
+impl LibsshSetupDeadline {
+    fn new(timeout: Duration) -> Result<Self, String> {
+        Self::from_started_at(Instant::now(), timeout)
+    }
+
+    pub(super) fn from_started_at(started_at: Instant, timeout: Duration) -> Result<Self, String> {
+        let deadline = started_at
+            .checked_add(timeout)
+            .ok_or_else(|| "libssh setup deadline is outside the supported range".to_string())?;
+        Ok(Self { deadline })
+    }
+
+    fn remaining(self) -> Option<Duration> {
+        self.remaining_at(Instant::now())
+    }
+
+    pub(super) fn remaining_at(self, now: Instant) -> Option<Duration> {
+        self.deadline
+            .checked_duration_since(now)
+            .filter(|remaining| !remaining.is_zero())
+    }
+}
+
 fn libssh_terminal_setup_error(
     action: &str,
     error: libssh_rs::Error,
@@ -31,7 +59,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
 ) -> Result<EstablishedSshRuntime, String> {
-    let setup_started = Instant::now();
+    let setup_deadline = LibsshSetupDeadline::new(connect_timeout)?;
     let agent_socket_path = agent_socket_path
         .or_else(|| std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from));
     #[cfg(unix)]
@@ -56,6 +84,12 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let closed = Arc::new(AtomicBool::new(false));
     let (proxy_stream, jump_sessions, mut transport_bridge_finished) =
         if !ssh.jumps.is_empty() {
+            let remaining_jump_timeout = setup_deadline.remaining().ok_or_else(|| {
+                format!(
+                    "libssh Jump Host 连接超时（{} ms）",
+                    connect_timeout.as_millis()
+                )
+            })?;
             let connected_target = connect_ssh_target(
                 SshConnectRequest {
                     config: Arc::new(ssh_client_config(ssh)),
@@ -72,7 +106,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                     passphrase: passphrase.as_deref(),
                     enforce_profile_snapshot,
                 },
-                connect_timeout,
+                remaining_jump_timeout,
                 agent_socket_path.as_deref(),
                 SshTargetTransportMode::JumpChannel,
             )
@@ -98,8 +132,14 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 };
             (Some(stream), jump_sessions, Some(bridge_finished))
         } else if ssh.proxy.enabled {
+            let remaining_proxy_timeout = setup_deadline.remaining().ok_or_else(|| {
+                format!(
+                    "libssh SSH 代理连接超时（{} ms）",
+                    connect_timeout.as_millis()
+                )
+            })?;
             let stream = tokio::time::timeout(
-                connect_timeout.saturating_sub(setup_started.elapsed()),
+                remaining_proxy_timeout,
                 connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
             )
             .await
@@ -120,8 +160,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         } else {
             (None, Vec::new(), None)
         };
-    let remaining_connect_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
-    if remaining_connect_timeout.is_zero() {
+    let Some(remaining_connect_timeout) = setup_deadline.remaining() else {
         cleanup_failed_libssh_runtime(
             None,
             &jump_sessions,
@@ -134,7 +173,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             "libssh SSH 连接超时（{} ms）",
             connect_timeout.as_millis()
         ));
-    }
+    };
     #[cfg(unix)]
     let identity_agent_path = filtered_agent_proxy
         .as_ref()
@@ -383,8 +422,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let identity_refs = ssh.identity_refs.clone();
     let (offer_agent_before, offer_agent_after) =
         libssh_agent_offer_positions(ssh, agent_socket_available);
-    let remaining_auth_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
-    if remaining_auth_timeout.is_zero() {
+    let Some(remaining_auth_timeout) = setup_deadline.remaining() else {
         cleanup_failed_libssh_runtime(
             Some(&session),
             &jump_sessions,
@@ -397,7 +435,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             "libssh SSH 认证超时（{} ms）",
             connect_timeout.as_millis()
         ));
-    }
+    };
     let auth_session = session.clone();
     let auth = match tokio::time::timeout(
         remaining_auth_timeout,
@@ -499,8 +537,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let cols = u32::from(profile.terminal.cols);
     let rows = u32::from(profile.terminal.rows);
     let attach_tmux = matches!(profile.connection, ConnectionConfig::Tmux(_));
-    let remaining_terminal_timeout = connect_timeout.saturating_sub(setup_started.elapsed());
-    if remaining_terminal_timeout.is_zero() {
+    let Some(remaining_terminal_timeout) = setup_deadline.remaining() else {
         cleanup_failed_libssh_runtime(
             Some(&session),
             &jump_sessions,
@@ -513,7 +550,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             "libssh 终端 setup 超时（{} ms）",
             connect_timeout.as_millis()
         ));
-    }
+    };
     let channel = tokio::time::timeout(
         remaining_terminal_timeout,
         tokio::task::spawn_blocking(move || {
