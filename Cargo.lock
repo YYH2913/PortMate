@@ -4582,7 +4582,7 @@ dependencies = [
 
 [[package]]
 name = "portmate"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4629,7 +4629,7 @@ dependencies = [
 
 [[package]]
 name = "portmate-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4644,14 +4644,14 @@ dependencies = [
 
 [[package]]
 name = "portmate-kdf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2 0.5.3",
 ]
 
 [[package]]
 name = "portmate-keyring"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apple-native-keyring-store",
  "dbus-secret-service-keyring-store",
@@ -4662,7 +4662,7 @@ dependencies = [
 
 [[package]]
 name = "portmate-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4683,7 +4683,7 @@ dependencies = [
 
 [[package]]
 name = "portmate-process-watchdog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",

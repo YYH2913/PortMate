@@ -4,6 +4,62 @@ All notable PortMate changes are recorded here. PortMate is still alpha software
 or an unsigned artifact is not a production release. The complete release gates are maintained in
 [RELEASE.md](./RELEASE.md).
 
+## [0.1.2] - 2026-08-17
+
+### Added
+
+- Added saved custom scripts with explicit desktop review, per-session targeting, version-bound
+  execution, and an MCP capability that exposes only enabled scripts permitted by the grant.
+- Added MCP host-route proxy capabilities so authorized clients can open, inspect, and close TCP
+  routes reachable from the PortMate host without receiving desktop credentials.
+- Added one-click CC Switch JSON for existing grants, including the reusable token already owned by
+  that grant, and retained configurable remote HTTP listener settings.
+
+### Changed
+
+- Direct MCP content upload now supports larger resumable payloads and feeds the normal transfer
+  pipeline, so remote load operations no longer require a source path on the desktop host.
+- Terminal interaction keeps the active output anchored when Enter is pressed instead of moving the
+  viewport to the oldest scrollback row.
+- Native Rust test jobs now compile the backend with a mock runtime and without the desktop Wry
+  feature, while production desktop builds retain the full Tauri/WebView runtime.
+
+### Fixed
+
+- Fixed existing MCP authorization tokens being unavailable for reuse in generated CC Switch
+  configuration and made the complete configuration visible for previously created grants.
+- Fixed transient libssh deadline tests by using an explicitly shared test cipher and preserving one
+  total timeout across setup and authentication stages.
+- Fixed packaged macOS conflict checks aborting inside AppKit by validating and migrating native
+  smoke-test data directories before Tauri initializes the application runtime.
+- Fixed Windows CI backend tests loading desktop-only runtime dependencies and failing before the
+  Rust test harness with `STATUS_ENTRYPOINT_NOT_FOUND`.
+
+### Security
+
+- Custom-script MCP calls remain grant-scoped, require desktop approval where configured, bind the
+  reviewed script version, and never expose saved script bodies through logs or MCP responses.
+- Host-route proxy operations enforce explicit scope, bounded concurrency, target policy, audit
+  records, and lifecycle ownership; they do not reveal stored SSH passwords or private keys.
+- Reused MCP tokens are shown only in the local authorization UI that owns the grant and are embedded
+  only when the user explicitly requests exportable CC Switch configuration.
+
+### Migration
+
+- No Store schema migration is required from `0.1.1`; existing sessions, grants, scripts, transfers,
+  and encrypted credential references are loaded in place.
+- Keep a backup of the application-data directory before upgrading and do not run an older build
+  against the only upgraded Store, as described in [RELEASE.md](./RELEASE.md).
+
+### Known Limitations
+
+- The Windows GNU portable bundle is unsigned and provides cross-build and static package evidence;
+  it does not replace Windows MSVC, WebView2, Credential Manager, MSI/NSIS, or signing smoke tests.
+- GSSAPI/Active Directory, real remote Sysmon, physical serial/modem faults, and the complete
+  cross-platform terminal/Tmux matrix still require external hosts, operating systems, or hardware.
+- PortMate remains alpha software and should not be used unattended for production-critical access
+  or transfer until all applicable [RELEASE.md](./RELEASE.md) gates pass.
+
 ## [0.1.1] - 2026-08-14
 
 ### Added
