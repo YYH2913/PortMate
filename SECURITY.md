@@ -42,10 +42,13 @@ trusted release artifacts for those threats.
   remote-to-remote copy remains limited to the same authorized session.
 - Cancel, retry, and stop requests are authorized against the session recorded for the backend task
   or live tunnel ID. A caller-supplied `sessionId` cannot reassign ownership.
-- MCP forwarding is limited to SSH local forwarding, SSH remote forwarding, and a local dynamic
-  SOCKS5 listener attached to one connected SSH/Tmux session. It does not modify the host routing
-  table or install transparent system-wide proxy rules. Binding a listener outside loopback can
-  expose it to the attached network and should retain desktop confirmation.
+- MCP forwarding supports SSH local/remote forwarding and SSH dynamic SOCKS5 through an authorized
+  connected SSH/Tmux session. It also supports fixed TCP forwarding and route-scoped dynamic SOCKS5
+  through the PortMate host's own reachable network, without any terminal session. Host egress is
+  represented by `egress: "portmate-host"`, is isolated by normalized MCP client ID, and does not
+  support SSH-style remote listeners. None of these modes modifies the host routing table or
+  installs transparent system-wide proxy rules. Binding a listener outside loopback can expose it
+  to the attached network and should retain desktop confirmation.
 
 ## Dependency Gates
 

@@ -74,13 +74,31 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         "list_transfers",
         "get_transfer",
         "start_transfer",
+        "start_content_transfer",
+        "begin_content_upload",
+        "append_content_upload",
+        "start_content_upload_transfer",
         "cancel_transfer",
         "retry_transfer",
         "create_tunnel",
         "list_tunnels",
         "stop_tunnel",
+        "create_host_route",
+        "list_host_routes",
+        "stop_host_route",
     ):
         require(tool_name in tool_names, f"{transport} tools/list omitted {tool_name}")
+    start_transfer = next((tool for tool in tools.tools if tool.name == "start_transfer"), None)
+    require(start_transfer is not None, f"{transport} tools/list omitted start_transfer definition")
+    start_transfer_schema = sdk_field(start_transfer, "inputSchema", "input_schema")
+    protocol_schema = start_transfer_schema.get("properties", {}).get("protocol", {})
+    require("tftp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted TFTP")
+    create_tunnel = next((tool for tool in tools.tools if tool.name == "create_tunnel"), None)
+    require(create_tunnel is not None, f"{transport} tools/list omitted create_tunnel definition")
+    create_tunnel_schema = sdk_field(create_tunnel, "inputSchema", "input_schema")
+    egress_schema = create_tunnel_schema.get("properties", {}).get("egress", {})
+    require("portmate-host" in egress_schema.get("enum", []), f"{transport} create_tunnel schema omitted PortMate-host egress")
+    require("sessionId" not in create_tunnel_schema.get("required", []), f"{transport} create_tunnel still requires sessionId for every route")
     resources = await session.list_resources()
     require(any(str(resource.uri) == "portmate://sessions" for resource in resources.resources), f"{transport} resources/list omitted sessions")
     templates = await session.list_resource_templates()

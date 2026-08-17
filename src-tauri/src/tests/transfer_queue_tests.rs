@@ -465,6 +465,7 @@ fn transfer_protocol_settings_are_enforced_before_queueing() {
     tauri::async_runtime::block_on(async {
         let mut profile = test_ssh_profile();
         profile.transfer.sftp = false;
+        profile.transfer.tftp = false;
         profile.transfer.ymodem = false;
         let state = test_app_state(
             profile.clone(),
@@ -473,15 +474,21 @@ fn transfer_protocol_settings_are_enforced_before_queueing() {
 
         for (protocol, label) in [
             (TransferProtocol::Sftp, "SFTP"),
+            (TransferProtocol::Tftp, "TFTP"),
             (TransferProtocol::Ymodem, "YModem"),
         ] {
+            let destination = if protocol == TransferProtocol::Tftp {
+                "load:tftpboot?deviceIp=192.168.255.1"
+            } else {
+                "remote:/tmp/input.bin"
+            };
             let error = start_transfer_inner(
                 &state,
                 StartTransferRequest {
                     session_id: profile.id.clone(),
                     protocol,
                     source: "input.bin".to_string(),
-                    destination: "remote:/tmp/input.bin".to_string(),
+                    destination: destination.to_string(),
                 },
             )
             .await

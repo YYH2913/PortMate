@@ -769,6 +769,9 @@ mod tests {
             transfer.input_schema["properties"]["source"]["maxLength"],
             32_768
         );
+        assert!(transfer.input_schema["properties"]["protocol"]["enum"]
+            .as_array()
+            .is_some_and(|protocols| protocols.contains(&json!("tftp"))));
         assert!(transfer.description.contains(
             "At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint"
         ));
@@ -781,6 +784,11 @@ mod tests {
         assert!(content_transfer.description.contains("one-shot server"));
         assert!(
             content_transfer.input_schema["properties"]["protocol"]["enum"]
+                .as_array()
+                .is_some_and(|protocols| protocols.contains(&json!("tftp")))
+        );
+        assert!(
+            definition("begin_content_upload").input_schema["properties"]["protocol"]["enum"]
                 .as_array()
                 .is_some_and(|protocols| protocols.contains(&json!("tftp")))
         );

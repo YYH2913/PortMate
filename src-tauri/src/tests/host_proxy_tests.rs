@@ -36,6 +36,35 @@ fn portmate_host_proxy_approval_names_routes_and_remote_listener_exposure() {
 }
 
 #[test]
+fn unified_host_tunnel_approval_keeps_the_host_proxy_target() {
+    let root = tempfile::tempdir().unwrap();
+    let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+    let request = IpcRequest {
+        token: "authenticated-token".to_string(),
+        client_id: "unified-host-proxy-client".to_string(),
+        trusted_write: false,
+        command: "create_tunnel".to_string(),
+        args: serde_json::json!({
+            "egress": "portmate-host",
+            "mode": "local",
+            "bindHost": "127.0.0.1",
+            "bindPort": 0,
+            "targetHost": "192.168.33.143",
+            "targetPort": 80
+        }),
+    };
+    validate_ipc_write_args(&state, &request).unwrap();
+    let target = capture_mcp_write_execution_context(&state, &request)
+        .unwrap()
+        .approval_target()
+        .unwrap();
+    assert_eq!(target.kind, "portmate-host-proxy");
+    assert_eq!(target.id, "127.0.0.1:0");
+    assert!(target.label.contains("TCP"));
+    assert!(target.label.contains("192.168.33.143:80"));
+}
+
+#[test]
 fn mcp_host_route_forwards_tcp_without_any_session_and_is_client_isolated() {
     tauri::async_runtime::block_on(async {
         let root = tempfile::tempdir().unwrap();

@@ -51,11 +51,13 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
 }
 
 function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
-  if (action !== "run_custom_script" && action !== "create_host_route") return value === undefined ? undefined : null;
+  if (action !== "run_custom_script"
+    && action !== "create_host_route"
+    && action !== "create_tunnel") return value === undefined ? undefined : null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   if (!validText(source.label, 512)) return null;
-  if (action === "create_host_route") {
+  if (action === "create_host_route" || action === "create_tunnel") {
     if (source.kind !== "portmate-host-proxy" || !validText(source.id, 512)) return null;
     return {
       kind: "portmate-host-proxy",

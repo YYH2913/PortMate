@@ -216,6 +216,53 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
 }
 
 #[test]
+fn mcp_start_transfer_accepts_tftp_for_a_profile_with_tftp_enabled() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-tftp-transfer-{}", Uuid::new_v4()));
+        let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+        let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        let lane = transfer_lane(&state, &session_id).unwrap();
+        let _lane_guard = lane.lock().await;
+        let response = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "tftp-transfer-client".to_string(),
+                trusted_write: true,
+                command: "start_transfer".to_string(),
+                args: serde_json::json!({
+                    "sessionId": session_id,
+                    "protocol": "tftp",
+                    "source": "/tmp/firmware.bin",
+                    "destination": "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=0"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let task: TransferTask = serde_json::from_value(response).unwrap();
+        assert_eq!(task.protocol, TransferProtocol::Tftp);
+        assert_eq!(task.status, TransferStatus::Queued);
+        let cancelled = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "tftp-transfer-client".to_string(),
+                trusted_write: true,
+                command: "cancel_transfer".to_string(),
+                args: serde_json::json!({ "transferId": task.id }),
+            },
+        )
+        .await
+        .unwrap();
+        let cancelled: TransferTask = serde_json::from_value(cancelled).unwrap();
+        assert_eq!(cancelled.status, TransferStatus::Cancelled);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn mcp_content_transfer_validates_payload_and_stages_without_exposing_content() {
     let root = std::env::temp_dir().join(format!("portmate-mcp-content-{}", Uuid::new_v4()));
     let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));

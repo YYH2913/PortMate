@@ -43,6 +43,21 @@ describe("MCP approval state", () => {
     });
     expect(normalizeMcpApproval({
       ...base,
+      action: "create_tunnel",
+      sessionId: "portmate-host",
+      scope: "tunnel",
+      target: {
+        kind: "portmate-host-proxy",
+        id: "127.0.0.1:0",
+        label: "PortMate host TCP proxy to 192.168.33.143:80",
+      },
+    })).toMatchObject({
+      action: "create_tunnel",
+      sessionId: "portmate-host",
+      target: { kind: "portmate-host-proxy", id: "127.0.0.1:0" },
+    });
+    expect(normalizeMcpApproval({
+      ...base,
       action: "run_custom_script",
       scope: "run-scripts",
       target: {
@@ -87,6 +102,12 @@ describe("MCP approval state", () => {
       action: "run_custom_script",
       scope: "run-scripts",
       target: { kind: "custom-script", id: "not-a-uuid", label: "Inspect service" },
+    })).toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
+      action: "create_tunnel",
+      scope: "tunnel",
+      target: { kind: "custom-script", id: "not-a-route", label: "Unexpected target" },
     })).toBeNull();
     expect(normalizeMcpApproval({
       ...base,
