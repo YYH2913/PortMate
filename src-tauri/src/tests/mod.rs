@@ -542,6 +542,7 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
         shell: Arc::new(Mutex::new(HashMap::new())),
         tcp: Arc::new(Mutex::new(HashMap::new())),
         serial: Arc::new(Mutex::new(HashMap::new())),
+        serial_workers: Arc::new(SerialWorkerRegistry::default()),
         serial_captures: Arc::new(Mutex::new(HashMap::new())),
         active_commands: Arc::new(Mutex::new(HashMap::new())),
         tunnels: Arc::new(Mutex::new(HashMap::new())),

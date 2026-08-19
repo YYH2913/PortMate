@@ -42,6 +42,18 @@ fn serial_connection_details_validate_port_and_reconnect_flag() {
 }
 
 #[test]
+fn serial_worker_registry_stops_new_work_and_waits_for_active_workers() {
+    let registry = Arc::new(SerialWorkerRegistry::default());
+    let worker = registry.register().expect("initial serial worker");
+    assert_eq!(registry.wait_for_idle(Duration::ZERO), 1);
+
+    registry.begin_shutdown();
+    assert!(registry.register().is_err());
+    drop(worker);
+    assert_eq!(registry.wait_for_idle(Duration::from_millis(50)), 0);
+}
+
+#[test]
 fn serial_line_updates_compensate_prior_writes_after_partial_failure() {
     let mut calls = Vec::new();
     let error =

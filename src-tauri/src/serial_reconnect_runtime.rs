@@ -6,6 +6,13 @@ pub(super) fn spawn_serial_reconnect(
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
+    let worker = match io.serial_workers.register() {
+        Ok(worker) => worker,
+        Err(_) => {
+            closed.store(true, Ordering::SeqCst);
+            return;
+        }
+    };
     let thread_name = format!("portmate-serial-reconnect-{session_id}");
     let worker_io = io.clone();
     let worker_session_id = session_id.clone();
@@ -14,6 +21,7 @@ pub(super) fn spawn_serial_reconnect(
     if let Err(error) = std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
+            let _worker = worker;
             reconnect_serial_session(
                 worker_io,
                 worker_session_id,
@@ -48,6 +56,9 @@ fn reconnect_serial_session(
     closed: Arc<AtomicBool>,
 ) {
     loop {
+        if io.serial_workers.is_shutting_down() {
+            return;
+        }
         if !wait_for_serial_reconnect_attempt(
             &io,
             &session_id,
@@ -115,6 +126,9 @@ fn reconnect_serial_session(
                 }
             }
         };
+        if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
+            return;
+        }
         let (port, reader) = match open_configured_serial_port(&serial, &port_name) {
             Ok(port) => port,
             Err(error) => {
@@ -144,6 +158,11 @@ fn reconnect_serial_session(
                 }
             }
         };
+        if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
+            drop(reader);
+            drop(port);
+            return;
+        }
 
         let runtime_id = Uuid::new_v4().to_string();
         let writer = Arc::new(Mutex::new(port));
@@ -164,6 +183,9 @@ fn reconnect_serial_session(
             }
         };
         let reader_start_gate = Arc::new(ReaderStartGate::default());
+        if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
+            return;
+        }
         if let Err(error) = spawn_serial_reader(SerialReadTask {
             io: io.clone(),
             profile: profile.clone(),
@@ -181,6 +203,9 @@ fn reconnect_serial_session(
             next_closed.store(true, Ordering::SeqCst);
             reader_start_gate.cancel();
             let error = format!("serial read thread restart failed: {error}");
+            if io.serial_workers.is_shutting_down() {
+                return;
+            }
             fail_pending_serial_reconnect_install(
                 &io,
                 &session_id,
@@ -199,6 +224,7 @@ fn reconnect_serial_session(
                     .get(&session_id)
                     .is_none_or(|runtime| runtime.runtime_id != previous_runtime_id)
                     || closed.load(Ordering::SeqCst)
+                    || io.serial_workers.is_shutting_down()
                 {
                     SerialReconnectInstallDecision::Superseded
                 } else {

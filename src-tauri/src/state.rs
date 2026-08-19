@@ -11,6 +11,87 @@ pub(super) type SessionOpenCancellations =
 pub(super) static SESSION_LIFECYCLE_LANES: OnceLock<SessionLifecycleLanes> = OnceLock::new();
 pub(super) static SESSION_OPEN_CANCELLATIONS: OnceLock<SessionOpenCancellations> = OnceLock::new();
 
+#[derive(Debug, Default)]
+struct SerialWorkerState {
+    active: usize,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct SerialWorkerRegistry {
+    shutting_down: AtomicBool,
+    state: Mutex<SerialWorkerState>,
+    changed: Condvar,
+}
+
+impl SerialWorkerRegistry {
+    pub(super) fn register(self: &Arc<Self>) -> Result<SerialWorkerGuard, String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err("PortMate is shutting down; serial work is not accepted".to_string());
+        }
+        state.active += 1;
+        Ok(SerialWorkerGuard {
+            registry: Arc::clone(self),
+        })
+    }
+
+    pub(super) fn begin_shutdown(&self) {
+        let _state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutting_down.store(true, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    pub(super) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn wait_for_idle(&self, timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.active > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if result.timed_out() {
+                break;
+            }
+        }
+        state.active
+    }
+
+}
+
+pub(super) struct SerialWorkerGuard {
+    registry: Arc<SerialWorkerRegistry>,
+}
+
+impl Drop for SerialWorkerGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .registry
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active = state.active.saturating_sub(1);
+        self.registry.changed.notify_all();
+    }
+}
+
 pub(super) struct SessionOpenCancellation {
     cancelled: AtomicBool,
     changed: tokio::sync::Notify,
@@ -60,6 +141,7 @@ pub struct AppState {
     pub(super) shell: Arc<Mutex<HashMap<String, ShellRuntime>>>,
     pub(super) tcp: Arc<Mutex<HashMap<String, TcpRuntime>>>,
     pub(super) serial: Arc<Mutex<HashMap<String, SerialRuntime>>>,
+    pub(super) serial_workers: Arc<SerialWorkerRegistry>,
     pub(super) serial_captures: SerialCaptureMap,
     pub(super) active_commands: ActiveCommandMap,
     pub(super) tunnels: Arc<Mutex<HashMap<String, TunnelRuntime>>>,
@@ -126,6 +208,7 @@ pub(super) struct SessionIo {
     pub(super) app_handle: Option<AppHandle>,
     pub(super) store: Arc<Mutex<SessionStore>>,
     pub(super) runtimes: RuntimeRegistry,
+    pub(super) serial_workers: Arc<SerialWorkerRegistry>,
     pub(super) serial_captures: SerialCaptureMap,
     pub(super) active_commands: ActiveCommandMap,
     pub(super) trigger_command_slots: Arc<tokio::sync::Semaphore>,
@@ -148,6 +231,7 @@ impl AppState {
             app_handle: self.app_handle.clone(),
             store: Arc::clone(&self.store),
             runtimes: self.runtimes(),
+            serial_workers: Arc::clone(&self.serial_workers),
             serial_captures: Arc::clone(&self.serial_captures),
             active_commands: Arc::clone(&self.active_commands),
             trigger_command_slots: Arc::clone(&self.trigger_command_slots),

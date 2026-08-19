@@ -1,4 +1,4 @@
-use super::transport_timing::STREAM_PERSIST_INTERVAL;
+use super::transport_timing::{SERIAL_RUNTIME_SHUTDOWN_TIMEOUT, STREAM_PERSIST_INTERVAL};
 use super::*;
 
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;
@@ -71,14 +71,19 @@ pub(super) fn open_serial_session(
     state: &AppState,
     profile: SessionProfile,
 ) -> Result<SessionSummary, String> {
-    install_serial_session(state, prepare_serial_session(profile)?)
+    install_serial_session(state, prepare_serial_session(state, profile)?)
 }
 
 pub(super) fn prepare_serial_session(
+    state: &AppState,
     profile: SessionProfile,
 ) -> Result<PreparedSerialSession, String> {
+    let _worker = state.serial_workers.register()?;
     let (serial, port_name) = serial_connection_details(&profile)?;
     let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
+    if state.serial_workers.is_shutting_down() {
+        return Err("PortMate is shutting down; serial port was released".to_string());
+    }
     Ok(PreparedSerialSession {
         profile,
         serial,
@@ -92,6 +97,7 @@ pub(super) fn install_serial_session(
     state: &AppState,
     prepared: PreparedSerialSession,
 ) -> Result<SessionSummary, String> {
+    let _worker = state.serial_workers.register()?;
     let PreparedSerialSession {
         profile,
         serial,
@@ -204,10 +210,42 @@ enum SerialReaderTransition {
 pub(super) fn spawn_serial_reader(
     task: SerialReadTask,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let worker = task
+        .io
+        .serial_workers
+        .register()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Interrupted, error))?;
     let name = format!("portmate-serial-{}", task.profile.id);
     std::thread::Builder::new()
         .name(name)
-        .spawn(read_serial_port(task))
+        .spawn(move || {
+            let _worker = worker;
+            read_serial_port(task)();
+        })
+}
+
+pub(super) fn shutdown_serial_runtimes(state: &AppState) {
+    state.serial_workers.begin_shutdown();
+    let runtimes = {
+        let mut connections = state
+            .serial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        connections.drain().map(|(_, runtime)| runtime).collect::<Vec<_>>()
+    };
+    for runtime in &runtimes {
+        runtime.closed.store(true, Ordering::SeqCst);
+    }
+    drop(runtimes);
+
+    let remaining = state
+        .serial_workers
+        .wait_for_idle(SERIAL_RUNTIME_SHUTDOWN_TIMEOUT);
+    if remaining > 0 {
+        eprintln!(
+            "PortMate: {remaining} serial worker(s) did not release before the shutdown deadline"
+        );
+    }
 }
 
 fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {

@@ -310,7 +310,10 @@ pub(super) async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Serial(_)) {
-        let prepare = spawn_session_prepare(&cancellation, move || prepare_serial_session(profile));
+        let prepare_state = state.clone();
+        let prepare = spawn_session_prepare(&cancellation, move || {
+            prepare_serial_session(&prepare_state, profile)
+        });
         let prepared = match wait_for_session_prepare(
             &state,
             &session_id,

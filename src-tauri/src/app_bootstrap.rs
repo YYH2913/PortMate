@@ -152,6 +152,7 @@ pub fn run() {
                     shutdown_mcp_http_runtime(state.inner());
                     shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());
+                    shutdown_serial_runtimes(state.inner());
                     shutdown_system_event_sink(state.inner());
                     if let Err(error) =
                         flush_json_compatibility_snapshots(Duration::from_secs(5))
@@ -223,6 +224,7 @@ fn initialize_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error
         shell: Arc::new(Mutex::new(HashMap::new())),
         tcp: Arc::new(Mutex::new(HashMap::new())),
         serial: Arc::new(Mutex::new(HashMap::new())),
+        serial_workers: Arc::new(SerialWorkerRegistry::default()),
         serial_captures: Arc::new(Mutex::new(HashMap::new())),
         active_commands: Arc::new(Mutex::new(HashMap::new())),
         tunnels: Arc::new(Mutex::new(HashMap::new())),

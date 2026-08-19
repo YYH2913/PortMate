@@ -69,7 +69,7 @@ pub(super) fn serial_reconnect_pending(
     runtime_id: &str,
     closed: &AtomicBool,
 ) -> bool {
-    if closed.load(Ordering::SeqCst) {
+    if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
         return false;
     }
     let connections = match io.runtimes.serial.lock() {
