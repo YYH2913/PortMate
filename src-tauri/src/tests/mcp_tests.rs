@@ -135,6 +135,35 @@ fn dedicated_mcp_tftp_arguments_normalize_to_existing_transfer_routes() {
 }
 
 #[test]
+fn dedicated_mcp_send_bytes_decodes_base64_and_hex_without_text_framing() {
+    assert_eq!(
+        decode_mcp_direct_bytes(&serde_json::json!({
+            "sessionId": "board-uart",
+            "encoding": "base64",
+            "data": "AAH/"
+        }))
+        .unwrap(),
+        vec![0x00, 0x01, 0xff]
+    );
+    assert_eq!(
+        decode_mcp_direct_bytes(&serde_json::json!({
+            "sessionId": "board-uart",
+            "encoding": "hex",
+            "data": "00 01 ff"
+        }))
+        .unwrap(),
+        vec![0x00, 0x01, 0xff]
+    );
+    assert!(decode_mcp_direct_bytes(&serde_json::json!({
+        "sessionId": "board-uart",
+        "encoding": "hex",
+        "data": "0"
+    }))
+    .unwrap_err()
+    .contains("even number"));
+}
+
+#[test]
 fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() {
     tauri::async_runtime::block_on(async {
         let root =

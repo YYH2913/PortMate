@@ -4,6 +4,7 @@ import type { McpApprovalRequest } from "./types";
 
 const actionLabels: Record<string, string> = {
   send_text: "发送终端文本",
+  send_bytes: "透传原始字节",
   send_key: "发送终端按键",
   serial_send_break: "发送串口 Break",
   run_command: "执行终端命令",

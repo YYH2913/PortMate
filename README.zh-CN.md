@@ -227,6 +227,16 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 该工具使用 `write-input` scope，遵循授权会话范围、写操作逐次确认、执行前二次授权校验和审计。成功结果包含 `sent: true`，同时写入不含设备数据的系统事件。桌面 IPC 不可用、会话断开、正在重连、目标不是串口或驱动拒绝 Break 时都会失败关闭，不会把未执行操作报告为成功。桌面端原有“发送 Break”按钮不依赖 MCP。
 
+需要绕过终端文本处理、直接透传协议数据时，可以调用 `send_bytes`，并使用 `encoding: "base64"` 或 `encoding: "hex"`。PortMate 会解码后原样写入，不自动追加换行，返回值只包含脱敏后的字节摘要。它适用于二进制串口帧、Bootloader 数据包和 TCP/Telnet 原始载荷；只有协商后的 Telnet 传输确实需要时才会执行协议转义。载荷上限为 4 MiB，仍需要 `write-input` 授权。
+
+```json
+{
+  "sessionId": "board-uart",
+  "encoding": "hex",
+  "data": "55 aa 00 ff"
+}
+```
+
 ### 文件传输工具
 
 `list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、TFTP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。

@@ -275,6 +275,7 @@ try {
     "get_transfer",
     "start_transfer",
     "start_content_transfer",
+    "send_bytes",
     "begin_content_upload",
     "append_content_upload",
     "start_content_upload_transfer",
@@ -294,6 +295,10 @@ try {
   const startTransfer = tools.tools.find((tool) => tool.name === "start_transfer");
   assert(startTransfer?.inputSchema?.properties?.protocol?.enum?.includes("tftp"),
     "start_transfer schema omitted TFTP");
+  const sendBytes = tools.tools.find((tool) => tool.name === "send_bytes");
+  assert(sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("base64")
+    && sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("hex"),
+    "send_bytes schema omitted a binary encoding");
   const createTunnel = tools.tools.find((tool) => tool.name === "create_tunnel");
   assert(createTunnel?.inputSchema?.properties?.egress?.enum?.includes("portmate-host"),
     "create_tunnel schema omitted PortMate-host egress");

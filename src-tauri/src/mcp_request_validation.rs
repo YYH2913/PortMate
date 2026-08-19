@@ -1,5 +1,66 @@
 use super::*;
 
+pub(super) fn decode_mcp_direct_bytes(
+    args: &serde_json::Value,
+) -> Result<Vec<u8>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "send_bytes arguments must be a JSON object".to_string())?;
+    let encoding = object
+        .get("encoding")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "send_bytes encoding must be `base64` or `hex`".to_string())?;
+    let data = object
+        .get("data")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "send_bytes data must be an encoded string".to_string())?;
+    use portmate_core::{MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH, MAX_MCP_CONTENT_TRANSFER_BYTES};
+    if data.is_empty() || data.len() > MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH {
+        return Err(format!(
+            "send_bytes data must be non-empty and at most {MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH} bytes"
+        ));
+    }
+    let decoded = match encoding {
+        "base64" => {
+            let compact: String = data.chars().filter(|character| !character.is_ascii_whitespace()).collect();
+            BASE64_STANDARD
+                .decode(compact)
+                .map_err(|_| "send_bytes data is not valid standard Base64".to_string())?
+        }
+        "hex" => decode_mcp_hex(data)?,
+        _ => return Err("send_bytes encoding must be `base64` or `hex`".to_string()),
+    };
+    if decoded.is_empty() || decoded.len() > MAX_MCP_CONTENT_TRANSFER_BYTES {
+        return Err(format!(
+            "send_bytes payload must contain 1 to {MAX_MCP_CONTENT_TRANSFER_BYTES} decoded bytes"
+        ));
+    }
+    Ok(decoded)
+}
+
+fn decode_mcp_hex(data: &str) -> Result<Vec<u8>, String> {
+    let compact: String = data.chars().filter(|character| !character.is_ascii_whitespace()).collect();
+    if !compact.len().is_multiple_of(2) {
+        return Err("send_bytes hex data must contain an even number of digits".to_string());
+    }
+    let mut bytes = Vec::with_capacity(compact.len() / 2);
+    for pair in compact.as_bytes().chunks_exact(2) {
+        let high = hex_digit(pair[0]).ok_or_else(|| "send_bytes hex data contains a non-hex digit".to_string())?;
+        let low = hex_digit(pair[1]).ok_or_else(|| "send_bytes hex data contains a non-hex digit".to_string())?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(super) fn normalize_mcp_tftp_args(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -200,7 +261,7 @@ fn bounded_approval_host(host: &str) -> String {
 
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
-        "send_text" | "send_key" | "serial_send_break" | "run_command" | "attach_tmux" => {
+        "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command" | "attach_tmux" => {
             Some(McpScope::WriteInput)
         }
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
@@ -257,6 +318,9 @@ pub(super) fn validate_ipc_write_args(
         }
         "send_key" => {
             ipc_string_arg(&request.args, "key")?;
+        }
+        "send_bytes" => {
+            decode_mcp_direct_bytes(&request.args)?;
         }
         "serial_send_break" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?;

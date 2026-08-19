@@ -177,7 +177,7 @@ impl PortMateMcp {
                 };
                 serde_json::to_string_pretty(&scripts)?
             }
-            "send_text" | "send_key" | "run_command" | "run_custom_script" => {
+            "send_text" | "send_bytes" | "send_key" | "run_command" | "run_custom_script" => {
                 if let Some(output) = self.write_tool(name, &arguments)? {
                     output
                 } else {

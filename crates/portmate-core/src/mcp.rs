@@ -150,6 +150,22 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "send_bytes",
+            "Send Raw Bytes",
+            "Pass bytes directly to a connected session without adding a newline or converting the payload to terminal text. Encode data as standard Base64 or hexadecimal; PortMate preserves the decoded bytes, applies only transport-required Telnet escaping, and records a redacted byte summary instead of the payload.",
+            json!({
+                "type":"object",
+                "required":["sessionId","encoding","data"],
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "encoding":{"type":"string","enum":["base64","hex"]},
+                    "data":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH}
+                }
+            }),
+            false,
+        ),
+        tool(
             "send_key",
             "Send Key",
             "Send a terminal key sequence to a trusted session.",
@@ -766,6 +782,22 @@ mod tests {
         assert!(serial_break
             .description
             .contains("connected serial session"));
+    }
+
+    #[test]
+    fn raw_bytes_tool_exposes_binary_encodings_without_payload_echo() {
+        let bytes = definition("send_bytes");
+        assert!(!bytes.read_only);
+        assert_eq!(
+            bytes.input_schema["required"],
+            json!(["sessionId", "encoding", "data"])
+        );
+        assert_eq!(
+            bytes.input_schema["properties"]["encoding"]["enum"],
+            json!(["base64", "hex"])
+        );
+        assert!(bytes.description.contains("without adding a newline"));
+        assert!(bytes.description.contains("redacted byte summary"));
     }
 
     #[test]

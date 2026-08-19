@@ -167,6 +167,27 @@ async fn execute_ipc_request_inner(
                 .collect::<Vec<_>>();
             serde_json::to_value(scripts).map_err(|error| error.to_string())
         }
+        "send_bytes" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let bytes = decode_mcp_direct_bytes(&request.args)?;
+            let actor = mcp_audit_actor(&request.client_id);
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let event = send_bytes_inner_with_context(
+                state.session_io(),
+                session_id,
+                bytes,
+                &actor,
+                Some("send_bytes"),
+                Some(validation),
+            )
+            .await?;
+            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
+        }
         "send_text" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();

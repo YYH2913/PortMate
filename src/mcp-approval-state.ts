@@ -5,6 +5,7 @@ export const MAX_MCP_APPROVAL_QUEUE = 32;
 
 const approvalActionScopes: Record<string, McpScope> = {
   send_text: "write-input",
+  send_bytes: "write-input",
   send_key: "write-input",
   serial_send_break: "write-input",
   run_command: "write-input",

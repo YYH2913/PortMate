@@ -227,6 +227,16 @@ Script bodies are stored in the PortMate application Store and may also appear i
 
 The tool uses the `write-input` scope and remains subject to the grant's session boundary, per-write confirmation, commit-time authorization revalidation, and audit recording. A successful result contains `sent: true` and records a system event without device data. It fails closed when desktop IPC is unavailable, the session is disconnected or reconnecting, the target is not serial-backed, or the driver rejects Break. The existing desktop Send Break control does not require MCP.
 
+For protocol payloads that must bypass terminal text handling, call `send_bytes` with `encoding: "base64"` or `encoding: "hex"`. PortMate sends the decoded bytes directly without appending a newline, and returns only a redacted byte summary. This is suitable for binary serial frames, bootloader packets, and raw TCP/Telnet payloads; Telnet escaping is applied only when required by the negotiated transport. The payload is bounded to 4 MiB and still requires the `write-input` grant.
+
+```json
+{
+  "sessionId": "board-uart",
+  "encoding": "hex",
+  "data": "55 aa 00 ff"
+}
+```
+
 ### File Transfer Tools
 
 `list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, TFTP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.

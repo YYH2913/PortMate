@@ -75,6 +75,7 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         "get_transfer",
         "start_transfer",
         "start_content_transfer",
+        "send_bytes",
         "begin_content_upload",
         "append_content_upload",
         "start_content_upload_transfer",
@@ -94,6 +95,12 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     start_transfer_schema = sdk_field(start_transfer, "inputSchema", "input_schema")
     protocol_schema = start_transfer_schema.get("properties", {}).get("protocol", {})
     require("tftp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted TFTP")
+    send_bytes = next((tool for tool in tools.tools if tool.name == "send_bytes"), None)
+    require(send_bytes is not None, f"{transport} tools/list omitted send_bytes definition")
+    send_bytes_schema = sdk_field(send_bytes, "inputSchema", "input_schema")
+    encoding_schema = send_bytes_schema.get("properties", {}).get("encoding", {})
+    require(set(("base64", "hex")).issubset(set(encoding_schema.get("enum", []))),
+            f"{transport} send_bytes schema omitted a binary encoding")
     create_tunnel = next((tool for tool in tools.tools if tool.name == "create_tunnel"), None)
     require(create_tunnel is not None, f"{transport} tools/list omitted create_tunnel definition")
     create_tunnel_schema = sdk_field(create_tunnel, "inputSchema", "input_schema")

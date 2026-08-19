@@ -321,7 +321,29 @@ pub(super) async fn send_bytes_inner(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
+    send_bytes_inner_with_context(
+        io,
+        session_id,
+        bytes,
+        "desktop-user",
+        Some("send_bytes"),
+        None,
+    )
+    .await
+}
+
+pub(super) async fn send_bytes_inner_with_context(
+    io: SessionIo,
+    session_id: String,
+    bytes: Vec<u8>,
+    actor: &str,
+    audit_action: Option<&str>,
+    commit_validation: Option<CommitValidation>,
+) -> Result<SessionEvent, String> {
     let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
     clear_active_command(&io, &session_id);
     write_session_bytes(
@@ -340,8 +362,8 @@ pub(super) async fn send_bytes_inner(
         &session_id,
         &text,
         &wire_bytes,
-        "desktop-user",
-        Some("send_bytes"),
+        actor,
+        audit_action,
         BTreeMap::new(),
     ))
 }

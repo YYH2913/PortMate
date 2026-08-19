@@ -54,6 +54,12 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
     assert!(transfer["inputSchema"]["properties"]["protocol"]["enum"]
         .as_array()
         .is_some_and(|protocols| protocols.iter().any(|protocol| protocol == "tftp")));
+    let raw_bytes = tools
+        .iter()
+        .find(|tool| tool["name"] == "send_bytes")
+        .expect("tools/list omitted send_bytes");
+    assert_eq!(raw_bytes["inputSchema"]["properties"]["encoding"]["enum"],
+        json!(["base64", "hex"]));
     let tftp = tools
         .iter()
         .find(|tool| tool["name"] == "tftp")
