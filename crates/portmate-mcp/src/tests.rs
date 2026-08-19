@@ -154,6 +154,102 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
+    let root = std::env::temp_dir().join(format!("portmate-unified-transfer-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let store_path = root.join("portmate-store.sqlite3");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let received = Arc::new(Mutex::new(Vec::<IpcRequest>::new()));
+    let received_by_server = Arc::clone(&received);
+    let server_thread = thread::spawn(move || {
+        for index in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            stream.read_to_end(&mut raw).unwrap();
+            let request = serde_json::from_slice::<IpcRequest>(&raw).unwrap();
+            received_by_server.lock().unwrap().push(request);
+            let response = json!({
+                "ok": true,
+                "value": {
+                    "id": format!("transfer-{index}"),
+                    "sessionId": "refresh-session",
+                    "protocol": "xmodem",
+                    "source": "staged.bin",
+                    "destination": "load:loadx",
+                    "bytesTotal": 3,
+                    "bytesDone": 0,
+                    "status": "queued",
+                    "message": null
+                },
+                "error": null
+            });
+            stream
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .unwrap();
+        }
+    });
+    let mut server = content_upload_server(&root, "unified-transfer-client");
+    server.ipc = Some(IpcEndpointFile {
+        addr: address.to_string(),
+        token: Some("unified-transfer-token".to_string()),
+        token_ref: None,
+        store_path: store_path.display().to_string(),
+    });
+
+    server
+        .start_transfer_tool(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "source": root.join("firmware.bin").display().to_string(),
+            "destination": "load:loadx"
+        }))
+        .unwrap();
+    server
+        .start_transfer_tool(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "contentBase64": BASE64_STANDARD.encode(b"abc"),
+            "destination": "load:loadx"
+        }))
+        .unwrap();
+    let upload = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "destination": "load:loadx"
+        }))
+        .unwrap();
+    let upload_id = upload["uploadId"].as_str().unwrap();
+    server
+        .append_content_upload(&json!({
+            "uploadId": upload_id,
+            "offset": 0,
+            "contentBase64": BASE64_STANDARD.encode(b"abc")
+        }))
+        .unwrap();
+    server
+        .start_transfer_tool(&json!({ "uploadId": upload_id }))
+        .unwrap();
+
+    server_thread.join().unwrap();
+    let requests = received.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .all(|request| request.command == "start_transfer"));
+    assert!(requests[0].args.get("source").is_some());
+    assert!(requests[1].args.get("contentBase64").is_some());
+    assert_eq!(requests[2].args, json!({ "uploadId": upload_id }));
+    drop(requests);
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn content_upload_rejects_a_symlinked_private_root() {

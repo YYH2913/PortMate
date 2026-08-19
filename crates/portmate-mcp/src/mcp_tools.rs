@@ -218,7 +218,14 @@ impl PortMateMcp {
                     format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
                 }
             }
-            "tftp" | "start_transfer" | "start_content_transfer" => {
+            "start_transfer" => {
+                let value = self.start_transfer_tool(&arguments)?;
+                let transfer = serde_json::from_value::<TransferTask>(value)
+                    .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
+                serde_json::to_string_pretty(&redact_transfer_task(transfer))?
+            }
+            // Compatibility aliases remain callable but are intentionally omitted from tools/list.
+            "tftp" | "start_content_transfer" => {
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     let transfer = serde_json::from_value::<TransferTask>(value)
                         .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
@@ -383,6 +390,50 @@ impl PortMateMcp {
                 .map_err(Into::into);
         }
         Ok(None)
+    }
+
+    pub(super) fn start_transfer_tool(&self, arguments: &Value) -> Result<Value> {
+        let object = arguments
+            .as_object()
+            .ok_or_else(|| anyhow!("start_transfer arguments must be an object"))?;
+        let has_path = object.contains_key("source");
+        let has_inline = object.contains_key("fileName") || object.contains_key("contentBase64");
+        let has_upload = object.contains_key("uploadId");
+        let allowed_fields: &[&str] = match (has_path, has_inline, has_upload) {
+            (true, false, false) => {
+                &["sessionId", "protocol", "source", "destination"]
+            }
+            (false, true, false)
+                if object.contains_key("fileName") && object.contains_key("contentBase64") =>
+            {
+                &[
+                    "sessionId",
+                    "protocol",
+                    "fileName",
+                    "contentBase64",
+                    "destination",
+                ]
+            }
+            (false, false, true) => &["uploadId"],
+            _ => {
+                return Err(anyhow!(
+                    "start_transfer requires exactly one source: source, fileName plus contentBase64, or uploadId"
+                ))
+            }
+        };
+        if object
+            .keys()
+            .any(|key| !allowed_fields.contains(&key.as_str()))
+        {
+            return Err(anyhow!(
+                "start_transfer contains fields from another source mode"
+            ));
+        }
+        if has_upload {
+            return self.start_content_upload_transfer_with_command(arguments, "start_transfer");
+        }
+        self.call_ipc_value("start_transfer", arguments.clone())?
+            .ok_or_else(|| anyhow!("start_transfer was NOT executed: desktop IPC is not available"))
     }
 }
 

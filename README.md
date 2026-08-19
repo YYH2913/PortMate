@@ -239,7 +239,7 @@ For protocol payloads that must bypass terminal text handling, call `send_bytes`
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, TFTP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single public transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: `source` for a path, `fileName` plus `contentBase64` for inline content, or `uploadId` for a completed resumable upload. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP. The former `tftp`, `start_content_transfer`, and `start_content_upload_transfer` names remain callable compatibility aliases but are no longer advertised by `tools/list`.
 
 Upload with SFTP:
 
@@ -267,11 +267,12 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
-TFTP is also available directly from the desktop Transfer Tasks dialog. It starts a one-shot server on the PortMate host and drives U-Boot through any connected interactive session. MCP clients can call the dedicated `tftp` tool (or use the generic `start_transfer`/`start_content_transfer` forms) with either a local desktop `source` or inline content:
+TFTP is also available directly from the desktop Transfer Tasks dialog. It starts a one-shot server on the PortMate host and drives U-Boot through any connected interactive session. MCP clients select `protocol: "tftp"` in `start_transfer` with either a local desktop `source` or inline content:
 
 ```json
 {
   "sessionId": "board-uart",
+  "protocol": "tftp",
   "fileName": "firmware.bin",
   "contentBase64": "AAECAwQF...",
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
@@ -282,7 +283,7 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
 
 The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot honors `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
-For content produced on another MCP client, `start_content_transfer` is the small-file shortcut. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
+For content produced on another MCP client, use the inline source form of `start_transfer`. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 
 ```json
 {
@@ -317,7 +318,7 @@ Append standard-Base64 chunks in order. `offset` is the decoded byte offset and 
 }
 ```
 
-After the response reports `complete: true`, call `start_content_upload_transfer` with `{"uploadId":"..."}`. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
+After the response reports `complete: true`, call `start_transfer` with `{"uploadId":"..."}`. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
 
 Both workflows stage content in the desktop application's private data directory, validate safe file names and transfer routes, and remove staged content after use. The bytes are not included in MCP audit records or returned as client-supplied paths. SFTP/SCP destinations use `remote:` or `ssh:`, for example `remote:/tmp/firmware.bin`; TFTP and Modem destinations use constrained `load:` endpoints. Only the final transfer start follows the normal MCP write approval policy, so individual chunks do not create approval prompts. Staged-content tasks cannot be retried after the staging file is removed; start a new upload instead.
 

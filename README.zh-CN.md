@@ -239,7 +239,7 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、TFTP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一公开的启动工具。每次调用只能选择一种来源：路径使用 `source`，内联内容使用 `fileName + contentBase64`，已完成的分块上传使用 `uploadId`。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。旧的 `tftp`、`start_content_transfer`、`start_content_upload_transfer` 名称仍可供已有客户端兼容调用，但不再出现在 `tools/list`。
 
 SFTP 上传示例：
 
@@ -267,11 +267,12 @@ SFTP 上传示例：
 
 PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
 
-普通桌面模式也可直接在“传输任务”对话框中选择 TFTP。PortMate 会在本机启动一次性服务，并通过任意已连接的交互会话驱动 U-Boot。MCP 客户端可以调用专用的 `tftp` 工具（也兼容通用的 `start_transfer`/`start_content_transfer`），并选择本地桌面端 `source` 或内联内容：
+普通桌面模式也可直接在“传输任务”对话框中选择 TFTP。PortMate 会在本机启动一次性服务，并通过任意已连接的交互会话驱动 U-Boot。MCP 客户端在 `start_transfer` 中选择 `protocol: "tftp"`，并使用本地桌面端 `source` 或内联内容：
 
 ```json
 {
   "sessionId": "board-uart",
+  "protocol": "tftp",
   "fileName": "firmware.bin",
   "contentBase64": "AAECAwQF...",
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
@@ -282,7 +283,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 
-如果内容来自另一台电脑上的 MCP 客户端，`start_content_transfer` 是小文件快捷方式。它直接发送一段标准 Base64，不要求源文件已经位于桌面端电脑；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
+如果内容来自另一台电脑上的 MCP 客户端，使用 `start_transfer` 的内联来源形式。它直接发送一段标准 Base64，不要求源文件已经位于桌面端电脑；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
 
 ```json
 {
@@ -317,7 +318,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 }
 ```
 
-响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_content_upload_transfer`。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
+响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_transfer`。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
 
 两种流程都会在桌面应用的私有数据目录中暂存内容，校验安全文件名与传输路由，并在使用后删除暂存内容。文件字节不会进入 MCP 审计记录，也不会作为客户端提供的路径返回。SFTP/SCP 目标使用 `remote:` 或 `ssh:`，例如 `remote:/tmp/firmware.bin`；TFTP 和 Modem 目标使用受约束的 `load:` 端点。只有最终启动传输时才遵循 MCP 写操作审批策略，追加分块不会反复弹出审批。暂存文件被删除后不能直接重试任务，需要重新开始上传。
 

@@ -363,50 +363,25 @@ async fn execute_ipc_request_inner(
         "tftp" => {
             let normalized = normalize_mcp_tftp_args(&request.args)
                 .map_err(|error| format!("invalid TFTP request: {error}"))?;
+            let transfer = normalize_mcp_start_transfer_args(&normalized)
+                .map_err(|error| format!("invalid TFTP request: {error}"))?;
             let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
                 authorization_context,
             )?;
-            if normalized.get("contentBase64").is_some() {
-                let content_request = serde_json::from_value::<StartMcpContentTransferRequest>(normalized)
-                    .map_err(|error| format!("invalid TFTP content request: {error}"))?;
-                let (source, staging_path) = stage_mcp_content_transfer(&state, &content_request)?;
-                let transfer = StartTransferRequest {
-                    session_id: content_request.session_id,
-                    protocol: content_request.protocol,
-                    source,
-                    destination: content_request.destination,
-                };
-                match start_transfer_inner_with_staging(
-                    &state,
-                    transfer,
-                    Some(staging_path.clone()),
-                    Some(validation),
-                )
-                .await
-                {
-                    Ok(task) => serde_json::to_value(redact_transfer_task(task))
-                        .map_err(|error| error.to_string()),
-                    Err(error) => {
-                        let _ = fs::remove_file(&staging_path);
-                        let _ = staging_path
-                            .parent()
-                            .filter(|parent| parent.file_name().is_some())
-                            .map(fs::remove_dir);
-                        Err(error)
-                    }
-                }
-            } else {
-                let transfer = serde_json::from_value::<StartTransferRequest>(normalized)
-                    .map_err(|error| format!("invalid TFTP transfer request: {error}"))?;
-                let task = start_transfer_inner_with_validation(&state, transfer, Some(validation)).await?;
-                serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
-            }
+            let task = execute_mcp_start_transfer(
+                &state,
+                &request.client_id,
+                transfer,
+                validation,
+            )
+            .await?;
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "start_transfer" => {
-            let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
+            let transfer = normalize_mcp_start_transfer_args(&request.args)
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
             let validation = mcp_commit_validation(
                 &state,
@@ -414,8 +389,13 @@ async fn execute_ipc_request_inner(
                 execution_context,
                 authorization_context,
             )?;
-            let task =
-                start_transfer_inner_with_validation(&state, transfer, Some(validation)).await?;
+            let task = execute_mcp_start_transfer(
+                &state,
+                &request.client_id,
+                transfer,
+                validation,
+            )
+            .await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "start_content_transfer" => {
@@ -423,83 +403,42 @@ async fn execute_ipc_request_inner(
                 request.args.clone(),
             )
             .map_err(|error| format!("invalid content transfer request: {error}"))?;
+            let transfer = NormalizedMcpStartTransferRequest::Inline(content_request);
             let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
                 authorization_context,
             )?;
-            let (source, staging_path) = stage_mcp_content_transfer(&state, &content_request)?;
-            let transfer = StartTransferRequest {
-                session_id: content_request.session_id,
-                protocol: content_request.protocol,
-                source,
-                destination: content_request.destination,
-            };
-            match start_transfer_inner_with_staging(
+            let task = execute_mcp_start_transfer(
                 &state,
+                &request.client_id,
                 transfer,
-                Some(staging_path.clone()),
-                Some(validation),
+                validation,
             )
-            .await
-            {
-                Ok(task) => serde_json::to_value(redact_transfer_task(task))
-                    .map_err(|error| error.to_string()),
-                Err(error) => {
-                    let _ = fs::remove_file(&staging_path);
-                    let _ = staging_path
-                        .parent()
-                        .filter(|parent| parent.file_name().is_some())
-                        .map(fs::remove_dir);
-                    Err(error)
-                }
-            }
+            .await?;
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "start_content_upload_transfer" => {
             let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
                 request.args.clone(),
             )
             .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
+            let transfer = NormalizedMcpStartTransferRequest::Upload(transfer);
             let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
                 authorization_context,
             )?;
-            let metadata = load_mcp_content_upload_metadata(
+            let task = execute_mcp_start_transfer(
                 &state,
                 &request.client_id,
-                &transfer.upload_id,
-            )?;
-            let staging_state = state.clone();
-            let staging_metadata = metadata.clone();
-            let (source, staging_path) = tauri::async_runtime::spawn_blocking(move || {
-                stage_mcp_content_upload(&staging_state, &staging_metadata)
-            })
-            .await
-            .map_err(|error| format!("MCP content upload staging task failed: {error}"))??;
-            let transfer = StartTransferRequest {
-                session_id: metadata.session_id,
-                protocol: metadata.protocol,
-                source,
-                destination: metadata.destination,
-            };
-            match start_transfer_inner_with_staging(
-                &state,
                 transfer,
-                Some(staging_path.clone()),
-                Some(validation),
+                validation,
             )
-            .await
-            {
-                Ok(task) => serde_json::to_value(redact_transfer_task(task))
-                    .map_err(|error| error.to_string()),
-                Err(error) => {
-                    cleanup_staged_mcp_content_path(&staging_path);
-                    Err(error)
-                }
-            }
+            .await?;
+            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "cancel_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
@@ -721,6 +660,73 @@ async fn execute_ipc_request_inner(
             Ok(store.export_session_bundle_redacted(&session_id))
         }
         other => Err(format!("unsupported IPC command: {other}")),
+    }
+}
+
+async fn execute_mcp_start_transfer(
+    state: &AppState,
+    client_id: &str,
+    request: NormalizedMcpStartTransferRequest,
+    validation: CommitValidation,
+) -> Result<TransferTask, String> {
+    match request {
+        NormalizedMcpStartTransferRequest::Path(transfer) => {
+            start_transfer_inner_with_validation(state, transfer, Some(validation)).await
+        }
+        NormalizedMcpStartTransferRequest::Inline(content_request) => {
+            let (source, staging_path) = stage_mcp_content_transfer(state, &content_request)?;
+            let transfer = StartTransferRequest {
+                session_id: content_request.session_id,
+                protocol: content_request.protocol,
+                source,
+                destination: content_request.destination,
+            };
+            match start_transfer_inner_with_staging(
+                state,
+                transfer,
+                Some(staging_path.clone()),
+                Some(validation),
+            )
+            .await
+            {
+                Ok(task) => Ok(task),
+                Err(error) => {
+                    cleanup_staged_mcp_content_path(&staging_path);
+                    Err(error)
+                }
+            }
+        }
+        NormalizedMcpStartTransferRequest::Upload(upload) => {
+            let metadata =
+                load_mcp_content_upload_metadata(state, client_id, &upload.upload_id)?;
+            let staging_state = state.clone();
+            let staging_metadata = metadata.clone();
+            let (source, staging_path) = tauri::async_runtime::spawn_blocking(move || {
+                stage_mcp_content_upload(&staging_state, &staging_metadata)
+            })
+            .await
+            .map_err(|error| format!("MCP content upload staging task failed: {error}"))??;
+            let transfer = StartTransferRequest {
+                session_id: metadata.session_id,
+                protocol: metadata.protocol,
+                source,
+                destination: metadata.destination,
+            };
+            match start_transfer_inner_with_staging(
+                state,
+                transfer,
+                Some(staging_path.clone()),
+                Some(validation),
+            )
+            .await
+            {
+                Ok(task) => Ok(task),
+                Err(error) => {
+                    cleanup_staged_mcp_content_path(&staging_path);
+                    Err(error)
+                }
+            }
+        }
     }
 }
 

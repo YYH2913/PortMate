@@ -274,15 +274,12 @@ try {
     "list_transfers",
     "get_transfer",
     "start_transfer",
-    "start_content_transfer",
     "send_bytes",
     "begin_content_upload",
     "append_content_upload",
-    "start_content_upload_transfer",
     "cancel_content_upload",
     "cancel_transfer",
     "retry_transfer",
-    "tftp",
     "create_tunnel",
     "list_tunnels",
     "stop_tunnel",
@@ -295,6 +292,11 @@ try {
   const startTransfer = tools.tools.find((tool) => tool.name === "start_transfer");
   assert(startTransfer?.inputSchema?.properties?.protocol?.enum?.includes("tftp"),
     "start_transfer schema omitted TFTP");
+  assert(startTransfer?.inputSchema?.oneOf?.length === 3,
+    "start_transfer schema did not unify path, inline, and uploaded sources");
+  for (const legacyAlias of ["tftp", "start_content_transfer", "start_content_upload_transfer"]) {
+    assert(!toolNames.has(legacyAlias), `tools/list still advertises compatibility alias ${legacyAlias}`);
+  }
   const sendBytes = tools.tools.find((tool) => tool.name === "send_bytes");
   assert(sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("base64")
     && sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("hex"),

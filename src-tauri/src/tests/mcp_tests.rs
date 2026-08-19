@@ -135,6 +135,54 @@ fn dedicated_mcp_tftp_arguments_normalize_to_existing_transfer_routes() {
 }
 
 #[test]
+fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
+    assert!(matches!(
+        normalize_mcp_start_transfer_args(&serde_json::json!({
+            "sessionId": "board-uart",
+            "protocol": "xmodem",
+            "source": "/tmp/firmware.bin",
+            "destination": "load:loadx"
+        }))
+        .unwrap(),
+        NormalizedMcpStartTransferRequest::Path(_)
+    ));
+    assert!(matches!(
+        normalize_mcp_start_transfer_args(&serde_json::json!({
+            "sessionId": "board-uart",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE=",
+            "destination": "load:loadx"
+        }))
+        .unwrap(),
+        NormalizedMcpStartTransferRequest::Inline(_)
+    ));
+    assert!(matches!(
+        normalize_mcp_start_transfer_args(&serde_json::json!({
+            "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce"
+        }))
+        .unwrap(),
+        NormalizedMcpStartTransferRequest::Upload(_)
+    ));
+
+    for mixed in [
+        serde_json::json!({
+            "sessionId": "board-uart",
+            "protocol": "xmodem",
+            "source": "/tmp/firmware.bin",
+            "contentBase64": "AAE=",
+            "destination": "load:loadx"
+        }),
+        serde_json::json!({
+            "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce",
+            "sessionId": "board-uart"
+        }),
+    ] {
+        assert!(normalize_mcp_start_transfer_args(&mixed).is_err());
+    }
+}
+
+#[test]
 fn dedicated_mcp_send_bytes_decodes_base64_and_hex_without_text_framing() {
     assert_eq!(
         decode_mcp_direct_bytes(&serde_json::json!({

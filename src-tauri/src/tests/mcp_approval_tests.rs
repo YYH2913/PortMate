@@ -117,6 +117,7 @@ fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
         ("serial_send_break", McpScope::WriteInput, "write-input"),
         ("send_bytes", McpScope::WriteInput, "write-input"),
         ("cancel_transfer", McpScope::Transfer, "transfer"),
+        ("start_transfer", McpScope::Transfer, "transfer"),
         ("tftp", McpScope::Transfer, "transfer"),
         ("retry_transfer", McpScope::Transfer, "transfer"),
         (

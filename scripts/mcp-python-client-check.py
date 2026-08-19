@@ -74,14 +74,11 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         "list_transfers",
         "get_transfer",
         "start_transfer",
-        "start_content_transfer",
         "send_bytes",
         "begin_content_upload",
         "append_content_upload",
-        "start_content_upload_transfer",
         "cancel_transfer",
         "retry_transfer",
-        "tftp",
         "create_tunnel",
         "list_tunnels",
         "stop_tunnel",
@@ -95,6 +92,10 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     start_transfer_schema = sdk_field(start_transfer, "inputSchema", "input_schema")
     protocol_schema = start_transfer_schema.get("properties", {}).get("protocol", {})
     require("tftp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted TFTP")
+    require(len(start_transfer_schema.get("oneOf", [])) == 3,
+            f"{transport} start_transfer schema did not unify all source modes")
+    for legacy_alias in ("tftp", "start_content_transfer", "start_content_upload_transfer"):
+        require(legacy_alias not in tool_names, f"{transport} tools/list still advertises {legacy_alias}")
     send_bytes = next((tool for tool in tools.tools if tool.name == "send_bytes"), None)
     require(send_bytes is not None, f"{transport} tools/list omitted send_bytes definition")
     send_bytes_schema = sdk_field(send_bytes, "inputSchema", "input_schema")
