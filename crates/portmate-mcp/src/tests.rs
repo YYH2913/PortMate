@@ -164,7 +164,7 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
     let received = Arc::new(Mutex::new(Vec::<IpcRequest>::new()));
     let received_by_server = Arc::clone(&received);
     let server_thread = thread::spawn(move || {
-        for index in 0..3 {
+        for index in 0..4 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut raw = Vec::new();
             stream.read_to_end(&mut raw).unwrap();
@@ -210,8 +210,20 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
         .start_transfer_tool(&json!({
             "sessionId": "refresh-session",
             "protocol": "xmodem",
-            "fileName": "firmware.bin",
+            "fileName": "legacy-firmware.bin",
             "contentBase64": BASE64_STANDARD.encode(b"abc"),
+            "destination": "load:loadx"
+        }))
+        .unwrap();
+    server
+        .start_transfer_tool(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "source": {
+                "kind": "mcp",
+                "fileName": "firmware.bin",
+                "contentBase64": BASE64_STANDARD.encode(b"abc")
+            },
             "destination": "load:loadx"
         }))
         .unwrap();
@@ -239,15 +251,54 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
 
     server_thread.join().unwrap();
     let requests = received.lock().unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests
         .iter()
         .all(|request| request.command == "start_transfer"));
     assert!(requests[0].args.get("source").is_some());
-    assert!(requests[1].args.get("contentBase64").is_some());
-    assert_eq!(requests[2].args, json!({ "uploadId": upload_id }));
+    assert_eq!(
+        requests[1].args.get("fileName").and_then(Value::as_str),
+        Some("legacy-firmware.bin")
+    );
+    assert_eq!(
+        requests[2].args.get("source"),
+        Some(&json!({
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": BASE64_STANDARD.encode(b"abc")
+        }))
+    );
+    assert_eq!(requests[3].args, json!({ "uploadId": upload_id }));
     drop(requests);
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn start_transfer_rejects_malformed_virtual_sources_before_desktop_ipc() {
+    let root = std::env::temp_dir().join(format!("portmate-virtual-source-{}", Uuid::new_v4()));
+    let server = content_upload_server(&root, "virtual-source-client");
+    let request = |source| {
+        json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "source": source,
+            "destination": "load:loadx"
+        })
+    };
+
+    for source in [
+        json!({"kind": "path", "fileName": "firmware.bin", "contentBase64": "AAE="}),
+        json!({"kind": "mcp", "contentBase64": "AAE="}),
+        json!({"kind": "mcp", "fileName": "firmware.bin", "contentBase64": "AAE=", "path": "C:\\firmware.bin"}),
+        json!(["firmware.bin"]),
+    ] {
+        let error = server
+            .start_transfer_tool(&request(source))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("source"));
+        assert!(!error.contains("desktop IPC is not available"));
+    }
 }
 
 #[cfg(unix)]
@@ -286,11 +337,14 @@ fn desktop_ipc_request_budget_accepts_a_maximum_inline_content_envelope() {
         args: json!({
             "sessionId": "refresh-session",
             "protocol": "xmodem",
-            "fileName": "firmware.bin",
-            "contentBase64": BASE64_STANDARD.encode(vec![
-                0xa5;
-                MAX_MCP_CONTENT_TRANSFER_BYTES
-            ]),
+            "source": {
+                "kind": "mcp",
+                "fileName": "firmware.bin",
+                "contentBase64": BASE64_STANDARD.encode(vec![
+                    0xa5;
+                    MAX_MCP_CONTENT_TRANSFER_BYTES
+                ])
+            },
             "destination": "load:loadx"
         }),
     };

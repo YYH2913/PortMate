@@ -90,6 +90,15 @@ try {
     "start_transfer schema omitted TFTP");
   assert(startTransfer?.inputSchema?.oneOf?.length === 3,
     "start_transfer schema did not unify path, inline, and uploaded sources");
+  const sourceSchemas = startTransfer?.inputSchema?.properties?.source?.oneOf ?? [];
+  assert(sourceSchemas.some((schema) => schema.type === "string"),
+    "start_transfer schema omitted the desktop path source");
+  assert(sourceSchemas.some((schema) => schema.type === "object"
+    && schema.properties?.kind?.const === "mcp"
+    && schema.required?.includes("fileName")
+    && schema.required?.includes("contentBase64")
+    && schema.additionalProperties === false),
+    "start_transfer schema omitted the virtual MCP file source");
   const sendBytes = tools.tools.find((tool) => tool.name === "send_bytes");
   assert(sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("base64")
     && sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("hex"),

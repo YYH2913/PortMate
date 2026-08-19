@@ -32,11 +32,14 @@ fn stdio_reader_accepts_a_maximum_inline_content_envelope() {
             "arguments": {
                 "sessionId": "refresh-session",
                 "protocol": "xmodem",
-                "fileName": "firmware.bin",
-                "contentBase64": BASE64_STANDARD.encode(vec![
-                    0xa5;
-                    MAX_MCP_CONTENT_TRANSFER_BYTES
-                ]),
+                "source": {
+                    "kind": "mcp",
+                    "fileName": "firmware.bin",
+                    "contentBase64": BASE64_STANDARD.encode(vec![
+                        0xa5;
+                        MAX_MCP_CONTENT_TRANSFER_BYTES
+                    ])
+                },
                 "destination": "load:loadx"
             }
         }
@@ -401,11 +404,14 @@ fn http_parser_accepts_a_maximum_inline_content_envelope() {
             "arguments": {
                 "sessionId": "refresh-session",
                 "protocol": "xmodem",
-                "fileName": "firmware.bin",
-                "contentBase64": BASE64_STANDARD.encode(vec![
-                    0xa5;
-                    MAX_MCP_CONTENT_TRANSFER_BYTES
-                ]),
+                "source": {
+                    "kind": "mcp",
+                    "fileName": "firmware.bin",
+                    "contentBase64": BASE64_STANDARD.encode(vec![
+                        0xa5;
+                        MAX_MCP_CONTENT_TRANSFER_BYTES
+                    ])
+                },
                 "destination": "load:loadx"
             }
         }

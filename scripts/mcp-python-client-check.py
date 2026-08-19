@@ -91,6 +91,20 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     require("tftp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted TFTP")
     require(len(start_transfer_schema.get("oneOf", [])) == 3,
             f"{transport} start_transfer schema did not unify all source modes")
+    source_schemas = (
+        start_transfer_schema.get("properties", {})
+        .get("source", {})
+        .get("oneOf", [])
+    )
+    require(any(schema.get("type") == "string" for schema in source_schemas),
+            f"{transport} start_transfer schema omitted the desktop path source")
+    require(any(
+        schema.get("type") == "object"
+        and schema.get("properties", {}).get("kind", {}).get("const") == "mcp"
+        and {"fileName", "contentBase64"}.issubset(set(schema.get("required", [])))
+        and schema.get("additionalProperties") is False
+        for schema in source_schemas
+    ), f"{transport} start_transfer schema omitted the virtual MCP file source")
     send_bytes = next((tool for tool in tools.tools if tool.name == "send_bytes"), None)
     require(send_bytes is not None, f"{transport} tools/list omitted send_bytes definition")
     send_bytes_schema = sdk_field(send_bytes, "inputSchema", "input_schema")

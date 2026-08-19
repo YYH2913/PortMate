@@ -128,11 +128,14 @@ fn ipc_rejects_invalid_tokens_and_oversized_payloads_without_audit() {
             args: serde_json::json!({
                 "sessionId": session_id,
                 "protocol": "xmodem",
-                "fileName": "firmware.bin",
-                "contentBase64": BASE64_STANDARD.encode(vec![
-                    0xa5;
-                    portmate_core::MAX_MCP_CONTENT_TRANSFER_BYTES
-                ]),
+                "source": {
+                    "kind": "mcp",
+                    "fileName": "firmware.bin",
+                    "contentBase64": BASE64_STANDARD.encode(vec![
+                        0xa5;
+                        portmate_core::MAX_MCP_CONTENT_TRANSFER_BYTES
+                    ])
+                },
                 "destination": "load:loadx"
             }),
         })

@@ -6,6 +6,47 @@ pub(super) enum NormalizedMcpStartTransferRequest {
     Upload(StartMcpContentUploadTransferRequest),
 }
 
+fn normalize_mcp_virtual_content_source(
+    args: &serde_json::Value,
+) -> Result<StartMcpContentTransferRequest, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "start_transfer arguments must be a JSON object".to_string())?;
+    let source = object
+        .get("source")
+        .cloned()
+        .ok_or_else(|| "virtual MCP source is missing".to_string())?;
+    let source: McpVirtualFileSource = serde_json::from_value(source)
+        .map_err(|error| format!("invalid virtual MCP source: {error}"))?;
+    let McpVirtualFileSource::Mcp {
+        file_name,
+        content_base64,
+    } = source;
+    let session_id = object
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "virtual MCP source requires sessionId".to_string())?
+        .to_string();
+    let protocol = object
+        .get("protocol")
+        .cloned()
+        .ok_or_else(|| "virtual MCP source requires protocol".to_string())?;
+    let protocol: TransferProtocol = serde_json::from_value(protocol)
+        .map_err(|error| format!("invalid virtual MCP source protocol: {error}"))?;
+    let destination = object
+        .get("destination")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "virtual MCP source requires destination".to_string())?
+        .to_string();
+    Ok(StartMcpContentTransferRequest {
+        session_id,
+        protocol,
+        file_name,
+        content_base64,
+        destination,
+    })
+}
+
 pub(super) fn normalize_mcp_start_transfer_args(
     args: &serde_json::Value,
 ) -> Result<NormalizedMcpStartTransferRequest, String> {
@@ -13,6 +54,9 @@ pub(super) fn normalize_mcp_start_transfer_args(
         .as_object()
         .ok_or_else(|| "start_transfer arguments must be a JSON object".to_string())?;
     let has_path = object.contains_key("source");
+    let has_virtual_source = object
+        .get("source")
+        .is_some_and(serde_json::Value::is_object);
     let has_inline = object.contains_key("fileName") || object.contains_key("contentBase64");
     let has_upload = object.contains_key("uploadId");
     let allowed_fields: &[&str] = match (has_path, has_inline, has_upload) {
@@ -41,6 +85,10 @@ pub(super) fn normalize_mcp_start_transfer_args(
         .any(|key| !allowed_fields.contains(&key.as_str()))
     {
         return Err("start_transfer contains fields from another source mode".to_string());
+    }
+    if has_path && has_virtual_source {
+        return normalize_mcp_virtual_content_source(args)
+            .map(NormalizedMcpStartTransferRequest::Inline);
     }
     if has_path {
         return serde_json::from_value(args.clone())

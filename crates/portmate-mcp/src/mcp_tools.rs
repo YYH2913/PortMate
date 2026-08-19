@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use portmate_core::{
     redact_secrets, redact_session_event, redact_session_events, redact_transfer_task,
     CustomScriptSummary, McpScope, SessionEvent, SessionSummary, TransferTask,
+    MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
 };
 use serde_json::{json, Value};
 
@@ -373,11 +374,61 @@ impl PortMateMcp {
                 "start_transfer contains fields from another source mode"
             ));
         }
+        if let Some(source) = object.get("source") {
+            validate_start_transfer_source(source)?;
+        }
         if has_upload {
             return self.start_completed_upload_transfer(arguments);
         }
         self.call_ipc_value("start_transfer", arguments.clone())?
             .ok_or_else(|| anyhow!("start_transfer was NOT executed: desktop IPC is not available"))
+    }
+}
+
+fn validate_start_transfer_source(source: &Value) -> Result<()> {
+    match source {
+        Value::String(path) if !path.is_empty() && path.len() <= 32 * 1024 => Ok(()),
+        Value::String(_) => Err(anyhow!(
+            "start_transfer source path must be non-empty and at most 32768 bytes"
+        )),
+        Value::Object(object) => {
+            let required = ["kind", "fileName", "contentBase64"];
+            if object.len() != required.len()
+                || required.iter().any(|field| !object.contains_key(*field))
+            {
+                return Err(anyhow!(
+                    "virtual MCP source must contain only kind, fileName, and contentBase64"
+                ));
+            }
+            if object.get("kind").and_then(Value::as_str) != Some("mcp") {
+                return Err(anyhow!("virtual MCP source kind must be `mcp`"));
+            }
+            let file_name = object
+                .get("fileName")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("virtual MCP source fileName must be a string"))?;
+            if file_name.is_empty() || file_name.len() > 255 {
+                return Err(anyhow!(
+                    "virtual MCP source fileName must be non-empty and at most 255 bytes"
+                ));
+            }
+            let content_base64 = object
+                .get("contentBase64")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("virtual MCP source contentBase64 must be a string"))?;
+            if content_base64.is_empty()
+                || content_base64.len() > MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
+            {
+                return Err(anyhow!(
+                    "virtual MCP source contentBase64 must be non-empty and at most {} bytes",
+                    MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "start_transfer source must be a desktop path string or a virtual MCP file object"
+        )),
     }
 }
 

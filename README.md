@@ -239,7 +239,7 @@ For protocol payloads that must bypass terminal text handling, call `send_bytes`
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: `source` for a path, `fileName` plus `contentBase64` for inline content, or `uploadId` for a completed resumable upload. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: a string `source` path, a virtual MCP file in `source: { kind: "mcp", fileName, contentBase64 }`, legacy top-level `fileName` plus `contentBase64`, or `uploadId` for a completed resumable upload. The virtual form sends bytes in the MCP request and never resolves a client path or requires a user-selected folder on the PortMate desktop host. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed string paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP.
 
 Upload with SFTP:
 
@@ -273,8 +273,11 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
 {
   "sessionId": "board-uart",
   "protocol": "tftp",
-  "fileName": "firmware.bin",
-  "contentBase64": "AAECAwQF...",
+  "source": {
+    "kind": "mcp",
+    "fileName": "firmware.bin",
+    "contentBase64": "AAECAwQF..."
+  },
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
 }
 ```
@@ -283,14 +286,17 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
 
 The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot honors `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
-For content produced on another MCP client, use the inline source form of `start_transfer`. It sends one standard Base64 value without requiring the source to exist on the desktop host. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
+For content produced on another MCP client, use the virtual source form of `start_transfer`. It sends one standard Base64 value without requiring the source to exist on the desktop host or granting access to a local folder. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 
 ```json
 {
   "sessionId": "board-uart",
   "protocol": "xmodem",
-  "fileName": "firmware.bin",
-  "contentBase64": "AAECAwQF...",
+  "source": {
+    "kind": "mcp",
+    "fileName": "firmware.bin",
+    "contentBase64": "AAECAwQF..."
+  },
   "destination": "load:loadx?address=0x80000000"
 }
 ```

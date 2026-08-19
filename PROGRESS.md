@@ -702,6 +702,8 @@ Trigger 本地命令完成结果和异步 `send_text` 批次失败现绑定触�
 
 Local/Dynamic tunnel 的异步客户端失败事件现绑定 tunnel ID、SSH runtime ID 与专属 `closed` Arc 组成的精确 runtime generation；旧客户端在 tunnel 停止、同 ID 重建或父 SSH 换代后迟到失败时，只更新旧代际自身的 metrics，不再把诊断追加到替代连接的事件历史。Store 与 tunnel registry 按既有锁顺序完成所有权复核，新代际安装不能插入复核与事件提交之间。回归覆盖当前、同 SSH runtime 替代和旧代际拒绝；25 项 tunnel 专项（含真实 OpenSSH SFTP/SCP 与三模式 tunnel 端到端）、release-source、Rustfmt、diff whitespace gate 和 workspace all-targets Clippy `-D warnings` 均通过。
 
+MCP `start_transfer` 现支持 `source: { kind: "mcp", fileName, contentBase64 }` 虚拟文件来源：客户端字节随 MCP 请求直接进入桌面端私有暂存，不解析客户端 Windows/Linux 路径，也不要求选择或授权 PortMate 主机文件夹；任务完成、失败或取消后沿用既有暂存清理。字符串 `source` 继续表示 PortMate 主机路径，旧顶层 `fileName + contentBase64` 保持兼容，超过 4 MiB 的内容继续使用 512 MiB 可续传 upload 流程。schema、stdio/HTTP/Python SDK、bridge/IPC 最大 envelope、错误 kind/缺字段/额外字段/来源混用和路径误判均有回归覆盖。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

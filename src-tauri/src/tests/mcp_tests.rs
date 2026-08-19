@@ -132,6 +132,24 @@ fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
         .unwrap(),
         NormalizedMcpStartTransferRequest::Inline(_)
     ));
+    let virtual_source = normalize_mcp_start_transfer_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "protocol": "xmodem",
+        "source": {
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE="
+        },
+        "destination": "load:loadx"
+    }))
+    .unwrap();
+    match virtual_source {
+        NormalizedMcpStartTransferRequest::Inline(request) => {
+            assert_eq!(request.file_name, "firmware.bin");
+            assert_eq!(request.content_base64, "AAE=");
+        }
+        _ => panic!("virtual MCP source was treated as a path"),
+    }
     assert!(matches!(
         normalize_mcp_start_transfer_args(&serde_json::json!({
             "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce"
@@ -149,11 +167,49 @@ fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
             "destination": "load:loadx"
         }),
         serde_json::json!({
+            "sessionId": "board-uart",
+            "protocol": "xmodem",
+            "source": {
+                "kind": "mcp",
+                "fileName": "firmware.bin",
+                "contentBase64": "AAE="
+            },
+            "fileName": "mixed.bin",
+            "contentBase64": "AAE=",
+            "destination": "load:loadx"
+        }),
+        serde_json::json!({
             "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce",
             "sessionId": "board-uart"
         }),
     ] {
         assert!(normalize_mcp_start_transfer_args(&mixed).is_err());
+    }
+
+    for source in [
+        serde_json::json!({
+            "kind": "path",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE="
+        }),
+        serde_json::json!({
+            "kind": "mcp",
+            "contentBase64": "AAE="
+        }),
+        serde_json::json!({
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE=",
+            "path": "C:\\firmware.bin"
+        }),
+    ] {
+        assert!(normalize_mcp_start_transfer_args(&serde_json::json!({
+            "sessionId": "board-uart",
+            "protocol": "xmodem",
+            "source": source,
+            "destination": "load:loadx"
+        }))
+        .is_err());
     }
 }
 

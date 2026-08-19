@@ -239,7 +239,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer from exactly one source: a `source` path, inline `fileName` plus `contentBase64`, or a completed resumable `uploadId`. Path transfers require sessionId, protocol, source, and destination. At least one endpoint must use `remote:`, `ssh:`, or a constrained `load:` receiver; unprefixed paths are local to the PortMate desktop host. Inline transfers are limited to 4 MiB. Uploaded transfers reuse the session, protocol, name, and destination declared by begin_content_upload. TFTP uses destination `load:tftpboot`; Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. Poll get_transfer for completion.",
+            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer from exactly one source: a path string, a virtual MCP file object, legacy inline fields, or a completed resumable uploadId. Use `source: {kind: \"mcp\", fileName, contentBase64}` to pass client-held bytes without resolving a client path or selecting a local folder on the PortMate desktop host. Path transfers require sessionId, protocol, source, and destination. At least one endpoint must use `remote:`, `ssh:`, or a constrained `load:` receiver. Virtual and legacy inline transfers are limited to 4 MiB; larger client-held files use begin_content_upload and append_content_upload. TFTP uses destination `load:tftpboot`; Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. Poll get_transfer for completion.",
             json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -260,7 +260,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
-                    "source":{"type":"string","minLength":1,"maxLength":32768},
+                    "source":{"oneOf":[{"type":"string","minLength":1,"maxLength":32768},{"type":"object","required":["kind","fileName","contentBase64"],"additionalProperties":false,"properties":{"kind":{"type":"string","const":"mcp"},"fileName":{"type":"string","minLength":1,"maxLength":255},"contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH}}}]},
                     "fileName":{"type":"string","minLength":1,"maxLength":255},
                     "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
                     "destination":{"type":"string","minLength":1,"maxLength":32768},
@@ -713,8 +713,18 @@ mod tests {
 
         let transfer = definition("start_transfer");
         assert_eq!(
-            transfer.input_schema["properties"]["source"]["maxLength"],
+            transfer.input_schema["properties"]["source"]["oneOf"][0]["maxLength"],
             32_768
+        );
+        assert_eq!(
+            transfer.input_schema["properties"]["source"]["oneOf"][1]["properties"]["kind"]
+                ["const"],
+            "mcp"
+        );
+        assert_eq!(
+            transfer.input_schema["properties"]["source"]["oneOf"][1]["properties"]
+                ["contentBase64"]["maxLength"],
+            MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
         );
         assert!(transfer.input_schema["properties"]["protocol"]["enum"]
             .as_array()

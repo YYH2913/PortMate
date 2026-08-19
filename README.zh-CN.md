@@ -239,7 +239,7 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一的启动工具。每次调用只能选择一种来源：路径使用 `source`，内联内容使用 `fileName + contentBase64`，已完成的分块上传使用 `uploadId`。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一的启动工具。每次调用只能选择一种来源：字符串路径使用 `source`，虚拟 MCP 文件使用 `source: { kind: "mcp", fileName, contentBase64 }`，旧版内联内容使用顶层 `fileName + contentBase64`，大文件使用 `uploadId`。虚拟来源的字节直接随 MCP 请求透传，不会在 PortMate 桌面端解析客户端路径，也不要求用户选择或授权本地文件夹。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀字符串路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。
 
 SFTP 上传示例：
 
@@ -273,8 +273,11 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 {
   "sessionId": "board-uart",
   "protocol": "tftp",
-  "fileName": "firmware.bin",
-  "contentBase64": "AAECAwQF...",
+  "source": {
+    "kind": "mcp",
+    "fileName": "firmware.bin",
+    "contentBase64": "AAECAwQF..."
+  },
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
 }
 ```
@@ -283,14 +286,17 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 
-如果内容来自另一台电脑上的 MCP 客户端，使用 `start_transfer` 的内联来源形式。它直接发送一段标准 Base64，不要求源文件已经位于桌面端电脑；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
+如果内容来自另一台电脑上的 MCP 客户端，使用 `start_transfer` 的虚拟来源形式。它直接发送一段标准 Base64，不要求源文件位于桌面端电脑，也不需要授权本地文件夹；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
 
 ```json
 {
   "sessionId": "board-uart",
   "protocol": "xmodem",
-  "fileName": "firmware.bin",
-  "contentBase64": "AAECAwQF...",
+  "source": {
+    "kind": "mcp",
+    "fileName": "firmware.bin",
+    "contentBase64": "AAECAwQF..."
+  },
   "destination": "load:loadx?address=0x80000000"
 }
 ```
