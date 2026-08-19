@@ -80,6 +80,7 @@ try {
     "cancel_content_upload",
     "cancel_transfer",
     "retry_transfer",
+    "tftp",
     "create_tunnel",
     "list_tunnels",
     "stop_tunnel",

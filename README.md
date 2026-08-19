@@ -257,12 +257,11 @@ For a U-Boot-style device receiver, upload a local file with the matching Modem 
 
 PortMate sends the device command before starting the protocol. A `baud` parameter is accepted only for a connected serial session; PortMate switches the local port for the transfer and restores its original rate afterward. The endpoint grammar cannot contain an arbitrary shell command.
 
-TFTP is also available directly from the desktop Transfer Tasks dialog. It starts a one-shot server on the PortMate host and drives U-Boot through any connected interactive session. The same runtime is exposed to MCP through local-file, inline-content, and resumable-upload transfers:
+TFTP is also available directly from the desktop Transfer Tasks dialog. It starts a one-shot server on the PortMate host and drives U-Boot through any connected interactive session. MCP clients can call the dedicated `tftp` tool (or use the generic `start_transfer`/`start_content_transfer` forms) with either a local desktop `source` or inline content:
 
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "tftp",
   "fileName": "firmware.bin",
   "contentBase64": "AAECAwQF...",
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"

@@ -252,6 +252,28 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "tftp",
+            "TFTP Transfer",
+            "Start a one-shot TFTP transfer from a local desktop file or inline Base64 content. The destination must be a constrained `load:tftpboot` receiver; PortMate starts the temporary server, drives U-Boot through the connected session, and closes the server when the task finishes. Provide either `source` for a local file or both `fileName` and `contentBase64` for content supplied by the MCP client. Poll `get_transfer` for final bytesDone, status, and message.",
+            json!({
+                "type":"object",
+                "required":["sessionId","destination"],
+                "additionalProperties":false,
+                "oneOf":[
+                    {"required":["source"]},
+                    {"required":["fileName","contentBase64"]}
+                ],
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "source":{"type":"string","minLength":1,"maxLength":32768},
+                    "fileName":{"type":"string","minLength":1,"maxLength":255},
+                    "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
+                    "destination":{"type":"string","minLength":1,"maxLength":32768}
+                }
+            }),
+            false,
+        ),
+        tool(
             "start_content_transfer",
             "Start Content Transfer",
             "Start a small transfer from inline Base64 content supplied by the MCP client. The decoded payload is limited to 4 MiB. For larger files, use begin_content_upload, append_content_upload, and start_content_upload_transfer. TFTP starts a one-shot server on the PortMate host and drives U-Boot through the connected session; poll get_transfer for final bytesDone, status, and message. The destination must be a remote:/ssh: endpoint or a constrained load: receiver.",
@@ -797,6 +819,14 @@ mod tests {
         assert!(transfer.description.contains(
             "At least one side must use a `remote:`, `ssh:`, or constrained `load:` endpoint"
         ));
+        let tftp = definition("tftp");
+        assert!(!tftp.read_only);
+        assert_eq!(
+            tftp.input_schema["required"],
+            json!(["sessionId", "destination"])
+        );
+        assert_eq!(tftp.input_schema["oneOf"].as_array().map(Vec::len), Some(2));
+        assert!(tftp.description.contains("one-shot TFTP"));
         let content_transfer = definition("start_content_transfer");
         assert_eq!(
             content_transfer.input_schema["properties"]["contentBase64"]["maxLength"],

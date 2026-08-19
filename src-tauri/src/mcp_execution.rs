@@ -339,6 +339,51 @@ async fn execute_ipc_request_inner(
                 close_session_inner_with_validation(&state, session_id, Some(validations)).await?;
             serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
         }
+        "tftp" => {
+            let normalized = normalize_mcp_tftp_args(&request.args)
+                .map_err(|error| format!("invalid TFTP request: {error}"))?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            if normalized.get("contentBase64").is_some() {
+                let content_request = serde_json::from_value::<StartMcpContentTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP content request: {error}"))?;
+                let (source, staging_path) = stage_mcp_content_transfer(&state, &content_request)?;
+                let transfer = StartTransferRequest {
+                    session_id: content_request.session_id,
+                    protocol: content_request.protocol,
+                    source,
+                    destination: content_request.destination,
+                };
+                match start_transfer_inner_with_staging(
+                    &state,
+                    transfer,
+                    Some(staging_path.clone()),
+                    Some(validation),
+                )
+                .await
+                {
+                    Ok(task) => serde_json::to_value(redact_transfer_task(task))
+                        .map_err(|error| error.to_string()),
+                    Err(error) => {
+                        let _ = fs::remove_file(&staging_path);
+                        let _ = staging_path
+                            .parent()
+                            .filter(|parent| parent.file_name().is_some())
+                            .map(fs::remove_dir);
+                        Err(error)
+                    }
+                }
+            } else {
+                let transfer = serde_json::from_value::<StartTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP transfer request: {error}"))?;
+                let task = start_transfer_inner_with_validation(&state, transfer, Some(validation)).await?;
+                serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
+            }
+        }
         "start_transfer" => {
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;

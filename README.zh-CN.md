@@ -257,12 +257,11 @@ SFTP 上传示例：
 
 PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用于已连接的串口会话；PortMate 会为传输切换本地串口速率，并在结束后恢复原速率。该端点语法不能携带任意 Shell 命令。
 
-普通桌面模式也可直接在“传输任务”对话框中选择 TFTP。PortMate 会在本机启动一次性服务，并通过任意已连接的交互会话驱动 U-Boot；MCP 的本地文件、内联内容和可续传上传入口复用同一个运行时：
+普通桌面模式也可直接在“传输任务”对话框中选择 TFTP。PortMate 会在本机启动一次性服务，并通过任意已连接的交互会话驱动 U-Boot。MCP 客户端可以调用专用的 `tftp` 工具（也兼容通用的 `start_transfer`/`start_content_transfer`），并选择本地桌面端 `source` 或内联内容：
 
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "tftp",
   "fileName": "firmware.bin",
   "contentBase64": "AAECAwQF...",
   "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"

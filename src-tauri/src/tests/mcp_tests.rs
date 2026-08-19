@@ -106,6 +106,35 @@ fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
 }
 
 #[test]
+fn dedicated_mcp_tftp_arguments_normalize_to_existing_transfer_routes() {
+    let local = normalize_mcp_tftp_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "source": "/tmp/firmware.bin",
+        "destination": "load:tftpboot?deviceIp=192.168.1.10"
+    }))
+    .unwrap();
+    assert_eq!(local["protocol"], "tftp");
+    assert!(serde_json::from_value::<StartTransferRequest>(local).is_ok());
+
+    let inline = normalize_mcp_tftp_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "fileName": "firmware.bin",
+        "contentBase64": "AAE=",
+        "destination": "load:tftpboot?deviceIp=192.168.1.10"
+    }))
+    .unwrap();
+    assert_eq!(inline["protocol"], "tftp");
+    assert!(serde_json::from_value::<StartMcpContentTransferRequest>(inline).is_ok());
+    assert!(normalize_mcp_tftp_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "source": "/tmp/fw.bin",
+        "contentBase64": "AAE=",
+        "destination": "load:tftpboot?deviceIp=192.168.1.10"
+    }))
+    .is_err());
+}
+
+#[test]
 fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() {
     tauri::async_runtime::block_on(async {
         let root =

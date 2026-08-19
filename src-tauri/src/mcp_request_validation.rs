@@ -1,5 +1,40 @@
 use super::*;
 
+pub(super) fn normalize_mcp_tftp_args(
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "TFTP MCP arguments must be a JSON object".to_string())?;
+    let has_source = object.get("source").is_some();
+    let has_file_name = object.get("fileName").is_some();
+    let has_content = object.get("contentBase64").is_some();
+    if has_source == (has_file_name || has_content) {
+        return Err(
+            "TFTP MCP requires either source or both fileName and contentBase64, but not both"
+                .to_string(),
+        );
+    }
+    if has_file_name != has_content {
+        return Err("TFTP MCP inline content requires both fileName and contentBase64".to_string());
+    }
+    if has_source && object.get("source").and_then(serde_json::Value::as_str).is_none() {
+        return Err("TFTP MCP source must be a local file path string".to_string());
+    }
+    if has_file_name
+        && (object.get("fileName").and_then(serde_json::Value::as_str).is_none()
+            || object
+                .get("contentBase64")
+                .and_then(serde_json::Value::as_str)
+                .is_none())
+    {
+        return Err("TFTP MCP inline content requires string fileName and contentBase64".to_string());
+    }
+    let mut normalized = object.clone();
+    normalized.insert("protocol".to_string(), serde_json::json!("tftp"));
+    Ok(serde_json::Value::Object(normalized))
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) enum McpWriteExecutionContext {
     #[default]
@@ -170,6 +205,7 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
         }
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
         "start_transfer"
+        | "tftp"
         | "start_content_transfer"
         | "start_content_upload_transfer"
         | "cancel_transfer"
@@ -239,6 +275,18 @@ pub(super) fn validate_ipc_write_args(
             let transfer = serde_json::from_value::<StartTransferRequest>(request.args.clone())
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
             validate_mcp_transfer_route(&transfer)?;
+        }
+        "tftp" => {
+            let normalized = normalize_mcp_tftp_args(&request.args)?;
+            if normalized.get("contentBase64").is_some() {
+                let transfer = serde_json::from_value::<StartMcpContentTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP content request: {error}"))?;
+                validate_mcp_content_transfer_request(&transfer)?;
+            } else {
+                let transfer = serde_json::from_value::<StartTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP transfer request: {error}"))?;
+                validate_mcp_transfer_route(&transfer)?;
+            }
         }
         "start_content_transfer" => {
             let transfer = serde_json::from_value::<StartMcpContentTransferRequest>(
@@ -339,6 +387,18 @@ pub(super) fn ipc_write_session_id(
                 &transfer.upload_id,
             )?
             .session_id))
+        }
+        "tftp" => {
+            let normalized = normalize_mcp_tftp_args(&request.args)?;
+            if normalized.get("contentBase64").is_some() {
+                Ok(Some(serde_json::from_value::<StartMcpContentTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP content request: {error}"))?
+                    .session_id))
+            } else {
+                Ok(Some(serde_json::from_value::<StartTransferRequest>(normalized)
+                    .map_err(|error| format!("invalid TFTP transfer request: {error}"))?
+                    .session_id))
+            }
         }
         "cancel_transfer" | "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?;

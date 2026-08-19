@@ -12,6 +12,7 @@ const actionLabels: Record<string, string> = {
   open_session: "打开会话",
   close_session: "断开会话",
   start_transfer: "启动文件传输",
+  tftp: "启动 TFTP 传输",
   start_content_transfer: "启动内联内容传输",
   start_content_upload_transfer: "启动分块内容传输",
   cancel_transfer: "取消文件传输",

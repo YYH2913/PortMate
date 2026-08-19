@@ -54,6 +54,14 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
     assert!(transfer["inputSchema"]["properties"]["protocol"]["enum"]
         .as_array()
         .is_some_and(|protocols| protocols.iter().any(|protocol| protocol == "tftp")));
+    let tftp = tools
+        .iter()
+        .find(|tool| tool["name"] == "tftp")
+        .expect("tools/list omitted dedicated tftp tool");
+    assert_eq!(tftp["annotations"]["readOnlyHint"], false);
+    assert!(tftp["inputSchema"]["oneOf"]
+        .as_array()
+        .is_some_and(|variants| variants.len() == 2));
     let tunnel = tools
         .iter()
         .find(|tool| tool["name"] == "create_tunnel")

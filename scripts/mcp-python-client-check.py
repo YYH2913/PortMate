@@ -80,6 +80,7 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         "start_content_upload_transfer",
         "cancel_transfer",
         "retry_transfer",
+        "tftp",
         "create_tunnel",
         "list_tunnels",
         "stop_tunnel",
