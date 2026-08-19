@@ -84,12 +84,32 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
 }
 
 #[test]
-fn removed_transfer_tool_names_are_not_callable() {
+fn removed_legacy_tool_names_are_not_advertised_or_callable() {
+    let response = handle_http_json_rpc(json!({
+        "jsonrpc": "2.0",
+        "id": "removed-tools",
+        "method": "tools/list",
+        "params": {}
+    }))
+    .unwrap()
+    .unwrap();
+    let advertised = response["result"]["tools"]
+        .as_array()
+        .expect("tools/list response");
     for name in [
+        concat!("open", "_session"),
+        concat!("close", "_session"),
+        concat!("create_host", "_route"),
+        concat!("list_host", "_routes"),
+        concat!("stop_host", "_route"),
         concat!("tf", "tp"),
         concat!("start_content", "_transfer"),
         concat!("start_content_upload", "_transfer"),
     ] {
+        assert!(
+            !advertised.iter().any(|tool| tool["name"] == name),
+            "tools/list still advertises removed tool {name}"
+        );
         let mut server = PortMateMcp {
             store: test_snapshot_store("removed tool"),
             store_path: None,
@@ -428,7 +448,7 @@ fn tunnel_read_scope_returns_a_stable_empty_list_without_desktop_ipc() {
     assert_eq!(response["content"][0]["text"], "[]");
     let host_routes = server
         .tool_call(&json!({
-            "name": "list_host_routes",
+            "name": "list_tunnels",
             "arguments": {}
         }))
         .unwrap();
@@ -443,7 +463,7 @@ fn tunnel_read_scope_returns_a_stable_empty_list_without_desktop_ipc() {
         .is_ok());
     assert!(server
         .tool_call(&json!({
-            "name": "list_host_routes",
+            "name": "list_tunnels",
             "arguments": {}
         }))
         .is_ok());

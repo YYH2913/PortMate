@@ -1,9 +1,8 @@
 use super::{desktop_ipc::ipc_value_to_text, PortMateMcp};
 use anyhow::{anyhow, Result};
 use portmate_core::{
-    redact_secrets, redact_session_event, redact_session_events, redact_session_summary,
-    redact_transfer_task, CustomScriptSummary, McpScope, SessionEvent, SessionSummary,
-    TransferTask,
+    redact_secrets, redact_session_event, redact_session_events, redact_transfer_task,
+    CustomScriptSummary, McpScope, SessionEvent, SessionSummary, TransferTask,
 };
 use serde_json::{json, Value};
 
@@ -208,16 +207,6 @@ impl PortMateMcp {
                     )?
                 }
             }
-            "open_session" | "close_session" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    let summary = serde_json::from_value::<SessionSummary>(value)
-                        .map_err(|error| anyhow!("invalid desktop session response: {error}"))?;
-                    serde_json::to_string_pretty(&redact_session_summary(summary))?
-                } else {
-                    is_error = true;
-                    format!("{name} was NOT executed: desktop IPC is not available, so no session state changed.")
-                }
-            }
             "start_transfer" => {
                 let value = self.start_transfer_tool(&arguments)?;
                 let transfer = serde_json::from_value::<TransferTask>(value)
@@ -286,32 +275,6 @@ impl PortMateMcp {
                 } else {
                     is_error = true;
                     "stop_tunnel was NOT executed: desktop IPC is not available, so no forward or proxy was stopped."
-                        .to_string()
-                }
-            }
-            "create_host_route" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    redact_secrets(&ipc_value_to_text(value)?)
-                } else {
-                    is_error = true;
-                    "create_host_route was NOT executed: desktop IPC is not available, so no PortMate host route was created."
-                        .to_string()
-                }
-            }
-            "list_host_routes" => {
-                self.guard_read_scope(McpScope::ReadTunnels, None)?;
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    redact_secrets(&ipc_value_to_text(value)?)
-                } else {
-                    serde_json::to_string_pretty(&Vec::<Value>::new())?
-                }
-            }
-            "stop_host_route" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    redact_secrets(&ipc_value_to_text(value)?)
-                } else {
-                    is_error = true;
-                    "stop_host_route was NOT executed: desktop IPC is not available, so no PortMate host route was stopped."
                         .to_string()
                 }
             }

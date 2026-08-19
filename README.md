@@ -324,7 +324,7 @@ Both workflows stage content in the desktop application's private data directory
 
 ### Route-Specific Forwarding And Proxy
 
-`create_tunnel`, `list_tunnels`, and `stop_tunnel` expose both route boundaries. Use `egress: "ssh"` with a connected, authorized SSH or Tmux `sessionId`, or use `egress: "portmate-host"` without a session to reach TCP targets available directly from the machine running PortMate. The older `create_host_route`, `list_host_routes`, and `stop_host_route` names remain compatible aliases. Neither boundary modifies the operating system routing table.
+`create_tunnel`, `list_tunnels`, and `stop_tunnel` expose both route boundaries. Use `egress: "ssh"` with a connected, authorized SSH or Tmux `sessionId`, or use `egress: "portmate-host"` without a session to reach TCP targets available directly from the machine running PortMate. Neither boundary modifies the operating system routing table.
 
 Local forwarding sends one local listener to a fixed target through SSH:
 
@@ -376,7 +376,7 @@ For a fixed route reachable from the PortMate host, call the same tool with `egr
 }
 ```
 
-For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host routes are runtime-only and owned by the normalized MCP Client ID: another client cannot list or stop them. They survive terminal session disconnects and stop through `stop_tunnel` (or the compatible `stop_host_route`) or when PortMate exits; they are never restored from a saved profile.
+For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host routes are runtime-only and owned by the normalized MCP Client ID: another client cannot list or stop them. They survive terminal session disconnects and stop through `stop_tunnel` or when PortMate exits; they are never restored from a saved profile.
 
 ```json
 {

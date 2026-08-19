@@ -217,20 +217,6 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
-            "open_session",
-            "Open Session",
-            "Open a saved session profile.",
-            session_schema(),
-            false,
-        ),
-        tool(
-            "close_session",
-            "Close Session",
-            "Close a running session.",
-            session_schema(),
-            false,
-        ),
-        tool(
             "list_transfers",
             "List Transfers",
             "List recent file-transfer tasks visible to this client. Paths are redacted.",
@@ -458,75 +444,6 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
-            "create_host_route",
-            "Create PortMate Host Route",
-            "Expose a TCP route reachable directly from the machine running PortMate. `local` creates a fixed TCP forward; `dynamic` creates a route-restricted SOCKS5 proxy. This tool is independent of terminal sessions. Non-loopback listeners require `allowRemoteBind: true`.",
-            json!({
-                "type":"object",
-                "required":["mode","bindHost","bindPort"],
-                "additionalProperties":false,
-                "properties":{
-                    "mode":{"type":"string","enum":["local","dynamic"]},
-                    "bindHost":{"type":"string","minLength":1,"maxLength":255},
-                    "bindPort":{"type":"integer","minimum":0,"maximum":65535},
-                    "allowRemoteBind":{"type":"boolean","default":false},
-                    "targetHost":{"type":"string","maxLength":255,"default":""},
-                    "targetPort":{"type":"integer","minimum":0,"maximum":65535,"default":0},
-                    "routeRules":{
-                        "type":"array",
-                        "maxItems":64,
-                        "default":[],
-                        "items":{
-                            "type":"object",
-                            "required":["host"],
-                            "additionalProperties":false,
-                            "properties":{
-                                "host":{"type":"string","minLength":1,"maxLength":255},
-                                "port":{"type":["integer","null"],"minimum":1,"maximum":65535,"default":null}
-                            }
-                        }
-                    },
-                    "label":{"type":"string","minLength":1,"maxLength":128}
-                },
-                "allOf":[
-                    {
-                        "if":{"properties":{"mode":{"const":"dynamic"}},"required":["mode"]},
-                        "then":{
-                            "required":["routeRules"],
-                            "properties":{
-                                "targetHost":{"type":"string","maxLength":0},
-                                "targetPort":{"const":0},
-                                "routeRules":{"type":"array","minItems":1,"maxItems":64}
-                            }
-                        },
-                        "else":{
-                            "required":["targetHost","targetPort"],
-                            "properties":{
-                                "targetHost":{"type":"string","minLength":1,"maxLength":255},
-                                "targetPort":{"type":"integer","minimum":1,"maximum":65535},
-                                "routeRules":{"type":"array","maxItems":0}
-                            }
-                        }
-                    }
-                ]
-            }),
-            false,
-        ),
-        tool(
-            "list_host_routes",
-            "List PortMate Host Routes",
-            "List active PortMate-host routes owned by this MCP client. No terminal session is required.",
-            json!({"type":"object","additionalProperties":false,"properties":{}}),
-            true,
-        ),
-        tool(
-            "stop_host_route",
-            "Stop PortMate Host Route",
-            "Stop a PortMate-host route owned by this MCP client.",
-            tunnel_id_schema(),
-            false,
-        ),
-        tool(
             "list_tmux_state",
             "List Tmux State",
             "Read tmux sessions and panes for a connected SSH-backed session.",
@@ -720,6 +637,7 @@ mod tests {
 
     #[test]
     fn bridge_management_tools_are_advertised_with_safe_schemas() {
+        assert_eq!(tool_definitions().len(), 28);
         for name in ["mcp_bridge_status", "reload_mcp", "restart_mcp"] {
             let definition = definition(name);
             assert_eq!(definition.input_schema["type"], "object", "{name}");
@@ -773,18 +691,11 @@ mod tests {
             "retry_transfer",
             "list_tunnels",
             "stop_tunnel",
-            "list_host_routes",
-            "stop_host_route",
         ] {
             let tool = definition(name);
             assert_eq!(tool.input_schema["type"], "object", "{name}");
         }
-        for name in [
-            "list_transfers",
-            "get_transfer",
-            "list_tunnels",
-            "list_host_routes",
-        ] {
+        for name in ["list_transfers", "get_transfer", "list_tunnels"] {
             assert!(definition(name).read_only, "{name}");
         }
         for name in [
@@ -796,8 +707,6 @@ mod tests {
             "retry_transfer",
             "create_tunnel",
             "stop_tunnel",
-            "create_host_route",
-            "stop_host_route",
         ] {
             assert!(!definition(name).read_only, "{name}");
         }
@@ -899,23 +808,6 @@ mod tests {
         assert_eq!(
             clauses[2]["oneOf"][1]["properties"]["egress"]["const"],
             "portmate-host"
-        );
-
-        let host_schema = definition("create_host_route").input_schema;
-        assert_eq!(
-            host_schema["properties"]["mode"]["enum"],
-            json!(["local", "dynamic"])
-        );
-        assert!(host_schema["properties"].get("sessionId").is_none());
-        assert!(host_schema["properties"].get("egress").is_none());
-        let host_dynamic_clause = &host_schema["allOf"][0];
-        assert_eq!(
-            host_dynamic_clause["then"]["properties"]["routeRules"]["minItems"],
-            1
-        );
-        assert_eq!(
-            host_dynamic_clause["then"]["required"],
-            json!(["routeRules"])
         );
     }
 

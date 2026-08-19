@@ -114,6 +114,11 @@ fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
         Some(McpScope::ManageMcp)
     );
     for removed in [
+        concat!("open", "_session"),
+        concat!("close", "_session"),
+        concat!("create_host", "_route"),
+        concat!("list_host", "_routes"),
+        concat!("stop_host", "_route"),
         concat!("tf", "tp"),
         concat!("start_content", "_transfer"),
         concat!("start_content_upload", "_transfer"),
@@ -148,7 +153,7 @@ fn confirming_mcp_grant_fails_closed_before_execution_without_ui() {
         state.store.lock().unwrap().grants.push(McpGrant {
             client_id: "confirming-client".to_string(),
             name: "Confirming client".to_string(),
-            scopes: vec![McpScope::ManageSessions],
+            scopes: vec![McpScope::WriteInput],
             allowed_sessions: vec![session_id.clone()],
             confirm_writes: true,
             expires_at: None,
@@ -161,10 +166,10 @@ fn confirming_mcp_grant_fails_closed_before_execution_without_ui() {
                 token: "authenticated-token".to_string(),
                 client_id: "confirming-client".to_string(),
                 trusted_write: false,
-                command: "open_session".to_string(),
+                command: "run_command".to_string(),
                 args: serde_json::json!({
                     "sessionId": session_id,
-                    "password": "must-not-enter-approval-or-audit"
+                    "command": "must-not-enter-approval-or-audit"
                 }),
             },
         )

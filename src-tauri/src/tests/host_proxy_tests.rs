@@ -8,8 +8,9 @@ fn portmate_host_proxy_approval_names_routes_and_remote_listener_exposure() {
         token: "authenticated-token".to_string(),
         client_id: "host-proxy-client".to_string(),
         trusted_write: false,
-        command: "create_host_route".to_string(),
+        command: "create_tunnel".to_string(),
         args: serde_json::json!({
+            "egress": "portmate-host",
             "mode": "dynamic",
             "bindHost": "0.0.0.0",
             "bindPort": 1080,

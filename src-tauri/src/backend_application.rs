@@ -37,6 +37,7 @@ use profile_normalization::*;
 use serial_commands::serial_send_break_inner_with_validation;
 #[cfg(test)]
 use session_close::close_session_inner;
+#[cfg(test)]
 use session_close::{close_session_inner_with_validation, SessionCloseValidations};
 #[cfg(test)]
 use session_close::session_has_registered_runtime;
@@ -49,7 +50,8 @@ use session_open::{
     open_session_inner, register_session_open_cancellation, session_lifecycle_lane,
     spawn_session_prepare, wait_for_session_prepare,
 };
-use session_open::{open_session_inner_with_validation, SessionOpenCredentials};
+#[cfg(test)]
+use session_open::SessionOpenCredentials;
 #[cfg(any(feature = "desktop", test))]
 use session_open::MAX_CONCURRENT_SESSION_OPENS;
 #[cfg(test)]

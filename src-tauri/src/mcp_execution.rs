@@ -314,52 +314,6 @@ async fn execute_ipc_request_inner(
             .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
-        "open_session" => {
-            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            if ["password", "passphrase", "credentialHandle"]
-                .iter()
-                .any(|field| request.args.get(*field).is_some())
-            {
-                return Err(
-                    "MCP open_session 不接受内联凭据或桌面凭据句柄；请使用已保存的 Profile 凭据"
-                        .to_string(),
-                );
-            }
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let summary = open_session_inner_with_validation(
-                state.clone(),
-                session_id,
-                SessionOpenCredentials::default(),
-                Some(validation),
-            )
-            .await?;
-            serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
-        }
-        "close_session" => {
-            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            let validations = SessionCloseValidations {
-                before_pending_open_cancel: mcp_commit_validation(
-                    &state,
-                    &request,
-                    execution_context,
-                    authorization_context,
-                )?,
-                before_runtime_disconnect: mcp_commit_validation(
-                    &state,
-                    &request,
-                    execution_context,
-                    authorization_context,
-                )?,
-            };
-            let summary =
-                close_session_inner_with_validation(&state, session_id, Some(validations)).await?;
-            serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
-        }
         "start_transfer" => {
             let transfer = normalize_mcp_start_transfer_args(&request.args)
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
@@ -499,53 +453,6 @@ async fn execute_ipc_request_inner(
             } else {
                 stop_tunnel_inner_with_validation(&state, &tunnel_id, Some(validation)).await?
             };
-            serde_json::to_value(redact_mcp_tunnel_status(status))
-                .map_err(|error| error.to_string())
-        }
-        "create_host_route" => {
-            let route = serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
-                .map_err(|error| format!("invalid host route request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let spec = create_host_route_inner_with_validation(
-                &state,
-                &request.client_id,
-                route,
-                Some(validation),
-            )
-            .await?;
-            serde_json::to_value(redact_mcp_tunnel_spec(spec)).map_err(|error| error.to_string())
-        }
-        "list_host_routes" => {
-            {
-                let store = state.store.lock().map_err(|error| error.to_string())?;
-                require_mcp_read_scope(&store, &request, McpScope::ReadTunnels, None)?;
-            }
-            let statuses = list_host_routes_inner(&state, &request.client_id)?
-                .into_iter()
-                .map(redact_mcp_tunnel_status)
-                .collect::<Vec<_>>();
-            serde_json::to_value(statuses).map_err(|error| error.to_string())
-        }
-        "stop_host_route" => {
-            let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let status = stop_host_route_inner_with_validation(
-                &state,
-                &request.client_id,
-                &tunnel_id,
-                Some(validation),
-            )
-            .await?;
             serde_json::to_value(redact_mcp_tunnel_status(status))
                 .map_err(|error| error.to_string())
         }

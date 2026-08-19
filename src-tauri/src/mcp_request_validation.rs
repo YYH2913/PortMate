@@ -197,10 +197,6 @@ pub(super) fn capture_mcp_write_execution_context(
     request: &IpcRequest,
 ) -> Result<McpWriteExecutionContext, String> {
     let host_route = match request.command.as_str() {
-        "create_host_route" => Some(normalize_host_route_request(
-            serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
-                .map_err(|error| format!("invalid host route request: {error}"))?,
-        )?),
         "create_tunnel" => match normalize_mcp_tunnel_request(
             serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?,
@@ -286,11 +282,8 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
         "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command" | "attach_tmux" => {
             Some(McpScope::WriteInput)
         }
-        "open_session" | "close_session" => Some(McpScope::ManageSessions),
         "start_transfer" | "cancel_transfer" | "retry_transfer" => Some(McpScope::Transfer),
-        "create_tunnel" | "stop_tunnel" | "create_host_route" | "stop_host_route" => {
-            Some(McpScope::Tunnel)
-        }
+        "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
         "run_custom_script" => Some(McpScope::RunScripts),
         "restart_mcp_http" => Some(McpScope::ManageMcp),
         _ => None,
@@ -306,7 +299,7 @@ pub(super) fn ipc_read_scope(command: &str) -> Option<McpScope> {
         | "list_tmux_state"
         | "export_session_bundle" => Some(McpScope::ReadLogs),
         "list_transfers" | "get_transfer" => Some(McpScope::ReadTransfers),
-        "list_tunnels" | "list_host_routes" => Some(McpScope::ReadTunnels),
+        "list_tunnels" => Some(McpScope::ReadTunnels),
         "list_custom_scripts" => Some(McpScope::ReadScripts),
         "mcp_http_runtime_status" => Some(McpScope::ReadMcp),
         _ => None,
@@ -394,18 +387,13 @@ pub(super) fn validate_ipc_write_args(
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
             normalize_mcp_tunnel_request(tunnel)?;
         }
-        "create_host_route" => {
-            let route = serde_json::from_value::<CreateHostRouteRequest>(request.args.clone())
-                .map_err(|error| format!("invalid host route request: {error}"))?;
-            normalize_host_route_request(route)?;
-        }
-        "stop_tunnel" | "stop_host_route" => {
+        "stop_tunnel" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;
         }
         "attach_tmux" => {
             ipc_string_arg(&request.args, "target")?;
         }
-        "open_session" | "close_session" | "restart_mcp_http" => {}
+        "restart_mcp_http" => {}
         _ => {
             return Err(format!(
                 "unsupported IPC write command: {}",
@@ -430,7 +418,7 @@ pub(super) fn ipc_write_session_id(
     request: &IpcRequest,
 ) -> Result<Option<String>, String> {
     match request.command.as_str() {
-        "create_host_route" | "stop_host_route" | "restart_mcp_http" => Ok(None),
+        "restart_mcp_http" => Ok(None),
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;

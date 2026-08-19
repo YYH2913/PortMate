@@ -82,9 +82,6 @@ try {
     "create_tunnel",
     "list_tunnels",
     "stop_tunnel",
-    "create_host_route",
-    "list_host_routes",
-    "stop_host_route",
   ]) {
     assert(toolNames.has(toolName), `tools/list omitted ${toolName}`);
   }

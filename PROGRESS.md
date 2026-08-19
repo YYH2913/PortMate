@@ -364,7 +364,7 @@ SSH 连接凭据弹窗现为每次请求分配单调 request ID，提交/取消�
 - stdio/HTTP 共用的 JSON-RPC envelope 会保留显式 null ID，拒绝对象/数组/布尔 ID 和非结构化 `params`；batch 在任何 tool dispatch 前限制为 128 项，避免小请求放大为无界调用与响应。
 - stdio/HTTP JSON-RPC 响应与 SSE JSON 数据共用 64 MiB 有界 writer，写入将在追加越界前停止。单响应超限会返回保留原 ID 的 `-32603`；batch 或 SSE 状态超限会以不含原大 payload 的受限错误替换，避免日志、screen 或状态数据造成无界二次序列化和输出。
 - MCP protocol version 使用 `2025-06-18`。
-- Tools：`list_sessions`、`read_screen`、`tail_log`、`search_logs`、`send_text`、`send_key`、`run_command`、`open_session`、`close_session`、`start_transfer`、`create_tunnel`、`list_tmux_state`、`attach_tmux`、`export_session_bundle`。
+- Tools：`list_sessions`、`read_screen`、`tail_log`、`search_logs`、`send_text`、`send_key`、`run_command`、`start_transfer`、`create_tunnel`、`list_tunnels`、`stop_tunnel`、`list_tmux_state`、`attach_tmux`、`export_session_bundle`。会话连接和关闭由桌面端生命周期命令负责，不再作为 MCP 工具暴露；PortMate 主机路由统一通过 `create_tunnel`/`list_tunnels`/`stop_tunnel` 管理。
 - Resources：sessions、state、screen、log、timeline、sysmon、tmux、transfer。
 - Prompts：diagnose、serial/SSH compare、repro report。
 - grant Store 为空时默认只读；存在任意 grant 后，读工具、资源、提示和 SSE 状态按 client 的 `read-sessions`/`read-logs` 与允许会话显式过滤。写操作始终通过 MCP grant scope 控制；可选 `confirmWrites` 会在每次写入前请求一次性桌面批准，最多 32 个 pending、60 秒超时并 fail-closed，批准 ID 只可消费一次。

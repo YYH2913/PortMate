@@ -324,7 +324,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 ### 指定路由转发与代理
 
-`create_tunnel`、`list_tunnels`、`stop_tunnel` 现在统一提供两类路由。使用 `egress: "ssh"` 加已连接且已授权的 SSH/Tmux `sessionId`，或使用 `egress: "portmate-host"` 且不填写 sessionId，直接访问 PortMate 运行主机可达的 TCP 目标。旧的 `create_host_route`、`list_host_routes`、`stop_host_route` 名称仍作为兼容别名保留。两类能力都不会修改操作系统路由表。
+`create_tunnel`、`list_tunnels`、`stop_tunnel` 统一提供两类路由。使用 `egress: "ssh"` 加已连接且已授权的 SSH/Tmux `sessionId`，或使用 `egress: "portmate-host"` 且不填写 sessionId，直接访问 PortMate 运行主机可达的 TCP 目标。两类能力都不会修改操作系统路由表。
 
 本地转发把一个本地监听端口经 SSH 送到固定目标：
 
@@ -376,7 +376,7 @@ SSH 服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理
 }
 ```
 
-使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机路由只在当前运行期有效，并按规范化后的 MCP Client ID 隔离，其他 Client 不能列出或停止。终端会话断开不会影响它；可调用 `stop_tunnel`（或兼容的 `stop_host_route`）或退出 PortMate 停止，也不会从已保存的会话配置自动恢复。
+使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机路由只在当前运行期有效，并按规范化后的 MCP Client ID 隔离，其他 Client 不能列出或停止。终端会话断开不会影响它；可调用 `stop_tunnel` 或退出 PortMate 停止，也不会从已保存的会话配置自动恢复。
 
 ```json
 {

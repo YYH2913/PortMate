@@ -6460,7 +6460,7 @@ Host staging
       expiresAt: new Date(now + offset + 60_000).toISOString(),
     });
     const first = approval("11111111-1111-4111-8111-111111111111", "ops-console", "run_command", "edge-router", "write-input");
-    const second = approval("22222222-2222-4222-8222-222222222222", "session-manager", "close_session", "bench-uart", "manage-sessions", 1);
+    const second = approval("22222222-2222-4222-8222-222222222222", "route-manager", "stop_tunnel", "bench-uart", "tunnel", 1);
     window.__emitTauriEvent("portmate-mcp-approval", { ...first, scope: "tunnel" });
     window.__emitTauriEvent("portmate-mcp-approval", first);
     window.__emitTauriEvent("portmate-mcp-approval", first);
@@ -6496,7 +6496,7 @@ Host staging
     && await approvalDialog.getByRole("button", { name: "拒绝", exact: true }).isDisabled(),
   "MCP approval controls stayed enabled while a response was pending");
   await page.evaluate(() => window.__pendingMcpApprovalResponses.shift().resolve());
-  await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("断开会话"));
+  await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("停止指定转发或代理"));
   await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => window.__pendingMcpApprovalResponses.length === 1);

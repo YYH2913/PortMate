@@ -16,8 +16,11 @@ fn invalid_mcp_identifiers_are_bounded_before_audit() {
                 token: "authenticated-token".to_string(),
                 client_id: invalid_client.clone(),
                 trusted_write: true,
-                command: "open_session".to_string(),
-                args: serde_json::json!({ "sessionId": "bad\nsession" }),
+                command: "run_command".to_string(),
+                args: serde_json::json!({
+                    "sessionId": "bad\nsession",
+                    "command": "true"
+                }),
             },
         )
         .await
@@ -48,9 +51,10 @@ fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
                 token: "authenticated-token".to_string(),
                 client_id: "readonly-client".to_string(),
                 trusted_write: false,
-                command: "open_session".to_string(),
+                command: "run_command".to_string(),
                 args: serde_json::json!({
                     "sessionId": session_id,
+                    "command": "must-not-run",
                     "password": "denied-password-secret"
                 }),
             },
@@ -80,12 +84,12 @@ fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
         let audit = state.store.lock().unwrap().audit.clone();
         assert_eq!(audit.len(), 2);
         assert_eq!(audit[0].actor, "readonly-client");
-        assert_eq!(audit[0].action, "open_session");
+        assert_eq!(audit[0].action, "run_command");
         assert_eq!(audit[0].decision, "denied");
         assert_eq!(audit[0].session_id.as_deref(), Some(session_id.as_str()));
         assert_eq!(
             audit[0].details.get("scope").map(String::as_str),
-            Some("manage-sessions")
+            Some("write-input")
         );
         assert_eq!(audit[1].actor, "trusted-client");
         assert_eq!(audit[1].action, "run_command");
@@ -1071,207 +1075,6 @@ fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
             drop(store);
             let _ = fs::remove_dir_all(root);
         }
-    });
-}
-
-#[test]
-fn queued_mcp_open_session_revalidates_its_grant_before_connecting() {
-    tauri::async_runtime::block_on(async {
-        let root =
-            std::env::temp_dir().join(format!("portmate-mcp-open-commit-{}", Uuid::new_v4()));
-        let profile = test_shell_profile();
-        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
-        state.store.lock().unwrap().grants.push(McpGrant {
-            client_id: "queued-open-client".to_string(),
-            name: "Queued open client".to_string(),
-            scopes: vec![McpScope::ManageSessions],
-            allowed_sessions: vec![profile.id.clone()],
-            confirm_writes: false,
-            expires_at: None,
-            revoked_at: None,
-        });
-
-        let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
-        let lane_guard = lane.lock().await;
-        let request = IpcRequest {
-            token: "authenticated-token".to_string(),
-            client_id: "queued-open-client".to_string(),
-            trusted_write: false,
-            command: "open_session".to_string(),
-            args: serde_json::json!({ "sessionId": profile.id }),
-        };
-        let run_state = state.clone();
-        let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while Arc::strong_count(&lane) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("open_session did not enter the lifecycle queue");
-
-        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
-        drop(lane_guard);
-
-        let error = run.await.unwrap().unwrap_err();
-        assert!(error.contains("grant changed"), "{error}");
-        assert!(state.shell.lock().unwrap().is_empty());
-        let store = state.store.lock().unwrap();
-        assert_eq!(
-            store.summaries()[0].runtime.status,
-            SessionStatus::Disconnected
-        );
-        assert!(store.events.is_empty());
-        assert_eq!(
-            store
-                .audit
-                .iter()
-                .find(|record| record.action == "open_session")
-                .map(|record| record.decision.as_str()),
-            Some("failed")
-        );
-        drop(store);
-        assert_eq!(
-            state.session_open_slots.available_permits(),
-            MAX_CONCURRENT_SESSION_OPENS
-        );
-        let _ = fs::remove_dir_all(root);
-    });
-}
-
-#[test]
-fn queued_mcp_close_session_revalidates_its_grant_before_disconnect() {
-    let _runtime_guard = shared_runtime_test_guard();
-    tauri::async_runtime::block_on(async {
-        let root = tempfile::tempdir().unwrap();
-        let profile = test_shell_profile();
-        let state = test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
-        let opened = open_session_inner(
-            state.clone(),
-            profile.id.clone(),
-            SessionOpenCredentials::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(opened.runtime.status, SessionStatus::Connected);
-        state.store.lock().unwrap().grants.push(McpGrant {
-            client_id: "queued-close-client".to_string(),
-            name: "Queued close client".to_string(),
-            scopes: vec![McpScope::ManageSessions],
-            allowed_sessions: vec![profile.id.clone()],
-            confirm_writes: false,
-            expires_at: None,
-            revoked_at: None,
-        });
-
-        let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
-        let lane_guard = lane.lock().await;
-        let request = IpcRequest {
-            token: "authenticated-token".to_string(),
-            client_id: "queued-close-client".to_string(),
-            trusted_write: false,
-            command: "close_session".to_string(),
-            args: serde_json::json!({ "sessionId": profile.id }),
-        };
-        let run_state = state.clone();
-        let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while Arc::strong_count(&lane) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("close_session did not enter the lifecycle queue");
-
-        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
-        drop(lane_guard);
-
-        let error = run.await.unwrap().unwrap_err();
-        assert!(error.contains("grant changed"), "{error}");
-        assert!(state.shell.lock().unwrap().contains_key(&profile.id));
-        {
-            let store = state.store.lock().unwrap();
-            assert_eq!(
-                store.summaries()[0].runtime.status,
-                SessionStatus::Connected
-            );
-            assert_eq!(
-                store
-                    .audit
-                    .iter()
-                    .find(|record| record.action == "close_session")
-                    .map(|record| record.decision.as_str()),
-                Some("failed")
-            );
-        }
-
-        close_session_inner(&state, profile.id.clone())
-            .await
-            .unwrap();
-    });
-}
-
-#[test]
-fn authorized_mcp_close_finishes_after_cancelling_a_pending_open() {
-    tauri::async_runtime::block_on(async {
-        let root = tempfile::tempdir().unwrap();
-        let profile = test_shell_profile();
-        let state = test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
-        state.store.lock().unwrap().grants.push(McpGrant {
-            client_id: "pending-open-close-client".to_string(),
-            name: "Pending open close client".to_string(),
-            scopes: vec![McpScope::ManageSessions],
-            allowed_sessions: vec![profile.id.clone()],
-            confirm_writes: false,
-            expires_at: None,
-            revoked_at: None,
-        });
-        let pending_open = register_session_open_cancellation(&state, &profile.id).unwrap();
-        let lane = session_lifecycle_lane(&state, &profile.id).unwrap();
-        let lane_guard = lane.lock().await;
-        let request = IpcRequest {
-            token: "authenticated-token".to_string(),
-            client_id: "pending-open-close-client".to_string(),
-            trusted_write: false,
-            command: "close_session".to_string(),
-            args: serde_json::json!({ "sessionId": profile.id }),
-        };
-        let run_state = state.clone();
-        let run = tokio::spawn(async move { handle_ipc_request(run_state, request).await });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !pending_open.is_cancelled() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("close_session did not cancel the pending open before waiting");
-
-        state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
-        drop(lane_guard);
-
-        let closed = run.await.unwrap().unwrap();
-        assert_eq!(
-            closed
-                .get("runtime")
-                .and_then(|runtime| runtime.get("status"))
-                .and_then(serde_json::Value::as_str),
-            Some("disconnected")
-        );
-        let store = state.store.lock().unwrap();
-        assert_eq!(
-            store
-                .audit
-                .iter()
-                .find(|record| record.action == "close_session")
-                .map(|record| record.decision.as_str()),
-            Some("succeeded")
-        );
-        drop(store);
-        drop(pending_open);
-        assert_eq!(
-            state.session_open_slots.available_permits(),
-            MAX_CONCURRENT_SESSION_OPENS
-        );
     });
 }
 

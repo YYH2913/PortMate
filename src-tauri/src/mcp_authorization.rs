@@ -135,10 +135,7 @@ pub(super) fn mcp_audit_details(
             details.insert("scriptId".to_string(), script_id.to_string());
         }
     }
-    if matches!(
-        request.command.as_str(),
-        "create_tunnel" | "create_host_route"
-    ) {
+    if request.command == "create_tunnel" {
         for (argument, detail) in [
             ("egress", "egress"),
             ("mode", "mode"),
