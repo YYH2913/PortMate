@@ -239,7 +239,7 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一公开的启动工具。每次调用只能选择一种来源：路径使用 `source`，内联内容使用 `fileName + contentBase64`，已完成的分块上传使用 `uploadId`。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。旧的 `tftp`、`start_content_transfer`、`start_content_upload_transfer` 名称仍可供已有客户端兼容调用，但不再出现在 `tools/list`。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一的启动工具。每次调用只能选择一种来源：路径使用 `source`，内联内容使用 `fileName + contentBase64`，已完成的分块上传使用 `uploadId`。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。
 
 SFTP 上传示例：
 

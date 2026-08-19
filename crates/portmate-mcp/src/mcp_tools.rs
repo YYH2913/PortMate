@@ -224,19 +224,6 @@ impl PortMateMcp {
                     .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
                 serde_json::to_string_pretty(&redact_transfer_task(transfer))?
             }
-            // Compatibility aliases remain callable but are intentionally omitted from tools/list.
-            "tftp" | "start_content_transfer" => {
-                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-                    let transfer = serde_json::from_value::<TransferTask>(value)
-                        .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
-                    serde_json::to_string_pretty(&redact_transfer_task(transfer))?
-                } else {
-                    is_error = true;
-                    format!(
-                        "{name} was NOT executed: desktop IPC is not available, so no transfer was started."
-                    )
-                }
-            }
             "begin_content_upload" => {
                 let value = self.begin_content_upload(&arguments)?;
                 serde_json::to_string_pretty(&value)?
@@ -244,12 +231,6 @@ impl PortMateMcp {
             "append_content_upload" => {
                 let value = self.append_content_upload(&arguments)?;
                 serde_json::to_string_pretty(&value)?
-            }
-            "start_content_upload_transfer" => {
-                let value = self.start_content_upload_transfer(&arguments)?;
-                let transfer = serde_json::from_value::<TransferTask>(value)
-                    .map_err(|error| anyhow!("invalid desktop transfer response: {error}"))?;
-                serde_json::to_string_pretty(&redact_transfer_task(transfer))?
             }
             "cancel_content_upload" => {
                 let value = self.cancel_content_upload(&arguments)?;
@@ -430,7 +411,7 @@ impl PortMateMcp {
             ));
         }
         if has_upload {
-            return self.start_content_upload_transfer_with_command(arguments, "start_transfer");
+            return self.start_completed_upload_transfer(arguments);
         }
         self.call_ipc_value("start_transfer", arguments.clone())?
             .ok_or_else(|| anyhow!("start_transfer was NOT executed: desktop IPC is not available"))

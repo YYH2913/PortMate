@@ -113,18 +113,19 @@ fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
         ipc_write_scope("restart_mcp_http"),
         Some(McpScope::ManageMcp)
     );
+    for removed in [
+        concat!("tf", "tp"),
+        concat!("start_content", "_transfer"),
+        concat!("start_content_upload", "_transfer"),
+    ] {
+        assert_eq!(ipc_write_scope(removed), None, "{removed}");
+    }
     for (action, scope, label) in [
         ("serial_send_break", McpScope::WriteInput, "write-input"),
         ("send_bytes", McpScope::WriteInput, "write-input"),
         ("cancel_transfer", McpScope::Transfer, "transfer"),
         ("start_transfer", McpScope::Transfer, "transfer"),
-        ("tftp", McpScope::Transfer, "transfer"),
         ("retry_transfer", McpScope::Transfer, "transfer"),
-        (
-            "start_content_upload_transfer",
-            McpScope::Transfer,
-            "transfer",
-        ),
         ("stop_tunnel", McpScope::Tunnel, "tunnel"),
         ("restart_mcp_http", McpScope::ManageMcp, "manage-mcp"),
     ] {

@@ -360,7 +360,7 @@ SSH 连接凭据弹窗现为每次请求分配单调 request ID，提交/取消�
 
 - `portmate-mcp` stdio bridge，JSON-RPC lifecycle/tools/resources/prompts。
 - 官方 TypeScript SDK 1.10.0/1.20.0/1.29.0/1.30.0 矩阵使用隔离 npm lock/node_modules 启动真实 bridge 子进程，分别覆盖 `2024-11-05` 旧生命周期、`2025-06-18` 正常协商，以及 1.29.0/1.30.0 从 `2025-11-25` 请求回退到服务端 `2025-06-18`；每版都完成 initialize/initialized、ping、tools/resources/templates/prompts/resource read 共 8 条消息，并验证客户端关闭后 bridge 自行退出。
-- stdio 每条 newline-delimited JSON payload 上限为 6 MiB（不含 `LF/CRLF`）；超限行仅保留 `limit + 2` 字节并有界丢弃到换行，返回 JSON-RPC parse error 后可继续处理下一条消息，不会无界分配或协议失步。4 MiB 以内的解码后内联内容可由 `start_content_transfer` 直接传入；更大文件仍使用可续传分块上传。
+- stdio 每条 newline-delimited JSON payload 上限为 6 MiB（不含 `LF/CRLF`）；超限行仅保留 `limit + 2` 字节并有界丢弃到换行，返回 JSON-RPC parse error 后可继续处理下一条消息，不会无界分配或协议失步。4 MiB 以内的解码后内联内容可由 `start_transfer` 的 `fileName + contentBase64` 来源直接传入；更大文件仍使用可续传分块上传。
 - stdio/HTTP 共用的 JSON-RPC envelope 会保留显式 null ID，拒绝对象/数组/布尔 ID 和非结构化 `params`；batch 在任何 tool dispatch 前限制为 128 项，避免小请求放大为无界调用与响应。
 - stdio/HTTP JSON-RPC 响应与 SSE JSON 数据共用 64 MiB 有界 writer，写入将在追加越界前停止。单响应超限会返回保留原 ID 的 `-32603`；batch 或 SSE 状态超限会以不含原大 payload 的受限错误替换，避免日志、screen 或状态数据造成无界二次序列化和输出。
 - MCP protocol version 使用 `2025-06-18`。

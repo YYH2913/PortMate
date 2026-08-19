@@ -124,7 +124,7 @@ fn ipc_rejects_invalid_tokens_and_oversized_payloads_without_audit() {
             token: "wrong-token".to_string(),
             client_id: "unauthenticated-client".to_string(),
             trusted_write: true,
-            command: "start_content_transfer".to_string(),
+            command: "start_transfer".to_string(),
             args: serde_json::json!({
                 "sessionId": session_id,
                 "protocol": "xmodem",

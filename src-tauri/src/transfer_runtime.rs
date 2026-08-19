@@ -90,7 +90,7 @@ pub(super) async fn retry_transfer_inner_with_validation(
             .is_some_and(|parent| parent.starts_with(&root))
     }) {
         return Err(
-            "inline MCP content transfers cannot be retried; call start_content_transfer again"
+            "inline MCP content transfers cannot be retried; call start_transfer again"
                 .to_string(),
         );
     }

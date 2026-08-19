@@ -239,7 +239,7 @@ For protocol payloads that must bypass terminal text handling, call `send_bytes`
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single public transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: `source` for a path, `fileName` plus `contentBase64` for inline content, or `uploadId` for a completed resumable upload. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP. The former `tftp`, `start_content_transfer`, and `start_content_upload_transfer` names remain callable compatibility aliases but are no longer advertised by `tools/list`.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: `source` for a path, `fileName` plus `contentBase64` for inline content, or `uploadId` for a completed resumable upload. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP.
 
 Upload with SFTP:
 

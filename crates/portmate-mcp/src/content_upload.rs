@@ -177,17 +177,9 @@ impl PortMateMcp {
         }))
     }
 
-    pub(super) fn start_content_upload_transfer(&self, arguments: &Value) -> Result<Value> {
-        self.start_content_upload_transfer_with_command(arguments, "start_content_upload_transfer")
-    }
-
-    pub(super) fn start_content_upload_transfer_with_command(
-        &self,
-        arguments: &Value,
-        ipc_command: &str,
-    ) -> Result<Value> {
+    pub(super) fn start_completed_upload_transfer(&self, arguments: &Value) -> Result<Value> {
         let request: ContentUploadIdRequest = serde_json::from_value(arguments.clone())
-            .context("invalid start_content_upload_transfer arguments")?;
+            .context("invalid start_transfer upload arguments")?;
         let upload_id = request.upload_id;
         let upload_dir = self.owned_upload_dir(&upload_id)?;
         let lock = open_upload_lock(&upload_dir)?;
@@ -199,9 +191,9 @@ impl PortMateMcp {
         let payload_path = upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE);
         verify_payload(&payload_path, &metadata)?;
         let value = self
-            .call_ipc_value(ipc_command, json!({ "uploadId": &upload_id }))?
+            .call_ipc_value("start_transfer", json!({ "uploadId": &upload_id }))?
             .ok_or_else(|| {
-                anyhow!("{ipc_command} was NOT executed: desktop IPC is not available")
+                anyhow!("start_transfer was NOT executed: desktop IPC is not available")
             })?;
         remove_upload_content_files(&upload_dir);
         drop(lock);

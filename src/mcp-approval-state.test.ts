@@ -22,7 +22,12 @@ describe("MCP approval state", () => {
     });
     expect(normalizeMcpApproval({ ...base, action: "cancel_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer" })).not.toBeNull();
-    expect(normalizeMcpApproval({ ...base, action: "start_content_upload_transfer", scope: "transfer" })).not.toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "start_transfer", scope: "transfer" })).not.toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
+      action: ["start", "content", "upload", "transfer"].join("_"),
+      scope: "transfer",
+    })).toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,

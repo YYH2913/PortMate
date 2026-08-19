@@ -63,9 +63,6 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
     assert!(transfer["inputSchema"]["oneOf"]
         .as_array()
         .is_some_and(|variants| variants.len() == 3));
-    for compatibility_alias in ["tftp", "start_content_transfer", "start_content_upload_transfer"] {
-        assert!(tools.iter().all(|tool| tool["name"] != compatibility_alias));
-    }
     let tunnel = tools
         .iter()
         .find(|tool| tool["name"] == "create_tunnel")
@@ -87,80 +84,25 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
 }
 
 #[test]
-fn hidden_transfer_aliases_remain_callable_for_existing_clients() {
-    for (name, arguments) in [
-        (
-            "tftp",
-            json!({
-                "sessionId": "refresh-session",
-                "source": "/tmp/firmware.bin",
-                "destination": "load:tftpboot?deviceIp=192.168.1.10"
-            }),
-        ),
-        (
-            "start_content_transfer",
-            json!({
-                "sessionId": "refresh-session",
-                "protocol": "xmodem",
-                "fileName": "firmware.bin",
-                "contentBase64": "AAE=",
-                "destination": "load:loadx"
-            }),
-        ),
+fn removed_transfer_tool_names_are_not_callable() {
+    for name in [
+        concat!("tf", "tp"),
+        concat!("start_content", "_transfer"),
+        concat!("start_content_upload", "_transfer"),
     ] {
         let mut server = PortMateMcp {
-            store: test_snapshot_store("compatibility alias"),
+            store: test_snapshot_store("removed tool"),
             store_path: None,
             ipc: None,
-            client_id: "legacy-client".to_string(),
+            client_id: "removed-tool-client".to_string(),
             allow_write: true,
         };
-        let response = server
-            .tool_call(&json!({ "name": name, "arguments": arguments }))
-            .unwrap();
-        assert_eq!(response["isError"], true, "{name}");
-        assert!(response["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("desktop IPC is not available")));
+        let error = server
+            .tool_call(&json!({ "name": name, "arguments": {} }))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, format!("unknown tool: {name}"));
     }
-
-    let root = std::env::temp_dir().join(format!(
-        "portmate-upload-alias-{}",
-        Uuid::new_v4()
-    ));
-    fs::create_dir_all(&root).unwrap();
-    let mut server = content_upload_server(&root, "legacy-client");
-    let upload = server
-        .begin_content_upload(&json!({
-            "sessionId": "refresh-session",
-            "protocol": "xmodem",
-            "fileName": "firmware.bin",
-            "sizeBytes": 1,
-            "sha256": format!("{:x}", Sha256::digest(b"x")),
-            "destination": "load:loadx"
-        }))
-        .unwrap();
-    let upload_id = upload["uploadId"].as_str().unwrap();
-    server
-        .append_content_upload(&json!({
-            "uploadId": upload_id,
-            "offset": 0,
-            "contentBase64": BASE64_STANDARD.encode(b"x")
-        }))
-        .unwrap();
-    let error = server
-        .tool_call(&json!({
-            "name": "start_content_upload_transfer",
-            "arguments": { "uploadId": upload_id }
-        }))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("desktop IPC is not available"));
-    assert!(!error.contains("unknown tool"));
-    server
-        .cancel_content_upload(&json!({ "uploadId": upload_id }))
-        .unwrap();
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

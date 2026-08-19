@@ -28,7 +28,7 @@ fn stdio_reader_accepts_a_maximum_inline_content_envelope() {
         "id": "large-stdio-content",
         "method": "tools/call",
         "params": {
-            "name": "start_content_transfer",
+            "name": "start_transfer",
             "arguments": {
                 "sessionId": "refresh-session",
                 "protocol": "xmodem",
@@ -397,7 +397,7 @@ fn http_parser_accepts_a_maximum_inline_content_envelope() {
         "id": "large-http-content",
         "method": "tools/call",
         "params": {
-            "name": "start_content_transfer",
+            "name": "start_transfer",
             "arguments": {
                 "sessionId": "refresh-session",
                 "protocol": "xmodem",

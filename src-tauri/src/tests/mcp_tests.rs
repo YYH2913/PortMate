@@ -106,35 +106,6 @@ fn denied_and_invalid_mcp_writes_are_audited_without_arguments() {
 }
 
 #[test]
-fn dedicated_mcp_tftp_arguments_normalize_to_existing_transfer_routes() {
-    let local = normalize_mcp_tftp_args(&serde_json::json!({
-        "sessionId": "board-uart",
-        "source": "/tmp/firmware.bin",
-        "destination": "load:tftpboot?deviceIp=192.168.1.10"
-    }))
-    .unwrap();
-    assert_eq!(local["protocol"], "tftp");
-    assert!(serde_json::from_value::<StartTransferRequest>(local).is_ok());
-
-    let inline = normalize_mcp_tftp_args(&serde_json::json!({
-        "sessionId": "board-uart",
-        "fileName": "firmware.bin",
-        "contentBase64": "AAE=",
-        "destination": "load:tftpboot?deviceIp=192.168.1.10"
-    }))
-    .unwrap();
-    assert_eq!(inline["protocol"], "tftp");
-    assert!(serde_json::from_value::<StartMcpContentTransferRequest>(inline).is_ok());
-    assert!(normalize_mcp_tftp_args(&serde_json::json!({
-        "sessionId": "board-uart",
-        "source": "/tmp/fw.bin",
-        "contentBase64": "AAE=",
-        "destination": "load:tftpboot?deviceIp=192.168.1.10"
-    }))
-    .is_err());
-}
-
-#[test]
 fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
     assert!(matches!(
         normalize_mcp_start_transfer_args(&serde_json::json!({
@@ -608,7 +579,7 @@ fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
                 token: "authenticated-token".to_string(),
                 client_id: "queue-client".to_string(),
                 trusted_write: true,
-                command: "start_content_upload_transfer".to_string(),
+                command: "start_transfer".to_string(),
                 args: serde_json::json!({ "uploadId": upload_id }),
             },
         )
@@ -626,7 +597,7 @@ fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
             let audit = store
                 .audit
                 .iter()
-                .find(|record| record.action == "start_content_upload_transfer")
+                .find(|record| record.action == "start_transfer")
                 .unwrap();
             assert_eq!(audit.decision, "succeeded");
             assert_eq!(
@@ -868,7 +839,7 @@ fn stale_mcp_transfer_authorization_is_rejected_at_each_commit_point() {
                 token: "authenticated-token".to_string(),
                 client_id: client_id.to_string(),
                 trusted_write: false,
-                command: "start_content_transfer".to_string(),
+                command: "start_transfer".to_string(),
                 args: serde_json::json!({
                     "sessionId": profile.id,
                     "protocol": "xmodem",
@@ -881,7 +852,7 @@ fn stale_mcp_transfer_authorization_is_rejected_at_each_commit_point() {
                 token: "authenticated-token".to_string(),
                 client_id: client_id.to_string(),
                 trusted_write: false,
-                command: "start_content_upload_transfer".to_string(),
+                command: "start_transfer".to_string(),
                 args: serde_json::json!({ "uploadId": upload_id }),
             },
             IpcRequest {

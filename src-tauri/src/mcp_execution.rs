@@ -360,71 +360,9 @@ async fn execute_ipc_request_inner(
                 close_session_inner_with_validation(&state, session_id, Some(validations)).await?;
             serde_json::to_value(redact_session_summary(summary)).map_err(|error| error.to_string())
         }
-        "tftp" => {
-            let normalized = normalize_mcp_tftp_args(&request.args)
-                .map_err(|error| format!("invalid TFTP request: {error}"))?;
-            let transfer = normalize_mcp_start_transfer_args(&normalized)
-                .map_err(|error| format!("invalid TFTP request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let task = execute_mcp_start_transfer(
-                &state,
-                &request.client_id,
-                transfer,
-                validation,
-            )
-            .await?;
-            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
-        }
         "start_transfer" => {
             let transfer = normalize_mcp_start_transfer_args(&request.args)
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let task = execute_mcp_start_transfer(
-                &state,
-                &request.client_id,
-                transfer,
-                validation,
-            )
-            .await?;
-            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
-        }
-        "start_content_transfer" => {
-            let content_request = serde_json::from_value::<StartMcpContentTransferRequest>(
-                request.args.clone(),
-            )
-            .map_err(|error| format!("invalid content transfer request: {error}"))?;
-            let transfer = NormalizedMcpStartTransferRequest::Inline(content_request);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let task = execute_mcp_start_transfer(
-                &state,
-                &request.client_id,
-                transfer,
-                validation,
-            )
-            .await?;
-            serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
-        }
-        "start_content_upload_transfer" => {
-            let transfer = serde_json::from_value::<StartMcpContentUploadTransferRequest>(
-                request.args.clone(),
-            )
-            .map_err(|error| format!("invalid uploaded content transfer request: {error}"))?;
-            let transfer = NormalizedMcpStartTransferRequest::Upload(transfer);
             let validation = mcp_commit_validation(
                 &state,
                 &request,

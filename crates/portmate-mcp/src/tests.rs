@@ -128,7 +128,7 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
         }))
         .unwrap();
     let unavailable = server
-        .start_content_upload_transfer(&json!({ "uploadId": upload_id }))
+        .start_completed_upload_transfer(&json!({ "uploadId": upload_id }))
         .unwrap_err()
         .to_string();
     assert!(unavailable.contains("desktop IPC is not available"));
@@ -143,7 +143,7 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     )
     .unwrap();
     assert!(server
-        .start_content_upload_transfer(&json!({ "uploadId": upload_id }))
+        .start_completed_upload_transfer(&json!({ "uploadId": upload_id }))
         .unwrap_err()
         .to_string()
         .contains("SHA-256 mismatch"));
@@ -282,7 +282,7 @@ fn desktop_ipc_request_budget_accepts_a_maximum_inline_content_envelope() {
         token: "bridge-token".to_string(),
         client_id: "content-client".to_string(),
         trusted_write: false,
-        command: "start_content_transfer".to_string(),
+        command: "start_transfer".to_string(),
         args: json!({
             "sessionId": "refresh-session",
             "protocol": "xmodem",
