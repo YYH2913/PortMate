@@ -16,6 +16,10 @@ describe("MCP approval state", () => {
   it("accepts bounded action/scope pairs and canonicalizes timestamps", () => {
     expect(normalizeMcpApproval(base)).toEqual(base);
     expect(normalizeMcpApproval({ ...base, action: "create_tunnel", scope: "write-input" })).toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "serial_send_break" })).toMatchObject({
+      action: "serial_send_break",
+      scope: "write-input",
+    });
     expect(normalizeMcpApproval({ ...base, action: "cancel_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer" })).not.toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "start_content_upload_transfer", scope: "transfer" })).not.toBeNull();

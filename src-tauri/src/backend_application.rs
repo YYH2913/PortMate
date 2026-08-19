@@ -34,6 +34,7 @@ use profile_commands::{
     validate_expected_proxy_password, validate_profile_transport_change, validate_profile_tunnels,
 };
 use profile_normalization::*;
+use serial_commands::serial_send_break_inner_with_validation;
 #[cfg(test)]
 use session_close::close_session_inner;
 use session_close::{close_session_inner_with_validation, SessionCloseValidations};

@@ -161,6 +161,13 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "serial_send_break",
+            "Send Serial Break",
+            "Pulse the hardware Break condition on a connected serial session.",
+            session_schema(),
+            false,
+        ),
+        tool(
             "run_command",
             "Run Command",
             "Send a command followed by newline.",
@@ -722,6 +729,21 @@ mod tests {
         assert!(definition("mcp_bridge_status").read_only);
         assert!(definition("reload_mcp").read_only);
         assert!(!definition("restart_mcp").read_only);
+    }
+
+    #[test]
+    fn serial_break_is_a_bounded_write_tool() {
+        let serial_break = definition("serial_send_break");
+        assert!(!serial_break.read_only);
+        assert_eq!(serial_break.input_schema["type"], "object");
+        assert_eq!(serial_break.input_schema["required"], json!(["sessionId"]));
+        assert_eq!(
+            serial_break.input_schema["properties"]["sessionId"]["maxLength"],
+            128
+        );
+        assert!(serial_break
+            .description
+            .contains("connected serial session"));
     }
 
     #[test]

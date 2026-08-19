@@ -165,7 +165,9 @@ fn bounded_approval_host(host: &str) -> String {
 
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
-        "send_text" | "send_key" | "run_command" | "attach_tmux" => Some(McpScope::WriteInput),
+        "send_text" | "send_key" | "serial_send_break" | "run_command" | "attach_tmux" => {
+            Some(McpScope::WriteInput)
+        }
         "open_session" | "close_session" => Some(McpScope::ManageSessions),
         "start_transfer"
         | "start_content_transfer"
@@ -219,6 +221,10 @@ pub(super) fn validate_ipc_write_args(
         }
         "send_key" => {
             ipc_string_arg(&request.args, "key")?;
+        }
+        "serial_send_break" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?;
+            ensure_serial_profile(&state.store, session_id)?;
         }
         "run_command" => {
             ipc_string_arg(&request.args, "command")?;

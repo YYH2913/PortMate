@@ -215,6 +215,18 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 脚本正文保存在 PortMate 应用 Store 中，执行后也可能进入终端日志。不要在脚本中保存密码、Token、私钥或其他 Secret。
 
+### MCP 串口 Break
+
+`serial_send_break` 会让当前已连接串口的硬件 Break 条件保持约 250 ms 后清除。它不是文本输入、换行或 `Ctrl+C`，通常用于中断设备启动、进入 Bootloader，或触发设备定义的串口控制行为。目标 `sessionId` 必须对应串口 Profile 和当前活动的串口连接；USB 转串口芯片及驱动也必须支持 Break。
+
+```json
+{
+  "sessionId": "board-uart"
+}
+```
+
+该工具使用 `write-input` scope，遵循授权会话范围、写操作逐次确认、执行前二次授权校验和审计。成功结果包含 `sent: true`，同时写入不含设备数据的系统事件。桌面 IPC 不可用、会话断开、正在重连、目标不是串口或驱动拒绝 Break 时都会失败关闭，不会把未执行操作报告为成功。桌面端原有“发送 Break”按钮不依赖 MCP。
+
 ### 文件传输工具
 
 `list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 支持 SFTP、SCP、TFTP、XModem、YModem 和 ZModem。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；没有前缀的一端表示运行 PortMate 桌面应用的电脑上的路径。MCP 不暴露纯本地到本地复制。

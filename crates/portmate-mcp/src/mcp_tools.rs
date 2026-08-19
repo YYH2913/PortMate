@@ -187,6 +187,15 @@ impl PortMateMcp {
                     )
                 }
             }
+            "serial_send_break" => {
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    ipc_value_to_text(value)?
+                } else {
+                    is_error = true;
+                    "serial_send_break was NOT executed: desktop IPC is not available, so no Break was sent."
+                        .to_string()
+                }
+            }
             "export_session_bundle" => {
                 let session_id = required_string(&arguments, "sessionId")?;
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;

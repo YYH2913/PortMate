@@ -215,6 +215,18 @@ MCP uses `list_custom_scripts` to receive only `id`, `name`, `description`, and 
 
 Script bodies are stored in the PortMate application Store and may also appear in terminal logging after execution. Do not save passwords, tokens, private keys, or other secrets in scripts.
 
+### MCP Serial Break
+
+`serial_send_break` asserts the hardware Break condition on the currently connected serial port for approximately 250 ms and then clears it. This is not text input, a newline, or `Ctrl+C`; devices commonly use it to interrupt startup, enter a bootloader, or trigger a device-specific serial control path. The target `sessionId` must identify both a Serial profile and its current live serial connection, and the USB-to-serial adapter and driver must support Break.
+
+```json
+{
+  "sessionId": "board-uart"
+}
+```
+
+The tool uses the `write-input` scope and remains subject to the grant's session boundary, per-write confirmation, commit-time authorization revalidation, and audit recording. A successful result contains `sent: true` and records a system event without device data. It fails closed when desktop IPC is unavailable, the session is disconnected or reconnecting, the target is not serial-backed, or the driver rejects Break. The existing desktop Send Break control does not require MCP.
+
 ### File Transfer Tools
 
 `list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` accepts SFTP, SCP, TFTP, XModem, YModem, and ZModem. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed endpoints are paths on the machine running the PortMate desktop application. Pure local-to-local copy is deliberately not exposed through MCP.

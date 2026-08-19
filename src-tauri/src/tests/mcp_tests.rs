@@ -1959,6 +1959,43 @@ fn failed_mcp_write_finalizes_audit_without_secret_arguments() {
 }
 
 #[test]
+fn mcp_serial_break_rejects_non_serial_sessions_before_authorization() {
+    tauri::async_runtime::block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "portmate-mcp-serial-break-invalid-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        let error = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "serial-break-client".to_string(),
+                trusted_write: true,
+                command: "serial_send_break".to_string(),
+                args: serde_json::json!({ "sessionId": session_id }),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("not serial-backed"), "{error}");
+        let audit = state.store.lock().unwrap().audit.clone();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].action, "serial_send_break");
+        assert_eq!(audit[0].decision, "invalid");
+        assert_eq!(
+            audit[0].details.get("scope").map(String::as_str),
+            Some("write-input")
+        );
+        let persisted = load_store_sqlite(&state.store_path).unwrap();
+        assert_eq!(persisted.audit, audit);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn applied_mcp_audit_keeps_final_truth_when_persistence_fails() {
     let mut store = SessionStore::default();
     store.record_audit(AuditRecord {

@@ -213,6 +213,30 @@ async fn execute_ipc_request_inner(
             .await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
+        "serial_send_break" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let break_state = state.clone();
+            let break_session_id = session_id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                serial_send_break_inner_with_validation(
+                    &break_state,
+                    &break_session_id,
+                    Some(validation),
+                )
+            })
+            .await
+            .map_err(|error| format!("serial Break task failed: {error}"))??;
+            Ok(serde_json::json!({
+                "sessionId": session_id,
+                "sent": true,
+            }))
+        }
         "run_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let command = ipc_string_arg(&request.args, "command")?.to_string();

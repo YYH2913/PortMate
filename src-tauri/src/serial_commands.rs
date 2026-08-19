@@ -229,15 +229,29 @@ pub(crate) fn serial_send_break(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    serial_send_break_inner_with_validation(state.inner(), &session_id, None)
+}
+
+pub(super) fn serial_send_break_inner_with_validation(
+    state: &AppState,
+    session_id: &str,
+    commit_validation: Option<CommitValidation>,
+) -> Result<(), String> {
+    ensure_serial_profile(&state.store, session_id)?;
     let connections = state.serial.lock().map_err(|error| error.to_string())?;
-    let writer = connections
-        .get(&session_id)
-        .ok_or_else(|| "串口会话尚未连接".to_string())?
+    let runtime = connections
+        .get(session_id)
+        .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+        .ok_or_else(|| "串口会话尚未连接".to_string())?;
+    let writer = runtime
         .writer
         .as_ref()
         .map(Arc::clone)
         .ok_or_else(|| "串口正在重连".to_string())?;
     let port = writer.lock().map_err(|error| error.to_string())?;
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
     let clear_retried = pulse_serial_break_with(
         || port.set_break().map_err(|error| error.to_string()),
         || port.clear_break().map_err(|error| error.to_string()),
@@ -246,9 +260,11 @@ pub(crate) fn serial_send_break(
     if clear_retried {
         eprintln!("PortMate: serial Break clear succeeded on retry");
     }
+    drop(port);
+    drop(connections);
 
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    store.record_system_event(&session_id, "PortMate: serial Break sent");
+    store.record_system_event(session_id, "PortMate: serial Break sent");
     persist_applied_store(&store, &state.store_path, "serial Break event")
         .map_err(|error| format!("Break 已发送并清除，但系统事件无法持久化: {error}"))?;
     Ok(())

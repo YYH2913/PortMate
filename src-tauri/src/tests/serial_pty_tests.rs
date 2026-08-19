@@ -86,6 +86,31 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
             .expect_err("serial health monitoring must not write probe bytes");
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 
+        let break_result = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "serial-break-client".to_string(),
+                trusted_write: true,
+                command: "serial_send_break".to_string(),
+                args: serde_json::json!({ "sessionId": profile.id }),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(break_result["sent"], true);
+        assert_eq!(break_result["sessionId"], profile.id);
+        {
+            let store = state.store.lock().unwrap();
+            assert!(store.events.iter().any(|event| {
+                event.session_id == profile.id
+                    && event.text.as_deref() == Some("PortMate: serial Break sent")
+            }));
+            let audit = store.audit.last().expect("serial Break audit");
+            assert_eq!(audit.action, "serial_send_break");
+            assert_eq!(audit.decision, "succeeded");
+        }
+
         let capture = serial_capture_snapshot_inner(&state, &profile.id, None).unwrap();
         assert_eq!(capture.frames.len(), 2);
         assert_eq!(capture.frames[0].direction, EventDirection::Outbound);

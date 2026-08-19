@@ -645,6 +645,29 @@ fn list_sessions_text(server: &mut PortMateMcp) -> String {
 }
 
 #[test]
+fn serial_break_fails_closed_without_desktop_ipc() {
+    let mut server = PortMateMcp {
+        store: test_snapshot_store("serial break"),
+        store_path: None,
+        ipc: None,
+        client_id: "serial-operator".to_string(),
+        allow_write: true,
+    };
+
+    let response = server
+        .tool_call(&json!({
+            "name": "serial_send_break",
+            "arguments": { "sessionId": "refresh-session" }
+        }))
+        .unwrap();
+    assert_eq!(response["isError"], true);
+    let text = response["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("NOT executed"));
+    assert!(text.contains("desktop IPC is not available"));
+    assert!(text.contains("no Break was sent"));
+}
+
+#[test]
 fn explicit_read_grants_filter_sessions_resources_and_global_logs() {
     let mut store = test_snapshot_store("visible snapshot");
     let mut hidden = store.profiles[0].clone();

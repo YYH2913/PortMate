@@ -5,6 +5,7 @@ import type { McpApprovalRequest } from "./types";
 const actionLabels: Record<string, string> = {
   send_text: "发送终端文本",
   send_key: "发送终端按键",
+  serial_send_break: "发送串口 Break",
   run_command: "执行终端命令",
   run_custom_script: "运行自定义脚本",
   attach_tmux: "连接 Tmux",
