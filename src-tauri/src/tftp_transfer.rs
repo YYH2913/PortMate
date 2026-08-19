@@ -13,6 +13,7 @@ const TFTP_MAX_BLOCK_SIZE: usize = 1_468;
 const TFTP_MAX_PACKET_SIZE: usize = 65_535;
 const TFTP_RETRY_COUNT: usize = 5;
 const TFTP_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
+const TFTP_COMMAND_LINE_DELAY: Duration = Duration::from_millis(80);
 
 #[derive(Debug, PartialEq, Eq)]
 struct TftpReadRequest {
@@ -78,10 +79,19 @@ pub(super) async fn transfer_file_via_tftp(
 
     let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
     let commands = spec.command_lines(&file_name, server_ip, server_port)?;
-    binding
-        .write_runtime_bytes(state, commands.as_bytes())
-        .await
-        .map_err(|error| format!("启动 U-Boot TFTP 命令失败: {error}"))?;
+    // The original U-Boot serial console can overrun when the complete command
+    // sequence is written as one 115200-baud burst. Send each command line
+    // separately so the console has time to consume the preceding CR.
+    let command_lines = split_tftp_command_lines(&commands);
+    for (index, line) in command_lines.iter().enumerate() {
+        binding
+            .write_runtime_bytes(state, line.as_bytes())
+            .await
+            .map_err(|error| format!("启动 U-Boot TFTP 命令失败: {error}"))?;
+        if index + 1 < command_lines.len() {
+            tokio::time::sleep(TFTP_COMMAND_LINE_DELAY).await;
+        }
+    }
 
     let deadline = Instant::now() + spec.timeout;
     serve_tftp_file(
@@ -95,6 +105,13 @@ pub(super) async fn transfer_file_via_tftp(
         progress,
     )
     .await
+}
+
+pub(super) fn split_tftp_command_lines(commands: &str) -> Vec<&str> {
+    commands
+        .split_inclusive('\r')
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 async fn resolve_tftp_server_ip(spec: &TftpReceiverSpec) -> Result<Ipv4Addr, String> {

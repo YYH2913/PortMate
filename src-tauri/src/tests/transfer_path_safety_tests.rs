@@ -283,3 +283,17 @@ fn tftp_load_endpoints_are_bounded_and_command_injection_safe() {
         );
     }
 }
+
+#[test]
+fn tftp_commands_are_sent_as_independent_cr_terminated_lines() {
+    let commands = "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 firmware.bin\r";
+    assert_eq!(
+        split_tftp_command_lines(commands),
+        vec![
+            "setenv ipaddr 192.168.255.1\r",
+            "setenv serverip 192.168.255.2\r",
+            "setenv tftpdstp 1069\r",
+            "tftpboot 0x81800000 firmware.bin\r",
+        ]
+    );
+}
