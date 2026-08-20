@@ -99,6 +99,11 @@ describe("MCP approval state", () => {
       .toEqual([older]);
   });
 
+  it("reuses the approval array when an expiry sweep changes nothing", () => {
+    const current = [base];
+    expect(mergeMcpApprovals(current, [], Date.parse("2026-07-17T10:00:30.000Z"))).toBe(current);
+  });
+
   it("retains an expired in-flight response until it resolves", () => {
     const afterExpiry = Date.parse("2026-07-17T10:01:01.000Z");
     expect(mergeMcpApprovals([], [base], afterExpiry, new Set(), new Set([base.id])))

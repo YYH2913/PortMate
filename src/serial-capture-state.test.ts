@@ -45,4 +45,14 @@ describe("serial capture state", () => {
       capturedBytes: 4,
     })).toEqual([frames[1]]);
   });
+
+  it("reuses the current frame array when an incremental poll has no changes", () => {
+    const unchanged = mergeSerialCaptureSnapshot(frames, {
+      frames: [],
+      reset: false,
+      totalFrames: frames.length,
+      capturedBytes: 7,
+    });
+    expect(unchanged).toBe(frames);
+  });
 });

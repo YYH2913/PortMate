@@ -44,7 +44,12 @@ export function mergeSerialCaptureSnapshot(
   current: SerialCaptureFrame[],
   snapshot: SerialCaptureSnapshot,
 ): SerialCaptureFrame[] {
-  if (snapshot.totalFrames === 0) return [];
+  if (snapshot.totalFrames === 0) return current.length === 0 ? current : [];
+  // Incremental polling commonly returns an empty page when no bytes arrived.
+  // Preserve the existing reference so callers can skip a React state update.
+  if (!snapshot.reset && snapshot.frames.length === 0 && current.length === snapshot.totalFrames) {
+    return current;
+  }
   const source = snapshot.reset ? snapshot.frames : [...current, ...snapshot.frames];
   const seen = new Set<string>();
   const unique = source.filter((frame) => {
@@ -52,5 +57,9 @@ export function mergeSerialCaptureSnapshot(
     seen.add(frame.id);
     return true;
   });
-  return unique.slice(-snapshot.totalFrames);
+  const next = unique.slice(-snapshot.totalFrames);
+  if (next.length === current.length && next.every((frame, index) => frame.id === current[index]?.id)) {
+    return current;
+  }
+  return next;
 }

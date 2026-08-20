@@ -80,6 +80,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   const framesRef = useRef<SerialCaptureFrame[]>([]);
   const captureOperationGateRef = useRef(new KeyedRequestGate<"capture">());
   const captureEpochRef = useRef(0);
+  const sessionSignatureRef = useRef("");
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const isSerial = session?.profile.connection.kind === "serial";
   const captureBusy = captureOperation !== null;
@@ -186,8 +187,12 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   }
 
   function storeSessions(next: SessionSummary[]) {
-    sessionsRef.current = next;
-    setSessions(next);
+    const signature = serialAnalyzerSessionSignature(next);
+    if (sessionSignatureRef.current === signature) return;
+    const snapshot = cloneSessionSummaries(next);
+    sessionSignatureRef.current = signature;
+    sessionsRef.current = snapshot;
+    setSessions(snapshot);
   }
 
   async function refreshSessions() {
@@ -641,6 +646,36 @@ function loadLocalSessions(): SessionSummary[] {
   } catch {
     return [];
   }
+}
+
+function serialAnalyzerSessionSignature(sessions: readonly SessionSummary[]): string {
+  return sessions
+    .map((session) => [
+      session.profile.id,
+      session.profile.name,
+      session.profile.connection.kind,
+      session.profile.connection.kind === "serial"
+        ? [
+            session.profile.connection.port,
+            session.profile.connection.baudRate,
+            session.profile.connection.dataBits,
+            session.profile.connection.stopBits,
+            session.profile.connection.parity,
+            session.profile.connection.flowControl,
+          ].join("\u0002")
+        : "",
+      session.runtime.status,
+      session.runtime.connectedSince ?? "",
+      session.runtime.lastDisconnect ?? "",
+      session.runtime.lastDisconnectReason ?? "",
+      session.runtime.lastActivity,
+    ].join("\u0000"))
+    .join("\u0001");
+}
+
+function cloneSessionSummaries(sessions: readonly SessionSummary[]): SessionSummary[] {
+  if (typeof structuredClone === "function") return structuredClone(sessions) as SessionSummary[];
+  return JSON.parse(JSON.stringify(sessions)) as SessionSummary[];
 }
 
 function readScreenLockMarker(fallbackLockedAt = Date.now()): ScreenLockMarker | null {

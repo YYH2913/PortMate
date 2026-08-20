@@ -97,9 +97,27 @@ export function mergeMcpApprovals(
       merged.set(request.id, request);
     }
   }
-  return [...merged.values()]
+  const next = [...merged.values()]
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id))
     .slice(0, MAX_MCP_APPROVAL_QUEUE);
+  if (next.length === current.length && next.every((item, index) => sameApproval(item, current[index]))) {
+    // The one-second expiry sweep is intentionally cheap when nothing changed.
+    // Reusing the array prevents the whole workspace from rendering again.
+    return current as McpApprovalRequest[];
+  }
+  return next;
+}
+
+function sameApproval(left: McpApprovalRequest, right: McpApprovalRequest | undefined): boolean {
+  if (!right) return false;
+  return left.id === right.id
+    && left.clientId === right.clientId
+    && left.action === right.action
+    && left.sessionId === right.sessionId
+    && left.scope === right.scope
+    && left.createdAt === right.createdAt
+    && left.expiresAt === right.expiresAt
+    && JSON.stringify(left.target ?? null) === JSON.stringify(right.target ?? null);
 }
 
 function validText(value: unknown, maxBytes: number): value is string {

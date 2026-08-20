@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -111,6 +111,7 @@ type TerminalCanvasProps = {
 };
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
+const TERMINAL_RESIZE_SETTLE_MS = 64;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -357,6 +358,7 @@ export default function TerminalCanvas({
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
+  const [completionReadyKey, setCompletionReadyKey] = useState("");
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
   displayModeRef.current = displayMode;
   const gotoLineOpen = gotoLineContext !== null;
@@ -434,14 +436,21 @@ export default function TerminalCanvas({
       + (completionPreferences.previewMode === "input" && selectedCompletion ? 28 : 0)
       + 16
     : 0;
+  const completionGeometryKey = completionSurfaceOpen
+    ? [active?.profile.id ?? "", completionInput.line, completionCandidates.length, completionUsageHint?.label ?? "", completionPanelHeight, completionPreferences.previewMode].join("\u0000")
+    : "";
+  const completionSurfaceVisible = completionSurfaceOpen && completionReadyKey === completionGeometryKey;
+  const completionShiftTransform = completionSurfaceVisible && completionAnchor.shift > 0
+    ? `translateY(-${completionAnchor.shift}px)`
+    : undefined;
   refreshCompletionAnchorRef.current = () => {
     if (!completionSurfaceOpenRef.current) return;
     const term = termRef.current;
     const host = hostRef.current;
-    const canvas = host?.parentElement;
+    const terminalRegion = host?.closest<HTMLElement>(".terminal-terminal-region");
     const screen = host?.querySelector<HTMLElement>(".xterm-screen");
-    if (!term || !host || !canvas || !screen) return;
-    const canvasRect = canvas.getBoundingClientRect();
+    if (!term || !host || !terminalRegion || !screen) return;
+    const canvasRect = terminalRegion.getBoundingClientRect();
     const hostRect = host.getBoundingClientRect();
     const screenRect = screen.getBoundingClientRect();
     const cellHeight = screenRect.height / Math.max(1, term.rows);
@@ -931,6 +940,7 @@ export default function TerminalCanvas({
     });
     let terminalDisposed = false;
     let timestampFrame: number | null = null;
+    let resizeReportTimer: number | null = null;
     const timestampMarkerLimit = Math.min(
       MAX_TERMINAL_TIMESTAMPS,
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
@@ -1232,21 +1242,66 @@ export default function TerminalCanvas({
       scheduleTimestampGutter();
       const size = `${term.cols}x${term.rows}`;
       host.dataset.terminalSize = size;
-      if (displayModeRef.current === "hex" || !focusedRef.current || lastSizeRef.current === size) return;
-      lastSizeRef.current = size;
-      if (isBackendAvailable()) {
-        void invokeBackend("resize_session", {
-          sessionId: active.profile.id,
-          cols: term.cols,
-          rows: term.rows,
-        }).catch(() => {});
+      if (resizeReportTimer !== null) {
+        window.clearTimeout(resizeReportTimer);
+        resizeReportTimer = null;
       }
+      // Only the active pane may resize the shared PTY. ResizeObserver callbacks
+      // can arrive after focus changes, before the inactive pane has been laid out.
+      if (
+        displayModeRef.current === "hex"
+        || !focusedRef.current
+        || host.dataset.terminalResizeOwner !== "active"
+        || !host.closest(".terminal-pane.active")
+        || lastSizeRef.current === size
+      ) return;
+      let candidateSize = size;
+      let candidateViewport = `${window.innerWidth}x${window.innerHeight}`;
+      const reportStableSize = () => {
+        resizeReportTimer = null;
+        if (terminalDisposed || !focusedRef.current || host.dataset.terminalResizeOwner !== "active"
+          || !host.closest(".terminal-pane.active")) return;
+        fit.fit();
+        scheduleTimestampGutter();
+        const settledSize = `${term.cols}x${term.rows}`;
+        host.dataset.terminalSize = settledSize;
+        const settledViewport = `${window.innerWidth}x${window.innerHeight}`;
+        if (settledSize !== candidateSize || settledViewport !== candidateViewport) {
+          candidateSize = settledSize;
+          candidateViewport = settledViewport;
+          resizeReportTimer = window.setTimeout(reportStableSize, TERMINAL_RESIZE_SETTLE_MS);
+          return;
+        }
+        if (displayModeRef.current === "hex" || lastSizeRef.current === settledSize) return;
+        lastSizeRef.current = settledSize;
+        if (isBackendAvailable()) {
+          void invokeBackend("resize_session", {
+            sessionId: active.profile.id,
+            cols: term.cols,
+            rows: term.rows,
+          }).catch(() => {});
+        }
+      };
+      resizeReportTimer = window.setTimeout(reportStableSize, TERMINAL_RESIZE_SETTLE_MS);
     };
     fitAndReportRef.current = fitAndReport;
     queueMicrotask(fitAndReport);
 
     const resizeObserver = new ResizeObserver(fitAndReport);
     resizeObserver.observe(host);
+    let windowResizeFrame: number | null = null;
+    const handleWindowResize = () => {
+      if (resizeReportTimer !== null) {
+        window.clearTimeout(resizeReportTimer);
+        resizeReportTimer = null;
+      }
+      if (windowResizeFrame !== null) window.cancelAnimationFrame(windowResizeFrame);
+      windowResizeFrame = window.requestAnimationFrame(() => {
+        windowResizeFrame = null;
+        fitAndReport();
+      });
+    };
+    window.addEventListener("resize", handleWindowResize);
     let semanticFrame: number | null = null;
     let semanticDecorations: Array<{ dispose: () => void }> = [];
     let semanticMarkers: Array<{ dispose: () => void }> = [];
@@ -1421,6 +1476,8 @@ export default function TerminalCanvas({
     return () => {
       terminalDisposed = true;
       window.cancelAnimationFrame(readyFrame);
+      window.removeEventListener("resize", handleWindowResize);
+      if (windowResizeFrame !== null) window.cancelAnimationFrame(windowResizeFrame);
       if (host.dataset.terminalInstanceId === terminalInstanceId) host.dataset.terminalReady = "false";
       searchResultDisposable.dispose();
       inputDisposable.dispose();
@@ -1432,6 +1489,10 @@ export default function TerminalCanvas({
       if (inputFlushTimerRef.current !== null) {
         window.clearTimeout(inputFlushTimerRef.current);
         inputFlushTimerRef.current = null;
+      }
+      if (resizeReportTimer !== null) {
+        window.clearTimeout(resizeReportTimer);
+        resizeReportTimer = null;
       }
       pendingInputRef.current = "";
       pendingEventWrites.length = 0;
@@ -1782,12 +1843,15 @@ export default function TerminalCanvas({
     scheduleTerminalSurfaceFocus();
   }, [active?.profile.id, keyMode, mouseReporting, viewId]);
 
-  useEffect(() => {
-    const measureFrame = window.requestAnimationFrame(() => refreshCompletionAnchorRef.current());
-    return () => {
-      window.cancelAnimationFrame(measureFrame);
-    };
-  }, [completionCandidates.length, completionInput.line, completionPanelHeight, completionPreferences.previewMode, completionUsageHint?.label]);
+  useLayoutEffect(() => {
+    if (!completionSurfaceOpen) {
+      if (completionReadyKey !== "") setCompletionReadyKey("");
+      return;
+    }
+    setCompletionReadyKey("");
+    refreshCompletionAnchorRef.current();
+    setCompletionReadyKey(completionGeometryKey);
+  }, [completionGeometryKey, completionSurfaceOpen]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -1864,19 +1928,18 @@ export default function TerminalCanvas({
 
   return (
     <div
-      className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceOpen ? " completion-open" : ""}`}
+      className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceVisible ? " completion-open" : ""}`}
       data-terminal-focused={focused ? "true" : "false"}
       data-terminal-session-id={sessionId || undefined}
       data-terminal-view-id={viewId || undefined}
       inert={!focused}
       data-terminal-display-mode={active ? displayMode : undefined}
-      data-completion-placement={completionSurfaceOpen ? "below" : undefined}
-      data-completion-cursor-bottom={completionSurfaceOpen ? completionAnchor.cursorBottom : undefined}
-      data-completion-shift={completionSurfaceOpen ? completionAnchor.shift : undefined}
+      data-completion-placement={completionSurfaceVisible ? "below" : undefined}
+      data-completion-cursor-bottom={completionSurfaceVisible ? completionAnchor.cursorBottom : undefined}
+      data-completion-shift={completionSurfaceVisible ? completionAnchor.shift : undefined}
       style={{
         "--terminal-background": canvasBackground ?? "#0d1117",
         "--terminal-completion-height": `${completionPanelHeight}px`,
-        "--terminal-completion-shift": `${completionAnchor.shift}px`,
       } as CSSProperties}
     >
       {active ? (
@@ -1904,6 +1967,7 @@ export default function TerminalCanvas({
                 data-timestamp-count={timestampViewport.entries.length}
                 style={{
                   "--terminal-timestamp-cell-height": `${timestampViewport.cellHeight}px`,
+                  transform: completionShiftTransform,
                 } as CSSProperties}
               >
                 {timestampViewport.entries.map((entry) => (
@@ -1920,7 +1984,12 @@ export default function TerminalCanvas({
                   </time>
                 ))}
               </div>
-              <div ref={hostRef} className="terminal-host" inert={displayMode === "hex" || freeInputOpen || gotoLineOpen} />
+              <div
+                ref={hostRef}
+                className="terminal-host"
+                inert={displayMode === "hex" || freeInputOpen || gotoLineOpen}
+                style={{ transform: completionShiftTransform }}
+              />
           {focused && freeInputOpen ? (
             <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
               event.preventDefault();
@@ -2023,52 +2092,54 @@ export default function TerminalCanvas({
                 </button>
               </form>
             ) : null}
-          {completionSurfaceOpen ? (
-            <section
-              className="terminal-completion"
-              aria-label="终端命令补全"
-              data-preview-mode={completionPreferences.previewMode}
-              style={{
-                "--terminal-completion-rows": completionPreferences.listRows,
-                top: `${completionAnchor.top}px`,
-              } as CSSProperties}
-            >
-              {completionPreferences.previewMode === "input" && selectedCompletion ? (
-                <div className="terminal-completion-preview" aria-hidden="true">
-                  <code>{completionInput.line}</code><code>{selectedCompletion.appendText}</code>
-                </div>
-              ) : null}
-              {completionUsageHint ? (
-                <div className="terminal-completion-usage" aria-label="命令用法">
-                  <span>用法</span>
-                  <code title={completionUsageHint.label}>{completionUsageHint.label}</code>
-                  <small>{completionUsageHint.detail}</small>
-                </div>
-              ) : null}
-              {completionCandidates.length ? (
-                <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
-                  {completionCandidates.map((suggestion, index) => (
-                    <button
-                      key={suggestion.id}
-                      type="button"
-                      role="option"
-                      aria-selected={index === activeCompletionIndex}
-                      className={index === activeCompletionIndex ? "active" : ""}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onMouseEnter={() => {
-                        completionSelectionRef.current = index;
-                        setCompletionSelection(index);
-                      }}
-                      onClick={() => acceptCompletionRef.current(suggestion)}
-                    >
-                      <span>{terminalCompletionSourceLabel(suggestion.source)}</span>
-                      <code>{suggestion.label}</code>
-                      <small>{suggestion.detail}</small>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </section>
+          {completionSurfaceVisible ? (
+            <div className="terminal-completion-layer">
+              <section
+                className="terminal-completion"
+                aria-label="终端命令补全"
+                data-preview-mode={completionPreferences.previewMode}
+                style={{
+                  "--terminal-completion-rows": completionPreferences.listRows,
+                  top: `${completionAnchor.top}px`,
+                } as CSSProperties}
+              >
+                {completionPreferences.previewMode === "input" && selectedCompletion ? (
+                  <div className="terminal-completion-preview" aria-hidden="true">
+                    <code>{completionInput.line}</code><code>{selectedCompletion.appendText}</code>
+                  </div>
+                ) : null}
+                {completionUsageHint ? (
+                  <div className="terminal-completion-usage" aria-label="命令用法">
+                    <span>用法</span>
+                    <code title={completionUsageHint.label}>{completionUsageHint.label}</code>
+                    <small>{completionUsageHint.detail}</small>
+                  </div>
+                ) : null}
+                {completionCandidates.length ? (
+                  <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
+                    {completionCandidates.map((suggestion, index) => (
+                      <button
+                        key={suggestion.id}
+                        type="button"
+                        role="option"
+                        aria-selected={index === activeCompletionIndex}
+                        className={index === activeCompletionIndex ? "active" : ""}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseEnter={() => {
+                          completionSelectionRef.current = index;
+                          setCompletionSelection(index);
+                        }}
+                        onClick={() => acceptCompletionRef.current(suggestion)}
+                      >
+                        <span>{terminalCompletionSourceLabel(suggestion.source)}</span>
+                        <code>{suggestion.label}</code>
+                        <small>{suggestion.detail}</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            </div>
           ) : null}
           {focused && gotoLineContext ? (
             <form className="terminal-goto-line" aria-label="跳转到终端行" onSubmit={(event) => {

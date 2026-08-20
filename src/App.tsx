@@ -1626,7 +1626,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (gate.isCurrent("summaries", token)) {
         restoreTerminalInputSessions(nextSessions);
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
-        setSessions(nextSessions);
+        const snapshot = cloneSessionSummaries(nextSessions);
+        setSessions(snapshot);
         const restored = reconcileWorkspaceSnapshot({
           version: 4,
           root: workspaceRootRef.current,
@@ -1751,7 +1752,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         afterId: current.at(-1)?.id ?? null,
       });
       if (!gate.isCurrent(sessionId, token)) return;
-      storeSerialCapture(sessionId, mergeSerialCaptureSnapshot(current, snapshot));
+      const next = mergeSerialCaptureSnapshot(current, snapshot);
+      if (next !== current) storeSerialCapture(sessionId, next);
     } catch {
       // Capture polling is best-effort; transport status and terminal output remain authoritative.
     } finally {
@@ -1830,8 +1832,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const signature = sessionsSignature(nextSessions);
       if (sessionsSignatureRef.current === signature) return;
       sessionsSignatureRef.current = signature;
-      setSessions(nextSessions);
-      saveLocalSessionSummaries(nextSessions);
+      const snapshot = cloneSessionSummaries(nextSessions);
+      setSessions(snapshot);
+      saveLocalSessionSummaries(snapshot);
     } catch {
       // Polling failures retain the last valid session snapshot.
     } finally {
@@ -6507,6 +6510,11 @@ function logSignature(events: SessionEvent[]) {
 
 function sessionsSignature(sessions: SessionSummary[]) {
   return JSON.stringify(sessions);
+}
+
+function cloneSessionSummaries(sessions: readonly SessionSummary[]): SessionSummary[] {
+  if (typeof structuredClone === "function") return structuredClone(sessions) as SessionSummary[];
+  return JSON.parse(JSON.stringify(sessions)) as SessionSummary[];
 }
 
 function mergeSessionSummaries(current: SessionSummary[], saved: SessionSummary) {

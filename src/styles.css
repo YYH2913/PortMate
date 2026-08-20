@@ -131,6 +131,7 @@ body.serial-analyzer-window {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .detached-pane-toolbar button:hover:not(:disabled),
@@ -184,6 +185,7 @@ body.serial-analyzer-window {
   color: #bfd0df;
   font: inherit;
   cursor: pointer;
+  transition: color 120ms ease;
 }
 
 .detached-pane-status button:hover,
@@ -281,6 +283,7 @@ body.serial-analyzer-window {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .serial-analyzer-titlebar button:hover:not(:disabled),
@@ -811,6 +814,7 @@ button {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .menu-tools button:hover,
@@ -838,6 +842,7 @@ button {
   color: #c9d6e2;
   cursor: pointer;
   font-size: 13px;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .menu-trigger:hover,
@@ -875,6 +880,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   text-align: left;
   cursor: pointer;
   font-size: 13px;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .menu-popover button:hover:not(:disabled) {
@@ -931,6 +937,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .context-menu-row:hover:not(:disabled),
@@ -1022,6 +1029,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: #d7dee6;
   text-align: left;
   cursor: pointer;
+  transition: background-color 120ms ease;
 }
 
 .context-color-grid button:hover {
@@ -1115,6 +1123,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: #d4dee7;
   cursor: pointer;
   font-size: 11px;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .quick-command-run span,
@@ -1171,6 +1180,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .workspace-dock {
@@ -1380,6 +1390,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: inherit;
   cursor: pointer;
   opacity: 0.62;
+  transition: opacity 120ms ease, color 120ms ease;
 }
 
 .workspace-dock-tab:hover .workspace-dock-tab-close,
@@ -1524,6 +1535,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .panel-filter button:hover,
@@ -1569,6 +1581,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: transparent;
   text-align: left;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .tree-session.active {
@@ -1836,6 +1849,18 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: rgba(15, 23, 32, 0.5);
   color: var(--muted);
   font-size: 10px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.serial-monitor-filters button:hover:not(:disabled),
+.serial-monitor-search button:hover:not(:disabled),
+.serial-monitor-filters button:focus-visible,
+.serial-monitor-search button:focus-visible {
+  outline: 0;
+  border-color: var(--line);
+  background: var(--control-hover);
+  color: var(--text);
 }
 
 .serial-monitor-filters button[aria-pressed="true"] {
@@ -2010,6 +2035,24 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: var(--control);
   color: var(--text);
   font-size: 12px;
+}
+
+.file-toolbar button,
+.file-actions button,
+.file-action-overflow > summary {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.file-toolbar button:hover:not(:disabled),
+.file-actions button:hover:not(:disabled),
+.file-action-overflow > summary:hover,
+.file-toolbar button:focus-visible,
+.file-actions button:focus-visible,
+.file-action-overflow > summary:focus-visible {
+  outline: 0;
+  border-color: #3c4d5d;
+  background: var(--control-hover);
+  color: var(--text);
 }
 
 .file-toolbar select {
@@ -2253,6 +2296,12 @@ body[data-portmate-modal-open] .portmate-context-menu {
   border: 0;
   background: transparent;
   cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.sysmon-applet button:hover:not(:disabled) {
+  background: rgba(141, 160, 179, 0.08);
+  color: var(--text);
 }
 
 .sysmon-applet-toggle {
@@ -2364,6 +2413,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .workspace-sysmon-header button:hover:not(:disabled),
@@ -2805,6 +2855,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: transparent;
   color: var(--muted);
   font-size: 10px;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .workspace-pane-tab.has-color {
@@ -3683,11 +3734,6 @@ body[data-portmate-modal-open] .portmate-context-menu {
   }
 }
 
-.terminal-canvas.completion-open .terminal-host,
-.terminal-canvas.completion-open .terminal-timestamp-gutter {
-  transform: translateY(calc(-1 * var(--terminal-completion-shift)));
-}
-
 .terminal-host .xterm {
   height: 100%;
 }
@@ -3696,10 +3742,20 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background-color: transparent !important;
 }
 
+.terminal-completion-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+}
+
 .terminal-completion {
   --terminal-completion-rows: 7;
   position: absolute;
   z-index: 5;
+  top: 0;
   left: calc(var(--terminal-timestamp-gutter-width) + 8px);
   width: min(520px, calc(100% - var(--terminal-timestamp-gutter-width) - 16px));
   max-height: min(var(--terminal-completion-height), 45%);
@@ -3712,6 +3768,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: #111820;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
   animation: terminal-completion-enter 100ms ease-out both;
+  pointer-events: auto;
 }
 
 .terminal-completion-preview {
@@ -4299,6 +4356,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   background: var(--control);
   color: inherit;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .send-icon-button:disabled {
@@ -4368,6 +4426,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+  transition: color 120ms ease;
 }
 
 .terminal-key-mode-status:hover,
@@ -4450,6 +4509,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: inherit;
   cursor: pointer;
   font: inherit;
+  transition: color 120ms ease;
 }
 
 .status-lock-button:hover,
@@ -4555,6 +4615,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: var(--text);
   font-family: var(--mono);
   font-size: 13px;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .screen-lock-field input:focus {
@@ -4575,6 +4636,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: #e6f0f7;
   cursor: pointer;
   font-size: 12px;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .screen-lock-primary:hover:not(:disabled),
@@ -4908,6 +4970,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
+  transition: color 120ms ease, border-color 120ms ease;
 }
 
 .settings-tabs button:hover,
@@ -5090,9 +5153,11 @@ body[data-portmate-modal-open] .portmate-context-menu {
   width: 100%;
   height: 34px;
   border: 1px solid var(--line);
+  border-radius: 3px;
   background: var(--control);
   color: var(--text);
   padding: 0 9px;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .setting-row-actions {
@@ -5185,10 +5250,25 @@ fieldset label {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--line);
+  border-radius: 3px;
   background: var(--control);
   color: var(--text);
   padding: 0 8px;
   font-size: 14px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.form-row select:focus,
+.dialog-field input:focus,
+.dialog-field select:focus,
+.dialog-field textarea:focus,
+.setting-row input:focus,
+.setting-row select:focus,
+.trigger-item input:focus,
+.trigger-item select:focus {
+  outline: 0;
+  border-color: var(--cyan);
+  background: #111c25;
 }
 
 .proxy-password-control {
@@ -5688,9 +5768,11 @@ fieldset label {
   min-width: 0;
   height: 32px;
   border: 1px solid var(--line);
+  border-radius: 3px;
   background: var(--control);
   color: var(--text);
   padding: 0 8px;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
 .trigger-enabled,
@@ -5930,6 +6012,7 @@ fieldset label {
   color: var(--text);
   cursor: pointer;
   font-size: 14px;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
 }
 
 .session-settings-actions {
@@ -12357,5 +12440,16 @@ fieldset label {
 @media (max-height: 600px) {
   .serial-analyzer-root {
     grid-template-rows: 38px auto 28px minmax(0, 1fr) 130px 30px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
