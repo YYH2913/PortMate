@@ -3,7 +3,6 @@ use std::net::Ipv4Addr;
 
 pub(super) const DEFAULT_TFTP_PORT: u16 = 69;
 pub(super) const DEFAULT_TFTP_TIMEOUT_SECONDS: u64 = 60;
-pub(super) const MAX_TFTP_TIMEOUT_SECONDS: u64 = 150;
 
 pub(super) fn prepare_transfer_request(
     profile: &SessionProfile,
@@ -465,10 +464,16 @@ pub(super) fn parse_tftp_receiver_endpoint(
                 let seconds = value.parse::<u64>().map_err(|_| {
                     "load: TFTP timeoutSeconds 必须是有效的正整数".to_string()
                 })?;
-                if !(5..=MAX_TFTP_TIMEOUT_SECONDS).contains(&seconds) {
-                    return Err(format!(
-                        "load: TFTP timeoutSeconds 必须介于 5 和 {MAX_TFTP_TIMEOUT_SECONDS} 之间"
-                    ));
+                if seconds < 5 {
+                    return Err("load: TFTP timeoutSeconds 必须至少为 5".to_string());
+                }
+                if Instant::now()
+                    .checked_add(Duration::from_secs(seconds))
+                    .is_none()
+                {
+                    return Err(
+                        "load: TFTP timeoutSeconds 超出当前平台可表示的时间范围".to_string(),
+                    );
                 }
                 timeout_seconds = Some(seconds);
             }

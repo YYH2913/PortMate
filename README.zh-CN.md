@@ -282,7 +282,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 }
 ```
 
-`deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，端口默认 69，总超时默认 60 秒且范围为 5-150 秒。`bindPort=0` 会自动选择空闲端口。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
+`deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，端口默认 69，总超时默认 60 秒。显式超时必须至少为 5 秒，PortMate 不再设置应用层上限。`bindPort=0` 会自动选择空闲端口。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
 
 一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 

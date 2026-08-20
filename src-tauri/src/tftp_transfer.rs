@@ -13,7 +13,10 @@ const TFTP_MAX_BLOCK_SIZE: usize = 1_468;
 const TFTP_MAX_PACKET_SIZE: usize = 65_535;
 const TFTP_RETRY_COUNT: usize = 5;
 const TFTP_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
-const TFTP_COMMAND_LINE_DELAY: Duration = Duration::from_millis(80);
+// The AXON 1.7 and downstream U-Boot consoles echo a complete command before
+// accepting the next one. At 115200 baud, 80 ms still lets the following line
+// overrun the command parser and corrupts `tftpdstp`/`tftpboot`.
+const TFTP_COMMAND_LINE_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, PartialEq, Eq)]
 struct TftpReadRequest {
@@ -93,7 +96,9 @@ pub(super) async fn transfer_file_via_tftp(
         }
     }
 
-    let deadline = Instant::now() + spec.timeout;
+    let deadline = Instant::now()
+        .checked_add(spec.timeout)
+        .ok_or_else(|| "TFTP 总超时超出当前平台可表示的时间范围".to_string())?;
     serve_tftp_file(
         &socket,
         &mut source,

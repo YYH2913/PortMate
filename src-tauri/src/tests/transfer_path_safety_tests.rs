@@ -230,9 +230,9 @@ fn device_load_endpoint_is_a_local_modem_upload_destination() {
 }
 
 #[test]
-fn tftp_load_endpoints_are_bounded_and_command_injection_safe() {
+fn tftp_load_endpoints_accept_long_timeouts_and_reject_unsafe_values() {
     let spec = parse_tftp_receiver_endpoint(
-        "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=1069&timeoutSeconds=90",
+        "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=1069&timeoutSeconds=3600",
     )
     .unwrap()
     .unwrap();
@@ -242,7 +242,7 @@ fn tftp_load_endpoints_are_bounded_and_command_injection_safe() {
     assert_eq!(spec.server_ip.unwrap().to_string(), "192.168.255.2");
     assert_eq!(spec.bind_host.unwrap().to_string(), "0.0.0.0");
     assert_eq!(spec.bind_port, 1_069);
-    assert_eq!(spec.timeout, Duration::from_secs(90));
+    assert_eq!(spec.timeout, Duration::from_secs(3_600));
     let commands = spec
         .command_lines("ignored.bin", "192.168.255.2".parse().unwrap(), 1_069)
         .unwrap();
@@ -272,7 +272,8 @@ fn tftp_load_endpoints_are_bounded_and_command_injection_safe() {
         "load:tftpboot?deviceIp=192.168.1.1&address=1%3Bsaveenv",
         "load:tftpboot?deviceIp=192.168.1.1&fileName=fw%3Bsaveenv",
         "load:tftpboot?deviceIp=192.168.1.1&bindPort=70000",
-        "load:tftpboot?deviceIp=192.168.1.1&timeoutSeconds=151",
+        "load:tftpboot?deviceIp=192.168.1.1&timeoutSeconds=4",
+        "load:tftpboot?deviceIp=192.168.1.1&timeoutSeconds=18446744073709551615",
         "load:tftpboot?deviceIp=192.168.1.1&unknown=1",
         "load:tftpboot?deviceIp=192.168.1.1&deviceIp=192.168.1.2",
         "load:loadx?deviceIp=192.168.1.1",

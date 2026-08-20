@@ -247,7 +247,7 @@ export default function TransferDialog({
               <DialogField label="监听端口:"><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder="69；0 表示自动分配" /></DialogField>
               <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，默认 ${loadaddr}" spellCheck={false} /></DialogField>
               <DialogField label="请求文件名:"><input value={tftpFileName} onChange={(event) => setTftpFileName(event.target.value)} placeholder="可选，默认使用本地文件名" spellCheck={false} /></DialogField>
-              <DialogField label="总超时(秒):"><input type="number" min={5} max={150} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
+              <DialogField label="总超时(秒):"><input type="number" min={5} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
             </>
           ) : (
             <DialogField label="目标:"><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>

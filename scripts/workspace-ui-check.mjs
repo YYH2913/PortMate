@@ -3057,14 +3057,16 @@ Host staging
   await page.locator('.transfer-dialog .dialog-field', { hasText: "服务端 IP:" }).locator("input").fill("192.168.255.2");
   await page.locator('.transfer-dialog .dialog-field', { hasText: "绑定地址:" }).locator("input").fill("0.0.0.0");
   await page.locator('.transfer-dialog .dialog-field', { hasText: "监听端口:" }).locator("input").fill("0");
-  await page.locator('.transfer-dialog .dialog-field', { hasText: "总超时(秒):" }).locator("input").fill("75");
+  const tftpTimeoutInput = page.locator('.transfer-dialog .dialog-field', { hasText: "总超时(秒):" }).locator("input");
+  assert(await tftpTimeoutInput.getAttribute("max") === null, "TFTP timeout still has a hard upper bound");
+  await tftpTimeoutInput.fill("3600");
   await page.locator(".transfer-dialog .utility-actions button", { hasText: "开始" }).click();
   const serialTftpTransfer = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "start_transfer").at(-1)?.args.request);
   assert(serialTftpTransfer?.sessionId === "bench-uart"
     && serialTftpTransfer.protocol === "tftp"
     && serialTftpTransfer.source === "/tmp/firmware.bin"
-    && serialTftpTransfer.destination === "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=0&timeoutSeconds=75",
+    && serialTftpTransfer.destination === "load:tftpboot?address=0x81800000&fileName=image.bin&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindHost=0.0.0.0&bindPort=0&timeoutSeconds=3600",
   `Serial TFTP transfer request is wrong: ${JSON.stringify(serialTftpTransfer)}`);
   const tftpNotice = page.locator(".notice-dialog", { hasText: "tftp queued" });
   await tftpNotice.waitFor();
