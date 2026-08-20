@@ -132,6 +132,7 @@ fn transfer_and_route_lifecycle_actions_build_expected_approval_scopes() {
         ("start_transfer", McpScope::Transfer, "transfer"),
         ("retry_transfer", McpScope::Transfer, "transfer"),
         ("stop_tunnel", McpScope::Tunnel, "tunnel"),
+        ("tunnel_request", McpScope::Tunnel, "tunnel"),
         ("restart_mcp_http", McpScope::ManageMcp, "manage-mcp"),
     ] {
         let request = build_mcp_approval_request("ops-client", action, "session-1", scope).unwrap();

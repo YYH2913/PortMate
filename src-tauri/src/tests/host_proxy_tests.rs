@@ -421,3 +421,421 @@ fn portmate_host_socks5_enforces_route_rules_and_relays_allowed_targets() {
         assert!(!stopped.spec.enabled);
     });
 }
+
+#[test]
+fn mcp_tunnel_request_relays_request_response_through_client_host_route() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "tunnel-request-client".to_string(),
+            name: "Tunnel request client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = echo_listener.accept().await.unwrap();
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").await.unwrap();
+        });
+
+        let created = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "tunnel-request-client".to_string(),
+                trusted_write: false,
+                command: "create_tunnel".to_string(),
+                args: serde_json::json!({
+                    "egress": "portmate-host",
+                    "mode": "local",
+                    "bindHost": "127.0.0.1",
+                    "bindPort": 0,
+                    "targetHost": "127.0.0.1",
+                    "targetPort": echo_address.port()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let tunnel = serde_json::from_value::<TunnelSpec>(created).unwrap();
+
+        let exchange = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "tunnel-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping")
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let result = serde_json::from_value::<McpTunnelExchangeResult>(exchange).unwrap();
+        assert_eq!(result.tunnel_id, tunnel.id);
+        assert_eq!(result.target_host, "127.0.0.1");
+        assert_eq!(result.target_port, echo_address.port());
+        assert_eq!(result.sent_bytes, 4);
+        assert_eq!(result.received_bytes, 4);
+        assert!(!result.truncated);
+        assert!(!result.timed_out);
+        assert_eq!(
+            BASE64_STANDARD.decode(&result.response_base64).unwrap(),
+            b"pong"
+        );
+        echo.await.unwrap();
+
+        let store = state.store.lock().unwrap();
+        let audit = store
+            .audit
+            .iter()
+            .find(|record| record.action == "tunnel_request")
+            .cloned()
+            .expect("tunnel_request audit record");
+        assert_eq!(audit.session_id, None);
+        assert_eq!(
+            audit.details.get("tunnelId").map(String::as_str),
+            Some(tunnel.id.as_str())
+        );
+        assert_eq!(
+            audit.details.get("encoding").map(String::as_str),
+            Some("base64")
+        );
+        assert_eq!(audit.decision, "succeeded");
+        assert!(!serde_json::to_string(&store.audit)
+            .unwrap()
+            .contains("ping"));
+    });
+}
+
+#[test]
+fn mcp_tunnel_request_enforces_dynamic_routes_ownership_and_target_rules() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.extend(
+            ["dynamic-request-client", "foreign-request-client"].map(|client_id| McpGrant {
+                client_id: client_id.to_string(),
+                name: client_id.to_string(),
+                scopes: vec![McpScope::Tunnel],
+                allowed_sessions: Vec::new(),
+                confirm_writes: false,
+                expires_at: None,
+                revoked_at: None,
+            }),
+        );
+
+        let echo_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let echo_address = echo_listener.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = echo_listener.accept().await.unwrap();
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").await.unwrap();
+        });
+
+        let created = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "dynamic-request-client".to_string(),
+                trusted_write: false,
+                command: "create_tunnel".to_string(),
+                args: serde_json::json!({
+                    "egress": "portmate-host",
+                    "mode": "dynamic",
+                    "bindHost": "127.0.0.1",
+                    "bindPort": 0,
+                    "routeRules": [{ "host": "127.0.0.1", "port": echo_address.port() }]
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let tunnel = serde_json::from_value::<TunnelSpec>(created).unwrap();
+
+        let allowed = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "dynamic-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "hex",
+                    "data": "70696e67",
+                    "targetHost": "127.0.0.1",
+                    "targetPort": echo_address.port()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let result = serde_json::from_value::<McpTunnelExchangeResult>(allowed).unwrap();
+        assert_eq!(
+            BASE64_STANDARD.decode(&result.response_base64).unwrap(),
+            b"pong"
+        );
+        echo.await.unwrap();
+
+        let denied = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "dynamic-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping"),
+                    "targetHost": "127.0.0.1",
+                    "targetPort": echo_address.port().saturating_add(1).max(1)
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains("denied by route rules"), "{denied}");
+
+        let missing_target = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "dynamic-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping")
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            missing_target.contains("require targetHost and targetPort"),
+            "{missing_target}"
+        );
+
+        let foreign = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "foreign-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping"),
+                    "targetHost": "127.0.0.1",
+                    "targetPort": echo_address.port()
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(foreign.contains("owned by another MCP client"), "{foreign}");
+    });
+}
+
+#[test]
+fn mcp_tunnel_request_rejects_invalid_shapes_and_non_host_egress() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "shape-request-client".to_string(),
+            name: "Shape request client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let created = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "create_tunnel".to_string(),
+                args: serde_json::json!({
+                    "egress": "portmate-host",
+                    "mode": "local",
+                    "bindHost": "127.0.0.1",
+                    "bindPort": 0,
+                    "targetHost": "127.0.0.1",
+                    "targetPort": 443
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let tunnel = serde_json::from_value::<TunnelSpec>(created).unwrap();
+
+        let invalid_encoding = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "utf-8",
+                    "data": "cGluZw=="
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            invalid_encoding.contains("encoding must be"),
+            "{invalid_encoding}"
+        );
+
+        let invalid_base64 = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": "%%%not-base64%%%"
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            invalid_base64.contains("not valid standard Base64"),
+            "{invalid_base64}"
+        );
+
+        let target_override = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping"),
+                    "targetHost": "127.0.0.1",
+                    "targetPort": 80
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            target_override.contains("must not override"),
+            "{target_override}"
+        );
+
+        let unknown = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": "missing-route",
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping")
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(unknown.contains("owned by another MCP client"), "{unknown}");
+
+        let owner = mcp_host_route_owner_id("shape-request-client").unwrap();
+        state.tunnels.lock().unwrap().insert(
+            "ssh-egress-route".to_string(),
+            TunnelRuntime {
+                session_id: owner,
+                ssh_runtime_id: "ssh-runtime-1".to_string(),
+                spec: TunnelSpec {
+                    id: "ssh-egress-route".to_string(),
+                    label: "SSH route".to_string(),
+                    egress: TunnelEgress::Ssh,
+                    mode: TunnelMode::Local,
+                    bind_host: "127.0.0.1".to_string(),
+                    bind_port: 10_001,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: 80,
+                    route_rules: Vec::new(),
+                    enabled: true,
+                },
+                metrics: Arc::new(TunnelMetrics::default()),
+                closed: Arc::new(AtomicBool::new(false)),
+                listener_worker: TunnelListenerWorker::completed(),
+            },
+        );
+        let ssh_egress = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "shape-request-client".to_string(),
+                trusted_write: false,
+                command: "tunnel_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": "ssh-egress-route",
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping")
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            ssh_egress.contains("owned by another MCP client"),
+            "{ssh_egress}"
+        );
+    });
+}
+
+#[test]
+fn mcp_tunnel_request_rejects_zero_dynamic_target_port_before_connecting() {
+    let error = validate_mcp_tunnel_exchange_request(&McpTunnelExchangeRequest {
+        tunnel_id: "dynamic-route".to_string(),
+        encoding: "base64".to_string(),
+        data: BASE64_STANDARD.encode(b"ping"),
+        target_host: Some("127.0.0.1".to_string()),
+        target_port: Some(0),
+        timeout_ms: None,
+        max_response_bytes: None,
+        close_write: true,
+    })
+    .unwrap_err();
+    assert!(
+        error.contains("targetPort must be between 1 and 65535"),
+        "{error}"
+    );
+}

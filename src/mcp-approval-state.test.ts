@@ -31,6 +31,28 @@ describe("MCP approval state", () => {
     expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,
+      action: "tunnel_request",
+      sessionId: "portmate-host",
+      scope: "tunnel",
+      target: {
+        kind: "portmate-host-tunnel-request",
+        id: "route-id",
+        label: "Request through PortMate host tunnel to 192.168.33.222:443",
+      },
+    })).toMatchObject({
+      action: "tunnel_request",
+      sessionId: "portmate-host",
+      target: { kind: "portmate-host-tunnel-request", id: "route-id" },
+    });
+    expect(normalizeMcpApproval({
+      ...base,
+      action: "tunnel_request",
+      sessionId: "portmate-host",
+      scope: "tunnel",
+      target: { kind: "portmate-host-proxy", id: "route-id", label: "Unexpected target" },
+    })).toBeNull();
+    expect(normalizeMcpApproval({
+      ...base,
       action: "restart_mcp_http",
       sessionId: "portmate-host",
       scope: "manage-mcp",

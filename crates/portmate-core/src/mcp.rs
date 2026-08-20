@@ -8,7 +8,13 @@ pub const MAX_MCP_BRIDGE_REQUEST_BYTES: usize = 6 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH: usize =
     MAX_MCP_CONTENT_TRANSFER_BYTES.div_ceil(3) * 4;
+/// Maximum request and response payload for one MCP host-tunnel exchange.
+pub const MAX_MCP_TUNNEL_EXCHANGE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH: usize =
+    MAX_MCP_TUNNEL_EXCHANGE_BYTES.div_ceil(3) * 4;
+pub const MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS: u64 = 30_000;
 const _: () = assert!(MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
+const _: () = assert!(MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
 /// Maximum file size accepted by the resumable MCP content-upload workflow.
 pub const MAX_MCP_CONTENT_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_UPLOAD_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -444,6 +450,27 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "tunnel_request",
+            "Request Through Tunnel",
+            "Send one bounded raw TCP request through an existing PortMate-host tunnel from the desktop host and return the response as standard Base64. This is the MCP data plane for agents that cannot reach a Windows or other desktop listener directly. Fixed local tunnels use their configured target; dynamic SOCKS5 tunnels require targetHost and targetPort and enforce the tunnel routeRules. The tunnel must be owned by this MCP client.",
+            json!({
+                "type":"object",
+                "required":["tunnelId","encoding","data"],
+                "additionalProperties":false,
+                "properties":{
+                    "tunnelId":{"type":"string","minLength":1,"maxLength":128},
+                    "encoding":{"type":"string","enum":["base64","hex"]},
+                    "data":{"type":"string","minLength":1,"maxLength":MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH},
+                    "targetHost":{"type":"string","minLength":1,"maxLength":255},
+                    "targetPort":{"type":"integer","minimum":1,"maximum":65535},
+                    "timeoutMs":{"type":"integer","minimum":100,"maximum":MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS,"default":10000},
+                    "maxResponseBytes":{"type":"integer","minimum":1,"maximum":MAX_MCP_TUNNEL_EXCHANGE_BYTES,"default":MAX_MCP_TUNNEL_EXCHANGE_BYTES},
+                    "closeWrite":{"type":"boolean","default":true}
+                }
+            }),
+            false,
+        ),
+        tool(
             "list_tmux_state",
             "List Tmux State",
             "Read tmux sessions and panes for a connected SSH-backed session.",
@@ -637,7 +664,7 @@ mod tests {
 
     #[test]
     fn bridge_management_tools_are_advertised_with_safe_schemas() {
-        assert_eq!(tool_definitions().len(), 28);
+        assert_eq!(tool_definitions().len(), 29);
         for name in ["mcp_bridge_status", "reload_mcp", "restart_mcp"] {
             let definition = definition(name);
             assert_eq!(definition.input_schema["type"], "object", "{name}");
@@ -740,6 +767,20 @@ mod tests {
         assert_eq!(
             transfer.input_schema["properties"]["uploadId"]["format"],
             "uuid"
+        );
+        let tunnel_request = definition("tunnel_request");
+        assert!(!tunnel_request.read_only);
+        assert_eq!(
+            tunnel_request.input_schema["properties"]["data"]["maxLength"],
+            MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH
+        );
+        assert_eq!(
+            tunnel_request.input_schema["properties"]["timeoutMs"]["maximum"],
+            MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS
+        );
+        assert_eq!(
+            tunnel_request.input_schema["properties"]["maxResponseBytes"]["maximum"],
+            MAX_MCP_TUNNEL_EXCHANGE_BYTES
         );
         assert!(transfer.description.contains("exactly one source"));
         assert!(transfer.description.contains("limited to 4 MiB"));

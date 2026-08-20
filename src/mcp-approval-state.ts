@@ -16,6 +16,7 @@ const approvalActionScopes: Record<string, McpScope> = {
   retry_transfer: "transfer",
   create_tunnel: "tunnel",
   stop_tunnel: "tunnel",
+  tunnel_request: "tunnel",
   restart_mcp_http: "manage-mcp",
 };
 
@@ -48,7 +49,8 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
 
 function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
   if (action !== "run_custom_script"
-    && action !== "create_tunnel") return value === undefined ? undefined : null;
+    && action !== "create_tunnel"
+    && action !== "tunnel_request") return value === undefined ? undefined : null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   if (!validText(source.label, 512)) return null;
@@ -56,6 +58,14 @@ function normalizeApprovalTarget(action: string, value: unknown): McpApprovalReq
     if (source.kind !== "portmate-host-proxy" || !validText(source.id, 512)) return null;
     return {
       kind: "portmate-host-proxy",
+      id: source.id,
+      label: source.label,
+    };
+  }
+  if (action === "tunnel_request") {
+    if (source.kind !== "portmate-host-tunnel-request" || !validText(source.id, 512)) return null;
+    return {
+      kind: "portmate-host-tunnel-request",
       id: source.id,
       label: source.label,
     };

@@ -399,6 +399,20 @@ For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed
 }
 ```
 
+MCP agents that run in a container or on a separate machine cannot reach listeners bound on the desktop host. `tunnel_request` is the MCP data plane for that case: it sends one bounded raw TCP request through an existing client-owned PortMate-host route from the desktop host and returns the response bytes as standard Base64, so no host-side listener is involved. Fixed local routes use their configured target; dynamic SOCKS5 routes require `targetHost` and `targetPort` and enforce the tunnel `routeRules`. Only the MCP client that created the host route can send requests through it, and each call is a `tunnel`-scope write with its own audit record and optional per-write confirmation:
+
+```json
+{
+  "tunnelId": "2a24...route-id",
+  "encoding": "base64",
+  "data": "R0VUIC9oZWFsdGh6IEhUVFAvMS4xDQpIb3N0OiBkZXZpY2UuaW50ZXJuYWwNCg0K",
+  "timeoutMs": 10000,
+  "closeWrite": true
+}
+```
+
+For a dynamic route, add `"targetHost"` and `"targetPort"` to select the SOCKS5 destination. `closeWrite` defaults to `true` and half-closes the request stream after writing, which lets request/response services such as HTTP detect the end of the request; set it to `false` for protocols that keep sending and rely on `timeoutMs`. The request payload is bounded to 4 MiB, the response is read until the remote closes or `timeoutMs` (100 ms to 30 s) elapses, and the result reports `sentBytes`, `receivedBytes`, `responseBase64`, `truncated`, and `timedOut`.
+
 ## Build
 
 Build the production frontend:

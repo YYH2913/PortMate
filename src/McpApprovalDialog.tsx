@@ -15,6 +15,7 @@ const actionLabels: Record<string, string> = {
   retry_transfer: "重试文件传输",
   create_tunnel: "创建指定转发或代理",
   stop_tunnel: "停止指定转发或代理",
+  tunnel_request: "通过隧道发送请求",
 };
 
 export default function McpApprovalDialog({

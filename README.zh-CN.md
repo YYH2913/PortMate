@@ -399,6 +399,20 @@ SSH 服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理
 }
 ```
 
+在容器或独立机器上运行的 MCP agent 无法访问桌面主机上绑定的监听端口。`tunnel_request` 就是为这种场景提供的数据面：它从桌面主机出发，通过一条已存在且属于当前 MCP Client 的 PortMate 主机路由发送一次有界原始 TCP 请求，并把响应字节以标准 Base64 原样返回，全程不依赖主机侧监听端口。固定 `local` 路由使用其配置目标；动态 SOCKS5 路由必须提供 `targetHost`/`targetPort` 并执行该隧道的 `routeRules`。只有创建该主机路由的 MCP Client 才能经它发送请求，每次调用都是一次 `tunnel` scope 写操作，带独立审计记录，也可按授权配置逐次确认：
+
+```json
+{
+  "tunnelId": "2a24...route-id",
+  "encoding": "base64",
+  "data": "R0VUIC9oZWFsdGh6IEhUVFAvMS4xDQpIb3N0OiBkZXZpY2UuaW50ZXJuYWwNCg0K",
+  "timeoutMs": 10000,
+  "closeWrite": true
+}
+```
+
+动态路由需额外传 `"targetHost"` 与 `"targetPort"` 指定 SOCKS5 目标。`closeWrite` 默认 `true`，写完请求后会半关闭写出方向，便于 HTTP 等请求/响应服务识别请求结束；对需要持续发送、以 `timeoutMs` 收尾的协议可设为 `false`。请求载荷上限 4 MiB，响应读取到远端关闭或 `timeoutMs`（100 ms 至 30 s）到期为止；结果包含 `sentBytes`、`receivedBytes`、`responseBase64`、`truncated` 与 `timedOut`。
+
 ## 构建
 
 前端生产构建：

@@ -174,6 +174,35 @@ pub(super) fn mcp_audit_details(
             details.insert("routeRuleCount".to_string(), value.len().to_string());
         }
     }
+    if request.command == "tunnel_request" {
+        for (argument, detail) in [
+            ("tunnelId", "tunnelId"),
+            ("targetHost", "targetHost"),
+            ("encoding", "encoding"),
+        ] {
+            if let Some(value) = request
+                .args
+                .get(argument)
+                .and_then(serde_json::Value::as_str)
+            {
+                details.insert(detail.to_string(), value.to_string());
+            }
+        }
+        if let Some(value) = request
+            .args
+            .get("targetPort")
+            .and_then(serde_json::Value::as_u64)
+        {
+            details.insert("targetPort".to_string(), value.to_string());
+        }
+        if let Some(value) = request
+            .args
+            .get("closeWrite")
+            .and_then(serde_json::Value::as_bool)
+        {
+            details.insert("closeWrite".to_string(), value.to_string());
+        }
+    }
     details
 }
 

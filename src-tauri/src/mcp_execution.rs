@@ -456,6 +456,24 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(redact_mcp_tunnel_status(status))
                 .map_err(|error| error.to_string())
         }
+        "tunnel_request" => {
+            let exchange = serde_json::from_value::<McpTunnelExchangeRequest>(request.args.clone())
+                .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
+            let validation = mcp_commit_validation(
+                &state,
+                &request,
+                execution_context,
+                authorization_context,
+            )?;
+            let result = execute_tunnel_request_inner(
+                &state,
+                &request.client_id,
+                exchange,
+                Some(validation),
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|error| error.to_string())
+        }
         "restart_mcp_http" => {
             let validation = mcp_commit_validation(
                 &state,

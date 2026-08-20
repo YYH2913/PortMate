@@ -4,6 +4,19 @@ All notable PortMate changes are recorded here. PortMate is still alpha software
 or an unsigned artifact is not a production release. The complete release gates are maintained in
 [RELEASE.md](./RELEASE.md).
 
+## [Unreleased]
+
+### Added
+
+- Added the `tunnel_request` MCP tool, a bounded request/response data plane that sends raw bytes
+  through an existing client-owned PortMate-host route from the desktop host and returns the
+  response as standard Base64. Agents running in containers or on separate machines can now reach
+  the route target without ever connecting to a listener bound on the desktop host. Fixed local
+  routes use their configured target; dynamic SOCKS5 routes take `targetHost`/`targetPort` and
+  enforce the route `routeRules`. Payloads and responses are bounded, reads honor a configurable
+  timeout and optional write half-close, and each call is a `tunnel`-scope write with per-client
+  ownership, approval, and audit coverage.
+
 ## [0.1.2] - 2026-08-17
 
 ### Added

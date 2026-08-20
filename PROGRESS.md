@@ -704,6 +704,8 @@ Local/Dynamic tunnel 的异步客户端失败事件现绑定 tunnel ID、SSH run
 
 MCP `start_transfer` 现支持 `source: { kind: "mcp", fileName, contentBase64 }` 虚拟文件来源：客户端字节随 MCP 请求直接进入桌面端私有暂存，不解析客户端 Windows/Linux 路径，也不要求选择或授权 PortMate 主机文件夹；任务完成、失败或取消后沿用既有暂存清理。字符串 `source` 继续表示 PortMate 主机路径，旧顶层 `fileName + contentBase64` 保持兼容，超过 4 MiB 的内容继续使用 512 MiB 可续传 upload 流程。schema、stdio/HTTP/Python SDK、bridge/IPC 最大 envelope、错误 kind/缺字段/额外字段/来源混用和路径误判均有回归覆盖。
 
+MCP 新增 `tunnel_request` 数据面工具，解决 tunnel 监听落在 Windows 桌面主机、而 agent 位于本地容器时无法触达监听端口的问题：调用方通过 `tunnelId + encoding + data` 提交一次有界原始 TCP 请求，桌面端经该 client 自有的 `portmate-host` 主机路由直接从桌面主机转发到代理目标，并按标准 Base64 原样返回响应，全程不需要 agent 访问主机侧监听地址。固定 `local` 路由使用配置目标且拒绝 `targetHost/targetPort` 覆盖；动态 SOCKS5 路由要求 `targetHost/targetPort` 并强制执行该隧道的 `routeRules`；`closeWrite` 默认写后半关闭便于 HTTP 等请求/响应协议识别请求结束，读取以 `timeoutMs`（100 ms–30 s）或远端关闭为界，请求/响应载荷分别限制 4 MiB，连接、写入与读取均有界并纳入 tunnel 连接槽位与双向字节 metrics。每次调用是 `tunnel` scope 写操作：首次授权快照绑定 tunnel ID、client owner 与 runtime generation，排队期间路由被停止/替换或授权被撤销时 fail-closed；审批目标使用 `portmate-host-tunnel-request` kind，前端审批弹窗显示隧道目标；审计记录只保存 tunnelId/目标/encoding/closeWrite，不保存载荷或响应正文。SSH egress、remote 模式与非法编码/超限载荷/目标覆盖均在命令边界拒绝。新增 3 项 host-proxy 真实 loopback 回归覆盖本地转发请求/响应、动态路由允许/拒绝/跨 client 隔离与形状校验；core 29 项工具 schema、MCP bridge 57+1 项、MCP 相关桌面测试 61 项、前端 635 项、Rustfmt 与 PortMate all-targets Clippy `-D warnings` 均通过（本机完整主应用测试中 openpty/socat/OpenSSH 类失败为沙箱环境缺失，与本变更无关）。
+
 ## 剩余外部验证门槛
 
 以下项目需要仓库外的主机、硬件或发布凭据；现有本机模拟、交叉编译和 Samba 结果不能代替成功记录：

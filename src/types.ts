@@ -570,7 +570,7 @@ export interface McpApprovalRequest {
 }
 
 export interface McpApprovalTarget {
-  kind: "custom-script" | "portmate-host-proxy";
+  kind: "custom-script" | "portmate-host-proxy" | "portmate-host-tunnel-request";
   id: string;
   label: string;
 }

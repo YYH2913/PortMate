@@ -132,7 +132,7 @@ pub(super) fn decode_mcp_direct_bytes(
                 .decode(compact)
                 .map_err(|_| "send_bytes data is not valid standard Base64".to_string())?
         }
-        "hex" => decode_mcp_hex(data)?,
+        "hex" => decode_mcp_hex("send_bytes", data)?,
         _ => return Err("send_bytes encoding must be `base64` or `hex`".to_string()),
     };
     if decoded.is_empty() || decoded.len() > MAX_MCP_CONTENT_TRANSFER_BYTES {
@@ -143,18 +143,90 @@ pub(super) fn decode_mcp_direct_bytes(
     Ok(decoded)
 }
 
-fn decode_mcp_hex(data: &str) -> Result<Vec<u8>, String> {
+pub(super) fn decode_mcp_tunnel_exchange_payload(
+    encoding: &str,
+    data: &str,
+) -> Result<Vec<u8>, String> {
+    if data.is_empty() || data.len() > MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH {
+        return Err(format!(
+            "tunnel_request data must be non-empty and at most {MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH} bytes"
+        ));
+    }
+    let decoded = match encoding {
+        "base64" => {
+            let compact: String = data
+                .chars()
+                .filter(|character| !character.is_ascii_whitespace())
+                .collect();
+            BASE64_STANDARD
+                .decode(compact)
+                .map_err(|_| "tunnel_request data is not valid standard Base64".to_string())?
+        }
+        "hex" => decode_mcp_hex("tunnel_request", data)?,
+        _ => return Err("tunnel_request encoding must be `base64` or `hex`".to_string()),
+    };
+    if decoded.is_empty() || decoded.len() > MAX_MCP_TUNNEL_EXCHANGE_BYTES {
+        return Err(format!(
+            "tunnel_request payload must contain 1 to {MAX_MCP_TUNNEL_EXCHANGE_BYTES} decoded bytes"
+        ));
+    }
+    Ok(decoded)
+}
+
+fn decode_mcp_hex(label: &str, data: &str) -> Result<Vec<u8>, String> {
     let compact: String = data.chars().filter(|character| !character.is_ascii_whitespace()).collect();
     if !compact.len().is_multiple_of(2) {
-        return Err("send_bytes hex data must contain an even number of digits".to_string());
+        return Err(format!(
+            "{label} hex data must contain an even number of digits"
+        ));
     }
     let mut bytes = Vec::with_capacity(compact.len() / 2);
     for pair in compact.as_bytes().chunks_exact(2) {
-        let high = hex_digit(pair[0]).ok_or_else(|| "send_bytes hex data contains a non-hex digit".to_string())?;
-        let low = hex_digit(pair[1]).ok_or_else(|| "send_bytes hex data contains a non-hex digit".to_string())?;
+        let high = hex_digit(pair[0])
+            .ok_or_else(|| format!("{label} hex data contains a non-hex digit"))?;
+        let low = hex_digit(pair[1])
+            .ok_or_else(|| format!("{label} hex data contains a non-hex digit"))?;
         bytes.push((high << 4) | low);
     }
     Ok(bytes)
+}
+
+pub(super) fn validate_mcp_tunnel_exchange_request(
+    request: &McpTunnelExchangeRequest,
+) -> Result<(), String> {
+    validate_mcp_operation_id(&request.tunnel_id, "tunnel")?;
+    decode_mcp_tunnel_exchange_payload(&request.encoding, &request.data)?;
+    if let Some(timeout_ms) = request.timeout_ms {
+        if !(100..=MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS).contains(&timeout_ms) {
+            return Err(format!(
+                "tunnel_request timeoutMs must be between 100 and {MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS}"
+            ));
+        }
+    }
+    if let Some(max_response_bytes) = request.max_response_bytes {
+        if max_response_bytes == 0 || max_response_bytes > MAX_MCP_TUNNEL_EXCHANGE_BYTES {
+            return Err(format!(
+                "tunnel_request maxResponseBytes must be between 1 and {MAX_MCP_TUNNEL_EXCHANGE_BYTES}"
+            ));
+        }
+    }
+    if request.target_port == Some(0) {
+        return Err("tunnel_request targetPort must be between 1 and 65535".to_string());
+    }
+    if let Some(target_host) = request.target_host.as_deref() {
+        if target_host.trim().is_empty()
+            || target_host.len() > MAX_TUNNEL_HOST_CHARACTERS
+            || target_host
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+        {
+            return Err(
+                "tunnel_request targetHost must be a valid host without surrounding whitespace"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn hex_digit(value: u8) -> Option<u8> {
@@ -178,13 +250,21 @@ pub(super) enum McpWriteExecutionContext {
     Tunnel {
         approval_target: McpApprovalTarget,
     },
+    TunnelExchange {
+        tunnel_id: String,
+        owner_id: String,
+        runtime_id: String,
+        approval_target: McpApprovalTarget,
+    },
 }
 
 impl McpWriteExecutionContext {
     pub(super) fn approval_target(&self) -> Option<McpApprovalTarget> {
         match self {
             Self::Generic => None,
-            Self::CustomScript { approval_target, .. } | Self::Tunnel { approval_target } => {
+            Self::CustomScript { approval_target, .. }
+            | Self::Tunnel { approval_target }
+            | Self::TunnelExchange { approval_target, .. } => {
                 Some(approval_target.clone())
             }
         }
@@ -212,6 +292,39 @@ impl McpWriteExecutionContext {
         state: &AppState,
         request: &IpcRequest,
     ) -> Result<(), String> {
+        if let Self::TunnelExchange {
+            tunnel_id,
+            owner_id,
+            runtime_id,
+            ..
+        } = self
+        {
+            if request.command != "tunnel_request"
+                || ipc_string_arg(&request.args, "tunnelId")? != tunnel_id
+            {
+                return Err("MCP tunnel target changed after authorization; request was not executed".to_string());
+            }
+            let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+            let current = tunnels
+                .get(tunnel_id)
+                .filter(|runtime| {
+                    runtime.session_id == *owner_id
+                        && runtime.ssh_runtime_id == *runtime_id
+                        && runtime.spec.egress == TunnelEgress::PortmateHost
+                        && !runtime.closed.load(Ordering::SeqCst)
+                })
+                .ok_or_else(|| "MCP tunnel was stopped or replaced after authorization".to_string())?;
+            let target_host = request.args.get("targetHost").and_then(serde_json::Value::as_str);
+            let target_port = request.args.get("targetPort").and_then(serde_json::Value::as_u64);
+            if current.spec.mode == TunnelMode::Dynamic {
+                if target_host.is_none() || target_port.is_none() {
+                    return Err("dynamic MCP tunnel requests require targetHost and targetPort".to_string());
+                }
+            } else if target_host.is_some() || target_port.is_some() {
+                return Err("fixed MCP tunnel requests must not override targetHost or targetPort".to_string());
+            }
+            return Ok(());
+        }
         let Self::CustomScript {
             script_id,
             updated_at,
@@ -244,6 +357,40 @@ pub(super) fn capture_mcp_write_execution_context(
     state: &AppState,
     request: &IpcRequest,
 ) -> Result<McpWriteExecutionContext, String> {
+    if request.command == "tunnel_request" {
+        let exchange: McpTunnelExchangeRequest = serde_json::from_value(request.args.clone())
+            .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
+        validate_mcp_tunnel_exchange_request(&exchange)?;
+        let owner_id = mcp_host_route_owner_id(&request.client_id)?;
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        let runtime = tunnels
+            .get(&exchange.tunnel_id)
+            .filter(|runtime| {
+                runtime.session_id == owner_id
+                    && runtime.spec.egress == TunnelEgress::PortmateHost
+                    && !runtime.closed.load(Ordering::SeqCst)
+            })
+            .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?;
+        let target = if runtime.spec.mode == TunnelMode::Dynamic {
+            format!(
+                "{}:{}",
+                exchange.target_host.as_deref().unwrap_or("<missing>"),
+                exchange.target_port.unwrap_or(0)
+            )
+        } else {
+            format!("{}:{}", runtime.spec.target_host, runtime.spec.target_port)
+        };
+        return Ok(McpWriteExecutionContext::TunnelExchange {
+            tunnel_id: exchange.tunnel_id,
+            owner_id,
+            runtime_id: runtime.ssh_runtime_id.clone(),
+            approval_target: McpApprovalTarget {
+                kind: "portmate-host-tunnel-request".to_string(),
+                id: runtime.spec.id.clone(),
+                label: format!("Request through PortMate host tunnel to {target}"),
+            },
+        });
+    }
     let host_route = match request.command.as_str() {
         "create_tunnel" => match normalize_mcp_tunnel_request(
             serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
@@ -331,7 +478,7 @@ pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
             Some(McpScope::WriteInput)
         }
         "start_transfer" | "cancel_transfer" | "retry_transfer" => Some(McpScope::Transfer),
-        "create_tunnel" | "stop_tunnel" => Some(McpScope::Tunnel),
+        "create_tunnel" | "stop_tunnel" | "tunnel_request" => Some(McpScope::Tunnel),
         "run_custom_script" => Some(McpScope::RunScripts),
         "restart_mcp_http" => Some(McpScope::ManageMcp),
         _ => None,
@@ -371,6 +518,35 @@ pub(super) fn validate_ipc_write_args(
     request: &IpcRequest,
 ) -> Result<(), String> {
     match request.command.as_str() {
+        "tunnel_request" => {
+            let exchange: McpTunnelExchangeRequest = serde_json::from_value(request.args.clone())
+                .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
+            validate_mcp_tunnel_exchange_request(&exchange)?;
+            let owner_id = mcp_host_route_owner_id(&request.client_id)?;
+            let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+            let runtime = tunnels
+                .get(&exchange.tunnel_id)
+                .filter(|runtime| {
+                    runtime.session_id == owner_id
+                        && runtime.spec.egress == TunnelEgress::PortmateHost
+                        && !runtime.closed.load(Ordering::SeqCst)
+                })
+                .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?;
+            if runtime.spec.mode == TunnelMode::Dynamic {
+                let host = exchange
+                    .target_host
+                    .as_deref()
+                    .ok_or_else(|| "dynamic MCP tunnel requests require targetHost and targetPort".to_string())?;
+                let port = exchange
+                    .target_port
+                    .ok_or_else(|| "dynamic MCP tunnel requests require targetHost and targetPort".to_string())?;
+                if !tunnel_route_allowed(&runtime.spec.route_rules, host, port) {
+                    return Err(format!("MCP tunnel target denied by route rules: {host}:{port}"));
+                }
+            } else if exchange.target_host.is_some() || exchange.target_port.is_some() {
+                return Err("fixed MCP tunnel requests must not override targetHost or targetPort".to_string());
+            }
+        }
         "send_text" => {
             ipc_string_arg(&request.args, "text")?;
         }
@@ -466,6 +642,10 @@ pub(super) fn ipc_write_session_id(
     request: &IpcRequest,
 ) -> Result<Option<String>, String> {
     match request.command.as_str() {
+        "tunnel_request" => {
+            validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;
+            Ok(None)
+        }
         "restart_mcp_http" => Ok(None),
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())

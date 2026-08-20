@@ -81,6 +81,25 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
         .find(|tool| tool["name"] == "list_tunnels")
         .unwrap();
     assert!(list["inputSchema"]["required"].is_null());
+    let tunnel_request = tools
+        .iter()
+        .find(|tool| tool["name"] == "tunnel_request")
+        .expect("tools/list omitted tunnel_request");
+    assert_eq!(
+        tunnel_request["inputSchema"]["required"],
+        json!(["tunnelId", "encoding", "data"])
+    );
+    assert_eq!(
+        tunnel_request["annotations"]["readOnlyHint"],
+        json!(false)
+    );
+    assert_eq!(
+        tunnel_request["inputSchema"]["properties"]["maxResponseBytes"]["maximum"],
+        json!(portmate_core::MAX_MCP_TUNNEL_EXCHANGE_BYTES)
+    );
+    assert!(tunnel_request["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("PortMate-host tunnel")));
 }
 
 #[test]

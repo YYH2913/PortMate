@@ -150,6 +150,42 @@ pub struct TunnelStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpTunnelExchangeRequest {
+    pub tunnel_id: String,
+    pub encoding: String,
+    #[serde(default)]
+    pub data: String,
+    #[serde(default)]
+    pub target_host: Option<String>,
+    #[serde(default)]
+    pub target_port: Option<u16>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub max_response_bytes: Option<usize>,
+    #[serde(default = "default_true")]
+    pub close_write: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTunnelExchangeResult {
+    pub tunnel_id: String,
+    pub target_host: String,
+    pub target_port: u16,
+    pub sent_bytes: usize,
+    pub received_bytes: usize,
+    pub response_base64: String,
+    pub truncated: bool,
+    pub timed_out: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SerialLineRequest {
     pub session_id: String,
