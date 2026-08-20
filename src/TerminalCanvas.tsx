@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -20,6 +20,7 @@ import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
 import {
   emptyTerminalCompletionInputState,
+  indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
@@ -334,6 +335,8 @@ export default function TerminalCanvas({
   const oneKeyPromptSessionRef = useRef("");
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
   const completionInputRef = useRef<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
+  const completionInputFrameRef = useRef<number | null>(null);
+  const pendingCompletionInputRef = useRef<TerminalCompletionInputState | null>(null);
   const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
   const completionSurfaceOpenRef = useRef(false);
   const completionSelectionRef = useRef(0);
@@ -375,6 +378,10 @@ export default function TerminalCanvas({
       : terminalCompletionPreferencesFromSettings(completionSettings),
     [completionSettings],
   );
+  const completionHistoryIndex = useMemo(
+    () => indexTerminalCompletionHistory(completionHistory),
+    [completionHistory],
+  );
   const oneKeyCompletionCandidates = useMemo(
     () => oneKeyCompletionEnabled && active && oneKeyPrompt
       ? oneKeyPromptCandidates(oneKeys, active.profile.id, oneKeyPrompt)
@@ -405,12 +412,13 @@ export default function TerminalCanvas({
         line: completionInput.line,
         preferences: completionPreferences,
         history: completionHistory,
+        historyIndex: completionHistoryIndex,
         quickCommands: completionQuickCommands,
       }).slice(0, completionPreferences.listRows)
       : []
   ), [
     completionDismissedLine,
-    completionHistory,
+    completionHistoryIndex,
     completionInput,
     completionPreferences,
     completionQuickCommands,
@@ -562,8 +570,30 @@ export default function TerminalCanvas({
   runSearchRef.current = (direction) => runTerminalSearch(direction);
 
   function storeCompletionInput(next: TerminalCompletionInputState) {
+    cancelScheduledCompletionInput();
     completionInputRef.current = next;
     setCompletionInput(next);
+  }
+
+  function cancelScheduledCompletionInput() {
+    if (completionInputFrameRef.current !== null) {
+      window.cancelAnimationFrame(completionInputFrameRef.current);
+      completionInputFrameRef.current = null;
+    }
+    pendingCompletionInputRef.current = null;
+  }
+
+  function storeCompletionInputDeferred(next: TerminalCompletionInputState) {
+    completionInputRef.current = next;
+    pendingCompletionInputRef.current = next;
+    if (completionInputFrameRef.current !== null) return;
+    completionInputFrameRef.current = window.requestAnimationFrame(() => {
+      completionInputFrameRef.current = null;
+      const pending = pendingCompletionInputRef.current;
+      pendingCompletionInputRef.current = null;
+      if (!pending) return;
+      startTransition(() => setCompletionInput(pending));
+    });
   }
 
   function resetCompletionInput(synchronized = true) {
@@ -579,7 +609,8 @@ export default function TerminalCanvas({
       ? { line: "", synchronized: false }
       : completionInputRef.current;
     const next = reduceTerminalCompletionInput(current, text);
-    storeCompletionInput(next);
+    if (/[\u0000-\u001f\u007f]/.test(text)) storeCompletionInput(next);
+    else storeCompletionInputDeferred(next);
     setCompletionDismissedLine("");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
@@ -1490,6 +1521,7 @@ export default function TerminalCanvas({
         window.clearTimeout(inputFlushTimerRef.current);
         inputFlushTimerRef.current = null;
       }
+      cancelScheduledCompletionInput();
       if (resizeReportTimer !== null) {
         window.clearTimeout(resizeReportTimer);
         resizeReportTimer = null;

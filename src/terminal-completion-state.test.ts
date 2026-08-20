@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyTerminalCompletionInputState,
+  indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
@@ -267,6 +268,23 @@ describe("terminal completion state", () => {
     expect(suggestions.some((item) => item.target.includes("\n"))).toBe(false);
     expect(suggestions.some((item) => item.target.includes(";"))).toBe(false);
     expect(suggestions.filter((item) => item.target === "git status")).toHaveLength(1);
+  });
+
+  it("uses a prefix index without changing history completion results", () => {
+    const history = ["git status", "git diff", "docker ps"];
+    const indexed = indexTerminalCompletionHistory(history);
+    const plain = terminalCompletionSuggestions({
+      line: "git s",
+      preferences: defaultTerminalCompletionPreferences,
+      history,
+    });
+    const optimized = terminalCompletionSuggestions({
+      line: "git s",
+      preferences: defaultTerminalCompletionPreferences,
+      historyIndex: indexed,
+    });
+    expect(optimized).toEqual(plain);
+    expect(indexed.prefixes.get("gi")?.map((entry) => entry.target)).toEqual(["git status", "git diff"]);
   });
 
   it("honors source switches, trigger length, and conservative shell syntax boundaries", () => {

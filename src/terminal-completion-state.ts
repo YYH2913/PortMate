@@ -31,6 +31,16 @@ export type TerminalCompletionUsageHint = {
   detail: string;
 };
 
+export type TerminalCompletionHistoryEntry = {
+  index: number;
+  target: string;
+};
+
+export type TerminalCompletionHistoryIndex = {
+  entries: readonly TerminalCompletionHistoryEntry[];
+  prefixes: ReadonlyMap<string, readonly TerminalCompletionHistoryEntry[]>;
+};
+
 type TerminalCommandContext = {
   schema: TerminalCommandSchema;
   unknownSubcommandPath: readonly string[] | null;
@@ -44,6 +54,30 @@ export const emptyTerminalCompletionInputState: TerminalCompletionInputState = {
   line: "",
   synchronized: true,
 };
+
+const HISTORY_INDEX_PREFIX_CHARACTERS = 2;
+
+/** Normalize and prefix-index history once per snapshot for interactive completion. */
+export function indexTerminalCompletionHistory(
+  history: readonly string[],
+): TerminalCompletionHistoryIndex {
+  const entries: TerminalCompletionHistoryEntry[] = [];
+  const prefixes = new Map<string, TerminalCompletionHistoryEntry[]>();
+  for (let index = 0; index < history.length; index += 1) {
+    const target = normalizeCandidateLine(history[index]);
+    if (!target) continue;
+    const entry = { index, target };
+    entries.push(entry);
+    const characters = Array.from(target);
+    for (let length = 1; length <= Math.min(HISTORY_INDEX_PREFIX_CHARACTERS, characters.length); length += 1) {
+      const prefix = characters.slice(0, length).join("");
+      const bucket = prefixes.get(prefix);
+      if (bucket) bucket.push(entry);
+      else prefixes.set(prefix, [entry]);
+    }
+  }
+  return { entries, prefixes };
+}
 
 const MAX_COMPLETION_LINE_CHARACTERS = 512;
 const MAX_COMPLETION_CANDIDATES = 40;
@@ -93,11 +127,13 @@ export function terminalCompletionSuggestions({
   line,
   preferences,
   history = [],
+  historyIndex,
   quickCommands = [],
 }: {
   line: string;
   preferences: TerminalCompletionPreferences;
   history?: readonly string[];
+  historyIndex?: TerminalCompletionHistoryIndex;
   quickCommands?: readonly TerminalCompletionQuickCommand[];
 }): TerminalCompletionSuggestion[] {
   if (!preferences.enabled || !completionLineIsSafe(line)) return [];
@@ -118,10 +154,14 @@ export function terminalCompletionSuggestions({
     }
   }
   if (preferences.history) {
-    for (let index = 0; index < history.length; index += 1) {
-      const target = normalizeCandidateLine(history[index]);
+    const historyEntries = historyIndex
+      ? historyIndex.prefixes.get(historyPrefix(line)) ?? []
+      : history.map((value, index) => ({ index, target: normalizeCandidateLine(value) }))
+        .filter((entry): entry is TerminalCompletionHistoryEntry => Boolean(entry.target));
+    for (const entry of historyEntries) {
+      const target = entry.target;
       if (!target || !target.startsWith(line) || target === line) continue;
-      candidates.push(suggestion(`history:${index}:${target}`, "history", target, "历史命令", target, line, false));
+      candidates.push(suggestion("history:" + entry.index + ":" + target, "history", target, "历史命令", target, line, false));
     }
   }
 
@@ -224,6 +264,10 @@ function normalizeCandidateLine(value: unknown): string {
   if (typeof value !== "string") return "";
   const target = value.trim();
   return completionLineIsSafe(target) ? target : "";
+}
+
+function historyPrefix(line: string): string {
+  return Array.from(line).slice(0, HISTORY_INDEX_PREFIX_CHARACTERS).join("");
 }
 
 function suggestion(
