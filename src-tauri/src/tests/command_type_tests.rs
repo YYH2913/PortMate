@@ -106,4 +106,18 @@ fn remaining_command_types_keep_stable_json_contracts() {
     .unwrap();
     assert_eq!(run_script["sessionId"], "ssh-1");
     assert_eq!(run_script["expectedUpdatedAt"], "2026-08-15T04:00:00Z");
+
+    let delete_audit: DeleteMcpAuditRequest = serde_json::from_value(serde_json::json!({
+        "recordIds": ["audit-1"],
+        "all": false,
+    }))
+    .unwrap();
+    assert_eq!(delete_audit.record_ids, vec!["audit-1".to_string()]);
+    assert!(!delete_audit.all);
+    let clear_audit: DeleteMcpAuditRequest = serde_json::from_value(serde_json::json!({
+        "all": true,
+    }))
+    .unwrap();
+    assert!(clear_audit.record_ids.is_empty());
+    assert!(clear_audit.all);
 }

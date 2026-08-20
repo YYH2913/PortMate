@@ -135,6 +135,104 @@ fn mcp_audit_export_is_atomic_exact_and_checksummed() {
 }
 
 #[test]
+fn mcp_audit_delete_is_validated_transactional_and_persistent() {
+    let root = canonical_test_temp_path("portmate-mcp-audit-delete");
+    fs::create_dir_all(&root).unwrap();
+    let store_path = root.join("portmate-store.sqlite3");
+    let mut store = SessionStore::default();
+    for id in ["audit-a", "audit-b", "audit-c"] {
+        store.record_audit(AuditRecord {
+            id: id.to_string(),
+            ts: Utc::now(),
+            actor: "mcp:test".to_string(),
+            action: "list_sessions".to_string(),
+            session_id: None,
+            decision: "authorized".to_string(),
+            details: BTreeMap::new(),
+        });
+    }
+    save_store(&store_path, &store).unwrap();
+
+    let remaining = commit_store_mutation(&mut store, &store_path, |next_store| {
+        delete_mcp_audit_from_store(
+            next_store,
+            &DeleteMcpAuditRequest {
+                record_ids: vec!["audit-b".to_string()],
+                all: false,
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["audit-a", "audit-c"]
+    );
+    assert_eq!(load_store_sqlite(&store_path).unwrap().audit.len(), 2);
+
+    let before_invalid = store.audit.clone();
+    let duplicate = delete_mcp_audit_from_store(
+        &mut store,
+        &DeleteMcpAuditRequest {
+            record_ids: vec!["audit-a".to_string(), "audit-a".to_string()],
+            all: false,
+        },
+    )
+    .unwrap_err();
+    assert!(duplicate.contains("duplicate"));
+    assert_eq!(store.audit, before_invalid);
+
+    let stale = delete_mcp_audit_from_store(
+        &mut store,
+        &DeleteMcpAuditRequest {
+            record_ids: vec!["missing".to_string()],
+            all: false,
+        },
+    )
+    .unwrap_err();
+    assert!(stale.contains("refresh"));
+    assert_eq!(store.audit, before_invalid);
+
+    let invalid_shape = delete_mcp_audit_from_store(
+        &mut store,
+        &DeleteMcpAuditRequest {
+            record_ids: vec!["audit-a".to_string()],
+            all: true,
+        },
+    )
+    .unwrap_err();
+    assert!(invalid_shape.contains("combine"));
+    assert_eq!(store.audit, before_invalid);
+
+    let empty_selection = delete_mcp_audit_from_store(
+        &mut store,
+        &DeleteMcpAuditRequest {
+            record_ids: Vec::new(),
+            all: false,
+        },
+    )
+    .unwrap_err();
+    assert!(empty_selection.contains("at least one"));
+    assert_eq!(store.audit, before_invalid);
+
+    let cleared = commit_store_mutation(&mut store, &store_path, |next_store| {
+        delete_mcp_audit_from_store(
+            next_store,
+            &DeleteMcpAuditRequest {
+                record_ids: Vec::new(),
+                all: true,
+            },
+        )
+    })
+    .unwrap();
+    assert!(cleared.is_empty());
+    assert!(load_store_sqlite(&store_path).unwrap().audit.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn terminal_text_export_is_atomic_bounded_and_checksummed() {
     let root = canonical_test_temp_path("portmate-terminal-export");
     fs::create_dir_all(&root).unwrap();

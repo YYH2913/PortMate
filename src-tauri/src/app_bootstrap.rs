@@ -73,6 +73,7 @@ pub fn run() {
             transfer_commands::retry_transfer,
             transfer_commands::cancel_transfer,
             mcp_commands::list_mcp_audit,
+            mcp_commands::delete_mcp_audit,
             mcp_commands::export_mcp_audit,
             mcp_commands::list_mcp_grants,
             mcp_commands::list_mcp_approvals,

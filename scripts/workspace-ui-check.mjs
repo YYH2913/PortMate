@@ -407,6 +407,7 @@ try {
       }));
     }
     window.__events = structuredClone(initialEvents);
+    window.__mcpAudit = structuredClone(initialMcpAudit);
     window.__oneKeys = [];
     window.__hostKeys = [];
     window.__hostKeySequence = 0;
@@ -1549,7 +1550,16 @@ try {
           if (!window.__deferHostKeyMutations) return result;
           return new Promise((resolve) => window.__pendingHostKeyMutations.push({ result, resolve }));
         }
-        if (command === "list_mcp_audit") return initialMcpAudit;
+        if (command === "list_mcp_audit") return structuredClone(window.__mcpAudit);
+        if (command === "delete_mcp_audit") {
+          const request = args.request ?? {};
+          if (request.all) window.__mcpAudit = [];
+          else {
+            const ids = new Set(request.recordIds ?? []);
+            window.__mcpAudit = window.__mcpAudit.filter((record) => !ids.has(record.id));
+          }
+          return structuredClone(window.__mcpAudit);
+        }
         if (command === "mcp_http_config") {
           if (!window.__deferMcpHttpConfig) return structuredClone(window.__mcpHttpConfig);
           return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
@@ -6425,6 +6435,31 @@ Host staging
     `MCP audit export ignored the active filters: ${JSON.stringify(exportCall)}`);
   assert((await auditView.locator(".mcp-audit-export").textContent()).includes("已导出 1 条"),
     "MCP audit export result is not visible");
+  await page.evaluate(() => {
+    window.__mcpAuditDeletePrompts = [];
+    window.__originalMcpConfirm = window.confirm;
+    window.confirm = (message) => {
+      window.__mcpAuditDeletePrompts.push(message);
+      return true;
+    };
+  });
+  await mcpDialog.getByRole("button", { name: "删除当前 MCP 审计", exact: true }).click();
+  await auditView.locator(".mcp-audit-list > button").waitFor({ state: "detached" });
+  const deletedAuditCall = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_mcp_audit").at(-1));
+  const deletedAuditPrompt = await page.evaluate(() => window.__mcpAuditDeletePrompts.at(-1));
+  assert(JSON.stringify(deletedAuditCall?.args?.request?.recordIds) === JSON.stringify(["audit-read"])
+    && deletedAuditPrompt?.includes("1 条 MCP 审计记录"),
+  "MCP audit record deletion did not confirm and target the inspected record");
+  await auditScope.selectOption("");
+  assert(await auditView.locator(".mcp-audit-list > button").count() === mcpAudit.length - 1,
+    "MCP audit record deletion did not update the visible history");
+  await mcpDialog.getByRole("button", { name: "清空全部 MCP 审计", exact: true }).click();
+  await auditView.locator(".mcp-audit-list > button").waitFor({ state: "detached" });
+  const clearAuditCall = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_mcp_audit").at(-1));
+  assert(clearAuditCall?.args?.request?.all === true
+    && await auditView.locator(".mcp-audit-list > button").count() === 0,
+  "MCP audit clear-all action did not remove the remaining history");
+  await page.evaluate(() => { window.confirm = window.__originalMcpConfirm; });
   await page.screenshot({ path: `${screenshotPrefix}-mcp-audit.png`, fullPage: true });
   await page.evaluate(() => {
     window.__mcpHttpRuntime = {

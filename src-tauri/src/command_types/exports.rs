@@ -99,6 +99,15 @@ pub struct ExportMcpAuditRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteMcpAuditRequest {
+    #[serde(default)]
+    pub record_ids: Vec<String>,
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportMcpAuditResult {
     pub path: String,
     pub checksum_path: String,

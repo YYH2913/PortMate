@@ -23,7 +23,7 @@ mod trigger_runtime;
 
 use mcp_authorization::*;
 #[cfg(test)]
-use mcp_commands::export_mcp_audit_inner;
+use mcp_commands::{delete_mcp_audit_from_store, export_mcp_audit_inner};
 use mcp_content_staging::*;
 use mcp_control::*;
 use mcp_execution::*;

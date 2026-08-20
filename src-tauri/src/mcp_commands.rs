@@ -3,6 +3,25 @@ use super::*;
 const MAX_MCP_AUDIT_EXPORT_RECORDS: usize = 5_000;
 const MAX_MCP_AUDIT_EXPORT_RECORD_BYTES: usize = 64 * 1024;
 const MAX_MCP_AUDIT_EXPORT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MCP_AUDIT_DELETE_RECORDS: usize = 100_000;
+
+fn validate_mcp_audit_record_ids(record_ids: &[String]) -> Result<HashSet<&str>, String> {
+    if record_ids.len() > MAX_MCP_AUDIT_DELETE_RECORDS {
+        return Err(format!(
+            "MCP audit deletion record limit exceeded ({MAX_MCP_AUDIT_DELETE_RECORDS})"
+        ));
+    }
+    let mut requested = HashSet::with_capacity(record_ids.len());
+    for id in record_ids {
+        if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+            return Err("MCP audit deletion contains an invalid record ID".to_string());
+        }
+        if !requested.insert(id.as_str()) {
+            return Err("MCP audit deletion contains duplicate record IDs".to_string());
+        }
+    }
+    Ok(requested)
+}
 
 pub(super) fn export_mcp_audit_inner(
     store_path: &Path,
@@ -79,6 +98,38 @@ pub(super) fn export_mcp_audit_inner(
     })
 }
 
+pub(super) fn delete_mcp_audit_from_store(
+    store: &mut SessionStore,
+    request: &DeleteMcpAuditRequest,
+) -> Result<Vec<AuditRecord>, String> {
+    if request.all && !request.record_ids.is_empty() {
+        return Err("MCP audit deletion cannot combine all with record IDs".to_string());
+    }
+    if !request.all && request.record_ids.is_empty() {
+        return Err("select at least one MCP audit record to delete, or choose all".to_string());
+    }
+
+    if request.all {
+        store.audit.clear();
+        return Ok(Vec::new());
+    }
+
+    let requested = validate_mcp_audit_record_ids(&request.record_ids)?;
+    if store
+        .audit
+        .iter()
+        .filter(|record| requested.contains(record.id.as_str()))
+        .count()
+        != requested.len()
+    {
+        return Err("MCP audit changed; refresh before deleting".to_string());
+    }
+    store
+        .audit
+        .retain(|record| !requested.contains(record.id.as_str()));
+    Ok(store.audit.clone())
+}
+
 fn append_mcp_audit_jsonl<T: Serialize>(output: &mut Vec<u8>, value: &T) -> Result<(), String> {
     let encoded = serde_json::to_vec(value)
         .map_err(|error| format!("failed to encode MCP audit export: {error}"))?;
@@ -103,6 +154,17 @@ pub(crate) fn list_mcp_audit(
 ) -> Result<Vec<portmate_core::AuditRecord>, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.audit.clone())
+}
+
+#[tauri::command]
+pub(crate) fn delete_mcp_audit(
+    state: State<'_, AppState>,
+    request: DeleteMcpAuditRequest,
+) -> Result<Vec<portmate_core::AuditRecord>, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        delete_mcp_audit_from_store(next_store, &request)
+    })
 }
 
 #[tauri::command]

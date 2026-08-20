@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CalendarClock, Check, Copy, Dices, Download, KeyRound, Play, Plus, RefreshCw, Save, Search, Square, X } from "lucide-react";
+import { CalendarClock, Check, Copy, Dices, Download, KeyRound, ListX, Play, Plus, RefreshCw, Save, Search, Square, Trash2, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
@@ -537,6 +537,34 @@ export default function McpDialog({
     }
   }
 
+  async function deleteAudit(recordIds: string[], all = false) {
+    if (auditBusy || (!all && !recordIds.length)) return;
+    const targetLabel = all
+      ? "全部 MCP 审计记录"
+      : recordIds.length === filteredAudit.length && recordIds.length === audit.length
+        ? "全部 MCP 审计记录"
+        : `${recordIds.length} 条 MCP 审计记录`;
+    if (!window.confirm(`删除${targetLabel}？此操作不可撤销。`)) return;
+    const token = requestGateRef.current.begin("audit");
+    if (token === null) return;
+    setError("");
+    setAuditBusy(true);
+    setAuditExport(null);
+    try {
+      const next = await invokeBackend<AuditRecord[]>("delete_mcp_audit", {
+        request: all ? { all: true, recordIds: [] } : { all: false, recordIds },
+      });
+      if (requestGateRef.current.isCurrent("audit", token)) {
+        onAuditChange(next);
+        if (!next.some((record) => record.id === selectedAuditId)) setSelectedAuditId("");
+      }
+    } catch (nextError) {
+      if (requestGateRef.current.isCurrent("audit", token)) setError(formatError(nextError));
+    } finally {
+      if (requestGateRef.current.finish("audit", token)) setAuditBusy(false);
+    }
+  }
+
   function selectGrant(grant: McpGrant) {
     if (grantBusy || !confirmDiscardGrant("切换授权")) return;
     setExpiryEditor(null);
@@ -848,6 +876,8 @@ export default function McpDialog({
               <span className="mcp-audit-count">{filteredAudit.length} / {audit.length}</span>
               <button type="button" className="icon-button" title="刷新审计" aria-label="刷新 MCP 审计" disabled={auditBusy || !isBackendAvailable()} onClick={() => void refreshAudit()}><RefreshCw size={14} /></button>
               <button type="button" className="icon-button" title="导出筛选结果" aria-label="导出 MCP 审计" disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void exportAudit()}><Download size={14} /></button>
+              <button type="button" className="icon-button danger" title="删除当前审计记录" aria-label="删除当前 MCP 审计" disabled={auditBusy || !selectedAudit || !isBackendAvailable()} onClick={() => void deleteAudit(selectedAudit ? [selectedAudit.id] : [])}><Trash2 size={14} /></button>
+              <button type="button" className="icon-button danger" title={filteredAudit.length === audit.length ? "清空全部审计" : "删除筛选结果"} aria-label={filteredAudit.length === audit.length ? "清空全部 MCP 审计" : "删除筛选结果"} disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void deleteAudit(filteredAudit.map((record) => record.id), filteredAudit.length === audit.length)}><ListX size={14} /></button>
             </div>
             {auditExport ? <div className="mcp-audit-export"><span>已导出 {auditExport.records} 条 · SHA-256 {auditExport.sha256.slice(0, 12)}...</span><button type="button" title="复制导出信息" aria-label="复制 MCP 审计导出信息" onClick={() => void navigator.clipboard?.writeText(`${auditExport.path}\n${auditExport.checksumPath}\nSHA-256 ${auditExport.sha256}`).catch(() => {})}><Copy size={14} /></button></div> : null}
             {error ? <div className="utility-error">{error}</div> : null}
