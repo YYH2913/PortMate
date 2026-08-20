@@ -6,6 +6,21 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-21
+
+### Changed
+
+- Removed the hard-coded 150-second ceiling from automatic TFTP transfers while retaining
+  caller-configured operation deadlines.
+- Stabilized terminal rendering and polling updates so interactive output remains responsive during
+  long-running sessions and transfers.
+
+### Fixed
+
+- Preserved configured TFTP timeouts end to end instead of silently replacing them with a fixed
+  upper bound.
+- Reduced unnecessary terminal and workspace update churn that could delay visible input/output.
+
 ### Added
 
 - Added the `tunnel_request` MCP tool, a bounded request/response data plane that sends raw bytes
