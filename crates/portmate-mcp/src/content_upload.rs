@@ -3,7 +3,8 @@ use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use fs2::FileExt;
 use portmate_core::{
-    McpContentUploadMetadata, TransferProtocol, MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
+    misplaced_mcp_tftp_destination_option, validate_tftp_file_name, McpContentUploadMetadata,
+    McpTransferDestination, TransferProtocol, MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
     MAX_MCP_CONTENT_TRANSFER_BYTES, MAX_MCP_CONTENT_UPLOADS, MAX_MCP_CONTENT_UPLOAD_BYTES,
     MAX_MCP_CONTENT_UPLOAD_TOTAL_BYTES, MCP_CONTENT_UPLOADS_DIRECTORY,
     MCP_CONTENT_UPLOAD_EXPIRY_SECONDS, MCP_CONTENT_UPLOAD_METADATA_FILE,
@@ -34,7 +35,7 @@ struct BeginContentUploadRequest {
     file_name: String,
     size_bytes: u64,
     sha256: String,
-    destination: String,
+    destination: McpTransferDestination,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,9 +54,20 @@ struct ContentUploadIdRequest {
 
 impl PortMateMcp {
     pub(super) fn begin_content_upload(&self, arguments: &Value) -> Result<Value> {
+        if let Some(field) = arguments
+            .as_object()
+            .and_then(misplaced_mcp_tftp_destination_option)
+        {
+            return Err(anyhow!(
+                "begin_content_upload TFTP option `{field}` must be nested in the structured `destination` object or encoded in the legacy load:tftpboot query string"
+            ));
+        }
         let request: BeginContentUploadRequest = serde_json::from_value(arguments.clone())
-            .context("invalid begin_content_upload arguments")?;
+            .map_err(|error| anyhow!("invalid begin_content_upload arguments: {error}"))?;
         validate_file_name(&request.file_name)?;
+        if request.protocol == TransferProtocol::Tftp {
+            validate_tftp_file_name(&request.file_name).map_err(anyhow::Error::msg)?;
+        }
         if request.size_bytes == 0 || request.size_bytes > MAX_MCP_CONTENT_UPLOAD_BYTES {
             return Err(anyhow!(
                 "sizeBytes must be between 1 and {MAX_MCP_CONTENT_UPLOAD_BYTES}"
@@ -67,9 +79,10 @@ impl PortMateMcp {
         }
         self.require_known_session(&request.session_id)?;
         self.require_content_upload_scope(&request.session_id)?;
-        if request.destination.is_empty() || request.destination.len() > 32 * 1024 {
-            return Err(anyhow!("destination must be between 1 and 32768 bytes"));
-        }
+        let destination = request
+            .destination
+            .normalize(&request.protocol)
+            .map_err(anyhow::Error::msg)?;
 
         let staging_root = self.content_upload_staging_root()?;
         create_private_directory(&staging_root)?;
@@ -105,7 +118,7 @@ impl PortMateMcp {
             file_name: request.file_name,
             size_bytes: request.size_bytes,
             sha256: request.sha256,
-            destination: request.destination,
+            destination,
             created_at_unix_seconds: unix_seconds_now(),
         };
         if let Err(error) = write_upload_metadata(&upload_dir, &metadata).and_then(|_| {

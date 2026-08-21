@@ -245,7 +245,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer from exactly one source: a path string, a virtual MCP file object, legacy inline fields, or a completed resumable uploadId. Use `source: {kind: \"mcp\", fileName, contentBase64}` to pass client-held bytes without resolving a client path or selecting a local folder on the PortMate desktop host. Path transfers require sessionId, protocol, source, and destination. At least one endpoint must use `remote:`, `ssh:`, or a constrained `load:` receiver. Virtual and legacy inline transfers are limited to 4 MiB; larger client-held files use begin_content_upload and append_content_upload. TFTP uses destination `load:tftpboot`; optional timeoutSeconds defaults to 60, must be at least 5, and has no application-defined upper limit. Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. Poll get_transfer for completion.",
+            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer from exactly one source: a path string, a virtual MCP file object, legacy inline fields, or a completed resumable uploadId. Use `source: {kind: \"mcp\", fileName, contentBase64}` to pass client-held bytes without resolving a client path or selecting a local folder on the PortMate desktop host. Path transfers require sessionId, protocol, source, and destination. At least one endpoint must use `remote:`, `ssh:`, or a constrained `load:` receiver. Virtual and legacy inline transfers are limited to 4 MiB; larger client-held files use begin_content_upload and append_content_upload. For TFTP, use structured `destination: {kind: \"tftpboot\", deviceIp, ...}`; deviceIp is required, timeoutSeconds defaults to 60, must be at least 5, and has no application-defined upper limit. The legacy `load:tftpboot?deviceIp=...` string remains supported. Resumable uploads bind this destination in begin_content_upload and later start with uploadId only. Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. Poll get_transfer for completion.",
             json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -263,13 +263,19 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                         "not":{"anyOf":[{"required":["sessionId"]},{"required":["protocol"]},{"required":["source"]},{"required":["fileName"]},{"required":["contentBase64"]},{"required":["destination"]}]}
                     }
                 ],
+                "allOf":[
+                    {
+                        "if":{"properties":{"destination":{"type":"object"}},"required":["destination"]},
+                        "then":{"properties":{"protocol":{"const":"tftp"}},"required":["protocol"]}
+                    }
+                ],
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
                     "source":{"oneOf":[{"type":"string","minLength":1,"maxLength":32768},{"type":"object","required":["kind","fileName","contentBase64"],"additionalProperties":false,"properties":{"kind":{"type":"string","const":"mcp"},"fileName":{"type":"string","minLength":1,"maxLength":255},"contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH}}}]},
                     "fileName":{"type":"string","minLength":1,"maxLength":255},
                     "contentBase64":{"type":"string","minLength":1,"maxLength":MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH},
-                    "destination":{"type":"string","minLength":1,"maxLength":32768},
+                    "destination":transfer_destination_schema(),
                     "uploadId":{"type":"string","format":"uuid"}
                 }
             }),
@@ -278,18 +284,24 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "begin_content_upload",
             "Begin Content Upload",
-            "Create a resumable private staging upload for content held by the MCP client. Files may be up to 512 MiB and active uploads share a 1 GiB declared-size quota. Append the file in ordered Base64 chunks, then call start_transfer with the returned uploadId.",
+            "Create a resumable private staging upload for content held by the MCP client. Files may be up to 512 MiB and active uploads share a 1 GiB declared-size quota. TFTP callers should provide structured destination `{kind: \"tftpboot\", deviceIp, ...}` so all route parameters are validated before content is uploaded. Append the file in ordered Base64 chunks, then call start_transfer with only the returned uploadId.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","fileName","sizeBytes","sha256","destination"],
                 "additionalProperties":false,
+                "allOf":[
+                    {
+                        "if":{"properties":{"destination":{"type":"object"}},"required":["destination"]},
+                        "then":{"properties":{"protocol":{"const":"tftp"}}}
+                    }
+                ],
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
                     "protocol":{"type":"string","enum":["sftp","scp","tftp","xmodem","ymodem","zmodem"]},
                     "fileName":{"type":"string","minLength":1,"maxLength":255},
                     "sizeBytes":{"type":"integer","minimum":1,"maximum":MAX_MCP_CONTENT_UPLOAD_BYTES},
                     "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
-                    "destination":{"type":"string","minLength":1,"maxLength":32768}
+                    "destination":transfer_destination_schema()
                 }
             }),
             false,
@@ -643,6 +655,34 @@ fn transfer_id_schema() -> Value {
     })
 }
 
+fn transfer_destination_schema() -> Value {
+    json!({
+        "oneOf":[
+            {
+                "type":"string",
+                "minLength":1,
+                "maxLength":32768,
+                "description":"A desktop, remote:, ssh:, load: Modem, or legacy load:tftpboot?deviceIp=... endpoint. TFTP requires deviceIp in the query string."
+            },
+            {
+                "type":"object",
+                "required":["kind","deviceIp"],
+                "additionalProperties":false,
+                "properties":{
+                    "kind":{"type":"string","const":"tftpboot"},
+                    "deviceIp":{"type":"string","format":"ipv4","minLength":7,"maxLength":15},
+                    "address":{"type":"string","pattern":"^(?:0[xX])?[0-9A-Fa-f]{1,16}$"},
+                    "fileName":{"type":"string","minLength":1,"maxLength":255},
+                    "serverIp":{"type":"string","format":"ipv4","minLength":7,"maxLength":15},
+                    "bindHost":{"type":"string","format":"ipv4","minLength":7,"maxLength":15},
+                    "bindPort":{"type":"integer","minimum":0,"maximum":65535,"default":69},
+                    "timeoutSeconds":{"type":"integer","minimum":5,"default":60}
+                }
+            }
+        ]
+    })
+}
+
 fn tunnel_id_schema() -> Value {
     json!({
         "type":"object",
@@ -768,6 +808,15 @@ mod tests {
             transfer.input_schema["properties"]["uploadId"]["format"],
             "uuid"
         );
+        let tftp_destination = &transfer.input_schema["properties"]["destination"]["oneOf"][1];
+        assert_eq!(tftp_destination["properties"]["kind"]["const"], "tftpboot");
+        assert_eq!(tftp_destination["required"], json!(["kind", "deviceIp"]));
+        assert_eq!(tftp_destination["additionalProperties"], false);
+        assert_eq!(
+            definition("begin_content_upload").input_schema["properties"]["destination"]["oneOf"]
+                [1],
+            *tftp_destination
+        );
         let tunnel_request = definition("tunnel_request");
         assert!(!tunnel_request.read_only);
         assert_eq!(
@@ -784,6 +833,10 @@ mod tests {
         );
         assert!(transfer.description.contains("exactly one source"));
         assert!(transfer.description.contains("limited to 4 MiB"));
+        assert!(transfer.description.contains("deviceIp is required"));
+        assert!(definition("begin_content_upload")
+            .description
+            .contains("validated before content is uploaded"));
         assert!(
             definition("begin_content_upload").input_schema["properties"]["protocol"]["enum"]
                 .as_array()

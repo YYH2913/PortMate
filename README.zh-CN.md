@@ -278,11 +278,17 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
     "fileName": "firmware.bin",
     "contentBase64": "AAECAwQF..."
   },
-  "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
+  "destination": {
+    "kind": "tftpboot",
+    "address": "0x81800000",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 69
+  }
 }
 ```
 
-`deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，端口默认 69，总超时默认 60 秒。显式超时必须至少为 5 秒，PortMate 不再设置应用层上限。`bindPort=0` 会自动选择空闲端口。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
+`deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，端口默认 69，总超时默认 60 秒。显式超时必须至少为 5 秒，PortMate 不再设置应用层上限。`bindPort=0` 会自动选择空闲端口。旧的 `"destination":"load:tftpboot?deviceIp=..."` 字符串仍然兼容。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
 
 一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 
@@ -291,13 +297,18 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "xmodem",
+  "protocol": "tftp",
   "source": {
     "kind": "mcp",
     "fileName": "firmware.bin",
     "contentBase64": "AAECAwQF..."
   },
-  "destination": "load:loadx?address=0x80000000"
+  "destination": {
+    "kind": "tftpboot",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 0
+  }
 }
 ```
 
@@ -306,11 +317,16 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "xmodem",
+  "protocol": "tftp",
   "fileName": "firmware.bin",
   "sizeBytes": 8388608,
   "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "destination": "load:loadx?address=0x80000000"
+  "destination": {
+    "kind": "tftpboot",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 0
+  }
 }
 ```
 
@@ -324,7 +340,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 }
 ```
 
-响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_transfer`。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
+响应出现 `complete: true` 后，以 `{"uploadId":"..."}` 调用 `start_transfer`。TFTP 目标参数在 `begin_content_upload` 时已经校验并固定，不能在最终启动请求中追加顶层 `deviceIp` 等字段。需要放弃未完成上传时，用相同参数调用 `cancel_content_upload`。活跃上传共享 1 GiB 声明大小配额；开始新上传时会清理超过 24 小时的旧上传。
 
 两种流程都会在桌面应用的私有数据目录中暂存内容，校验安全文件名与传输路由，并在使用后删除暂存内容。文件字节不会进入 MCP 审计记录，也不会作为客户端提供的路径返回。SFTP/SCP 目标使用 `remote:` 或 `ssh:`，例如 `remote:/tmp/firmware.bin`；TFTP 和 Modem 目标使用受约束的 `load:` 端点。只有最终启动传输时才遵循 MCP 写操作审批策略，追加分块不会反复弹出审批。暂存文件被删除后不能直接重试任务，需要重新开始上传。
 

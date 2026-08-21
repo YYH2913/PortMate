@@ -105,6 +105,34 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         and schema.get("additionalProperties") is False
         for schema in source_schemas
     ), f"{transport} start_transfer schema omitted the virtual MCP file source")
+    destination_schemas = (
+        start_transfer_schema.get("properties", {})
+        .get("destination", {})
+        .get("oneOf", [])
+    )
+    require(any(
+        schema.get("type") == "object"
+        and schema.get("properties", {}).get("kind", {}).get("const") == "tftpboot"
+        and "deviceIp" in set(schema.get("required", []))
+        and schema.get("additionalProperties") is False
+        for schema in destination_schemas
+    ), f"{transport} start_transfer schema omitted the structured TFTP destination")
+    begin_content_upload = next(
+        (tool for tool in tools.tools if tool.name == "begin_content_upload"), None
+    )
+    require(begin_content_upload is not None,
+            f"{transport} tools/list omitted begin_content_upload definition")
+    begin_upload_schema = sdk_field(begin_content_upload, "inputSchema", "input_schema")
+    begin_destination_schemas = (
+        begin_upload_schema.get("properties", {})
+        .get("destination", {})
+        .get("oneOf", [])
+    )
+    require(any(
+        schema.get("type") == "object"
+        and "deviceIp" in set(schema.get("required", []))
+        for schema in begin_destination_schemas
+    ), f"{transport} begin_content_upload schema omitted the structured TFTP destination")
     send_bytes = next((tool for tool in tools.tools if tool.name == "send_bytes"), None)
     require(send_bytes is not None, f"{transport} tools/list omitted send_bytes definition")
     send_bytes_schema = sdk_field(send_bytes, "inputSchema", "input_schema")

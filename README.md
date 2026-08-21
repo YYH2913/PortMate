@@ -278,11 +278,17 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
     "fileName": "firmware.bin",
     "contentBase64": "AAECAwQF..."
   },
-  "destination": "load:tftpboot?address=0x81800000&deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=69"
+  "destination": {
+    "kind": "tftpboot",
+    "address": "0x81800000",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 69
+  }
 }
 ```
 
-`deviceIp` is required. `address`, `fileName`, `serverIp`, `bindHost`, `bindPort`, and `timeoutSeconds` are optional: the load address defaults to `${loadaddr}`, the requested name defaults to the local source name, `serverIp` can be inferred from the route to the device, the bind host defaults to the advertised server IP, the port defaults to 69, and the timeout defaults to 60 seconds. Explicit timeouts must be at least 5 seconds and have no application-defined upper limit. `bindPort=0` chooses a free port. PortMate temporarily sends `setenv ipaddr`, `setenv serverip`, and `setenv tftpdstp` followed by `tftpboot`; it never sends `saveenv`.
+`deviceIp` is required. `address`, `fileName`, `serverIp`, `bindHost`, `bindPort`, and `timeoutSeconds` are optional: the load address defaults to `${loadaddr}`, the requested name defaults to the local source name, `serverIp` can be inferred from the route to the device, the bind host defaults to the advertised server IP, the port defaults to 69, and the timeout defaults to 60 seconds. Explicit timeouts must be at least 5 seconds and have no application-defined upper limit. `bindPort=0` chooses a free port. The legacy `"destination":"load:tftpboot?deviceIp=..."` string remains supported. PortMate temporarily sends `setenv ipaddr`, `setenv serverip`, and `setenv tftpdstp` followed by `tftpboot`; it never sends `saveenv`.
 
 The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot honors `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
@@ -291,13 +297,18 @@ For content produced on another MCP client, use the virtual source form of `star
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "xmodem",
+  "protocol": "tftp",
   "source": {
     "kind": "mcp",
     "fileName": "firmware.bin",
     "contentBase64": "AAECAwQF..."
   },
-  "destination": "load:loadx?address=0x80000000"
+  "destination": {
+    "kind": "tftpboot",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 0
+  }
 }
 ```
 
@@ -306,11 +317,16 @@ For files up to 512 MiB, compute the whole-file SHA-256 and use the resumable up
 ```json
 {
   "sessionId": "board-uart",
-  "protocol": "xmodem",
+  "protocol": "tftp",
   "fileName": "firmware.bin",
   "sizeBytes": 8388608,
   "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "destination": "load:loadx?address=0x80000000"
+  "destination": {
+    "kind": "tftpboot",
+    "deviceIp": "192.168.255.1",
+    "serverIp": "192.168.255.2",
+    "bindPort": 0
+  }
 }
 ```
 
@@ -324,7 +340,7 @@ Append standard-Base64 chunks in order. `offset` is the decoded byte offset and 
 }
 ```
 
-After the response reports `complete: true`, call `start_transfer` with `{"uploadId":"..."}`. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
+After the response reports `complete: true`, call `start_transfer` with `{"uploadId":"..."}`. TFTP destination options are validated and bound by `begin_content_upload`; do not add top-level `deviceIp` or related fields to the final start request. Call `cancel_content_upload` with the same argument to discard an incomplete upload. Active uploads share a 1 GiB declared-size quota and uploads older than 24 hours are removed when a new upload begins.
 
 Both workflows stage content in the desktop application's private data directory, validate safe file names and transfer routes, and remove staged content after use. The bytes are not included in MCP audit records or returned as client-supplied paths. SFTP/SCP destinations use `remote:` or `ssh:`, for example `remote:/tmp/firmware.bin`; TFTP and Modem destinations use constrained `load:` endpoints. Only the final transfer start follows the normal MCP write approval policy, so individual chunks do not create approval prompts. Staged-content tasks cannot be retried after the staging file is removed; start a new upload instead.
 

@@ -1,6 +1,7 @@
 pub mod custom_scripts;
 pub mod host_keys;
 pub mod mcp;
+mod mcp_transfer;
 pub mod models;
 pub mod redaction;
 pub mod store;
@@ -28,6 +29,12 @@ pub use mcp::{
     MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_EXPIRY_SECONDS,
     MCP_CONTENT_UPLOAD_METADATA_FILE, MCP_CONTENT_UPLOAD_METADATA_VERSION,
     MCP_CONTENT_UPLOAD_PAYLOAD_FILE, MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
+};
+pub use mcp_transfer::{
+    classify_mcp_start_transfer_source, misplaced_mcp_tftp_destination_option,
+    parse_tftp_receiver_endpoint, validate_tftp_file_name, McpStartTransferSource,
+    McpStructuredTransferDestination, McpTransferDestination, TftpReceiverSpec, DEFAULT_TFTP_PORT,
+    DEFAULT_TFTP_TIMEOUT_SECONDS,
 };
 pub use models::*;
 pub use redaction::{

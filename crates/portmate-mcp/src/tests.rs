@@ -155,6 +155,126 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
 }
 
 #[test]
+fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
+    let root =
+        std::env::temp_dir().join(format!("portmate-tftp-content-upload-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let server = content_upload_server(&root, "tftp-upload-owner");
+    let begin = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "tftp",
+            "fileName": "firmware.bin",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "destination": {
+                "kind": "tftpboot",
+                "deviceIp": "192.168.255.1",
+                "serverIp": "192.168.255.2",
+                "bindPort": 0,
+                "timeoutSeconds": 3600
+            }
+        }))
+        .unwrap();
+    let upload_id = begin["uploadId"].as_str().unwrap();
+    let upload_dir = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+        .join(upload_id);
+    let metadata = super::content_upload::read_upload_metadata(&upload_dir).unwrap();
+    assert_eq!(metadata.protocol, portmate_core::TransferProtocol::Tftp);
+    assert_eq!(
+        metadata.destination,
+        "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=0&timeoutSeconds=3600"
+    );
+
+    let misplaced = server
+        .start_transfer_tool(&json!({
+            "uploadId": upload_id,
+            "deviceIp": "192.168.255.1"
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(misplaced.contains("begin_content_upload"), "{misplaced}");
+    assert!(!misplaced.contains("another source mode"), "{misplaced}");
+
+    server
+        .cancel_content_upload(&json!({ "uploadId": upload_id }))
+        .unwrap();
+    let invalid_root = root.join("invalid");
+    fs::create_dir(&invalid_root).unwrap();
+    let invalid_server = content_upload_server(&invalid_root, "invalid-tftp-owner");
+    let missing = invalid_server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "tftp",
+            "fileName": "firmware.bin",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "destination": "load:tftpboot"
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("deviceIp"), "{missing}");
+    let missing_structured = invalid_server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "tftp",
+            "fileName": "firmware.bin",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "destination": { "kind": "tftpboot" }
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing_structured.contains("deviceIp"),
+        "{missing_structured}"
+    );
+    let unsafe_file_name = invalid_server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "tftp",
+            "fileName": "firmware.bin;saveenv",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "destination": {
+                "kind": "tftpboot",
+                "deviceIp": "192.168.255.1"
+            }
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unsafe_file_name.contains("TFTP fileName"),
+        "{unsafe_file_name}"
+    );
+    let misplaced_begin_option = invalid_server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "tftp",
+            "fileName": "firmware.bin",
+            "sizeBytes": 3,
+            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "deviceIp": "192.168.255.1",
+            "destination": {
+                "kind": "tftpboot",
+                "deviceIp": "192.168.255.1"
+            }
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        misplaced_begin_option.contains("structured `destination`"),
+        "{misplaced_begin_option}"
+    );
+    assert!(!invalid_root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
     let root = std::env::temp_dir().join(format!("portmate-unified-transfer-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

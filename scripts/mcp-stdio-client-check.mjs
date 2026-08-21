@@ -99,6 +99,16 @@ try {
     && schema.required?.includes("contentBase64")
     && schema.additionalProperties === false),
     "start_transfer schema omitted the virtual MCP file source");
+  const destinationSchemas = startTransfer?.inputSchema?.properties?.destination?.oneOf ?? [];
+  assert(destinationSchemas.some((schema) => schema.type === "object"
+    && schema.properties?.kind?.const === "tftpboot"
+    && schema.required?.includes("deviceIp")
+    && schema.additionalProperties === false),
+    "start_transfer schema omitted the structured TFTP destination");
+  const beginContentUpload = tools.tools.find((tool) => tool.name === "begin_content_upload");
+  assert(beginContentUpload?.inputSchema?.properties?.destination?.oneOf?.some((schema) =>
+    schema.type === "object" && schema.required?.includes("deviceIp")),
+  "begin_content_upload schema omitted the structured TFTP destination");
   const sendBytes = tools.tools.find((tool) => tool.name === "send_bytes");
   assert(sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("base64")
     && sendBytes?.inputSchema?.properties?.encoding?.enum?.includes("hex"),

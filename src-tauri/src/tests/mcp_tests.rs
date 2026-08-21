@@ -150,6 +150,45 @@ fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
         }
         _ => panic!("virtual MCP source was treated as a path"),
     }
+    let structured_tftp = normalize_mcp_start_transfer_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "protocol": "tftp",
+        "source": {
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE="
+        },
+        "destination": {
+            "kind": "tftpboot",
+            "deviceIp": "192.168.255.1",
+            "serverIp": "192.168.255.2",
+            "bindPort": 0
+        }
+    }))
+    .unwrap();
+    match structured_tftp {
+        NormalizedMcpStartTransferRequest::Inline(request) => assert_eq!(
+            request.destination,
+            "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=0"
+        ),
+        _ => panic!("structured TFTP destination was not normalized for inline content"),
+    }
+    let structured_tftp_path = normalize_mcp_start_transfer_args(&serde_json::json!({
+        "sessionId": "board-uart",
+        "protocol": "tftp",
+        "source": "/tmp/firmware.bin",
+        "destination": {
+            "kind": "tftpboot",
+            "deviceIp": "192.168.255.1"
+        }
+    }))
+    .unwrap();
+    match structured_tftp_path {
+        NormalizedMcpStartTransferRequest::Path(request) => {
+            assert_eq!(request.destination, "load:tftpboot?deviceIp=192.168.255.1")
+        }
+        _ => panic!("structured TFTP destination was not normalized for a path source"),
+    }
     assert!(matches!(
         normalize_mcp_start_transfer_args(&serde_json::json!({
             "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce"
@@ -157,6 +196,13 @@ fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
         .unwrap(),
         NormalizedMcpStartTransferRequest::Upload(_)
     ));
+    let misplaced_tftp = normalize_mcp_start_transfer_args(&serde_json::json!({
+        "uploadId": "8d23c9bd-4d7f-45dc-86a5-c702e5ac2bce",
+        "deviceIp": "192.168.255.1"
+    }))
+    .unwrap_err();
+    assert!(misplaced_tftp.contains("begin_content_upload"));
+    assert!(!misplaced_tftp.contains("another source mode"));
 
     for mixed in [
         serde_json::json!({
@@ -665,6 +711,69 @@ fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
                 Some("transfer")
             );
             assert!(!serde_json::to_string(audit).unwrap().contains("queued.bin"));
+        }
+        let terminal = wait_for_transfer_terminal_state(&state, &returned.id).await;
+        assert!(matches!(
+            terminal.status,
+            TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+        ));
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn mcp_chunked_tftp_upload_enters_the_authorized_transfer_queue() {
+    tauri::async_runtime::block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("portmate-mcp-tftp-upload-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        let upload_id = Uuid::new_v4().to_string();
+        let upload_dir = root
+            .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+            .join(MCP_CONTENT_UPLOADS_DIRECTORY)
+            .join(&upload_id);
+        fs::create_dir_all(&upload_dir).unwrap();
+        let payload = b"queued MCP TFTP upload";
+        let destination = "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=0";
+        let metadata = McpContentUploadMetadata {
+            version: MCP_CONTENT_UPLOAD_METADATA_VERSION,
+            upload_id: upload_id.clone(),
+            client_id: "tftp-queue-client".to_string(),
+            session_id: "session:1".to_string(),
+            protocol: TransferProtocol::Tftp,
+            file_name: "firmware.bin".to_string(),
+            size_bytes: payload.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(payload)),
+            destination: destination.to_string(),
+            created_at_unix_seconds: 1,
+        };
+        fs::write(
+            upload_dir.join(MCP_CONTENT_UPLOAD_METADATA_FILE),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        fs::write(upload_dir.join(MCP_CONTENT_UPLOAD_PAYLOAD_FILE), payload).unwrap();
+
+        let value = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "tftp-queue-client".to_string(),
+                trusted_write: true,
+                command: "start_transfer".to_string(),
+                args: serde_json::json!({ "uploadId": upload_id }),
+            },
+        )
+        .await
+        .unwrap();
+        let returned: TransferTask = serde_json::from_value(value).unwrap();
+        assert_eq!(returned.protocol, TransferProtocol::Tftp);
+        {
+            let store = state.store.lock().unwrap();
+            let queued = store.transfer_by_id(&returned.id).unwrap();
+            assert_eq!(queued.destination, destination);
+            assert!(queued.source.contains(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY));
         }
         let terminal = wait_for_transfer_terminal_state(&state, &returned.id).await;
         assert!(matches!(

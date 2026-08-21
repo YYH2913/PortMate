@@ -1,8 +1,9 @@
 use super::{desktop_ipc::ipc_value_to_text, PortMateMcp};
 use anyhow::{anyhow, Result};
 use portmate_core::{
-    redact_secrets, redact_session_event, redact_session_events, redact_transfer_task,
-    CustomScriptSummary, McpScope, SessionEvent, SessionSummary, TransferTask,
+    classify_mcp_start_transfer_source, redact_secrets, redact_session_event,
+    redact_session_events, redact_transfer_task, CustomScriptSummary, McpScope,
+    McpStartTransferSource, SessionEvent, SessionSummary, TransferTask,
     MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
 };
 use serde_json::{json, Value};
@@ -350,43 +351,11 @@ impl PortMateMcp {
         let object = arguments
             .as_object()
             .ok_or_else(|| anyhow!("start_transfer arguments must be an object"))?;
-        let has_path = object.contains_key("source");
-        let has_inline = object.contains_key("fileName") || object.contains_key("contentBase64");
-        let has_upload = object.contains_key("uploadId");
-        let allowed_fields: &[&str] = match (has_path, has_inline, has_upload) {
-            (true, false, false) => {
-                &["sessionId", "protocol", "source", "destination"]
-            }
-            (false, true, false)
-                if object.contains_key("fileName") && object.contains_key("contentBase64") =>
-            {
-                &[
-                    "sessionId",
-                    "protocol",
-                    "fileName",
-                    "contentBase64",
-                    "destination",
-                ]
-            }
-            (false, false, true) => &["uploadId"],
-            _ => {
-                return Err(anyhow!(
-                    "start_transfer requires exactly one source: source, fileName plus contentBase64, or uploadId"
-                ))
-            }
-        };
-        if object
-            .keys()
-            .any(|key| !allowed_fields.contains(&key.as_str()))
-        {
-            return Err(anyhow!(
-                "start_transfer contains fields from another source mode"
-            ));
-        }
+        let source_mode = classify_mcp_start_transfer_source(object).map_err(anyhow::Error::msg)?;
         if let Some(source) = object.get("source") {
             validate_start_transfer_source(source)?;
         }
-        if has_upload {
+        if source_mode == McpStartTransferSource::Upload {
             return self.start_completed_upload_transfer(arguments);
         }
         self.call_ipc_value("start_transfer", arguments.clone())?
