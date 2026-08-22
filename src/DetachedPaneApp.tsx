@@ -237,7 +237,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   async function sendInput(sessionId: string, text: string, inputEpoch: number) {
     if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
     try {
-      await invokeBackend("send_text", { sessionId, text, interactive: true });
+      await invokeBackend("send_text", { sessionId, text, interactive: true, queued: true });
       if (terminalInputIsCurrent(inputEpoch)) setError("");
     } catch (inputError) {
       if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));

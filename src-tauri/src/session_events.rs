@@ -97,18 +97,25 @@ fn record_accepted_channel_bytes(
     text: String,
 ) {
     let command_id = active_command_id(io, session_id);
-    let PendingEventLogs {
-        profile,
-        bytes_ref,
-        errors,
-    } = begin_event_log_shards(io, session_id, raw_bytes);
     if text.is_empty() {
+        // Binary/control-only traffic still gets a raw log entry, but it does
+        // not need to enter the text terminal event stream.
+        let raw_bytes = raw_bytes.to_vec();
+        let raw_bytes_for_publish = raw_bytes.clone();
+        if let Err(error) = enqueue_inbound_log_persistence(
+            io.clone(),
+            session_id.to_string(),
+            None,
+            raw_bytes,
+        ) {
+            eprintln!("PortMate: inbound raw log queue unavailable: {error}");
+        }
         publish_terminal_bytes(
             io.app_handle.as_ref(),
             session_id,
             EventDirection::Inbound,
             stream,
-            raw_bytes,
+            &raw_bytes_for_publish,
             None,
             Utc::now(),
         );
@@ -118,18 +125,17 @@ fn record_accepted_channel_bytes(
         let annotations = command_id
             .map(|command_id| BTreeMap::from([("commandId".to_string(), command_id)]))
             .unwrap_or_default();
-        let mut event = store
+        let event = store
             .record_event(
                 session_id,
                 EventDirection::Inbound,
                 stream,
                 Some(text.clone()),
-                bytes_ref,
+                None,
                 annotations,
             )
             .ok();
-        if let Some(event) = event.as_mut() {
-            append_logging_errors(event, &errors);
+        if let Some(event) = event.as_ref() {
             sync_stored_event(&mut store, event);
         }
         event
@@ -155,9 +161,13 @@ fn record_accepted_channel_bytes(
         terminal_event_timestamp,
     );
     if let Some(mut event) = live_event {
-        if profile.as_ref().is_some_and(|profile| {
-            append_event_text_and_jsonl_log_shards(&io.store_path, profile, &mut event)
-        }) {
+        if let Err(error) = enqueue_inbound_log_persistence(
+            io.clone(),
+            session_id.to_string(),
+            Some(event.clone()),
+            raw_bytes.to_vec(),
+        ) {
+            append_logging_error(&mut event, error);
             if let Ok(mut store) = io.store.lock() {
                 sync_stored_event(&mut store, &event);
             }
@@ -338,6 +348,83 @@ pub(super) struct PendingEventLogs {
     pub(super) profile: Option<SessionProfile>,
     pub(super) bytes_ref: Option<String>,
     pub(super) errors: Vec<String>,
+}
+
+const INBOUND_LOG_QUEUE_CAPACITY: usize = 1024;
+
+struct InboundLogPersistenceRequest {
+    io: SessionIo,
+    session_id: String,
+    event: Option<SessionEvent>,
+    raw_bytes: Vec<u8>,
+}
+
+static INBOUND_LOG_QUEUE: OnceLock<mpsc::Sender<InboundLogPersistenceRequest>> = OnceLock::new();
+
+fn enqueue_inbound_log_persistence(
+    io: SessionIo,
+    session_id: String,
+    event: Option<SessionEvent>,
+    raw_bytes: Vec<u8>,
+) -> Result<(), String> {
+    if cfg!(test) {
+        persist_inbound_log_request(InboundLogPersistenceRequest {
+            io,
+            session_id,
+            event,
+            raw_bytes,
+        });
+        return Ok(());
+    }
+    let sender = INBOUND_LOG_QUEUE.get_or_init(|| {
+        let (sender, mut receiver) = mpsc::channel(INBOUND_LOG_QUEUE_CAPACITY);
+        tauri::async_runtime::spawn(async move {
+            while let Some(request) = receiver.recv().await {
+                let _ = tauri::async_runtime::spawn_blocking(|| {
+                    persist_inbound_log_request(request);
+                })
+                .await;
+            }
+        });
+        sender
+    });
+    sender
+        .try_send(InboundLogPersistenceRequest {
+            io,
+            session_id,
+            event,
+            raw_bytes,
+        })
+        .map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) =>
+                "终端日志队列已满，已跳过本次磁盘日志写入".to_string(),
+            mpsc::error::TrySendError::Closed(_) => "终端日志 worker 已关闭".to_string(),
+        })
+}
+
+fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
+    let InboundLogPersistenceRequest {
+        io,
+        session_id,
+        mut event,
+        raw_bytes,
+    } = request;
+    let PendingEventLogs {
+        profile,
+        bytes_ref,
+        errors,
+    } = begin_event_log_shards(&io, &session_id, &raw_bytes);
+    let Some(mut event) = event.take() else {
+        return;
+    };
+    event.bytes_ref = bytes_ref;
+    append_logging_errors(&mut event, &errors);
+    if let Some(profile) = profile {
+        append_event_text_and_jsonl_log_shards(&io.store_path, &profile, &mut event);
+    }
+    if let Ok(mut store) = io.store.lock() {
+        sync_stored_event(&mut store, &event);
+    };
 }
 
 pub(super) fn begin_event_log_shards(

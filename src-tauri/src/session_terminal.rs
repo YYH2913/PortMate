@@ -198,8 +198,17 @@ pub(crate) async fn send_text(
     session_id: String,
     text: String,
     interactive: Option<bool>,
+    queued: Option<bool>,
 ) -> Result<SessionEvent, String> {
     if interactive.unwrap_or(false) {
+        if queued.unwrap_or(false) {
+            let wire_bytes = enqueue_interactive_text(
+                state.inner().session_io(),
+                session_id.clone(),
+                text.clone(),
+            )?;
+            return Ok(deferred_outbound_event(&session_id, &text, &wire_bytes));
+        }
         return send_text_interactive_inner(state.inner().session_io(), session_id, text).await;
     }
     send_text_inner(state.inner().session_io(), session_id, text).await

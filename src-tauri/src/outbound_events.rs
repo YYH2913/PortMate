@@ -12,6 +12,146 @@ type DeferredInteractiveQueues =
 
 static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLock::new();
 
+const INTERACTIVE_WRITE_QUEUE_CAPACITY: usize = 256;
+const INTERACTIVE_WRITE_BATCH_MAX_BYTES: usize = 16 * 1024;
+
+struct InteractiveWriteRequest {
+    io: SessionIo,
+    session_id: String,
+    runtime_id: String,
+    text: String,
+}
+
+type InteractiveWriteQueues =
+    Mutex<HashMap<(PathBuf, String), mpsc::Sender<InteractiveWriteRequest>>>;
+
+static INTERACTIVE_WRITE_QUEUES: OnceLock<InteractiveWriteQueues> = OnceLock::new();
+
+/// Enqueues desktop keystrokes without making the webview wait for the
+/// transport writer. Each session owns one bounded worker, so ordering is
+/// preserved while unrelated sessions remain independent.
+pub(super) fn enqueue_interactive_text(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+) -> Result<Vec<u8>, String> {
+    if session_id.is_empty() || text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
+        .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
+    let wire_bytes = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?
+        .into_bytes();
+    let key = (io.store_path.clone(), session_id.clone());
+    let sender = {
+        let mut queues = INTERACTIVE_WRITE_QUEUES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(sender) = queues.get(&key) {
+            sender.clone()
+        } else {
+            let (sender, mut receiver) = mpsc::channel::<InteractiveWriteRequest>(
+                INTERACTIVE_WRITE_QUEUE_CAPACITY,
+            );
+            tauri::async_runtime::spawn(async move {
+                let mut pending = None;
+                loop {
+                    let Some(first) = (match pending.take() {
+                        Some(request) => Some(request),
+                        None => receiver.recv().await,
+                    }) else {
+                        break;
+                    };
+                    let mut text = first.text;
+                    let io = first.io;
+                    let session_id = first.session_id;
+                    let runtime_id = first.runtime_id;
+                    while text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES {
+                        let Ok(next) = receiver.try_recv() else {
+                            break;
+                        };
+                        let remaining = INTERACTIVE_WRITE_BATCH_MAX_BYTES - text.len();
+                        if next.runtime_id == runtime_id && next.text.len() <= remaining {
+                            text.push_str(&next.text);
+                        } else {
+                            // Keep the next request intact for the following
+                            // batch rather than splitting UTF-8 text.
+                            pending = Some(next);
+                            break;
+                        }
+                    }
+                    match current_session_runtime_id(&io.runtimes, &session_id) {
+                        Ok(Some(current)) if current == runtime_id => {
+                            if let Err(error) = send_text_interactive_inner_for_runtime(
+                                io.clone(),
+                                session_id.clone(),
+                                text,
+                                &runtime_id,
+                            )
+                            .await
+                            {
+                                publish_interactive_write_error(&io, &session_id, error);
+                            }
+                        }
+                        Ok(_) => {
+                            // The session was closed or replaced while the
+                            // request waited in the queue. Never replay stale
+                            // keystrokes into a newly connected runtime.
+                        }
+                        Err(error) => {
+                            publish_interactive_write_error(&io, &session_id, error);
+                        }
+                    }
+                }
+            });
+            queues.insert(key.clone(), sender.clone());
+            sender
+        }
+    };
+    sender.try_send(InteractiveWriteRequest {
+        io,
+        session_id,
+        runtime_id,
+        text,
+    })
+    .map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => "终端输入队列已满，请稍后重试".to_string(),
+        mpsc::error::TrySendError::Closed(_) => "终端输入队列已关闭".to_string(),
+    })?;
+    Ok(wire_bytes)
+}
+
+fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: String) {
+    eprintln!("PortMate: interactive write failed for {session_id}: {error}");
+    let event = SessionEvent {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        pane_id: format!("{session_id}:main"),
+        ts: Utc::now(),
+        direction: EventDirection::System,
+        stream: EventStream::Audit,
+        bytes_ref: None,
+        text: Some(format!("PortMate: 交互输入发送失败: {error}")),
+        annotations: BTreeMap::from([(
+            "origin".to_string(),
+            "interactive-write-worker".to_string(),
+        )]),
+    };
+    if let Some(app_handle) = &io.app_handle {
+        let _ = app_handle.emit("portmate-session-event", event);
+    }
+}
+
+pub(super) fn clear_interactive_write_queue(store_path: &Path, session_id: &str) {
+    if let Some(queues) = INTERACTIVE_WRITE_QUEUES.get() {
+        queues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(store_path.to_path_buf(), session_id.to_string()));
+    }
+}
+
 /// Queue interactive event persistence away from the transport write path.
 /// The per-session worker preserves event order while keeping keystrokes from
 /// waiting on full-store snapshots and log shard writes.
@@ -91,6 +231,30 @@ pub(super) async fn send_text_interactive_inner(
     session_id: String,
     text: String,
 ) -> Result<SessionEvent, String> {
+    send_text_interactive_inner_for_optional_runtime(io, session_id, text, None).await
+}
+
+async fn send_text_interactive_inner_for_runtime(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    expected_runtime_id: &str,
+) -> Result<SessionEvent, String> {
+    send_text_interactive_inner_for_optional_runtime(
+        io,
+        session_id,
+        text,
+        Some(expected_runtime_id),
+    )
+    .await
+}
+
+async fn send_text_interactive_inner_for_optional_runtime(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    expected_runtime_id: Option<&str>,
+) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
     clear_active_command(&io, &session_id);
@@ -99,7 +263,7 @@ pub(super) async fn send_text_interactive_inner(
         &io.runtimes,
         &session_id,
         wire_text.as_bytes(),
-        None,
+        expected_runtime_id,
     )
     .await?;
     drop(lane_guard);

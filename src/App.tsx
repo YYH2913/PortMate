@@ -3898,6 +3898,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             sessionId,
             text,
             interactive: origin === "interactive",
+            queued: origin === "interactive",
           });
         }
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;

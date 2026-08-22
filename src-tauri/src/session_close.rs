@@ -103,6 +103,7 @@ pub(super) fn cleanup_deleted_session_runtime_state(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(session_id);
     clear_outbound_lane(&state.store_path, session_id);
+    clear_interactive_write_queue(&state.store_path, session_id);
 
     let mut approvals = state
         .pending_mcp_approvals
