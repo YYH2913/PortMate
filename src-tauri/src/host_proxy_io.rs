@@ -170,6 +170,136 @@ pub(super) async fn execute_tunnel_request_inner(
     })
 }
 
+pub(super) async fn execute_udp_tunnel_request_inner(
+    state: &AppState,
+    client_id: &str,
+    request: McpUdpExchangeRequest,
+    commit_validation: Option<CommitValidation>,
+) -> Result<McpUdpExchangeResult, String> {
+    if let Some(validate) = commit_validation {
+        validate()?;
+    }
+    validate_mcp_udp_exchange_request(&request)?;
+    let owner_id = mcp_host_route_owner_id(client_id)?;
+    let runtime = {
+        let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+        tunnels
+            .get(&request.tunnel_id)
+            .filter(|runtime| {
+                runtime.session_id == owner_id
+                    && runtime.spec.egress == TunnelEgress::PortmateHost
+                    && !runtime.closed.load(Ordering::SeqCst)
+            })
+            .cloned()
+            .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?
+    };
+    let (target_host, target_port) = match runtime.spec.mode {
+        TunnelMode::Local => {
+            if request.target_host.is_some() || request.target_port.is_some() {
+                return Err(
+                    "fixed UDP tunnel requests must not override targetHost or targetPort"
+                        .to_string(),
+                );
+            }
+            (runtime.spec.target_host.clone(), runtime.spec.target_port)
+        }
+        TunnelMode::Dynamic => {
+            let host = request.target_host.clone().ok_or_else(|| {
+                "dynamic UDP tunnel requests require targetHost and targetPort".to_string()
+            })?;
+            let port = request.target_port.ok_or_else(|| {
+                "dynamic UDP tunnel requests require targetHost and targetPort".to_string()
+            })?;
+            if !tunnel_route_allowed(&runtime.spec.route_rules, &host, port) {
+                return Err(format!(
+                    "MCP UDP tunnel target denied by route rules: {host}:{port}"
+                ));
+            }
+            (host, port)
+        }
+        TunnelMode::Remote => {
+            return Err("remote forwarding does not support UDP tunnel requests".to_string())
+        }
+    };
+    let payload = decode_mcp_udp_datagram_payload(&request.encoding, &request.data)?;
+    let timeout_ms = request
+        .timeout_ms
+        .unwrap_or(DEFAULT_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS);
+    let target = format!("{target_host}:{target_port}");
+    let target_addr = lookup_host((target_host.as_str(), target_port))
+        .await
+        .map_err(|error| format!("MCP UDP target lookup failed {target}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("MCP UDP target lookup returned no address: {target}"))?;
+    let bind_addr = match target_addr {
+        std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+        std::net::SocketAddr::V6(_) => std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0)),
+    };
+    let socket = UdpSocket::bind(bind_addr)
+        .await
+        .map_err(|error| format!("MCP UDP relay bind failed: {error}"))?;
+    let metrics = Arc::clone(&runtime.metrics);
+    let Some(permit) =
+        try_acquire_tunnel_connection(&state.tunnel_connection_slots, metrics.as_ref())
+    else {
+        return Err(format!(
+            "{TUNNEL_CONNECTION_LIMIT_ERROR_PREFIX} app limit ({MAX_TUNNEL_CONNECTIONS})"
+        ));
+    };
+    let _permit = permit;
+    metrics.connection_opened();
+    let result = async {
+        socket
+            .connect(target_addr)
+            .await
+            .map_err(|error| format!("MCP UDP target connect failed {target}: {error}"))?;
+        socket
+            .send(&payload)
+            .await
+            .map_err(|error| format!("MCP UDP datagram send failed {target}: {error}"))?;
+        let mut response = vec![0_u8; MAX_MCP_UDP_DATAGRAM_BYTES];
+        let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
+        tokio::pin!(deadline);
+        let received = tokio::select! {
+            result = socket.recv(&mut response) => {
+                result.map_err(|error| format!("MCP UDP datagram receive failed {target}: {error}"))?
+            }
+            _ = &mut deadline => {
+                return Ok::<McpUdpExchangeResult, String>(McpUdpExchangeResult {
+                    tunnel_id: runtime.spec.id.clone(),
+                    target_host,
+                    target_port,
+                    sent_bytes: payload.len(),
+                    received_bytes: 0,
+                    response_base64: String::new(),
+                    timed_out: true,
+                });
+            }
+        };
+        response.truncate(received);
+        Ok(McpUdpExchangeResult {
+            tunnel_id: runtime.spec.id.clone(),
+            target_host,
+            target_port,
+            sent_bytes: payload.len(),
+            received_bytes: response.len(),
+            response_base64: BASE64_STANDARD.encode(response),
+            timed_out: false,
+        })
+    }
+    .await;
+    match &result {
+        Ok(result) => {
+            metrics.add_tcp_to_ssh_bytes_u64(result.sent_bytes as u64);
+            metrics.add_ssh_to_tcp_bytes_u64(result.received_bytes as u64);
+            metrics.clear_error();
+        }
+        Err(error) => metrics.record_error(error),
+    }
+    metrics.connection_closed();
+    result
+}
+
 async fn exchange_host_tcp_request(
     target_host: &str,
     target_port: u16,

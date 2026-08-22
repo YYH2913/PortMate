@@ -13,8 +13,12 @@ pub const MAX_MCP_TUNNEL_EXCHANGE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH: usize =
     MAX_MCP_TUNNEL_EXCHANGE_BYTES.div_ceil(3) * 4;
 pub const MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS: u64 = 30_000;
+/// Maximum payload for one MCP UDP datagram exchange (IPv4/IPv6 UDP payload bound).
+pub const MAX_MCP_UDP_DATAGRAM_BYTES: usize = 65_507;
+pub const MAX_MCP_UDP_DATAGRAM_BASE64_LENGTH: usize = MAX_MCP_UDP_DATAGRAM_BYTES.div_ceil(3) * 4;
 const _: () = assert!(MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
 const _: () = assert!(MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
+const _: () = assert!(MAX_MCP_UDP_DATAGRAM_BASE64_LENGTH < MAX_MCP_BRIDGE_REQUEST_BYTES);
 /// Maximum file size accepted by the resumable MCP content-upload workflow.
 pub const MAX_MCP_CONTENT_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_MCP_CONTENT_UPLOAD_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -498,6 +502,25 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "udp_request",
+            "Request Through UDP Route",
+            "Send one bounded UDP datagram through an existing PortMate-host route and wait for one response datagram. Requires tunnel scope and an owned host route; this is a datagram exchange, not a persistent UDP association. It can carry individual TFTP, QUIC, or DTLS packets, but it does not implement their connection/session state or SOCKS5 UDP ASSOCIATE control channel. Request and response are each limited to 65507 bytes and timeout is 100 ms-30 s.",
+            json!({
+                "type":"object",
+                "required":["tunnelId","encoding","data"],
+                "additionalProperties":false,
+                "properties":{
+                    "tunnelId":{"type":"string","minLength":1,"maxLength":128},
+                    "encoding":{"type":"string","enum":["base64","hex"]},
+                    "data":{"type":"string","minLength":1,"maxLength":MAX_MCP_UDP_DATAGRAM_BASE64_LENGTH},
+                    "targetHost":{"type":"string","minLength":1,"maxLength":255},
+                    "targetPort":{"type":"integer","minimum":1,"maximum":65535},
+                    "timeoutMs":{"type":"integer","minimum":100,"maximum":MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS,"default":10000}
+                }
+            }),
+            false,
+        ),
+        tool(
             "list_tmux_state",
             "List Tmux State",
             "Read tmux sessions and panes for one connected authorized SSH/Tmux session. Read-only and requires read-logs; output is bounded and redacted. It never creates, kills, or attaches a tmux session.",
@@ -719,7 +742,7 @@ mod tests {
 
     #[test]
     fn bridge_management_tools_are_advertised_with_safe_schemas() {
-        assert_eq!(tool_definitions().len(), 30);
+        assert_eq!(tool_definitions().len(), 31);
         for name in ["mcp_bridge_status", "reload_mcp", "restart_mcp"] {
             let definition = definition(name);
             assert_eq!(definition.input_schema["type"], "object", "{name}");

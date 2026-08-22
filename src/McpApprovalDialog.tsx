@@ -17,6 +17,7 @@ const actionLabels: Record<string, string> = {
   create_tunnel: "创建指定转发或代理",
   stop_tunnel: "停止指定转发或代理",
   tunnel_request: "通过隧道发送请求",
+  udp_request: "通过隧道发送 UDP 数据报",
 };
 
 export default function McpApprovalDialog({

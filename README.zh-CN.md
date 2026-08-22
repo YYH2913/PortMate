@@ -400,7 +400,7 @@ SSH 服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理
 
 使用 PortMate 主机出站的 SOCKS5 代理时，`routeRules` 至少要包含一条允许目标。除非同时显式设置 `allowRemoteBind: true`，否则 `0.0.0.0` 等非回环监听会被拒绝；该标志会显示在 MCP 审批目标与审计记录中。主机路由只在当前运行期有效，并按规范化后的 MCP Client ID 隔离，其他 Client 不能列出或停止。终端会话断开不会影响它；可调用 `stop_tunnel` 或退出 PortMate 停止，也不会从已保存的会话配置自动恢复。
 
-当前所有 Tunnel 都是 TCP 语义：`local`/`remote` 转发使用 TCP，`dynamic` 是 TCP CONNECT 型 SOCKS5。当前不支持 UDP 数据报、SOCKS5 UDP ASSOCIATE、组播、广播、DTLS 或 QUIC，因此不能用 `create_tunnel`/`tunnel_request` 直接承载 TFTP。TFTP 使用独立的一次性 UDP 服务和 `start_transfer`；它不经过 Tunnel。
+当前所有 Tunnel 监听模式都是 TCP 语义：`local`/`remote` 转发使用 TCP，`dynamic` 是 TCP CONNECT 型 SOCKS5。UDP 数据报仅通过有界的 `udp_request` MCP 交换提供；持久 UDP 关联、SOCKS5 UDP ASSOCIATE、组播、广播、DTLS 和 QUIC 会话管理尚未实现。TFTP 使用独立的一次性 UDP 服务和 `start_transfer`。
 
 ```json
 {
@@ -432,6 +432,8 @@ SSH 服务端远程转发使用 `mode: "remote"`。指定路由的 SOCKS5 代理
 动态路由需额外传 `"targetHost"` 与 `"targetPort"` 指定 SOCKS5 目标。`closeWrite` 默认 `true`，写完请求后会半关闭写出方向，便于 HTTP 等请求/响应服务识别请求结束；对需要持续发送、以 `timeoutMs` 收尾的协议可设为 `false`。请求载荷上限 4 MiB，响应读取到远端关闭或 `timeoutMs`（100 ms 至 30 s）到期为止；结果包含 `sentBytes`、`receivedBytes`、`responseBase64`、`truncated` 与 `timedOut`。
 
 `tunnel_request` 是一次 TCP 请求/响应数据面，不是长连接文件流。MCP Agent 如果能访问 PortMate 主机监听端口，应直接连接返回的 `bindPort`，使用普通 TCP/SFTP 客户端或 SOCKS5 客户端进行流式传输；无法访问监听端口时，文件应使用 `begin_content_upload`/`append_content_upload`/`start_transfer` 的分片流程。
+
+udp_request 通过已有且属于当前 Client 的 PortMate-host 路由发送一个 UDP 数据报并等待一个响应数据报，单个数据报最多 65507 字节，超时范围为 100 ms 至 30 s。它可以承载单个 TFTP、QUIC 或 DTLS 包，但不会维护这些协议的连接状态，也不是 SOCKS5 UDP ASSOCIATE 控制通道；需要完整文件传输时使用 start_transfer 的 TFTP 或分片上传流程。
 
 ## 构建
 

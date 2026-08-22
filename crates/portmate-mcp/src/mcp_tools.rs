@@ -290,6 +290,15 @@ impl PortMateMcp {
                         .to_string()
                 }
             }
+            "udp_request" => {
+                if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
+                    redact_secrets(&ipc_value_to_text(value)?)
+                } else {
+                    is_error = true;
+                    "udp_request was NOT executed: desktop IPC is not available, so no UDP datagram was sent."
+                        .to_string()
+                }
+            }
             "list_tmux_state" => {
                 let session_id = required_string(&arguments, "sessionId")?;
                 self.guard_read_scope(McpScope::ReadLogs, Some(session_id))?;

@@ -83,6 +83,7 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
         "create_tunnel",
         "list_tunnels",
         "stop_tunnel",
+        "udp_request",
     ):
         require(tool_name in tool_names, f"{transport} tools/list omitted {tool_name}")
     start_transfer = next((tool for tool in tools.tools if tool.name == "start_transfer"), None)

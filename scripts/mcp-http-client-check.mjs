@@ -284,6 +284,7 @@ try {
     "create_tunnel",
     "list_tunnels",
     "stop_tunnel",
+    "udp_request",
   ]) {
     assert(toolNames.has(toolName), `tools/list omitted ${toolName}`);
   }

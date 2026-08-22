@@ -18,6 +18,7 @@ const approvalActionScopes: Record<string, McpScope> = {
   create_tunnel: "tunnel",
   stop_tunnel: "tunnel",
   tunnel_request: "tunnel",
+  udp_request: "tunnel",
   restart_mcp_http: "manage-mcp",
 };
 

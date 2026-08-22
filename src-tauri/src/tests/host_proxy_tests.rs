@@ -522,6 +522,79 @@ fn mcp_tunnel_request_relays_request_response_through_client_host_route() {
 }
 
 #[test]
+fn mcp_udp_request_relays_one_datagram_through_owned_host_route() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "udp-request-client".to_string(),
+            name: "UDP request client".to_string(),
+            scopes: vec![McpScope::Tunnel],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+
+        let echo_socket = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+        let echo_address = echo_socket.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let mut request = [0_u8; 4];
+            let (size, peer) = echo_socket.recv_from(&mut request).await.unwrap();
+            assert_eq!(&request[..size], b"ping");
+            echo_socket.send_to(b"pong", peer).await.unwrap();
+        });
+
+        let created = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "udp-request-client".to_string(),
+                trusted_write: false,
+                command: "create_tunnel".to_string(),
+                args: serde_json::json!({
+                    "egress": "portmate-host",
+                    "mode": "local",
+                    "bindHost": "127.0.0.1",
+                    "bindPort": 0,
+                    "targetHost": "127.0.0.1",
+                    "targetPort": echo_address.port()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let tunnel = serde_json::from_value::<TunnelSpec>(created).unwrap();
+
+        let exchange = handle_ipc_request(
+            state.clone(),
+            IpcRequest {
+                token: "authenticated-token".to_string(),
+                client_id: "udp-request-client".to_string(),
+                trusted_write: false,
+                command: "udp_request".to_string(),
+                args: serde_json::json!({
+                    "tunnelId": tunnel.id,
+                    "encoding": "base64",
+                    "data": BASE64_STANDARD.encode(b"ping")
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        let result = serde_json::from_value::<McpUdpExchangeResult>(exchange).unwrap();
+        assert_eq!(result.sent_bytes, 4);
+        assert_eq!(result.received_bytes, 4);
+        assert!(!result.timed_out);
+        assert_eq!(
+            BASE64_STANDARD.decode(result.response_base64).unwrap(),
+            b"pong"
+        );
+        echo.await.unwrap();
+    });
+}
+
+#[test]
 fn mcp_tunnel_request_enforces_dynamic_routes_ownership_and_target_rules() {
     tauri::async_runtime::block_on(async {
         let root = tempfile::tempdir().unwrap();

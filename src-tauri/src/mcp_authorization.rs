@@ -174,7 +174,7 @@ pub(super) fn mcp_audit_details(
             details.insert("routeRuleCount".to_string(), value.len().to_string());
         }
     }
-    if request.command == "tunnel_request" {
+    if matches!(request.command.as_str(), "tunnel_request" | "udp_request") {
         for (argument, detail) in [
             ("tunnelId", "tunnelId"),
             ("targetHost", "targetHost"),

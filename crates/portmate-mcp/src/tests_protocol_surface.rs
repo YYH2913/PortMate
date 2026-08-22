@@ -109,6 +109,19 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
     assert!(tunnel_request["description"]
         .as_str()
         .is_some_and(|description| description.contains("PortMate-host tunnel")));
+    let udp_request = tools
+        .iter()
+        .find(|tool| tool["name"] == "udp_request")
+        .expect("tools/list omitted udp_request");
+    assert_eq!(udp_request["inputSchema"]["required"], json!(["tunnelId", "encoding", "data"]));
+    assert_eq!(udp_request["annotations"]["readOnlyHint"], json!(false));
+    assert_eq!(
+        udp_request["inputSchema"]["properties"]["data"]["maxLength"],
+        json!(portmate_core::MAX_MCP_UDP_DATAGRAM_BASE64_LENGTH)
+    );
+    assert!(udp_request["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("UDP datagram")));
 }
 
 #[test]

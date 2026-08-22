@@ -24,7 +24,8 @@ use portmate_core::{
     TransferStatus, TransferTask, TriggerAction, TrustedHostKey, TunnelEgress, TunnelMode,
     TunnelSpec, CUSTOM_SCRIPT_EVENT_TEXT, DEFAULT_TFTP_PORT, MAX_COMMAND_HISTORY_ENTRIES,
     MAX_CUSTOM_SCRIPTS, MAX_MCP_CONTENT_UPLOAD_BYTES, MAX_MCP_TUNNEL_EXCHANGE_BASE64_LENGTH,
-    MAX_MCP_TUNNEL_EXCHANGE_BYTES, MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS, MAX_TUNNELS_PER_PROFILE,
+    MAX_MCP_TUNNEL_EXCHANGE_BYTES, MAX_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS,
+    MAX_MCP_UDP_DATAGRAM_BASE64_LENGTH, MAX_MCP_UDP_DATAGRAM_BYTES, MAX_TUNNELS_PER_PROFILE,
     MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS, MAX_TUNNEL_ROUTE_RULES,
     MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_METADATA_FILE,
     MCP_CONTENT_UPLOAD_METADATA_VERSION, MCP_CONTENT_UPLOAD_PAYLOAD_FILE,
@@ -66,7 +67,7 @@ use tar::{Builder as TarBuilder, Header as TarHeader};
 use tauri::Manager;
 use tauri::{Emitter, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
