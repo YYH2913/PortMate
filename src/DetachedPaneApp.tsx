@@ -228,10 +228,10 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     profileDeletedRef.current = false;
   }
 
-  function enqueueTerminalInput(sessionId: string, text: string) {
+  function enqueueTerminalInput(sessionId: string, text: string): Promise<void> {
     const inputEpoch = captureTerminalInputEpoch();
-    if (inputEpoch === null) return;
-    void inputQueueRef.current.enqueue(() => sendInput(sessionId, text, inputEpoch));
+    if (inputEpoch === null) return Promise.resolve();
+    return inputQueueRef.current.enqueue(() => sendInput(sessionId, text, inputEpoch));
   }
 
   async function sendInput(sessionId: string, text: string, inputEpoch: number) {

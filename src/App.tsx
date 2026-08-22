@@ -4445,7 +4445,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             blockSelection={blockSelection}
             connectionBusyIds={disconnectingSessionIds}
             serialControlBusyIds={serialControlBusyIds}
-            onInput={(sessionId, text, origin) => void routeTerminalInput(sessionId, text, origin)}
+            onInput={routeTerminalInput}
             onOneKeyCompletion={completeOneKeyPrompt}
             onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
             onConnect={(sessionId) => void connectSession(sessionId)}
@@ -5365,7 +5365,7 @@ function TerminalPaneGrid({
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -5452,7 +5452,7 @@ type TerminalWorkspaceNodeProps = {
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -5824,7 +5824,7 @@ type TerminalCanvasProps = {
   blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,

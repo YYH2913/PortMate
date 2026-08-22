@@ -18,6 +18,7 @@ import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptSt
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import { TerminalInputPump } from "./terminal-input-pump";
 import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
@@ -102,7 +103,7 @@ type TerminalCanvasProps = {
   blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (mode: TerminalKeyMode) => void;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void;
+  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,
@@ -113,6 +114,7 @@ type TerminalCanvasProps = {
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
 const TERMINAL_RESIZE_SETTLE_MS = 64;
+const TERMINAL_SEMANTIC_SETTLE_MS = 80;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -286,13 +288,6 @@ export default function TerminalCanvas({
   const displayModeRef = useRef(displayMode);
   const [byteFollow, setByteFollow] = useState(true);
   const [byteSelection, setByteSelection] = useState<TerminalByteSelection | null>(null);
-  const subscribeByteSnapshot = useCallback(
-    (listener: () => void) => subscribeTerminalByteCache(sessionId, listener),
-    [sessionId],
-  );
-  const getByteSnapshot = useCallback(() => terminalByteCacheSnapshot(sessionId), [sessionId]);
-  const byteSnapshot = useSyncExternalStore(subscribeByteSnapshot, getByteSnapshot, getByteSnapshot);
-  const byteStats = useMemo(() => terminalByteBufferStats(byteSnapshot), [byteSnapshot]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const terminalMountGenerationRef = useRef(0);
@@ -308,9 +303,6 @@ export default function TerminalCanvas({
   const gotoLineInputRef = useRef<HTMLInputElement | null>(null);
   const freeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
-  const pendingInputRef = useRef("");
-  const inputFlushTimerRef = useRef<number | null>(null);
-  const flushInputRef = useRef<() => void>(() => {});
   const lastSizeRef = useRef("");
   const focusedRef = useRef(focused);
   const fitAndReportRef = useRef<() => void>(() => {});
@@ -319,6 +311,12 @@ export default function TerminalCanvas({
   const blockSelectionRef = useRef(blockSelection);
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
+  const inputPumpRef = useRef<TerminalInputPump | null>(null);
+  if (!inputPumpRef.current) {
+    inputPumpRef.current = new TerminalInputPump((targetSessionId, text, origin) => (
+      onInputRef.current(targetSessionId, text, origin)
+    ));
+  }
   const keyModeRef = useRef(keyMode);
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
@@ -598,10 +596,11 @@ export default function TerminalCanvas({
 
   function resetCompletionInput(synchronized = true) {
     storeCompletionInput({ line: "", synchronized });
-    setCompletionDismissedLine("");
-    completionSelectionRef.current = 0;
-    setCompletionSelection(0);
-    refreshSemanticHighlightingRef.current();
+    setCompletionDismissedLine((current) => current ? "" : current);
+    if (completionSelectionRef.current !== 0) {
+      completionSelectionRef.current = 0;
+      setCompletionSelection(0);
+    }
   }
 
   function updateCompletionInput(text: string) {
@@ -611,10 +610,11 @@ export default function TerminalCanvas({
     const next = reduceTerminalCompletionInput(current, text);
     if (/[\u0000-\u001f\u007f]/.test(text)) storeCompletionInput(next);
     else storeCompletionInputDeferred(next);
-    setCompletionDismissedLine("");
-    completionSelectionRef.current = 0;
-    setCompletionSelection(0);
-    refreshSemanticHighlightingRef.current();
+    setCompletionDismissedLine((dismissed) => dismissed ? "" : dismissed);
+    if (completionSelectionRef.current !== 0) {
+      completionSelectionRef.current = 0;
+      setCompletionSelection(0);
+    }
   }
 
   acceptCompletionRef.current = (suggestion) => {
@@ -624,12 +624,7 @@ export default function TerminalCanvas({
     setCompletionDismissedLine(suggestion.source === "history" || suggestion.source === "quick" ? next.line : "");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
-    pendingInputRef.current += suggestion.appendText;
-    if (inputFlushTimerRef.current !== null) {
-      window.clearTimeout(inputFlushTimerRef.current);
-      inputFlushTimerRef.current = null;
-    }
-    flushInputRef.current();
+    inputPumpRef.current?.enqueue(active.profile.id, suggestion.appendText, "interactive");
     scheduleTerminalSurfaceFocus();
   };
   dismissCompletionRef.current = () => {
@@ -639,13 +634,13 @@ export default function TerminalCanvas({
   };
 
   function applyOneKeyPromptState(state: OneKeyPromptDetectionState) {
-    const previousEventId = oneKeyPromptStateRef.current.prompt?.eventId;
+    const previousPrompt = oneKeyPromptStateRef.current.prompt;
     oneKeyPromptStateRef.current = state;
-    refreshSemanticHighlightingRef.current();
     const prompt = state.prompt && !dismissedOneKeyPromptEventsRef.current.has(state.prompt.eventId)
       ? state.prompt
       : null;
-    if (previousEventId !== prompt?.eventId) {
+    if (!previousPrompt && !prompt) return;
+    if (previousPrompt?.eventId !== prompt?.eventId) {
       setOneKeyCompletionBusy(false);
       setOneKeyCompletionError("");
     }
@@ -654,7 +649,12 @@ export default function TerminalCanvas({
   }
 
   function dismissOneKeyPrompt() {
-    const prompt = oneKeyPromptStateRef.current.prompt;
+    const state = oneKeyPromptStateRef.current;
+    const prompt = state.prompt;
+    if (!prompt) {
+      if (state.raw) oneKeyPromptStateRef.current = emptyOneKeyPromptDetectionState();
+      return;
+    }
     if (prompt) {
       if (dismissedOneKeyPromptEventsRef.current.size >= 256) {
         dismissedOneKeyPromptEventsRef.current.clear();
@@ -796,7 +796,7 @@ export default function TerminalCanvas({
     if (!active) return;
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
-    onInputRef.current(active.profile.id, payload, "atomic");
+    inputPumpRef.current?.enqueue(active.profile.id, payload, "atomic");
     closeTerminalFreeInput();
   }
 
@@ -826,6 +826,7 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     if (!active || !hostRef.current) return;
+    inputPumpRef.current?.reset();
 
     const host = hostRef.current;
     const mountGeneration = ++terminalMountGenerationRef.current;
@@ -1334,6 +1335,9 @@ export default function TerminalCanvas({
     };
     window.addEventListener("resize", handleWindowResize);
     let semanticFrame: number | null = null;
+    let semanticTimer: number | null = null;
+    let completionAnchorFrame: number | null = null;
+    let completionAnchorRow = "";
     let semanticDecorations: Array<{ dispose: () => void }> = [];
     let semanticMarkers: Array<{ dispose: () => void }> = [];
     const clearSemanticHighlighting = () => {
@@ -1394,14 +1398,38 @@ export default function TerminalCanvas({
       host.dataset.terminalSemanticDecorationCount = String(decorationCount);
     };
     scheduleSemanticHighlighting = () => {
-      if (terminalDisposed || semanticFrame !== null) return;
+      if (terminalDisposed) return;
+      if (semanticTimer !== null) {
+        window.clearTimeout(semanticTimer);
+        semanticTimer = null;
+      }
+      if (semanticFrame !== null) return;
       semanticFrame = window.requestAnimationFrame(renderSemanticHighlighting);
+    };
+    const settleSemanticHighlighting = () => {
+      if (terminalDisposed) return;
+      if (semanticTimer !== null) window.clearTimeout(semanticTimer);
+      semanticTimer = window.setTimeout(() => {
+        semanticTimer = null;
+        scheduleSemanticHighlighting();
+      }, TERMINAL_SEMANTIC_SETTLE_MS);
+    };
+    const scheduleCompletionAnchorRefresh = (force = false) => {
+      if (terminalDisposed || !completionSurfaceOpenRef.current) return;
+      const buffer = term.buffer.active;
+      const row = `${buffer.type}:${buffer.cursorY}:${term.rows}`;
+      if (!force && completionAnchorRow === row) return;
+      completionAnchorRow = row;
+      if (completionAnchorFrame !== null) return;
+      completionAnchorFrame = window.requestAnimationFrame(() => {
+        completionAnchorFrame = null;
+        refreshCompletionAnchorRef.current();
+      });
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
-      scheduleSemanticHighlighting();
-      scheduleTimestampGutter();
-      refreshCompletionAnchorRef.current();
+      settleSemanticHighlighting();
+      scheduleCompletionAnchorRefresh();
     });
     const semanticScrollDisposable = term.onScroll(() => {
       recordTerminalViewport();
@@ -1418,37 +1446,18 @@ export default function TerminalCanvas({
       }
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
-      refreshCompletionAnchorRef.current();
+      scheduleCompletionAnchorRefresh(true);
     });
     scheduleSemanticHighlighting();
     scheduleTimestampGutter();
-    const flushInput = () => {
-      inputFlushTimerRef.current = null;
-      const text = pendingInputRef.current;
-      pendingInputRef.current = "";
-      if (text) {
-        onInputRef.current(active.profile.id, text, "interactive");
-      }
-    };
-    flushInputRef.current = flushInput;
     const inputDisposable = term.onData((text) => {
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       if (isTerminalMouseReport(text)
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
       if (/\r|\n/.test(text)) term.scrollToBottom();
+      inputPumpRef.current?.enqueue(active.profile.id, text, "interactive");
       updateCompletionInput(text);
       dismissOneKeyPrompt();
-      pendingInputRef.current += text;
-      if (/[\x00-\x1f\x7f]/.test(text)) {
-        if (inputFlushTimerRef.current !== null) {
-          window.clearTimeout(inputFlushTimerRef.current);
-        }
-        flushInput();
-        return;
-      }
-      if (inputFlushTimerRef.current === null) {
-        inputFlushTimerRef.current = window.setTimeout(flushInput, 12);
-      }
     });
     const selectionDisposable = term.onSelectionChange(() => {
       host.dataset.terminalHasSelection = term.hasSelection() ? "true" : "false";
@@ -1467,7 +1476,7 @@ export default function TerminalCanvas({
         if (text) {
           resetCompletionInput(false);
           dismissOneKeyPrompt();
-          onInputRef.current(active.profile.id, text, "atomic");
+          inputPumpRef.current?.enqueue(active.profile.id, text, "atomic");
         }
       }).catch(() => {});
     };
@@ -1517,23 +1526,20 @@ export default function TerminalCanvas({
       host.removeEventListener("paste", pauseCompletionOnPaste, true);
       host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
-      if (inputFlushTimerRef.current !== null) {
-        window.clearTimeout(inputFlushTimerRef.current);
-        inputFlushTimerRef.current = null;
-      }
       cancelScheduledCompletionInput();
       if (resizeReportTimer !== null) {
         window.clearTimeout(resizeReportTimer);
         resizeReportTimer = null;
       }
-      pendingInputRef.current = "";
+      inputPumpRef.current?.reset();
       pendingEventWrites.length = 0;
-      if (flushInputRef.current === flushInput) flushInputRef.current = () => {};
       resizeObserver.disconnect();
       semanticWriteDisposable.dispose();
       semanticScrollDisposable.dispose();
       semanticResizeDisposable.dispose();
       if (semanticFrame !== null) window.cancelAnimationFrame(semanticFrame);
+      if (semanticTimer !== null) window.clearTimeout(semanticTimer);
+      if (completionAnchorFrame !== null) window.cancelAnimationFrame(completionAnchorFrame);
       if (timestampFrame !== null) window.cancelAnimationFrame(timestampFrame);
       clearSemanticHighlighting();
       if (refreshSemanticHighlightingRef.current === scheduleSemanticHighlighting) {
@@ -1982,12 +1988,12 @@ export default function TerminalCanvas({
               <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title="Hex 视图" onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
               <button type="button" className={displayMode === "split" ? "active" : ""} aria-label="对照" aria-pressed={displayMode === "split"} title="文本与 Hex 对照视图" onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>对照</span></button>
             </div>
-            <span className="terminal-byte-summary" title={`实时窗口 ${formatBytes(byteSnapshot.capturedBytes)} · ${byteSnapshot.frames.length} 帧${byteSnapshot.droppedFrames ? ` · 已淘汰 ${byteSnapshot.droppedFrames} 帧` : ""}${byteStats.omittedBytes ? ` · 帧内截断 ${formatBytes(byteStats.omittedBytes)}` : ""}`}>
-              <span className="rx">RX {formatBytes(byteStats.rxBytes)}</span>
-              <span className="tx">TX {formatBytes(byteStats.txBytes)}</span>
-            </span>
-            <button type="button" className={byteFollow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label="跟随最新字节" aria-pressed={byteFollow} title="跟随最新字节" disabled={!byteSnapshot.frames.length} onClick={() => setByteFollow((current) => !current)}><ArrowDownToLine size={13} /></button>
-            <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!byteSnapshot.frames.length} onClick={() => { clearTerminalByteCache(active.profile.id); setByteSelection(null); setByteFollow(true); }}><Trash2 size={13} /></button>
+            <TerminalByteToolbar
+              sessionId={active.profile.id}
+              follow={byteFollow}
+              onFollowChange={setByteFollow}
+              onClear={() => { setByteSelection(null); setByteFollow(true); }}
+            />
           </div>
           <div className={`terminal-workspace mode-${displayMode}`}>
             <div className="terminal-terminal-region" aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
@@ -2251,16 +2257,14 @@ export default function TerminalCanvas({
           ) : null}
             </div>
             {displayMode !== "text" ? (
-              <Suspense fallback={<section className="terminal-byte-inspector" aria-label="终端字节检查器" aria-busy="true" />}>
-                <LazyTerminalByteInspector
-                  snapshot={byteSnapshot}
-                  bytesPerRow={displayMode === "split" ? 8 : 16}
-                  follow={byteFollow}
-                  selection={byteSelection}
-                  onFollowChange={setByteFollow}
-                  onSelectionChange={setByteSelection}
-                />
-              </Suspense>
+              <TerminalByteInspectorPane
+                sessionId={active.profile.id}
+                bytesPerRow={displayMode === "split" ? 8 : 16}
+                follow={byteFollow}
+                selection={byteSelection}
+                onFollowChange={setByteFollow}
+                onSelectionChange={setByteSelection}
+              />
             ) : null}
           </div>
         </>
@@ -2268,6 +2272,70 @@ export default function TerminalCanvas({
         <div className="terminal-empty">未打开会话</div>
       )}
     </div>
+  );
+}
+
+function useTerminalByteSnapshot(sessionId: string) {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeTerminalByteCache(sessionId, listener),
+    [sessionId],
+  );
+  const getSnapshot = useCallback(() => terminalByteCacheSnapshot(sessionId), [sessionId]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function TerminalByteToolbar({
+  sessionId,
+  follow,
+  onFollowChange,
+  onClear,
+}: {
+  sessionId: string;
+  follow: boolean;
+  onFollowChange: (follow: boolean) => void;
+  onClear: () => void;
+}) {
+  const snapshot = useTerminalByteSnapshot(sessionId);
+  const stats = useMemo(() => terminalByteBufferStats(snapshot), [snapshot]);
+  return (
+    <>
+      <span className="terminal-byte-summary" title={`实时窗口 ${formatBytes(snapshot.capturedBytes)} · ${snapshot.frames.length} 帧${snapshot.droppedFrames ? ` · 已淘汰 ${snapshot.droppedFrames} 帧` : ""}${stats.omittedBytes ? ` · 帧内截断 ${formatBytes(stats.omittedBytes)}` : ""}`}>
+        <span className="rx">RX {formatBytes(stats.rxBytes)}</span>
+        <span className="tx">TX {formatBytes(stats.txBytes)}</span>
+      </span>
+      <button type="button" className={follow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label="跟随最新字节" aria-pressed={follow} title="跟随最新字节" disabled={!snapshot.frames.length} onClick={() => onFollowChange(!follow)}><ArrowDownToLine size={13} /></button>
+      <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!snapshot.frames.length} onClick={() => { clearTerminalByteCache(sessionId); onClear(); }}><Trash2 size={13} /></button>
+    </>
+  );
+}
+
+function TerminalByteInspectorPane({
+  sessionId,
+  bytesPerRow,
+  follow,
+  selection,
+  onFollowChange,
+  onSelectionChange,
+}: {
+  sessionId: string;
+  bytesPerRow: number;
+  follow: boolean;
+  selection: TerminalByteSelection | null;
+  onFollowChange: (follow: boolean) => void;
+  onSelectionChange: (selection: TerminalByteSelection | null) => void;
+}) {
+  const snapshot = useTerminalByteSnapshot(sessionId);
+  return (
+    <Suspense fallback={<section className="terminal-byte-inspector" aria-label="终端字节检查器" aria-busy="true" />}>
+      <LazyTerminalByteInspector
+        snapshot={snapshot}
+        bytesPerRow={bytesPerRow}
+        follow={follow}
+        selection={selection}
+        onFollowChange={onFollowChange}
+        onSelectionChange={onSelectionChange}
+      />
+    </Suspense>
   );
 }
 
