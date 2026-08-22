@@ -1,5 +1,122 @@
 use super::*;
 
+struct DeferredInteractiveEvent {
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    wire_bytes: Vec<u8>,
+}
+
+type DeferredInteractiveQueues =
+    Mutex<HashMap<(PathBuf, String), mpsc::UnboundedSender<DeferredInteractiveEvent>>>;
+
+static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLock::new();
+
+/// Queue interactive event persistence away from the transport write path.
+/// The per-session worker preserves event order while keeping keystrokes from
+/// waiting on full-store snapshots and log shard writes.
+pub(super) fn enqueue_deferred_interactive_event(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    wire_bytes: Vec<u8>,
+) {
+    let key = (io.store_path.clone(), session_id.clone());
+    let sender = {
+        let mut queues = DEFERRED_INTERACTIVE_QUEUES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(sender) = queues.get(&key) {
+            sender.clone()
+        } else {
+            let (sender, mut receiver) = mpsc::unbounded_channel::<DeferredInteractiveEvent>();
+            tauri::async_runtime::spawn(async move {
+                while let Some(request) = receiver.recv().await {
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        let _ = record_outbound_user_event_with_context(
+                            &request.io,
+                            &request.session_id,
+                            &request.text,
+                            &request.wire_bytes,
+                            "desktop-user",
+                            Some("send_text"),
+                            BTreeMap::new(),
+                        );
+                    })
+                    .await;
+                }
+            });
+            queues.insert(key.clone(), sender.clone());
+            sender
+        }
+    };
+    if sender
+        .send(DeferredInteractiveEvent {
+            io,
+            session_id,
+            text,
+            wire_bytes,
+        })
+        .is_err()
+    {
+        eprintln!("PortMate: deferred interactive event queue is unavailable");
+    }
+}
+
+pub(super) fn deferred_outbound_event(
+    session_id: &str,
+    text: &str,
+    wire_bytes: &[u8],
+) -> SessionEvent {
+    SessionEvent {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        pane_id: format!("{session_id}:main"),
+        ts: Utc::now(),
+        direction: EventDirection::Outbound,
+        stream: EventStream::Stdout,
+        bytes_ref: None,
+        text: Some(redact_secrets(text)),
+        annotations: BTreeMap::from([
+            ("origin".to_string(), "interactive".to_string()),
+            ("wireBytes".to_string(), wire_bytes.len().to_string()),
+            ("persistence".to_string(), "queued".to_string()),
+        ]),
+    }
+}
+
+pub(super) async fn send_text_interactive_inner(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+) -> Result<SessionEvent, String> {
+    let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
+    clear_active_command(&io, &session_id);
+    write_session_bytes_for_runtime(
+        &io.store,
+        &io.runtimes,
+        &session_id,
+        wire_text.as_bytes(),
+        None,
+    )
+    .await?;
+    drop(lane_guard);
+
+    enqueue_deferred_interactive_event(
+        io,
+        session_id.clone(),
+        text.clone(),
+        wire_text.as_bytes().to_vec(),
+    );
+    Ok(deferred_outbound_event(
+        &session_id,
+        &text,
+        wire_text.as_bytes(),
+    ))
+}
+
 pub(super) async fn send_one_key_value(
     io: SessionIo,
     session_id: &str,

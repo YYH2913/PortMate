@@ -67,7 +67,7 @@ use tauri::Manager;
 use tauri::{Emitter, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 

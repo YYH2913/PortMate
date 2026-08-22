@@ -3847,7 +3847,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (origin === "command") {
           await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
         } else {
-          await invokeBackend<SessionEvent>("send_text", { sessionId, text });
+          await invokeBackend<SessionEvent>("send_text", {
+            sessionId,
+            text,
+            interactive: origin === "interactive",
+          });
         }
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
         if (session.profile.connection.kind === "serial") {

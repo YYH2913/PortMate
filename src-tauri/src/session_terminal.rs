@@ -197,7 +197,11 @@ pub(crate) async fn send_text(
     state: State<'_, AppState>,
     session_id: String,
     text: String,
+    interactive: Option<bool>,
 ) -> Result<SessionEvent, String> {
+    if interactive.unwrap_or(false) {
+        return send_text_interactive_inner(state.inner().session_io(), session_id, text).await;
+    }
     send_text_inner(state.inner().session_io(), session_id, text).await
 }
 
