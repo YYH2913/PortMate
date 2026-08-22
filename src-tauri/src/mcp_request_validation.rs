@@ -478,7 +478,7 @@ fn bounded_approval_host(host: &str) -> String {
 
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
-        "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command" | "attach_tmux" => {
+        "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command" | "run_local_command" | "attach_tmux" => {
             Some(McpScope::WriteInput)
         }
         "start_transfer" | "cancel_transfer" | "retry_transfer" => Some(McpScope::Transfer),
@@ -513,6 +513,20 @@ pub(super) fn validate_mcp_session_id(session_id: &str) -> Result<(), String> {
         return Err(format!(
             "MCP session ID must be non-empty, printable, and at most {MAX_MCP_GRANT_SESSION_ID_BYTES} bytes"
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn ensure_shell_profile(
+    store: &Arc<Mutex<SessionStore>>,
+    session_id: &str,
+) -> Result<(), String> {
+    let store = store.lock().map_err(|error| error.to_string())?;
+    let profile = store
+        .profile(session_id)
+        .ok_or_else(|| format!("unknown session: {session_id}"))?;
+    if !matches!(profile.connection, ConnectionConfig::Shell(_)) {
+        return Err("run_local_command requires a local Shell session".to_string());
     }
     Ok(())
 }
@@ -565,6 +579,11 @@ pub(super) fn validate_ipc_write_args(
             ensure_serial_profile(&state.store, session_id)?;
         }
         "run_command" => {
+            ipc_string_arg(&request.args, "command")?;
+        }
+        "run_local_command" => {
+            let session_id = ipc_string_arg(&request.args, "sessionId")?;
+            ensure_shell_profile(&state.store, session_id)?;
             ipc_string_arg(&request.args, "command")?;
         }
         "run_custom_script" => {

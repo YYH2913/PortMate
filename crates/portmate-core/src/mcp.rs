@@ -201,6 +201,21 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
             false,
         ),
         tool(
+            "run_local_command",
+            "Run Local Command",
+            "Run a command followed by newline in a connected PortMate local Shell session. The session must be created in the PortMate desktop and is subject to the same write-input grant, confirmation, and audit controls as other terminal input.",
+            json!({
+                "type":"object",
+                "required":["sessionId","command"],
+                "additionalProperties":false,
+                "properties":{
+                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
+                    "command":{"type":"string","minLength":1}
+                }
+            }),
+            false,
+        ),
+        tool(
             "list_custom_scripts",
             "List Custom Scripts",
             "List MCP-enabled custom scripts available to one session. Script bodies are never returned.",
@@ -704,7 +719,7 @@ mod tests {
 
     #[test]
     fn bridge_management_tools_are_advertised_with_safe_schemas() {
-        assert_eq!(tool_definitions().len(), 29);
+        assert_eq!(tool_definitions().len(), 30);
         for name in ["mcp_bridge_status", "reload_mcp", "restart_mcp"] {
             let definition = definition(name);
             assert_eq!(definition.input_schema["type"], "object", "{name}");

@@ -67,6 +67,7 @@ try {
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const toolName of [
     "list_sessions",
+    "run_local_command",
     "mcp_bridge_status",
     "reload_mcp",
     "restart_mcp",

@@ -60,6 +60,15 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
         .expect("tools/list omitted send_bytes");
     assert_eq!(raw_bytes["inputSchema"]["properties"]["encoding"]["enum"],
         json!(["base64", "hex"]));
+    let local_command = tools
+        .iter()
+        .find(|tool| tool["name"] == "run_local_command")
+        .expect("tools/list omitted run_local_command");
+    assert_eq!(local_command["inputSchema"]["required"], json!(["sessionId", "command"]));
+    assert_eq!(local_command["annotations"]["readOnlyHint"], json!(false));
+    assert!(local_command["description"]
+        .as_str()
+        .is_some_and(|description| description.contains("local Shell session")));
     assert!(transfer["inputSchema"]["oneOf"]
         .as_array()
         .is_some_and(|variants| variants.len() == 3));

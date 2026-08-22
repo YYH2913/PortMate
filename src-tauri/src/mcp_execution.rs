@@ -258,8 +258,11 @@ async fn execute_ipc_request_inner(
                 "sent": true,
             }))
         }
-        "run_command" => {
+        "run_command" | "run_local_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            if request.command == "run_local_command" {
+                ensure_shell_profile(&state.store, &session_id)?;
+            }
             let command = ipc_string_arg(&request.args, "command")?.to_string();
             let text = terminate_command_for_protocol(
                 command,

@@ -71,6 +71,7 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     tool_names = {tool.name for tool in tools.tools}
     for tool_name in (
         "list_sessions",
+        "run_local_command",
         "list_transfers",
         "get_transfer",
         "start_transfer",

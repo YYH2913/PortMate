@@ -2,6 +2,36 @@ use super::*;
 use crate::mcp_commands::mcp_http_token_from_probe;
 
 #[test]
+fn run_local_command_requires_a_shell_profile() {
+    let root = std::env::temp_dir().join(format!(
+        "portmate-local-command-validation-{}",
+        Uuid::new_v4()
+    ));
+    let state = test_app_state(
+        test_tcp_profile(ConnectionConfig::Tcp(
+            portmate_core::TcpConnection::default(),
+        )),
+        root.join("portmate-store.sqlite3"),
+    );
+    let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+    let request = IpcRequest {
+        token: "authenticated-token".to_string(),
+        client_id: "local-command-test".to_string(),
+        trusted_write: true,
+        command: "run_local_command".to_string(),
+        args: serde_json::json!({
+            "sessionId": session_id,
+            "command": "pwd",
+        }),
+    };
+    let error =
+        tauri::async_runtime::block_on(handle_ipc_request(state.clone(), request)).unwrap_err();
+    assert!(error.contains("local Shell session"), "{error}");
+    assert_eq!(state.store.lock().unwrap().audit.len(), 1);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn invalid_mcp_identifiers_are_bounded_before_audit() {
     tauri::async_runtime::block_on(async {
         let root = std::env::temp_dir().join(format!(

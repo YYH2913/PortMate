@@ -9,6 +9,7 @@ const approvalActionScopes: Record<string, McpScope> = {
   send_key: "write-input",
   serial_send_break: "write-input",
   run_command: "write-input",
+  run_local_command: "write-input",
   run_custom_script: "run-scripts",
   attach_tmux: "write-input",
   start_transfer: "transfer",

@@ -60,7 +60,7 @@ import { normalizeSerialConnectionSettings } from "./serial-connection-settings"
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
-import { applyPuttyImportTerminal, createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
+import { applyPuttyImportTerminal, createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
@@ -1964,6 +1964,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setBlockSelection((current) => !current);
       return;
     }
+    if (item === "本地终端") {
+      void openLocalTerminal();
+      return;
+    }
     if (item === "新建会话") {
       openSessionProfileDialog(createSessionDraft(), null, "会话");
       return;
@@ -2672,6 +2676,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function openNewSessionDialog() {
     openSessionProfileDialog(createSessionDraft(), null, "会话");
+  }
+
+  async function openLocalTerminal() {
+    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell" && session.profile.name === "本地终端");
+    if (existing) {
+      activateSession(existing.profile.id);
+      if (!["connected", "connecting", "reconnecting"].includes(existing.runtime.status)) {
+        await connectSession(existing.profile.id, existing);
+      }
+      return;
+    }
+    const profile = prepareSessionProfile({
+      ...createSessionDraft(),
+      name: "本地终端",
+      kind: "shell",
+      connection: createShellConnection(),
+    });
+    try {
+      const saved = await saveProfile(profile, null);
+      applySavedSession(saved);
+      await connectSession(saved.profile.id, saved);
+    } catch (error) {
+      setNotice({ title: "打开本地终端失败", message: formatError(error) });
+    }
   }
 
   function openSessionProfileDialog(
