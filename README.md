@@ -400,6 +400,8 @@ For a fixed route reachable from the PortMate host, call the same tool with `egr
 
 For a PortMate-host SOCKS5 proxy, `routeRules` must contain at least one allowed target. Non-loopback listeners such as `0.0.0.0` are rejected unless the call also sets `allowRemoteBind: true`; that flag is visible in the MCP approval target and audit record. Host routes are runtime-only and owned by the normalized MCP Client ID: another client cannot list or stop them. They survive terminal session disconnects and stop through `stop_tunnel` or when PortMate exits; they are never restored from a saved profile.
 
+All current Tunnel modes are TCP semantics: `local`/`remote` forwarding uses TCP, and `dynamic` is a TCP CONNECT-style SOCKS5 proxy. UDP datagrams, SOCKS5 UDP ASSOCIATE, multicast, broadcast, DTLS, and QUIC are not supported, so `create_tunnel` and `tunnel_request` cannot carry TFTP directly. TFTP uses its separate one-shot UDP service through `start_transfer`; it does not run inside a Tunnel.
+
 ```json
 {
   "egress": "portmate-host",
@@ -428,6 +430,8 @@ MCP agents that run in a container or on a separate machine cannot reach listene
 ```
 
 For a dynamic route, add `"targetHost"` and `"targetPort"` to select the SOCKS5 destination. `closeWrite` defaults to `true` and half-closes the request stream after writing, which lets request/response services such as HTTP detect the end of the request; set it to `false` for protocols that keep sending and rely on `timeoutMs`. The request payload is bounded to 4 MiB, the response is read until the remote closes or `timeoutMs` (100 ms to 30 s) elapses, and the result reports `sentBytes`, `receivedBytes`, `responseBase64`, `truncated`, and `timedOut`.
+
+`tunnel_request` is a single TCP request/response data-plane exchange, not a persistent file stream. When the MCP Agent can reach the PortMate host listener, it should connect to the returned `bindPort` with a normal TCP/SFTP client or SOCKS5 client for streaming transfers. When it cannot reach that listener, use the resumable `begin_content_upload`/`append_content_upload`/`start_transfer` workflow instead.
 
 ## Build
 

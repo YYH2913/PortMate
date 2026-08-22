@@ -83,42 +83,42 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_sessions",
             "List Sessions",
-            "List visible PortMate sessions.",
+            "List visible PortMate session summaries. Read-only and requires the read-sessions scope. Results are limited to sessions allowed for this MCP client and redact sensitive profile fields; this tool never opens, reconnects, or closes a session.",
             json!({"type":"object","properties":{}}),
             true,
         ),
         tool(
             "mcp_bridge_status",
             "MCP Bridge Status",
-            "Read the PortMate MCP Bridge transport, desktop IPC, store, and managed HTTP sidecar status without exposing tokens or secret values.",
+            "Read the PortMate MCP Bridge transport, desktop IPC, store, and managed HTTP sidecar status. Read-only and requires read-mcp; tokens, passwords, private keys, and other secret values are never returned. This tool does not change sessions or grants.",
             json!({"type":"object","additionalProperties":false,"properties":{}}),
             true,
         ),
         tool(
             "reload_mcp",
             "Reload MCP Bridge",
-            "Reload the MCP Bridge store and desktop IPC endpoint sources, then return the current Bridge status. This does not restart the process.",
+            "Reload the MCP Bridge store and desktop IPC endpoint sources, then return the current Bridge status. Read-only and requires read-mcp; it refreshes this bridge process only, does not restart PortMate or a managed HTTP sidecar, and does not change grants.",
             json!({"type":"object","additionalProperties":false,"properties":{}}),
             true,
         ),
         tool(
             "restart_mcp",
             "Restart MCP Bridge",
-            "Restart the PortMate-managed MCP HTTP sidecar and return its runtime status. A managed HTTP sidecar cannot restart itself from an in-flight request; use a stdio Bridge or the PortMate desktop UI for this operation.",
+            "Restart the PortMate-managed MCP HTTP sidecar and return its runtime status. This is a manage-mcp write and may interrupt active HTTP clients. A managed HTTP sidecar cannot restart itself from an in-flight request; use a stdio Bridge or the PortMate desktop UI. It never restarts the PortMate desktop process.",
             json!({"type":"object","additionalProperties":false,"properties":{}}),
             false,
         ),
         tool(
             "read_screen",
             "Read Screen",
-            "Read the current terminal screen snapshot.",
+            "Read the current terminal screen snapshot for one authorized session. Read-only and requires read-logs; output is secret-redacted and may be empty when no screen has been captured. It does not return a raw byte stream or send input.",
             session_schema(),
             true,
         ),
         tool(
             "tail_log",
             "Tail Log",
-            "Read recent structured log lines from a session.",
+            "Read recent structured log lines from one authorized session. Read-only and requires read-logs; limit is clamped to 1-1000 and event text/metadata are redacted. It does not return private key material or change the session.",
             json!({
                 "type":"object",
                 "required":["sessionId"],
@@ -132,7 +132,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "search_logs",
             "Search Logs",
-            "Search text logs across sessions.",
+            "Search redacted text logs for authorized sessions. Read-only and requires read-logs; an optional sessionId narrows the search and limit is clamped to 1-1000. Queries do not execute commands and secret values are filtered from results.",
             json!({
                 "type":"object",
                 "required":["query"],
@@ -147,7 +147,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "send_text",
             "Send Text",
-            "Send text to a trusted session.",
+            "Write the exact supplied text to a currently connected authorized terminal session. Requires the write-input scope and per-write confirmation when the grant enables it; no newline is added by this tool, although Telnet protocol framing may transform wire bytes. The returned event is redacted and the tool does not create a new process.",
             json!({
                 "type":"object",
                 "required":["sessionId","text"],
@@ -158,7 +158,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "send_bytes",
             "Send Raw Bytes",
-            "Pass bytes directly to a connected session without adding a newline or converting the payload to terminal text. Encode data as standard Base64 or hexadecimal; PortMate preserves the decoded bytes, applies only transport-required Telnet escaping, and records a redacted byte summary instead of the payload.",
+            "Write decoded bytes to a currently connected authorized session without adding a newline or converting the payload to terminal text. Requires write-input; encoding is standard Base64 or hexadecimal, decoded payload is limited to 4 MiB, Telnet escaping is applied only when required by negotiation, and the audit/event surface contains a redacted byte summary rather than the payload. This is a TCP/serial/terminal byte path, not a UDP datagram API.",
             json!({
                 "type":"object",
                 "required":["sessionId","encoding","data"],
@@ -174,7 +174,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "send_key",
             "Send Key",
-            "Send a terminal key sequence to a trusted session.",
+            "Send one supported terminal key sequence to a currently connected authorized session. Requires write-input; the key name is converted to PortMate's bounded terminal sequence table and is not an arbitrary shell command or arbitrary escape payload. The resulting event is redacted.",
             json!({
                 "type":"object",
                 "required":["sessionId","key"],
@@ -185,14 +185,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "serial_send_break",
             "Send Serial Break",
-            "Pulse the hardware Break condition on a connected serial session.",
+            "Pulse the hardware Break condition on a connected serial session (approximately 250 ms). Requires write-input and a serial runtime/driver that supports Break; it is not text input, Ctrl+C, or a network UDP operation.",
             session_schema(),
             false,
         ),
         tool(
             "run_command",
             "Run Command",
-            "Send a command followed by newline.",
+            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],
@@ -203,7 +203,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "run_local_command",
             "Run Local Command",
-            "Run a command followed by newline in a connected PortMate local Shell session. The session must be created in the PortMate desktop and is subject to the same write-input grant, confirmation, and audit controls as other terminal input.",
+            "Run a command followed by newline in a connected PortMate local Shell session. Requires write-input, an existing saved Shell profile, and its live PTY; the MCP caller cannot choose the shell program, arguments, or working directory. The same grant, confirmation, revalidation, redaction, and audit rules as other terminal input apply.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],
@@ -218,14 +218,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_custom_scripts",
             "List Custom Scripts",
-            "List MCP-enabled custom scripts available to one session. Script bodies are never returned.",
+            "List saved MCP-enabled custom script summaries for one authorized session. Read-only and requires read-scripts; only IDs, names, descriptions, and version metadata are returned. Script bodies and secret material are never returned, and this tool does not execute a script.",
             session_schema(),
             true,
         ),
         tool(
             "run_custom_script",
             "Run Custom Script",
-            "Run a saved MCP-enabled custom script in an authorized session. The request selects an existing script and cannot provide or replace its body.",
+            "Run one saved MCP-enabled custom script in an authorized currently connected session. Requires run-scripts plus the script's own MCP/session boundary; the request selects an existing script by ID and cannot provide, read, or replace its body. Write confirmation, version revalidation, output redaction, and audit still apply.",
             json!({
                 "type":"object",
                 "required":["sessionId","scriptId"],
@@ -240,7 +240,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_transfers",
             "List Transfers",
-            "List recent file-transfer tasks visible to this client. Paths are redacted.",
+            "List recent file-transfer tasks visible to this MCP client. Read-only and requires read-transfers (or the transfer scope implication); paths are always redacted. An optional sessionId narrows results and limit is clamped to 1-1000. This tool does not start, cancel, or retry a transfer.",
             json!({
                 "type":"object",
                 "properties":{
@@ -253,14 +253,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "get_transfer",
             "Get Transfer",
-            "Read one file-transfer task by ID. Paths are redacted.",
+            "Read one authorized file-transfer task by ID. Read-only and requires read-transfers (or the transfer scope implication); source and destination paths are redacted. It reports asynchronous state only and does not alter the task.",
             transfer_id_schema(),
             true,
         ),
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start an SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer from exactly one source: a path string, a virtual MCP file object, legacy inline fields, or a completed resumable uploadId. Use `source: {kind: \"mcp\", fileName, contentBase64}` to pass client-held bytes without resolving a client path or selecting a local folder on the PortMate desktop host. Path transfers require sessionId, protocol, source, and destination. At least one endpoint must use `remote:`, `ssh:`, or a constrained `load:` receiver. Virtual and legacy inline transfers are limited to 4 MiB; larger client-held files use begin_content_upload and append_content_upload. For TFTP, use structured `destination: {kind: \"tftpboot\", deviceIp, ...}`; deviceIp is required, timeoutSeconds defaults to 60, must be at least 5, and has no application-defined upper limit. The legacy `load:tftpboot?deviceIp=...` string remains supported. Resumable uploads bind this destination in begin_content_upload and later start with uploadId only. Modem receivers use `load:loadx`, `load:loady`, or `load:loadz`. Poll get_transfer for completion.",
+            "Start one asynchronous SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer. Requires the transfer scope and a sessionId-bound route unless using a completed uploadId. Select exactly one source: a desktop path, a virtual MCP file `{kind: \"mcp\", fileName, contentBase64}`, legacy inline fields, or uploadId. Desktop paths are resolved on the PortMate host; virtual/legacy inline content is limited to 4 MiB decoded, while resumable uploads support files up to 512 MiB with 4 MiB chunks. At least one endpoint must be `remote:`, `ssh:`, or a constrained `load:` receiver; pure local-to-local copy and arbitrary remote paths are rejected. For structured TFTP, deviceIp is required; destination options are bound before upload. Modem receivers are `load:loadx`, `load:loady`, or `load:loadz`. The call only queues the task; poll get_transfer for completion, cancellation, or failure.",
             json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -299,7 +299,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "begin_content_upload",
             "Begin Content Upload",
-            "Create a resumable private staging upload for content held by the MCP client. Files may be up to 512 MiB and active uploads share a 1 GiB declared-size quota. TFTP callers should provide structured destination `{kind: \"tftpboot\", deviceIp, ...}` so all route parameters are validated before content is uploaded. Append the file in ordered Base64 chunks, then call start_transfer with only the returned uploadId.",
+            "Begin a private resumable staging upload for client-held bytes. Requires the transfer scope; declares a 1-512 MiB file, full SHA-256, session, protocol, and destination before any bytes are accepted. TFTP destination options are validated before content is uploaded and fixed here. Active uploads share a 1 GiB declared-size quota and are owned by this MCP Client ID. Append ordered Base64 chunks (up to 4 MiB decoded each), then call start_transfer with only the returned uploadId; no transfer starts at this step.",
             json!({
                 "type":"object",
                 "required":["sessionId","protocol","fileName","sizeBytes","sha256","destination"],
@@ -324,7 +324,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "append_content_upload",
             "Append Content Upload",
-            "Append one ordered standard-Base64 chunk to a resumable content upload. offset must equal the nextOffset returned by the previous call.",
+            "Append one ordered standard-Base64 chunk to this client's private resumable upload. Requires transfer scope and the upload owner; decoded chunk size is 1-4 MiB, offset must equal the previous nextOffset, and this call only stages bytes. It does not trigger the final transfer or a new approval prompt for every chunk.",
             json!({
                 "type":"object",
                 "required":["uploadId","offset","contentBase64"],
@@ -340,7 +340,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "cancel_content_upload",
             "Cancel Content Upload",
-            "Delete an incomplete resumable content upload owned by this MCP client.",
+            "Delete an incomplete private resumable content upload owned by this MCP Client ID. Requires transfer scope; it cannot cancel a transfer that has already been finalized, and staged bytes are removed.",
             json!({
                 "type":"object",
                 "required":["uploadId"],
@@ -352,21 +352,21 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "cancel_transfer",
             "Cancel Transfer",
-            "Cancel a queued or running file-transfer task.",
+            "Cancel a queued or running authorized file-transfer task. Requires transfer scope and the task's recorded session boundary; completed tasks cannot be cancelled. The result reports applied cancellation state, not a promise that a device has already stopped mid-protocol.",
             transfer_id_schema(),
             false,
         ),
         tool(
             "retry_transfer",
             "Retry Transfer",
-            "Retry a previous file-transfer task with its original protocol and paths.",
+            "Retry an eligible previous file-transfer task with its recorded protocol, endpoints, and session. Requires transfer scope; paths are taken from the stored task and cannot be replaced by MCP. Inline virtual-content tasks and tasks whose staged bytes were deleted are not retryable; poll get_transfer for the new asynchronous task state.",
             transfer_id_schema(),
             false,
         ),
         tool(
             "create_tunnel",
             "Create Forward Or Proxy",
-            "Create a fixed TCP forward or dynamic SOCKS5 proxy. Use egress `ssh` with sessionId for a connected SSH/Tmux route, or egress `portmate-host` without sessionId to connect through a target reachable directly from the machine running PortMate. The latter is independent of terminal sessions and requires routeRules for dynamic SOCKS5.",
+            "Create a TCP-only fixed forward or dynamic SOCKS5 proxy; UDP datagrams, UDP ASSOCIATE, multicast, broadcast, DTLS, and QUIC are not supported. Requires the tunnel scope. Use egress `ssh` with a connected authorized SSH/Tmux session, or egress `portmate-host` without sessionId for a target reachable from the PortMate host. SSH egress supports local/remote/dynamic modes; PortMate-host egress is independent of terminal sessions and supports local/dynamic only. Dynamic host routes require routeRules. bindPort=0 selects an available listener port; non-loopback host listeners require allowRemoteBind and are protected only by network reachability, not an MCP token.",
             json!({
                 "type":"object",
                 "required":["mode","bindHost","bindPort"],
@@ -458,7 +458,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_tunnels",
             "List Forwards And Proxies",
-            "List active forwards and SOCKS5 proxies. Provide sessionId to list SSH/Tmux routes, or omit it (or set egress to `portmate-host`) to list PortMate-host routes owned by this MCP client. No terminal session is required for host routes.",
+            "List active TCP forwards and SOCKS5 proxies. Read-only and requires read-tunnels (or the tunnel scope implication). Provide sessionId for that session's SSH/Tmux routes; omit it for this MCP Client ID's PortMate-host routes. It reports runtime listeners, byte counters, and errors but never creates a route or exposes UDP state.",
             json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -472,14 +472,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "stop_tunnel",
             "Stop Forward Or Proxy",
-            "Stop an active SSH forward or dynamic SOCKS5 proxy by tunnel ID.",
+            "Stop an active authorized TCP forward or SOCKS5 proxy by tunnel ID. Requires tunnel scope and ownership/session authorization; it closes listeners and active connections and does not modify the operating system routing table. UDP tunnels cannot be stopped because this API does not create them.",
             tunnel_id_schema(),
             false,
         ),
         tool(
             "tunnel_request",
             "Request Through Tunnel",
-            "Send one bounded raw TCP request through an existing PortMate-host tunnel from the desktop host and return the response as standard Base64. This is the MCP data plane for agents that cannot reach a Windows or other desktop listener directly. Fixed local tunnels use their configured target; dynamic SOCKS5 tunnels require targetHost and targetPort and enforce the tunnel routeRules. The tunnel must be owned by this MCP client.",
+            "Send one bounded raw TCP request/response exchange through an existing owned PortMate-host tunnel from the desktop host. Requires tunnel scope; this is not a persistent stream, not a file-transfer protocol, and not UDP/UDP ASSOCIATE. Request and response are each limited to 4 MiB, timeout is 100 ms-30 s, fixed routes reject target overrides, and dynamic routes require targetHost/targetPort allowed by routeRules. Use a directly reachable host listener or resumable transfer for large/stateful streams.",
             json!({
                 "type":"object",
                 "required":["tunnelId","encoding","data"],
@@ -500,14 +500,14 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "list_tmux_state",
             "List Tmux State",
-            "Read tmux sessions and panes for a connected SSH-backed session.",
+            "Read tmux sessions and panes for one connected authorized SSH/Tmux session. Read-only and requires read-logs; output is bounded and redacted. It never creates, kills, or attaches a tmux session.",
             session_schema(),
             true,
         ),
         tool(
             "attach_tmux",
             "Attach Tmux",
-            "Switch or attach a tmux session in a trusted SSH-backed session.",
+            "Send a bounded attach/switch command to a connected authorized SSH/Tmux session. Requires write-input and a validated tmux target; it does not execute arbitrary shell text or create a new local process, and normal confirmation/revalidation/audit rules apply.",
             json!({
                 "type":"object",
                 "required":["sessionId","target"],
@@ -521,7 +521,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "export_session_bundle",
             "Export Session Bundle",
-            "Export logs and metadata for incident handoff.",
+            "Export a redacted incident bundle of logs and session metadata for one authorized session. Read-only and requires read-logs; credentials, private keys, raw secret values, and unapproved filesystem paths are excluded. It produces an export payload and does not mutate the session.",
             session_schema(),
             true,
         ),
