@@ -10,6 +10,7 @@ type PendingTerminalInput = {
   sessionId: string;
   text: string;
   origin: SyncInputOrigin;
+  waiters: Array<() => void>;
 };
 
 /**
@@ -22,22 +23,29 @@ export class TerminalInputPump {
 
   constructor(private readonly send: TerminalInputSender) {}
 
-  enqueue(sessionId: string, text: string, origin: SyncInputOrigin): void {
-    if (!sessionId || !text) return;
-    const tail = this.pending.at(-1);
-    if (
-      origin === "interactive"
-      && tail?.origin === "interactive"
-      && tail.sessionId === sessionId
-    ) {
-      tail.text += text;
-    } else {
-      this.pending.push({ sessionId, text, origin });
-    }
+  enqueue(sessionId: string, text: string, origin: SyncInputOrigin): Promise<void> {
+    if (!sessionId || !text) return Promise.resolve();
+    const completion = new Promise<void>((resolve) => {
+      const tail = this.pending.at(-1);
+      if (
+        origin === "interactive"
+        && tail?.origin === "interactive"
+        && tail.sessionId === sessionId
+      ) {
+        tail.text += text;
+        tail.waiters.push(resolve);
+      } else {
+        this.pending.push({ sessionId, text, origin, waiters: [resolve] });
+      }
+    });
     this.drain();
+    return completion;
   }
 
   reset(): void {
+    for (const item of this.pending) {
+      for (const resolve of item.waiters) resolve();
+    }
     this.pending.length = 0;
   }
 
@@ -56,8 +64,34 @@ export class TerminalInputPump {
     void Promise.resolve(result)
       .catch(() => {})
       .finally(() => {
+        for (const resolve of next.waiters) resolve();
         this.active = false;
         this.drain();
       });
+  }
+}
+
+/** Keeps independent session transports from blocking one another. */
+export class TerminalInputPumpRegistry {
+  private readonly pumps = new Map<string, TerminalInputPump>();
+
+  constructor(private readonly send: TerminalInputSender) {}
+
+  enqueue(sessionId: string, text: string, origin: SyncInputOrigin): Promise<void> {
+    if (!sessionId) return Promise.resolve();
+    let pump = this.pumps.get(sessionId);
+    if (!pump) {
+      pump = new TerminalInputPump(this.send);
+      this.pumps.set(sessionId, pump);
+    }
+    return pump.enqueue(sessionId, text, origin);
+  }
+
+  reset(sessionId?: string): void {
+    if (sessionId) {
+      this.pumps.get(sessionId)?.reset();
+      return;
+    }
+    for (const pump of this.pumps.values()) pump.reset();
   }
 }

@@ -114,7 +114,8 @@ type TerminalCanvasProps = {
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
 const TERMINAL_RESIZE_SETTLE_MS = 64;
-const TERMINAL_SEMANTIC_SETTLE_MS = 80;
+const TERMINAL_SEMANTIC_SETTLE_MS = 180;
+const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -333,7 +334,7 @@ export default function TerminalCanvas({
   const oneKeyPromptSessionRef = useRef("");
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
   const completionInputRef = useRef<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
-  const completionInputFrameRef = useRef<number | null>(null);
+  const completionInputTimerRef = useRef<number | null>(null);
   const pendingCompletionInputRef = useRef<TerminalCompletionInputState | null>(null);
   const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
   const completionSurfaceOpenRef = useRef(false);
@@ -574,9 +575,9 @@ export default function TerminalCanvas({
   }
 
   function cancelScheduledCompletionInput() {
-    if (completionInputFrameRef.current !== null) {
-      window.cancelAnimationFrame(completionInputFrameRef.current);
-      completionInputFrameRef.current = null;
+    if (completionInputTimerRef.current !== null) {
+      window.clearTimeout(completionInputTimerRef.current);
+      completionInputTimerRef.current = null;
     }
     pendingCompletionInputRef.current = null;
   }
@@ -584,14 +585,16 @@ export default function TerminalCanvas({
   function storeCompletionInputDeferred(next: TerminalCompletionInputState) {
     completionInputRef.current = next;
     pendingCompletionInputRef.current = next;
-    if (completionInputFrameRef.current !== null) return;
-    completionInputFrameRef.current = window.requestAnimationFrame(() => {
-      completionInputFrameRef.current = null;
+    if (completionInputTimerRef.current !== null) {
+      window.clearTimeout(completionInputTimerRef.current);
+    }
+    completionInputTimerRef.current = window.setTimeout(() => {
+      completionInputTimerRef.current = null;
       const pending = pendingCompletionInputRef.current;
       pendingCompletionInputRef.current = null;
       if (!pending) return;
       startTransition(() => setCompletionInput(pending));
-    });
+    }, 36);
   }
 
   function resetCompletionInput(synchronized = true) {
@@ -1338,6 +1341,7 @@ export default function TerminalCanvas({
     let semanticTimer: number | null = null;
     let completionAnchorFrame: number | null = null;
     let completionAnchorRow = "";
+    let lastInteractiveInputAt = 0;
     let semanticDecorations: Array<{ dispose: () => void }> = [];
     let semanticMarkers: Array<{ dispose: () => void }> = [];
     const clearSemanticHighlighting = () => {
@@ -1399,6 +1403,18 @@ export default function TerminalCanvas({
     };
     scheduleSemanticHighlighting = () => {
       if (terminalDisposed) return;
+      const inputIdleRemaining = Math.max(
+        0,
+        TERMINAL_SEMANTIC_INPUT_IDLE_MS - (performance.now() - lastInteractiveInputAt),
+      );
+      if (inputIdleRemaining > 0) {
+        if (semanticTimer !== null) window.clearTimeout(semanticTimer);
+        semanticTimer = window.setTimeout(() => {
+          semanticTimer = null;
+          scheduleSemanticHighlighting();
+        }, inputIdleRemaining);
+        return;
+      }
       if (semanticTimer !== null) {
         window.clearTimeout(semanticTimer);
         semanticTimer = null;
@@ -1409,10 +1425,14 @@ export default function TerminalCanvas({
     const settleSemanticHighlighting = () => {
       if (terminalDisposed) return;
       if (semanticTimer !== null) window.clearTimeout(semanticTimer);
+      const inputIdleRemaining = Math.max(
+        0,
+        TERMINAL_SEMANTIC_INPUT_IDLE_MS - (performance.now() - lastInteractiveInputAt),
+      );
       semanticTimer = window.setTimeout(() => {
         semanticTimer = null;
         scheduleSemanticHighlighting();
-      }, TERMINAL_SEMANTIC_SETTLE_MS);
+      }, Math.max(TERMINAL_SEMANTIC_SETTLE_MS, inputIdleRemaining));
     };
     const scheduleCompletionAnchorRefresh = (force = false) => {
       if (terminalDisposed || !completionSurfaceOpenRef.current) return;
@@ -1454,6 +1474,7 @@ export default function TerminalCanvas({
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       if (isTerminalMouseReport(text)
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
+      lastInteractiveInputAt = performance.now();
       if (/\r|\n/.test(text)) term.scrollToBottom();
       inputPumpRef.current?.enqueue(active.profile.id, text, "interactive");
       updateCompletionInput(text);

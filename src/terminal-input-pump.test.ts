@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TerminalInputPump } from "./terminal-input-pump";
+import { TerminalInputPump, TerminalInputPumpRegistry } from "./terminal-input-pump";
 
 function deferred() {
   let resolve!: () => void;
@@ -100,5 +100,42 @@ describe("terminal input pump", () => {
     await first.promise;
     await expect.poll(() => calls.length).toBe(2);
     expect(calls).toEqual(["a", "b"]);
+  });
+
+  it("resolves callers after their queued item is sent", async () => {
+    const first = deferred();
+    const calls: string[] = [];
+    const pump = new TerminalInputPump((_sessionId, text) => {
+      calls.push(text);
+      return calls.length === 1 ? first.promise : Promise.resolve();
+    });
+    let firstDone = false;
+    let secondDone = false;
+    const firstRequest = pump.enqueue("router", "a", "interactive").then(() => { firstDone = true; });
+    const secondRequest = pump.enqueue("router", "b", "atomic").then(() => { secondDone = true; });
+    await Promise.resolve();
+    expect(firstDone).toBe(false);
+    expect(secondDone).toBe(false);
+    first.resolve();
+    await firstRequest;
+    expect(firstDone).toBe(true);
+    expect(secondDone).toBe(false);
+    await secondRequest;
+    expect(secondDone).toBe(true);
+  });
+
+  it("runs independent registry sessions concurrently", async () => {
+    const first = deferred();
+    const calls: string[] = [];
+    const registry = new TerminalInputPumpRegistry((sessionId) => {
+      calls.push(sessionId);
+      return sessionId === "slow" ? first.promise : Promise.resolve();
+    });
+    const slow = registry.enqueue("slow", "a", "interactive");
+    const fast = registry.enqueue("fast", "b", "interactive");
+    await fast;
+    expect(calls).toEqual(["slow", "fast"]);
+    first.resolve();
+    await slow;
   });
 });

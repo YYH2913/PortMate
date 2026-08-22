@@ -72,6 +72,7 @@ import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
 import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
+import { TerminalInputPumpRegistry } from "./terminal-input-pump";
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
@@ -372,7 +373,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const credentialRequestIdRef = useRef(0);
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
+  const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const syncInputRef = useRef(false);
+  if (!directInputPumpRef.current) {
+    directInputPumpRef.current = new TerminalInputPumpRegistry((targetSessionId, text, origin) => {
+      const inputEpoch = captureTerminalInputEpoch(targetSessionId);
+      return inputEpoch === null
+        ? Promise.resolve()
+        : sendTerminalInput(targetSessionId, text, origin, inputEpoch);
+    });
+  }
   const terminalInputEpochsRef = useRef(new Map<string, number>());
   const deletedTerminalInputSessionsRef = useRef(new Set<string>());
   const logSignatureRef = useRef<Record<string, string>>({});
@@ -2373,6 +2383,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function invalidateDeletedSessionProfileOperations(profileId: string) {
     invalidateTerminalInputSession(profileId);
+    directInputPumpRef.current?.reset(profileId);
     sessionSummaryRefreshGateRef.current.invalidate("summaries");
     connectionAttemptGateRef.current.invalidate(profileId);
     connectionCloseGateRef.current.invalidate(profileId);
@@ -3768,6 +3779,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
     const closeToken = beginSessionDisconnect(sessionId);
     if (closeToken === null) return null;
+    directInputPumpRef.current?.reset(sessionId);
     const closeIsCurrent = () => connectionCloseGateRef.current.isCurrent(sessionId, closeToken);
     try {
       connectionAttemptGateRef.current.invalidate(sessionId);
@@ -3812,6 +3824,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentSessions = sessionsRef.current;
     if (!currentSessions.some((session) => session.profile.id === sessionId)) return Promise.resolve();
     const broadcastEnabled = syncInputRef.current;
+    // Normal input already has a per-terminal pump. When synchronization is
+    // disabled, keep all input origins on the shared fast pump so an external
+    // atomic send cannot overtake queued keystrokes, without waiting behind
+    // the broadcast FIFO.
+    if (!broadcastEnabled) {
+      return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
+    }
     const settings = syncInputSettings;
     const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
       .map((pane) => workspacePaneActiveView(pane).sessionId);
@@ -3991,7 +4010,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               if (inputEpoch === null || inputEpoch === undefined) return Promise.resolve();
               return sendMode === "hex"
                 ? sendTerminalBytes(target, bytePayload, inputEpoch)
-                : sendTerminalInput(target, textPayload, "atomic", inputEpoch);
+                : !syncInputRef.current
+                  ? routeTerminalInput(target, textPayload, "atomic")
+                  : sendTerminalInput(target, textPayload, "atomic", inputEpoch);
             }),
           );
           if (index + 1 < Math.max(1, sendCount)) {
