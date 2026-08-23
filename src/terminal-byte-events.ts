@@ -6,7 +6,7 @@ export const TERMINAL_BYTES_EVENT = "portmate-terminal-bytes";
 
 const TERMINAL_BYTE_FRAME_BATCH_LIMIT = 256;
 const TERMINAL_BYTE_FRAME_FLUSH_MS = 16;
-let pendingFrames: TerminalBytesEvent[] = [];
+let pendingFrameCount = 0;
 const pendingSessionIds = new Set<string>();
 let scheduledFrame: number | null = null;
 let scheduledTimer: ReturnType<typeof setTimeout> | null = null;
@@ -18,9 +18,9 @@ function flushPendingTerminalByteFrames() {
   if (scheduledTimer !== null) clearTimeout(scheduledTimer);
   scheduledFrame = null;
   scheduledTimer = null;
-  if (!pendingFrames.length && !pendingSessionIds.size) return;
+  if (!pendingFrameCount && !pendingSessionIds.size) return;
   const sessionIds = [...pendingSessionIds];
-  pendingFrames = [];
+  pendingFrameCount = 0;
   pendingSessionIds.clear();
   notifyTerminalByteCacheSessions(sessionIds);
 }
@@ -35,12 +35,12 @@ function schedulePendingTerminalByteFrames() {
 }
 
 function queueTerminalByteFrame(frame: TerminalBytesEvent) {
-  pendingFrames.push(frame);
+  pendingFrameCount += 1;
   const changed = appendTerminalByteCacheEvents([frame], false);
   for (const sessionId of changed) pendingSessionIds.add(sessionId);
   // Under a sustained stream, keep latency bounded even when animation frames
   // are throttled (background windows, minimized desktops, or slow WebViews).
-  if (pendingFrames.length >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) {
+  if (pendingFrameCount >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) {
     flushPendingTerminalByteFrames();
   } else {
     schedulePendingTerminalByteFrames();
