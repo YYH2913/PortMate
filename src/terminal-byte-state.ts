@@ -347,7 +347,10 @@ export function appendTerminalByteCacheEvent(event: TerminalBytesEvent): Termina
  * only once. Transport events can arrive much faster than a browser frame;
  * batching avoids rebuilding the Hex view for every read() chunk.
  */
-export function appendTerminalByteCacheEvents(events: readonly TerminalBytesEvent[]): void {
+export function appendTerminalByteCacheEvents(
+  events: readonly TerminalBytesEvent[],
+  notify = true,
+): readonly string[] {
   const changedEntries = new Set<TerminalByteCacheEntry>();
   for (const event of events) {
     if (!event.sessionId) continue;
@@ -357,7 +360,20 @@ export function appendTerminalByteCacheEvents(events: readonly TerminalBytesEven
     entry.buffer = next;
     changedEntries.add(entry);
   }
-  for (const entry of changedEntries) {
+  const changedSessionIds = [...changedEntries].map((entry) => (
+    [...terminalByteCache.entries()].find(([, candidate]) => candidate === entry)?.[0] ?? ""
+  )).filter(Boolean);
+  if (notify) notifyTerminalByteCacheSessions(changedSessionIds);
+  return changedSessionIds;
+}
+
+export function notifyTerminalByteCacheSessions(sessionIds: readonly string[]): void {
+  const notified = new Set<TerminalByteCacheEntry>();
+  for (const sessionId of sessionIds) {
+    const entry = terminalByteCache.get(sessionId);
+    if (entry) notified.add(entry);
+  }
+  for (const entry of notified) {
     for (const listener of entry.listeners) listener();
   }
 }

@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { appendTerminalByteCacheEvents } from "./terminal-byte-state";
+import { appendTerminalByteCacheEvents, notifyTerminalByteCacheSessions } from "./terminal-byte-state";
 import type { TerminalBytesEvent } from "./types";
 
 export const TERMINAL_BYTES_EVENT = "portmate-terminal-bytes";
@@ -7,6 +7,7 @@ export const TERMINAL_BYTES_EVENT = "portmate-terminal-bytes";
 const TERMINAL_BYTE_FRAME_BATCH_LIMIT = 256;
 const TERMINAL_BYTE_FRAME_FLUSH_MS = 16;
 let pendingFrames: TerminalBytesEvent[] = [];
+const pendingSessionIds = new Set<string>();
 let scheduledFrame: number | null = null;
 let scheduledTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -17,10 +18,11 @@ function flushPendingTerminalByteFrames() {
   if (scheduledTimer !== null) clearTimeout(scheduledTimer);
   scheduledFrame = null;
   scheduledTimer = null;
-  if (!pendingFrames.length) return;
-  const frames = pendingFrames;
+  if (!pendingFrames.length && !pendingSessionIds.size) return;
+  const sessionIds = [...pendingSessionIds];
   pendingFrames = [];
-  appendTerminalByteCacheEvents(frames);
+  pendingSessionIds.clear();
+  notifyTerminalByteCacheSessions(sessionIds);
 }
 
 function schedulePendingTerminalByteFrames() {
@@ -34,6 +36,8 @@ function schedulePendingTerminalByteFrames() {
 
 function queueTerminalByteFrame(frame: TerminalBytesEvent) {
   pendingFrames.push(frame);
+  const changed = appendTerminalByteCacheEvents([frame], false);
+  for (const sessionId of changed) pendingSessionIds.add(sessionId);
   // Under a sustained stream, keep latency bounded even when animation frames
   // are throttled (background windows, minimized desktops, or slow WebViews).
   if (pendingFrames.length >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) {
