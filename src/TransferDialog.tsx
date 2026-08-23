@@ -37,7 +37,9 @@ export default function TransferDialog({
   const [tftpDeviceIp, setTftpDeviceIp] = useState("");
   const [tftpServerIp, setTftpServerIp] = useState("");
   const [tftpBindHost, setTftpBindHost] = useState("");
-  const [tftpBindPort, setTftpBindPort] = useState("69");
+  // Prefer an unprivileged ephemeral port. Port 69 is commonly occupied by a
+  // system TFTP daemon and requires elevated privileges on Unix.
+  const [tftpBindPort, setTftpBindPort] = useState("0");
   const [tftpTimeoutSeconds, setTftpTimeoutSeconds] = useState("60");
   const [busy, setBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
@@ -244,7 +246,7 @@ export default function TransferDialog({
               <DialogField label="设备 IP:"><input value={tftpDeviceIp} onChange={(event) => setTftpDeviceIp(event.target.value)} placeholder="例如 192.168.255.1" spellCheck={false} /></DialogField>
               <DialogField label="服务端 IP:"><input value={tftpServerIp} onChange={(event) => setTftpServerIp(event.target.value)} placeholder="可选，按到设备的路由自动推断" spellCheck={false} /></DialogField>
               <DialogField label="绑定地址:"><input value={tftpBindHost} onChange={(event) => setTftpBindHost(event.target.value)} placeholder="可选，例如 0.0.0.0" spellCheck={false} /></DialogField>
-              <DialogField label="监听端口:"><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder="69；0 表示自动分配" /></DialogField>
+              <DialogField label="监听端口:"><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder="0 表示自动分配；69 可能需要权限" /></DialogField>
               <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，默认 ${loadaddr}" spellCheck={false} /></DialogField>
               <DialogField label="请求文件名:"><input value={tftpFileName} onChange={(event) => setTftpFileName(event.target.value)} placeholder="可选，默认使用本地文件名" spellCheck={false} /></DialogField>
               <DialogField label="总超时(秒):"><input type="number" min={5} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>

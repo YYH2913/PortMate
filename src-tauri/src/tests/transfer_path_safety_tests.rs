@@ -248,7 +248,7 @@ fn tftp_load_endpoints_accept_long_timeouts_and_reject_unsafe_values() {
         .unwrap();
     assert_eq!(
         commands,
-        "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 ignored.bin\r"
+        "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 192.168.255.2:1069:ignored.bin\r"
     );
     assert!(!commands.contains("saveenv"));
 
@@ -287,14 +287,14 @@ fn tftp_load_endpoints_accept_long_timeouts_and_reject_unsafe_values() {
 
 #[test]
 fn tftp_commands_are_sent_as_independent_cr_terminated_lines() {
-    let commands = "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 firmware.bin\r";
+    let commands = "setenv ipaddr 192.168.255.1\rsetenv serverip 192.168.255.2\rsetenv tftpdstp 1069\rtftpboot 0x81800000 192.168.255.2:1069:firmware.bin\r";
     assert_eq!(
         split_tftp_command_lines(commands),
         vec![
             "setenv ipaddr 192.168.255.1\r",
             "setenv serverip 192.168.255.2\r",
             "setenv tftpdstp 1069\r",
-            "tftpboot 0x81800000 firmware.bin\r",
+            "tftpboot 0x81800000 192.168.255.2:1069:firmware.bin\r",
         ]
     );
 }

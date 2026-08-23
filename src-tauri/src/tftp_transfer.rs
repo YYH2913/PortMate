@@ -11,8 +11,9 @@ const TFTP_OPCODE_OACK: u16 = 6;
 const TFTP_DEFAULT_BLOCK_SIZE: usize = 512;
 const TFTP_MAX_BLOCK_SIZE: usize = 1_468;
 const TFTP_MAX_PACKET_SIZE: usize = 65_535;
-const TFTP_RETRY_COUNT: usize = 5;
-const TFTP_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
+// U-Boot's default tftp timeout is 5 seconds. Matching it avoids premature
+// retransmits on older boot ROMs that do not negotiate a timeout option.
+const TFTP_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 // The AXON 1.7 and downstream U-Boot consoles echo a complete command before
 // accepting the next one. At 115200 baud, 80 ms still lets the following line
 // overrun the command parser and corrupts `tftpdstp`/`tftpboot`.
@@ -30,6 +31,12 @@ struct TftpNegotiation {
     option_ack: Option<Vec<u8>>,
 }
 
+struct TftpSocketBinding {
+    socket: UdpSocket,
+    port: u16,
+    fallback_from_default: bool,
+}
+
 pub(super) async fn transfer_file_via_tftp(
     state: &AppState,
     request: &StartTransferRequest,
@@ -41,9 +48,6 @@ pub(super) async fn transfer_file_via_tftp(
         return Err("TFTP 一次性服务仅支持 PortMate 本机文件".to_string());
     }
     let source_path = Path::new(&request.source);
-    if local_transfer_entry(source_path, "TFTP 本地传输源")?.is_none() {
-        return Err("TFTP 本地传输源不存在".to_string());
-    }
     let file_name = match spec.file_name.as_deref() {
         Some(file_name) => file_name.to_string(),
         None => source_path
@@ -56,29 +60,17 @@ pub(super) async fn transfer_file_via_tftp(
 
     let server_ip = resolve_tftp_server_ip(&spec).await?;
     let bind_host = spec.bind_host.unwrap_or(server_ip);
-    let socket = UdpSocket::bind((bind_host, spec.bind_port))
-        .await
-        .map_err(|error| {
-            let privilege_hint = if spec.bind_port != 0 && spec.bind_port < 1024 {
-                "；低端口可能需要管理员权限，可改用 bindPort=0 或大于 1023 的端口"
-            } else {
-                ""
-            };
-            format!(
-                "无法在 {bind_host}:{} 启动一次性 TFTP 服务: {error}{privilege_hint}",
-                spec.bind_port
-            )
-        })?;
-    let server_port = socket
-        .local_addr()
-        .map_err(|error| format!("无法读取 TFTP 服务监听地址: {error}"))?
-        .port();
-    let mut source = File::open(source_path)
-        .map_err(|error| format!("无法打开 TFTP 本地传输源: {error}"))?;
-    let total = source
-        .metadata()
-        .map_err(|error| format!("无法读取 TFTP 本地传输源信息: {error}"))?
-        .len();
+    let TftpSocketBinding {
+        socket,
+        port: server_port,
+        fallback_from_default,
+    } = bind_tftp_socket(bind_host, spec.bind_port).await?;
+    if fallback_from_default {
+        eprintln!(
+            "PortMate: TFTP default port 69 was unavailable on {bind_host}; using {server_port} with an explicit U-Boot server-port argument"
+        );
+    }
+    let (mut source, total) = open_local_transfer_source(source_path, "TFTP 本地传输源")?;
 
     let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
     let commands = spec.command_lines(&file_name, server_ip, server_port)?;
@@ -99,7 +91,7 @@ pub(super) async fn transfer_file_via_tftp(
     let deadline = Instant::now()
         .checked_add(spec.timeout)
         .ok_or_else(|| "TFTP 总超时超出当前平台可表示的时间范围".to_string())?;
-    serve_tftp_file(
+    let result = serve_tftp_file(
         &socket,
         &mut source,
         &file_name,
@@ -109,7 +101,76 @@ pub(super) async fn transfer_file_via_tftp(
         &binding,
         progress,
     )
-    .await
+    .await;
+    if result.is_err() {
+        // Leave U-Boot's network command and return it to its prompt before
+        // the next transfer. TFTP has no portable cancel packet.
+        let _ = binding.write_runtime_bytes(state, b"\x03").await;
+    }
+    result.map_err(|error| {
+        let fallback_note = if fallback_from_default {
+            "；端口 69 不可用，已使用高端口；目标 U-Boot 必须支持 `server:port:file` 语法或 CONFIG_TFTP_PORT/tftpdstp"
+        } else {
+            ""
+        };
+        format!(
+            "{error}（TFTP 服务 {bind_host}:{server_port}，仅接受来自设备 {} 的请求{fallback_note}）",
+            spec.device_ip,
+        )
+    })
+}
+
+async fn bind_tftp_socket(
+    bind_host: Ipv4Addr,
+    requested_port: u16,
+) -> Result<TftpSocketBinding, String> {
+    match UdpSocket::bind((bind_host, requested_port)).await {
+        Ok(socket) => {
+            let port = socket
+                .local_addr()
+                .map_err(|error| format!("无法读取 TFTP 服务监听地址: {error}"))?
+                .port();
+            Ok(TftpSocketBinding {
+                socket,
+                port,
+                fallback_from_default: false,
+            })
+        }
+        Err(error)
+            if requested_port == DEFAULT_TFTP_PORT
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            let fallback = UdpSocket::bind((bind_host, 0)).await.map_err(|fallback_error| {
+                format!(
+                    "无法在 {bind_host}:69 启动一次性 TFTP 服务: {error}；自动选择高端口也失败: {fallback_error}"
+                )
+            })?;
+            let port = fallback
+                .local_addr()
+                .map_err(|fallback_error| {
+                    format!("无法读取自动选择的 TFTP 服务监听地址: {fallback_error}")
+                })?
+                .port();
+            Ok(TftpSocketBinding {
+                socket: fallback,
+                port,
+                fallback_from_default: true,
+            })
+        }
+        Err(error) => {
+            let privilege_hint = if requested_port != 0 && requested_port < 1024 {
+                "；低端口可能需要管理员权限，可改用 bindPort=0 或大于 1023 的端口"
+            } else {
+                ""
+            };
+            Err(format!(
+                "无法在 {bind_host}:{requested_port} 启动一次性 TFTP 服务: {error}{privilege_hint}"
+            ))
+        }
+    }
 }
 
 pub(super) fn split_tftp_command_lines(commands: &str) -> Vec<&str> {
@@ -316,7 +377,10 @@ fn negotiate_tftp_options(
                 if requested == 0 || requested > u8::MAX as u64 {
                     return Err("TFTP timeout 选项必须介于 1 和 255 之间".to_string());
                 }
-                let seconds = requested.min(5);
+                // U-Boot validates that the OACK echoes its requested timeout
+                // exactly. Do not clamp this value to an application-local
+                // retry policy.
+                let seconds = requested;
                 retry_timeout = Duration::from_secs(seconds);
                 accepted.push((name.as_str(), seconds.to_string()));
             }
@@ -354,7 +418,9 @@ async fn send_tftp_packet_with_ack(
     progress: &TransferProgressContext,
 ) -> Result<(), String> {
     let mut response = vec![0_u8; TFTP_MAX_PACKET_SIZE];
-    for _ in 0..TFTP_RETRY_COUNT {
+    let mut attempts = 0_u32;
+    loop {
+        attempts = attempts.saturating_add(1);
         progress.check_cancelled()?;
         binding.ensure_current()?;
         socket
@@ -392,10 +458,12 @@ async fn send_tftp_packet_with_ack(
                 Err(error) => return Err(error),
             }
         }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "等待设备确认 TFTP 块 {expected_block} 超时，已重试 {attempts} 次"
+            ));
+        }
     }
-    Err(format!(
-        "等待设备确认 TFTP 块 {expected_block} 超时，已重试 {TFTP_RETRY_COUNT} 次"
-    ))
 }
 
 async fn receive_tftp_packet(
@@ -438,6 +506,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_port_binding_has_an_unprivileged_fallback() {
+        tauri::async_runtime::block_on(async {
+            let blocker = UdpSocket::bind((Ipv4Addr::LOCALHOST, DEFAULT_TFTP_PORT))
+                .await
+                .ok();
+            let binding = bind_tftp_socket(Ipv4Addr::LOCALHOST, DEFAULT_TFTP_PORT)
+                .await
+                .expect("TFTP should fall back when port 69 cannot be used");
+            if blocker.is_some() {
+                assert_ne!(binding.port, DEFAULT_TFTP_PORT);
+            }
+            drop(binding);
+            drop(blocker);
+        });
+    }
+
+    #[test]
     fn parses_binary_rrq_and_negotiates_bounded_options() {
         let request = parse_tftp_read_request(
             b"\x00\x01firmware.bin\x00octet\x00blksize\x0065464\x00tsize\x000\x00timeout\x009\x00",
@@ -446,7 +531,7 @@ mod tests {
         assert_eq!(request.file_name, "firmware.bin");
         let negotiation = negotiate_tftp_options(&request.options, 4_096).unwrap();
         assert_eq!(negotiation.block_size, TFTP_MAX_BLOCK_SIZE);
-        assert_eq!(negotiation.retry_timeout, Duration::from_secs(5));
+        assert_eq!(negotiation.retry_timeout, Duration::from_secs(9));
         let option_ack = negotiation.option_ack.unwrap();
         assert!(option_ack
             .windows(b"blksize\x001468\x00".len())

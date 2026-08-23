@@ -93,7 +93,10 @@ fn tcp_device_tftp_transfer_runs_one_shot_server_and_uboot_commands() {
                 .parse::<u16>()
                 .unwrap();
             assert_ne!(tftp_port, 0);
-            assert_eq!(lines[3], "tftpboot 0x81800000 firmware.bin");
+            let tftp_command = lines[3];
+            let expected_prefix = format!("tftpboot 0x81800000 127.0.0.1:{tftp_port}:");
+            assert!(tftp_command.starts_with(&expected_prefix), "{tftp_command}");
+            assert_eq!(tftp_command, format!("{expected_prefix}firmware.bin"));
             assert!(!commands.contains("saveenv"));
 
             let client = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();

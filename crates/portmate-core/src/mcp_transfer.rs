@@ -288,7 +288,18 @@ impl TftpReceiverSpec {
         } else {
             commands.push_str(&format!("setenv tftpdstp {server_port}\r"));
         }
-        commands.push_str(&format!("tftpboot {address} {file_name}\r"));
+        // Newer U-Boot builds that use the LWIP network stack do not compile
+        // CONFIG_TFTP_PORT and therefore ignore the tftpdstp environment
+        // variable.  Their tftpboot command accepts the explicit
+        // `server-ip:port:file` form. Keep the ordinary filename form for
+        // port 69 so older legacy-net builds remain compatible.
+        if server_port == DEFAULT_TFTP_PORT {
+            commands.push_str(&format!("tftpboot {address} {file_name}\r"));
+        } else {
+            commands.push_str(&format!(
+                "tftpboot {address} {server_ip}:{server_port}:{file_name}\r"
+            ));
+        }
         Ok(commands)
     }
 }
