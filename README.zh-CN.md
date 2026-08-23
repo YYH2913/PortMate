@@ -290,7 +290,7 @@ PortMate 会先发送设备命令，再开始协议传输。`baud` 只允许用�
 
 `deviceIp` 必填。`address`、`fileName`、`serverIp`、`bindHost`、`bindPort`、`timeoutSeconds` 均可选：加载地址默认使用 `${loadaddr}`，请求文件名默认使用本地源文件名，`serverIp` 可按到设备的路由自动推断，绑定地址默认使用对设备公布的服务端 IP，TFTP 协议默认端口为 69，但桌面端对话框默认使用 `bindPort=0`，避免 Unix 普通用户权限不足或与系统 TFTP 服务冲突。如果显式指定 69 且端口不可用，PortMate 会自动回退到空闲高端口，并在 U-Boot 命令中显式使用 `serverIp:端口:文件名`。这对忽略 `tftpdstp` 的 LWIP 版 U-Boot 是必要的；同时仍发送 `setenv tftpdstp` 兼容旧版网络栈。总超时默认 60 秒。显式超时必须至少为 5 秒，PortMate 不再设置应用层上限。`bindPort=0` 会自动选择空闲端口。旧的 `"destination":"load:tftpboot?deviceIp=..."` 字符串仍然兼容。PortMate 只临时发送 `setenv ipaddr`、`setenv serverip`、`setenv tftpdstp` 和随后的 `tftpboot`，不会发送 `saveenv`。
 
-一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
+一次性服务只接受来自 `deviceIp` 的 RRQ，只提供本次选定的文件名，支持常见的 `blksize`、`tsize`、`timeout` 协商，并在完成、取消、失败或超时后关闭。Unix 上监听 1024 以下端口可能需要更高权限；当目标 U-Boot 支持显式 `serverIp:端口:文件名` 语法或 `tftpdstp` 时，可使用 `bindPort=0` 或大于 1023 的端口。启动传输是异步操作，请使用返回的任务 ID 调用 `get_transfer`；最终的 `bytesDone`、`status`、`message` 分别表示传输字节数、完成状态和错误信息。
 
 如果内容来自另一台电脑上的 MCP 客户端，使用 `start_transfer` 的虚拟来源形式。它直接发送一段标准 Base64，不要求源文件位于桌面端电脑，也不需要授权本地文件夹；解码后内容上限为 4 MiB。更大的文件请使用下面的可续传上传流程：
 
