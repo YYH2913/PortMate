@@ -11,6 +11,7 @@ const TFTP_OPCODE_OACK: u16 = 6;
 const TFTP_DEFAULT_BLOCK_SIZE: usize = 512;
 const TFTP_MAX_BLOCK_SIZE: usize = 1_468;
 const TFTP_MAX_PACKET_SIZE: usize = 65_535;
+const TFTP_ACK_BUFFER_SIZE: usize = 4 + TFTP_MAX_BLOCK_SIZE + 512;
 // U-Boot's default tftp timeout is 5 seconds. Matching it avoids premature
 // retransmits on older boot ROMs that do not negotiate a timeout option.
 const TFTP_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -23,6 +24,32 @@ const TFTP_COMMAND_LINE_DELAY: Duration = Duration::from_millis(500);
 struct TftpReadRequest {
     file_name: String,
     options: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TftpRequestError {
+    code: u16,
+    message: String,
+}
+
+impl TftpRequestError {
+    fn illegal(message: impl Into<String>) -> Self {
+        Self { code: 4, message: message.into() }
+    }
+
+    fn file(message: impl Into<String>) -> Self {
+        Self { code: 1, message: message.into() }
+    }
+
+    fn option(message: impl Into<String>) -> Self {
+        Self { code: 8, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for TftpRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 struct TftpNegotiation {
@@ -73,19 +100,53 @@ pub(super) async fn transfer_file_via_tftp(
     let (mut source, total) = open_local_transfer_source(source_path, "TFTP 本地传输源")?;
 
     let binding = transfer_modem_binding(state, &request.session_id, progress).await?;
+    // Hold the session outbound lane for the complete one-shot transfer. A
+    // queued interactive write must never land between U-Boot setup lines or
+    // while the serial console is carrying the TFTP command.
+    let io = state.session_io();
+    let outbound_lane = acquire_tftp_outbound_lane(
+        &io.store_path,
+        &request.session_id,
+        progress,
+    )
+    .await?;
     let commands = spec.command_lines(&file_name, server_ip, server_port)?;
     // The original U-Boot serial console can overrun when the complete command
     // sequence is written as one 115200-baud burst. Send each command line
     // separately so the console has time to consume the preceding CR.
     let command_lines = split_tftp_command_lines(&commands);
-    for (index, line) in command_lines.iter().enumerate() {
-        binding
-            .write_runtime_bytes(state, line.as_bytes())
+    let setup_result = async {
+        for (index, line) in command_lines.iter().enumerate() {
+            progress.check_cancelled()?;
+            binding.ensure_current()?;
+            write_runtime_bytes_for_runtime_with_lane(
+                state,
+                &request.session_id,
+                line.as_bytes(),
+                Some(binding.runtime_id()),
+                &outbound_lane,
+            )
             .await
             .map_err(|error| format!("启动 U-Boot TFTP 命令失败: {error}"))?;
-        if index + 1 < command_lines.len() {
-            tokio::time::sleep(TFTP_COMMAND_LINE_DELAY).await;
+            if index + 1 < command_lines.len() {
+                sleep_tftp_with_cancellation(progress, TFTP_COMMAND_LINE_DELAY).await?;
+            }
         }
+        Ok::<(), String>(())
+    }
+    .await;
+    if let Err(error) = setup_result {
+        let _ = write_runtime_bytes_for_runtime_with_lane(
+            state,
+            &request.session_id,
+            b"\x03",
+            Some(binding.runtime_id()),
+            &outbound_lane,
+        )
+        .await;
+        // Preserve the canonical cancellation string so the transfer runner
+        // records a cancelled task instead of misclassifying it as a failure.
+        return Err(error);
     }
 
     let deadline = Instant::now()
@@ -105,9 +166,19 @@ pub(super) async fn transfer_file_via_tftp(
     if result.is_err() {
         // Leave U-Boot's network command and return it to its prompt before
         // the next transfer. TFTP has no portable cancel packet.
-        let _ = binding.write_runtime_bytes(state, b"\x03").await;
+        let _ = write_runtime_bytes_for_runtime_with_lane(
+            state,
+            &request.session_id,
+            b"\x03",
+            Some(binding.runtime_id()),
+            &outbound_lane,
+        )
+        .await;
     }
     result.map_err(|error| {
+        if error == TRANSFER_CANCELLED_MESSAGE {
+            return error;
+        }
         let fallback_note = if fallback_from_default {
             "；端口 69 不可用，已使用高端口；目标 U-Boot 必须支持 `server:port:file` 语法或 CONFIG_TFTP_PORT/tftpdstp"
         } else {
@@ -118,6 +189,42 @@ pub(super) async fn transfer_file_via_tftp(
             spec.device_ip,
         )
     })
+}
+
+async fn sleep_tftp_with_cancellation(
+    progress: &TransferProgressContext,
+    duration: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        progress.check_cancelled()?;
+        let remaining = duration.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(TRANSFER_CANCEL_POLL_INTERVAL)).await;
+    }
+}
+
+async fn acquire_tftp_outbound_lane(
+    store_path: &Path,
+    session_id: &str,
+    progress: &TransferProgressContext,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    loop {
+        progress.check_cancelled()?;
+        match acquire_outbound_lane_with_timeout(
+            store_path,
+            session_id,
+            TRANSFER_CANCEL_POLL_INTERVAL,
+        )
+        .await
+        {
+            Ok(guard) => return Ok(guard),
+            Err(error) if error.contains("出站队列等待超时") => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 async fn bind_tftp_socket(
@@ -224,7 +331,13 @@ async fn serve_tftp_file(
         progress,
     )
     .await?;
-    let negotiation = negotiate_tftp_options(&read_request.options, total)?;
+    let negotiation = match negotiate_tftp_options(&read_request.options, total) {
+        Ok(negotiation) => negotiation,
+        Err(error) => {
+            send_tftp_error(socket, peer, 8, &error).await;
+            return Err(error);
+        }
+    };
     if let Some(option_ack) = negotiation.option_ack.as_deref() {
         send_tftp_packet_with_ack(
             socket,
@@ -241,14 +354,16 @@ async fn serve_tftp_file(
 
     let mut block = 1_u16;
     let mut bytes_done = 0_u64;
+    let mut data = vec![0_u8; negotiation.block_size];
+    let mut packet = Vec::with_capacity(4 + negotiation.block_size);
     loop {
         let remaining = total.saturating_sub(bytes_done);
         let read_length = remaining.min(negotiation.block_size as u64) as usize;
-        let mut data = vec![0_u8; read_length];
+        data.resize(read_length, 0);
         source
             .read_exact(&mut data)
             .map_err(|error| format!("读取 TFTP 本地传输源失败: {error}"))?;
-        let mut packet = Vec::with_capacity(4 + data.len());
+        packet.clear();
         packet.extend_from_slice(&TFTP_OPCODE_DATA.to_be_bytes());
         packet.extend_from_slice(&block.to_be_bytes());
         packet.extend_from_slice(&data);
@@ -290,8 +405,8 @@ async fn wait_for_tftp_read_request(
         let request = match parse_tftp_read_request(&packet[..size]) {
             Ok(request) => request,
             Err(error) => {
-                send_tftp_error(socket, peer, 4, &error).await;
-                return Err(error);
+                send_tftp_error(socket, peer, error.code, &error.message).await;
+                return Err(error.message);
             }
         };
         if request.file_name != expected_file_name {
@@ -306,46 +421,63 @@ async fn wait_for_tftp_read_request(
     }
 }
 
-fn parse_tftp_read_request(packet: &[u8]) -> Result<TftpReadRequest, String> {
+fn parse_tftp_read_request(packet: &[u8]) -> Result<TftpReadRequest, TftpRequestError> {
     if packet.len() < 4 || u16::from_be_bytes([packet[0], packet[1]]) != TFTP_OPCODE_RRQ {
-        return Err("收到的 TFTP 数据包不是 RRQ".to_string());
+        return Err(TftpRequestError::illegal("收到的 TFTP 数据包不是 RRQ"));
     }
-    if packet.last() != Some(&0) {
-        return Err("TFTP RRQ 缺少终止符".to_string());
+
+    let (file_bytes, remaining) = take_tftp_field(&packet[2..])
+        .ok_or_else(|| TftpRequestError::illegal("TFTP RRQ 缺少文件名终止符"))?;
+    let (mode_bytes, mut option_bytes) = take_tftp_field(remaining)
+        .ok_or_else(|| TftpRequestError::illegal("TFTP RRQ 缺少传输模式终止符"))?;
+    let request_has_terminal_nul = packet.last() == Some(&0);
+    if file_bytes.is_empty() || mode_bytes.is_empty() {
+        return Err(TftpRequestError::illegal("TFTP RRQ 缺少文件名或传输模式"));
     }
-    let fields = packet[2..]
-        .split(|byte| *byte == 0)
-        .collect::<Vec<_>>();
-    if fields.len() < 3 || fields[0].is_empty() || fields[1].is_empty() {
-        return Err("TFTP RRQ 缺少文件名或传输模式".to_string());
-    }
-    let file_name = std::str::from_utf8(fields[0])
-        .map_err(|_| "TFTP RRQ 文件名不是 UTF-8".to_string())?
+    let file_name = std::str::from_utf8(file_bytes)
+        .map_err(|_| TftpRequestError::file("TFTP RRQ 文件名不是 UTF-8"))?
         .to_string();
-    validate_tftp_file_name(&file_name)?;
-    let mode = std::str::from_utf8(fields[1])
-        .map_err(|_| "TFTP RRQ 模式不是 UTF-8".to_string())?;
+    validate_tftp_file_name(&file_name).map_err(TftpRequestError::file)?;
+    let mode = std::str::from_utf8(mode_bytes)
+        .map_err(|_| TftpRequestError::illegal("TFTP RRQ 模式不是 UTF-8"))?;
     if !mode.eq_ignore_ascii_case("octet") {
-        return Err("TFTP 仅支持 octet 二进制模式".to_string());
+        return Err(TftpRequestError::illegal("TFTP 仅支持 octet 二进制模式"));
     }
-    let option_fields = &fields[2..fields.len() - 1];
-    if option_fields.len() % 2 != 0 {
-        return Err("TFTP RRQ 选项必须成对出现".to_string());
+
+    // Some boot ROMs send a fixed-size 516-byte RRQ and leave arbitrary
+    // non-NUL padding after the mode. Parse complete NUL-terminated option
+    // fields and ignore a bounded incomplete tail as compatibility padding.
+    let mut option_fields = Vec::new();
+    while let Some(separator) = option_bytes.iter().position(|byte| *byte == 0) {
+        let field = &option_bytes[..separator];
+        option_bytes = &option_bytes[separator + 1..];
+        if field.is_empty() {
+            break;
+        }
+        option_fields.push(field);
+    }
+    if option_fields.len() % 2 != 0 && request_has_terminal_nul {
+        return Err(TftpRequestError::option("TFTP RRQ 选项必须成对出现"));
     }
     let mut options = Vec::with_capacity(option_fields.len() / 2);
     for pair in option_fields.chunks_exact(2) {
         let name = std::str::from_utf8(pair[0])
-            .map_err(|_| "TFTP RRQ 选项名不是 UTF-8".to_string())?
+            .map_err(|_| TftpRequestError::option("TFTP RRQ 选项名不是 UTF-8"))?
             .to_ascii_lowercase();
         let value = std::str::from_utf8(pair[1])
-            .map_err(|_| "TFTP RRQ 选项值不是 UTF-8".to_string())?
+            .map_err(|_| TftpRequestError::option("TFTP RRQ 选项值不是 UTF-8"))?
             .to_string();
         if name.is_empty() || value.is_empty() {
-            return Err("TFTP RRQ 包含空选项".to_string());
+            return Err(TftpRequestError::option("TFTP RRQ 包含空选项"));
         }
         options.push((name, value));
     }
     Ok(TftpReadRequest { file_name, options })
+}
+
+fn take_tftp_field(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let separator = bytes.iter().position(|byte| *byte == 0)?;
+    Some((&bytes[..separator], &bytes[separator + 1..]))
 }
 
 fn negotiate_tftp_options(
@@ -417,7 +549,9 @@ async fn send_tftp_packet_with_ack(
     binding: &ModemRuntimeBinding,
     progress: &TransferProgressContext,
 ) -> Result<(), String> {
-    let mut response = vec![0_u8; TFTP_MAX_PACKET_SIZE];
+    // ACK/OACK/ERROR packets are small. Avoid allocating a full 64 KiB UDP
+    // buffer for every data block while retaining room for negotiated options.
+    let mut response = vec![0_u8; TFTP_ACK_BUFFER_SIZE];
     let mut attempts = 0_u32;
     loop {
         attempts = attempts.saturating_add(1);
@@ -543,8 +677,34 @@ mod tests {
 
     #[test]
     fn rejects_command_injection_in_rrq_file_names() {
-        assert!(parse_tftp_read_request(b"\x00\x01fw.bin;saveenv\x00octet\x00").is_err());
+        let error = parse_tftp_read_request(b"\x00\x01fw.bin;saveenv\x00octet\x00")
+            .expect_err("unsafe filenames must be rejected");
+        assert_eq!(error.code, 1);
         assert!(parse_tftp_read_request(b"\x00\x01../fw.bin\x00octet\x00").is_err());
         assert!(parse_tftp_read_request(b"\x00\x01fw.bin\x00netascii\x00").is_err());
+    }
+
+    #[test]
+    fn accepts_fixed_length_rrq_padding_after_mode() {
+        let mut packet = b"\x00\x01firmware.bin\x00octet\x00".to_vec();
+        packet.resize(516, 0xa5);
+        let request = parse_tftp_read_request(&packet).expect("padded RRQ should remain compatible");
+        assert_eq!(request.file_name, "firmware.bin");
+        assert!(request.options.is_empty());
+    }
+
+    #[test]
+    fn keeps_complete_options_before_fixed_length_rrq_padding() {
+        let mut packet = b"\x00\x01firmware.bin\x00octet\x00blksize\x001024\x00".to_vec();
+        packet.resize(516, 0xa5);
+        let request = parse_tftp_read_request(&packet).expect("valid options should survive padding");
+        assert_eq!(request.options, vec![("blksize".to_string(), "1024".to_string())]);
+    }
+
+    #[test]
+    fn malformed_rrq_uses_illegal_operation_error_code() {
+        let error = parse_tftp_read_request(b"\x00\x02firmware.bin\x00octet\x00")
+            .expect_err("WRQ is not a supported RRQ");
+        assert_eq!(error.code, 4);
     }
 }

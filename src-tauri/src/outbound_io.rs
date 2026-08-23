@@ -285,7 +285,28 @@ pub(super) async fn write_runtime_bytes_for_runtime(
     expected_runtime_id: Option<&str>,
 ) -> Result<(), String> {
     let io = state.session_io();
-    let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
+    let lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
+    write_runtime_bytes_for_runtime_with_lane(
+        state,
+        session_id,
+        bytes,
+        expected_runtime_id,
+        &lane_guard,
+    )
+    .await
+}
+
+/// Write bytes while the caller owns the session outbound lane. Long-running
+/// modem transfers use this form to keep interactive input from interleaving
+/// with their command setup and cleanup bytes.
+pub(super) async fn write_runtime_bytes_for_runtime_with_lane(
+    state: &AppState,
+    session_id: &str,
+    bytes: &[u8],
+    expected_runtime_id: Option<&str>,
+    _lane_guard: &tokio::sync::OwnedMutexGuard<()>,
+) -> Result<(), String> {
+    let io = state.session_io();
     let wire_bytes = outbound_bytes_for_session(&io.store, session_id, bytes)?;
     clear_active_command(&io, session_id);
     let ssh_writer = {
