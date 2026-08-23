@@ -338,13 +338,28 @@ export function terminalByteCacheSnapshot(sessionId: string): TerminalByteBuffer
 }
 
 export function appendTerminalByteCacheEvent(event: TerminalBytesEvent): TerminalByteBuffer {
-  if (!event.sessionId) return emptyBuffer;
-  const entry = terminalByteCacheEntry(event.sessionId);
-  const next = appendTerminalByteEvent(entry.buffer, event);
-  if (next === entry.buffer) return next;
-  entry.buffer = next;
-  for (const listener of entry.listeners) listener();
-  return next;
+  appendTerminalByteCacheEvents([event]);
+  return event.sessionId ? terminalByteCacheSnapshot(event.sessionId) : emptyBuffer;
+}
+
+/**
+ * Apply a burst of wire frames while notifying each session's subscribers
+ * only once. Transport events can arrive much faster than a browser frame;
+ * batching avoids rebuilding the Hex view for every read() chunk.
+ */
+export function appendTerminalByteCacheEvents(events: readonly TerminalBytesEvent[]): void {
+  const changedEntries = new Set<TerminalByteCacheEntry>();
+  for (const event of events) {
+    if (!event.sessionId) continue;
+    const entry = terminalByteCacheEntry(event.sessionId);
+    const next = appendTerminalByteEvent(entry.buffer, event);
+    if (next === entry.buffer) continue;
+    entry.buffer = next;
+    changedEntries.add(entry);
+  }
+  for (const entry of changedEntries) {
+    for (const listener of entry.listeners) listener();
+  }
 }
 
 export function clearTerminalByteCache(sessionId: string): TerminalByteBuffer {

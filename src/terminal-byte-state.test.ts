@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   appendTerminalByteCacheEvent,
+  appendTerminalByteCacheEvents,
   appendTerminalByteEvent,
   emptyTerminalByteBuffer,
   moveTerminalByteSelection,
   readTerminalDisplayMode,
   resetTerminalByteCacheForTests,
+  subscribeTerminalByteCache,
   terminalByteAscii,
   terminalByteCacheSnapshot,
   terminalByteFollowForScroll,
@@ -70,6 +72,19 @@ describe("terminal byte buffer", () => {
     appendTerminalByteCacheEvent(byteEvent("shared", [1, 2, 3]));
     appendTerminalByteCacheEvent(byteEvent("shared", [1, 2, 3]));
     expect(terminalByteCacheSnapshot("session-a").frames).toHaveLength(1);
+  });
+
+  it("notifies a session subscriber once for a burst of frames", () => {
+    let notifications = 0;
+    const stop = subscribeTerminalByteCache("session-a", () => { notifications += 1; });
+    appendTerminalByteCacheEvents([
+      byteEvent("burst-1", [1]),
+      byteEvent("burst-2", [2]),
+      byteEvent("burst-3", [3]),
+    ]);
+    stop();
+    expect(notifications).toBe(1);
+    expect(terminalByteCacheSnapshot("session-a").capturedBytes).toBe(3);
   });
 });
 

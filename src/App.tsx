@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -250,6 +250,17 @@ const tabColorChoices = [
   { label: "水鸭", value: "#008080" },
 ];
 
+/**
+ * Keep high-frequency terminal callbacks referentially stable while always
+ * dispatching to the latest App closure. This lets the terminal workspace be
+ * memoized without freezing settings or workspace state in an old closure.
+ */
+function useStableEvent<T extends (...args: never[]) => unknown>(handler: T): T {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  return useCallback(((...args: Parameters<T>) => handlerRef.current(...args)) as T, []);
+}
+
 export default function App({ workspaceWindowId }: { workspaceWindowId?: string }) {
   const workspaceStorageKey = workspaceWindowId ? null : WORKSPACE_STORAGE_KEY;
   const workspacePanelStorageKey = workspaceWindowId ? null : WORKSPACE_PANEL_STORAGE_KEY;
@@ -315,7 +326,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const commandHistoryPersistedSettingsRef = useRef<{ enabled: boolean; limit: number; retentionDays: number } | null>(null);
   commandHistoryPolicyRef.current = commandHistoryPolicy;
   commandHistoryEnabledRef.current = terminalPrefs.historyEnabled;
-  const commandHistory = commandHistoryEntries.map((entry) => entry.command);
+  const commandHistory = useMemo(
+    () => commandHistoryEntries.map((entry) => entry.command),
+    [commandHistoryEntries],
+  );
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
     normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
   ));
@@ -479,6 +493,28 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     return null;
   };
+
+  // The terminal tree is intentionally memoized. These stable adapters keep
+  // event handlers current without forcing every pane to rerender when an
+  // unrelated dialog, transfer, or audit state changes.
+  const terminalPaneOnInput = useStableEvent(routeTerminalInput);
+  const terminalPaneOnOneKeyCompletion = useStableEvent(completeOneKeyPrompt);
+  const terminalPaneOnKeyModeChange = useStableEvent((paneId: string, viewId: string, mode: TerminalKeyMode) => {
+    setActiveWorkspaceViewKeyMode(mode, paneId, viewId);
+  });
+  const terminalPaneOnConnect = useStableEvent((sessionId: string) => { void connectSession(sessionId); });
+  const terminalPaneOnDisconnect = useStableEvent((sessionId: string) => { void disconnectSession(sessionId); });
+  const terminalPaneOnSetSerialLine = useStableEvent((sessionId: string, line: "dtr" | "rts", value: boolean) => { void setSerialLine(sessionId, line, value); });
+  const terminalPaneOnSendSerialBreak = useStableEvent((sessionId: string) => { void sendSerialBreak(sessionId); });
+  const terminalPaneOnActivate = useStableEvent(activateWorkspacePane);
+  const terminalPaneOnCloseView = useStableEvent(closeWorkspaceViews);
+  const terminalPaneOnRenameView = useStableEvent((paneId: string, viewId?: string) => openWorkspaceViewRename(paneId, viewId));
+  const terminalPaneOnOpenViewContextMenu = useStableEvent(openWorkspaceViewContextMenu);
+  const terminalPaneOnMoveViewDrop = useStableEvent(moveWorkspaceViewToIndex);
+  const terminalPaneOnSplitViewDrop = useStableEvent(splitWorkspaceViewFromDrop);
+  const terminalPaneOnSplitRatioChange = useStableEvent((splitId: string, ratio: number) => {
+    setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
+  });
 
   function setWorkspaceRoot(update: SetStateAction<WorkspaceNode | null>) {
     const next = typeof update === "function" ? update(workspaceRootRef.current) : update;
@@ -4499,7 +4535,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }) : null}
 
         <section className="center-workspace">
-          <TerminalPaneGrid
+          <MemoizedTerminalPaneGrid
             root={workspaceRoot}
             sessions={sessions}
             activePaneId={activePaneId}
@@ -4516,22 +4552,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             blockSelection={blockSelection}
             connectionBusyIds={disconnectingSessionIds}
             serialControlBusyIds={serialControlBusyIds}
-            onInput={routeTerminalInput}
-            onOneKeyCompletion={completeOneKeyPrompt}
-            onKeyModeChange={(paneId, viewId, keyMode) => setActiveWorkspaceViewKeyMode(keyMode, paneId, viewId)}
-            onConnect={(sessionId) => void connectSession(sessionId)}
-            onDisconnect={(sessionId) => void disconnectSession(sessionId)}
-            onSetSerialLine={(sessionId, line, value) => void setSerialLine(sessionId, line, value)}
-            onSendSerialBreak={(sessionId) => void sendSerialBreak(sessionId)}
-            onActivate={activateWorkspacePane}
-            onCloseView={closeWorkspaceViews}
-            onRenameView={openWorkspaceViewRename}
-            onOpenViewContextMenu={openWorkspaceViewContextMenu}
-            onMoveViewDrop={moveWorkspaceViewToIndex}
-            onSplitViewDrop={splitWorkspaceViewFromDrop}
-            onSplitRatioChange={(splitId, ratio) => {
-              setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
-            }}
+            onInput={terminalPaneOnInput}
+            onOneKeyCompletion={terminalPaneOnOneKeyCompletion}
+            onKeyModeChange={terminalPaneOnKeyModeChange}
+            onConnect={terminalPaneOnConnect}
+            onDisconnect={terminalPaneOnDisconnect}
+            onSetSerialLine={terminalPaneOnSetSerialLine}
+            onSendSerialBreak={terminalPaneOnSendSerialBreak}
+            onActivate={terminalPaneOnActivate}
+            onCloseView={terminalPaneOnCloseView}
+            onRenameView={terminalPaneOnRenameView}
+            onOpenViewContextMenu={terminalPaneOnOpenViewContextMenu}
+            onMoveViewDrop={terminalPaneOnMoveViewDrop}
+            onSplitViewDrop={terminalPaneOnSplitViewDrop}
+            onSplitRatioChange={terminalPaneOnSplitRatioChange}
           />
         </section>
       </section>
@@ -5504,6 +5538,8 @@ function TerminalPaneGrid({
     </div>
   );
 }
+
+const MemoizedTerminalPaneGrid = memo(TerminalPaneGrid);
 
 type TerminalWorkspaceNodeProps = {
   node: WorkspaceNode;
