@@ -8,24 +8,158 @@ struct DeferredInteractiveEvent {
 }
 
 type DeferredInteractiveQueues =
-    Mutex<HashMap<(PathBuf, String), mpsc::UnboundedSender<DeferredInteractiveEvent>>>;
+    Mutex<HashMap<(PathBuf, String), DeferredInteractiveQueue>>;
 
 static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLock::new();
+static DEFERRED_INTERACTIVE_ACCEPTING: AtomicBool = AtomicBool::new(true);
+const DEFERRED_INTERACTIVE_QUEUE_CAPACITY: usize = 1024;
+
+struct DeferredInteractiveQueueState {
+    pending: AtomicUsize,
+    changed: Condvar,
+    lock: Mutex<()>,
+}
+
+impl DeferredInteractiveQueueState {
+    fn new() -> Self {
+        Self {
+            pending: AtomicUsize::new(0),
+            changed: Condvar::new(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn complete(&self) {
+        self.pending.fetch_sub(1, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    fn wait_empty(&self, deadline: Instant) -> bool {
+        let mut guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.pending.load(Ordering::SeqCst) > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = next;
+            if result.timed_out() && self.pending.load(Ordering::SeqCst) > 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Clone)]
+struct DeferredInteractiveQueue {
+    sender: mpsc::Sender<DeferredInteractiveEvent>,
+    state: Arc<DeferredInteractiveQueueState>,
+}
 
 const INTERACTIVE_WRITE_QUEUE_CAPACITY: usize = 256;
 const INTERACTIVE_WRITE_BATCH_MAX_BYTES: usize = 16 * 1024;
+
+struct InteractiveQueueCancellation {
+    cancelled: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl InteractiveQueueCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.changed.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn wait(&self) {
+        let notified = self.changed.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
 
 struct InteractiveWriteRequest {
     io: SessionIo,
     session_id: String,
     runtime_id: String,
     text: String,
+    wire_bytes: Vec<u8>,
 }
 
 type InteractiveWriteQueues =
-    Mutex<HashMap<(PathBuf, String), mpsc::Sender<InteractiveWriteRequest>>>;
+    Mutex<HashMap<(PathBuf, String), InteractiveWriteQueue>>;
+
+#[derive(Clone)]
+struct InteractiveWriteQueue {
+    sender: mpsc::Sender<InteractiveWriteRequest>,
+    cancellation: Arc<InteractiveQueueCancellation>,
+    completion: Arc<InteractiveWorkerCompletion>,
+}
+
+struct InteractiveWorkerCompletion {
+    done: AtomicBool,
+    changed: Condvar,
+    lock: Mutex<()>,
+}
+
+impl InteractiveWorkerCompletion {
+    fn new() -> Self {
+        Self {
+            done: AtomicBool::new(false),
+            changed: Condvar::new(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn finish(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    fn wait(&self, deadline: Instant) -> bool {
+        let mut guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !self.done.load(Ordering::SeqCst) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = next;
+            if result.timed_out() && !self.done.load(Ordering::SeqCst) {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 static INTERACTIVE_WRITE_QUEUES: OnceLock<InteractiveWriteQueues> = OnceLock::new();
+static INTERACTIVE_WRITE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
 /// Enqueues desktop keystrokes without making the webview wait for the
 /// transport writer. Each session owns one bounded worker, so ordering is
@@ -48,32 +182,57 @@ pub(super) fn enqueue_interactive_text(
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(sender) = queues.get(&key) {
-            sender.clone()
+        if !INTERACTIVE_WRITE_ACCEPTING.load(Ordering::SeqCst) {
+            return Err("终端输入队列正在关闭".to_string());
+        }
+        if let Some(queue) = queues.get(&key) {
+            queue.clone()
         } else {
             let (sender, mut receiver) = mpsc::channel::<InteractiveWriteRequest>(
                 INTERACTIVE_WRITE_QUEUE_CAPACITY,
             );
+            let cancellation = Arc::new(InteractiveQueueCancellation::new());
+            let worker_cancellation = Arc::clone(&cancellation);
+            let completion = Arc::new(InteractiveWorkerCompletion::new());
+            let worker_completion = Arc::clone(&completion);
             tauri::async_runtime::spawn(async move {
                 let mut pending = None;
                 loop {
-                    let Some(first) = (match pending.take() {
-                        Some(request) => Some(request),
-                        None => receiver.recv().await,
-                    }) else {
+                    if worker_cancellation.is_cancelled() {
                         break;
+                    }
+                    let first = tokio::select! {
+                        _ = worker_cancellation.wait() => break,
+                        request = async {
+                            match pending.take() {
+                                Some(request) => Some(request),
+                                None => receiver.recv().await,
+                            }
+                        } => request,
                     };
+                    let Some(first) = first else { break };
                     let mut text = first.text;
                     let io = first.io;
                     let session_id = first.session_id;
                     let runtime_id = first.runtime_id;
-                    while text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES {
+                    let mut wire_bytes = first.wire_bytes;
+                    // Give adjacent keystrokes from separate IPC calls a tiny
+                    // coalescing window. The 1 ms delay is below a frame and
+                    // removes the one-key/one-write pattern under fast typing.
+                    tokio::select! {
+                        _ = worker_cancellation.wait() => break,
+                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    }
+                    while text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES
+                        && !worker_cancellation.is_cancelled()
+                    {
                         let Ok(next) = receiver.try_recv() else {
                             break;
                         };
                         let remaining = INTERACTIVE_WRITE_BATCH_MAX_BYTES - text.len();
                         if next.runtime_id == runtime_id && next.text.len() <= remaining {
                             text.push_str(&next.text);
+                            wire_bytes.extend_from_slice(&next.wire_bytes);
                         } else {
                             // Keep the next request intact for the following
                             // batch rather than splitting UTF-8 text.
@@ -81,13 +240,20 @@ pub(super) fn enqueue_interactive_text(
                             break;
                         }
                     }
+                    if worker_cancellation.is_cancelled() {
+                        break;
+                    }
                     match current_session_runtime_id(&io.runtimes, &session_id) {
                         Ok(Some(current)) if current == runtime_id => {
+                            if worker_cancellation.is_cancelled() {
+                                break;
+                            }
                             if let Err(error) = send_text_interactive_inner_for_runtime(
                                 io.clone(),
                                 session_id.clone(),
                                 text,
                                 &runtime_id,
+                                wire_bytes,
                             )
                             .await
                             {
@@ -104,16 +270,26 @@ pub(super) fn enqueue_interactive_text(
                         }
                     }
                 }
+                worker_completion.finish();
             });
-            queues.insert(key.clone(), sender.clone());
-            sender
+            let queue = InteractiveWriteQueue {
+                sender,
+                cancellation,
+                completion,
+            };
+            queues.insert(key.clone(), queue.clone());
+            queue
         }
     };
-    sender.try_send(InteractiveWriteRequest {
+    if sender.cancellation.is_cancelled() {
+        return Err("终端输入队列已关闭".to_string());
+    }
+    sender.sender.try_send(InteractiveWriteRequest {
         io,
         session_id,
         runtime_id,
         text,
+        wire_bytes: wire_bytes.clone(),
     })
     .map_err(|error| match error {
         mpsc::error::TrySendError::Full(_) => "终端输入队列已满，请稍后重试".to_string(),
@@ -145,10 +321,63 @@ fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: Stri
 
 pub(super) fn clear_interactive_write_queue(store_path: &Path, session_id: &str) {
     if let Some(queues) = INTERACTIVE_WRITE_QUEUES.get() {
-        queues
+        let queue = queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(store_path.to_path_buf(), session_id.to_string()));
+        if let Some(queue) = queue {
+            queue.cancellation.cancel();
+        }
+    }
+}
+
+pub(super) fn clear_deferred_interactive_queue(store_path: &Path, session_id: &str) {
+    let queue = DEFERRED_INTERACTIVE_QUEUES.get().and_then(|queues| {
+        queues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(store_path.to_path_buf(), session_id.to_string()))
+    });
+    if let Some(queue) = queue {
+        drop(queue.sender);
+        if !queue.state.wait_empty(Instant::now() + Duration::from_secs(1)) {
+            eprintln!("PortMate: deferred interactive event queue did not drain while closing session");
+        }
+    }
+}
+
+pub(super) fn shutdown_interactive_write_queues() {
+    INTERACTIVE_WRITE_ACCEPTING.store(false, Ordering::SeqCst);
+    DEFERRED_INTERACTIVE_ACCEPTING.store(false, Ordering::SeqCst);
+    if let Some(queues) = INTERACTIVE_WRITE_QUEUES.get() {
+        let queues = {
+            let mut queues = queues
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *queues)
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for queue in queues.into_values() {
+            queue.cancellation.cancel();
+            if !queue.completion.wait(deadline) {
+                eprintln!("PortMate: interactive write worker did not stop before shutdown");
+            }
+        }
+    }
+    if let Some(queues) = DEFERRED_INTERACTIVE_QUEUES.get() {
+        let queues = {
+            let mut queues = queues
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *queues)
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for queue in queues.into_values() {
+            drop(queue.sender);
+            if !queue.state.wait_empty(deadline) {
+                eprintln!("PortMate: deferred interactive event queue did not flush before shutdown");
+            }
+        }
     }
 }
 
@@ -162,18 +391,25 @@ pub(super) fn enqueue_deferred_interactive_event(
     wire_bytes: Vec<u8>,
 ) {
     let key = (io.store_path.clone(), session_id.clone());
-    let sender = {
+    let result = {
         let mut queues = DEFERRED_INTERACTIVE_QUEUES
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(sender) = queues.get(&key) {
-            sender.clone()
+        if !DEFERRED_INTERACTIVE_ACCEPTING.load(Ordering::SeqCst) {
+            return;
+        }
+        let queue = if let Some(queue) = queues.get(&key) {
+            queue.clone()
         } else {
-            let (sender, mut receiver) = mpsc::unbounded_channel::<DeferredInteractiveEvent>();
+            let (sender, mut receiver) = mpsc::channel::<DeferredInteractiveEvent>(
+                DEFERRED_INTERACTIVE_QUEUE_CAPACITY,
+            );
+            let state = Arc::new(DeferredInteractiveQueueState::new());
+            let worker_state = Arc::clone(&state);
             tauri::async_runtime::spawn(async move {
                 while let Some(request) = receiver.recv().await {
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
                         let _ = record_outbound_user_event_with_context(
                             &request.io,
                             &request.session_id,
@@ -183,23 +419,30 @@ pub(super) fn enqueue_deferred_interactive_event(
                             Some("send_text"),
                             BTreeMap::new(),
                         );
-                    })
-                    .await;
+                    }).await;
+                    worker_state.complete();
+                    if result.is_err() {
+                        eprintln!("PortMate: deferred interactive event persistence worker failed");
+                    }
                 }
             });
-            queues.insert(key.clone(), sender.clone());
-            sender
-        }
-    };
-    if sender
-        .send(DeferredInteractiveEvent {
+            let queue = DeferredInteractiveQueue { sender, state };
+            queues.insert(key.clone(), queue.clone());
+            queue
+        };
+        queue.state.pending.fetch_add(1, Ordering::SeqCst);
+        let result = queue.sender.try_send(DeferredInteractiveEvent {
             io,
             session_id,
             text,
             wire_bytes,
-        })
-        .is_err()
-    {
+        });
+        if result.is_err() {
+            queue.state.complete();
+        }
+        result
+    };
+    if result.is_err() {
         eprintln!("PortMate: deferred interactive event queue is unavailable");
     }
 }
@@ -231,7 +474,7 @@ pub(super) async fn send_text_interactive_inner(
     session_id: String,
     text: String,
 ) -> Result<SessionEvent, String> {
-    send_text_interactive_inner_for_optional_runtime(io, session_id, text, None).await
+    send_text_interactive_inner_for_optional_runtime(io, session_id, text, None, None).await
 }
 
 async fn send_text_interactive_inner_for_runtime(
@@ -239,12 +482,14 @@ async fn send_text_interactive_inner_for_runtime(
     session_id: String,
     text: String,
     expected_runtime_id: &str,
+    wire_bytes: Vec<u8>,
 ) -> Result<SessionEvent, String> {
     send_text_interactive_inner_for_optional_runtime(
         io,
         session_id,
         text,
         Some(expected_runtime_id),
+        Some(wire_bytes),
     )
     .await
 }
@@ -254,15 +499,20 @@ async fn send_text_interactive_inner_for_optional_runtime(
     session_id: String,
     text: String,
     expected_runtime_id: Option<&str>,
+    provided_wire_bytes: Option<Vec<u8>>,
 ) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
-    let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?;
+    let wire_bytes = match provided_wire_bytes {
+        Some(bytes) => bytes,
+        None => outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?
+            .into_bytes(),
+    };
     clear_active_command(&io, &session_id);
     write_session_bytes_for_runtime(
         &io.store,
         &io.runtimes,
         &session_id,
-        wire_text.as_bytes(),
+        &wire_bytes,
         expected_runtime_id,
     )
     .await?;
@@ -272,12 +522,12 @@ async fn send_text_interactive_inner_for_optional_runtime(
         io,
         session_id.clone(),
         text.clone(),
-        wire_text.as_bytes().to_vec(),
+        wire_bytes.clone(),
     );
     Ok(deferred_outbound_event(
         &session_id,
         &text,
-        wire_text.as_bytes(),
+        &wire_bytes,
     ))
 }
 

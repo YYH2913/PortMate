@@ -154,7 +154,18 @@ pub fn run() {
                     shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());
                     shutdown_serial_runtimes(state.inner());
+                    shutdown_interactive_write_queues();
+                    shutdown_inbound_log_queues(Duration::from_secs(5));
                     shutdown_system_event_sink(state.inner());
+                    if let Ok(store) = state.inner().store.lock() {
+                        if let Err(error) = persist_applied_store(
+                            &store,
+                            &state.inner().store_path,
+                            "terminal log shutdown flush",
+                        ) {
+                            eprintln!("PortMate: terminal log shutdown flush failed: {error}");
+                        }
+                    }
                     if let Err(error) =
                         flush_json_compatibility_snapshots(Duration::from_secs(5))
                     {

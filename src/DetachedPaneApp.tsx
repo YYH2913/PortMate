@@ -140,6 +140,19 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     if (!isBackendAvailable()) return;
     let disposed = false;
     const unlisten = new Set<() => void>();
+    void listen<SessionEvent>("portmate-session-event-updated", (event) => {
+      if (disposed || event.payload.sessionId !== request.sessionId) return;
+      setEvents((current) => {
+        const index = current.findIndex((candidate) => candidate.id === event.payload.id);
+        if (index < 0) return current;
+        const next = current.slice();
+        next[index] = event.payload;
+        return next;
+      });
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten.add(nextUnlisten);
+    }).catch(() => {});
     void listen<DeleteSessionProfileResponse | string>(SESSION_PROFILE_DELETED_EVENT, (event) => {
       const deletedProfileId = typeof event.payload === "string"
         ? event.payload

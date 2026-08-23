@@ -258,6 +258,24 @@ function terminalSemanticColor(kind: TerminalSemanticTokenKind, theme: ITheme): 
   }
 }
 
+function terminalSemanticViewportFingerprint(
+  term: XTerm,
+  theme: ITheme,
+  enabled: boolean,
+  supported: boolean,
+  contentRevision: number,
+): string {
+  const buffer = term.buffer.active;
+  return String(contentRevision) + ":" + String(enabled ? 1 : 0) + ":"
+    + String(supported ? 1 : 0) + ":" + buffer.type + ":"
+    + String(buffer.viewportY) + ":" + String(term.rows) + ":" + String(term.cols) + ":"
+    + String(buffer.baseY + buffer.cursorY) + ":" + [
+    theme.green, theme.brightGreen, theme.blue, theme.brightBlue,
+    theme.yellow, theme.brightYellow, theme.cyan, theme.brightCyan,
+    theme.magenta, theme.brightMagenta, theme.red, theme.brightRed,
+  ].join("|");
+}
+
 export default function TerminalCanvas({
   viewId = "",
   active,
@@ -1344,6 +1362,8 @@ export default function TerminalCanvas({
     let lastInteractiveInputAt = 0;
     let semanticDecorations: Array<{ dispose: () => void }> = [];
     let semanticMarkers: Array<{ dispose: () => void }> = [];
+    let semanticFingerprint = "";
+    let semanticContentRevision = 0;
     const clearSemanticHighlighting = () => {
       for (const decoration of semanticDecorations.splice(0)) decoration.dispose();
       for (const marker of semanticMarkers.splice(0)) marker.dispose();
@@ -1351,7 +1371,16 @@ export default function TerminalCanvas({
     };
     const renderSemanticHighlighting = () => {
       semanticFrame = null;
+      const fingerprint = terminalSemanticViewportFingerprint(
+        term,
+        semanticThemeRef.current,
+        semanticHighlightingEnabledRef.current,
+        semanticHighlightingSupportedRef.current,
+        semanticContentRevision,
+      );
+      if (fingerprint === semanticFingerprint) return;
       clearSemanticHighlighting();
+      semanticFingerprint = fingerprint;
       if (!semanticHighlightingEnabledRef.current) {
         host.dataset.terminalSemanticHighlighting = "disabled";
         return;
@@ -1448,6 +1477,7 @@ export default function TerminalCanvas({
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
+      semanticContentRevision += 1;
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
     });

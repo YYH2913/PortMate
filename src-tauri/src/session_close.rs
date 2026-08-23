@@ -104,6 +104,7 @@ pub(super) fn cleanup_deleted_session_runtime_state(
         .remove(session_id);
     clear_outbound_lane(&state.store_path, session_id);
     clear_interactive_write_queue(&state.store_path, session_id);
+    clear_deferred_interactive_queue(&state.store_path, session_id);
 
     let mut approvals = state
         .pending_mcp_approvals
@@ -161,6 +162,10 @@ pub(super) async fn close_session_under_lifecycle_lock(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    // Stop queued keystrokes before removing the runtime. This prevents a
+    // close/reconnect race from leaving an orphan worker holding old input.
+    clear_interactive_write_queue(&state.store_path, &session_id);
+    clear_deferred_interactive_queue(&state.store_path, &session_id);
     clear_active_command(&state.session_io(), &session_id);
     let _ = cancel_tmux_control_runtimes_for_session(state, &session_id);
     let existing = {

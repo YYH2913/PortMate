@@ -1273,6 +1273,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!isBackendAvailable()) return;
     let disposed = false;
     const unlisten = new Set<() => void>();
+    void listen<SessionEvent>("portmate-session-event-updated", (event) => {
+      if (disposed) return;
+      const updated = event.payload;
+      setLogs((current) => {
+        const existing = current[updated.sessionId];
+        if (!existing) return current;
+        const index = existing.findIndex((candidate) => candidate.id === updated.id);
+        if (index < 0) return current;
+        const next = existing.slice();
+        next[index] = updated;
+        logSignatureRef.current[updated.sessionId] = logSignature(next);
+        return { ...current, [updated.sessionId]: next };
+      });
+    }).then((nextUnlisten) => {
+      if (disposed) nextUnlisten();
+      else unlisten.add(nextUnlisten);
+    }).catch(() => {});
     void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
       if (!disposed) profileUpdateHandlerRef.current(event.payload);
     }).then((nextUnlisten) => {
@@ -6559,7 +6576,13 @@ function formatError(error: unknown) {
 
 function logSignature(events: SessionEvent[]) {
   const last = events[events.length - 1];
-  return `${events.length}:${last?.id ?? ""}:${last?.ts ?? ""}`;
+  // Background shard persistence can fill bytesRef/loggingError on an older
+  // event without changing the tail id or timestamp. Include lightweight
+  // metadata for every event so the UI refreshes those updates.
+  const metadata = events.map((event) => (
+    event.id + ":" + (event.bytesRef ?? "") + ":" + (event.annotations.loggingError ?? "")
+  )).join("|");
+  return events.length + ":" + (last?.id ?? "") + ":" + (last?.ts ?? "") + ":" + metadata;
 }
 
 function sessionsSignature(sessions: SessionSummary[]) {

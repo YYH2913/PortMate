@@ -100,13 +100,11 @@ fn record_accepted_channel_bytes(
     if text.is_empty() {
         // Binary/control-only traffic still gets a raw log entry, but it does
         // not need to enter the text terminal event stream.
-        let raw_bytes = raw_bytes.to_vec();
-        let raw_bytes_for_publish = raw_bytes.clone();
         if let Err(error) = enqueue_inbound_log_persistence(
             io.clone(),
             session_id.to_string(),
             None,
-            raw_bytes,
+            raw_bytes.to_vec(),
         ) {
             eprintln!("PortMate: inbound raw log queue unavailable: {error}");
         }
@@ -115,7 +113,7 @@ fn record_accepted_channel_bytes(
             session_id,
             EventDirection::Inbound,
             stream,
-            &raw_bytes_for_publish,
+            raw_bytes,
             None,
             Utc::now(),
         );
@@ -359,7 +357,59 @@ struct InboundLogPersistenceRequest {
     raw_bytes: Vec<u8>,
 }
 
-static INBOUND_LOG_QUEUE: OnceLock<mpsc::Sender<InboundLogPersistenceRequest>> = OnceLock::new();
+struct InboundLogQueueState {
+    pending: AtomicUsize,
+    changed: Condvar,
+    lock: Mutex<()>,
+}
+
+impl InboundLogQueueState {
+    fn new() -> Self {
+        Self {
+            pending: AtomicUsize::new(0),
+            changed: Condvar::new(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn complete(&self) {
+        self.pending.fetch_sub(1, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    fn wait_empty(&self, deadline: Instant) -> bool {
+        let mut guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.pending.load(Ordering::SeqCst) > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = next;
+            if result.timed_out() && self.pending.load(Ordering::SeqCst) > 0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Clone)]
+struct InboundLogQueue {
+    sender: mpsc::Sender<InboundLogPersistenceRequest>,
+    state: Arc<InboundLogQueueState>,
+}
+
+type InboundLogQueues = Mutex<HashMap<(PathBuf, String), InboundLogQueue>>;
+
+static INBOUND_LOG_QUEUES: OnceLock<InboundLogQueues> = OnceLock::new();
+static INBOUND_LOG_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
 fn enqueue_inbound_log_persistence(
     io: SessionIo,
@@ -376,30 +426,75 @@ fn enqueue_inbound_log_persistence(
         });
         return Ok(());
     }
-    let sender = INBOUND_LOG_QUEUE.get_or_init(|| {
-        let (sender, mut receiver) = mpsc::channel(INBOUND_LOG_QUEUE_CAPACITY);
-        tauri::async_runtime::spawn(async move {
-            while let Some(request) = receiver.recv().await {
-                let _ = tauri::async_runtime::spawn_blocking(|| {
-                    persist_inbound_log_request(request);
-                })
-                .await;
-            }
-        });
-        sender
-    });
-    sender
-        .try_send(InboundLogPersistenceRequest {
+    let key = (io.store_path.clone(), session_id.clone());
+    let result = {
+        let mut queues = INBOUND_LOG_QUEUES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !INBOUND_LOG_ACCEPTING.load(Ordering::SeqCst) {
+            return Err("终端日志 worker 正在关闭".to_string());
+        }
+        let queue = if let Some(queue) = queues.get(&key) {
+            queue.clone()
+        } else {
+            let (sender, mut receiver) = mpsc::channel(INBOUND_LOG_QUEUE_CAPACITY);
+            let state = Arc::new(InboundLogQueueState::new());
+            let worker_state = Arc::clone(&state);
+            tauri::async_runtime::spawn(async move {
+                while let Some(request) = receiver.recv().await {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        persist_inbound_log_request(request);
+                    })
+                    .await;
+                    worker_state.complete();
+                    if result.is_err() {
+                        eprintln!("PortMate: inbound log persistence worker failed");
+                    }
+                }
+            });
+            let queue = InboundLogQueue { sender, state };
+            queues.insert(key, queue.clone());
+            queue
+        };
+        // Keep the registry lock while accounting and enqueueing. Shutdown
+        // takes the same lock, so it cannot miss a request between these
+        // two operations.
+        queue.state.pending.fetch_add(1, Ordering::SeqCst);
+        queue.sender.try_send(InboundLogPersistenceRequest {
             io,
             session_id,
             event,
             raw_bytes,
+        }).map_err(|error| {
+            queue.state.complete();
+            match error {
+                mpsc::error::TrySendError::Full(_) =>
+                    "终端日志队列已满，已跳过本次磁盘日志写入".to_string(),
+                mpsc::error::TrySendError::Closed(_) => "终端日志 worker 已关闭".to_string(),
+            }
         })
-        .map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) =>
-                "终端日志队列已满，已跳过本次磁盘日志写入".to_string(),
-            mpsc::error::TrySendError::Closed(_) => "终端日志 worker 已关闭".to_string(),
-        })
+    };
+    result.map(|_| ())
+}
+
+pub(super) fn shutdown_inbound_log_queues(timeout: Duration) {
+    let queues = INBOUND_LOG_QUEUES.get().map(|queues| {
+        let mut queues = queues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+        std::mem::take(&mut *queues)
+    }).unwrap_or_else(|| {
+        INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+        HashMap::new()
+    });
+    let deadline = Instant::now() + timeout;
+    for queue in queues.into_values() {
+        if !queue.state.wait_empty(deadline) {
+            eprintln!("PortMate: inbound log queue did not flush before shutdown");
+        }
+    }
 }
 
 fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
@@ -417,14 +512,21 @@ fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
     let Some(mut event) = event.take() else {
         return;
     };
+    let previous_bytes_ref = event.bytes_ref.clone();
+    let previous_annotations = event.annotations.clone();
     event.bytes_ref = bytes_ref;
     append_logging_errors(&mut event, &errors);
     if let Some(profile) = profile {
         append_event_text_and_jsonl_log_shards(&io.store_path, &profile, &mut event);
     }
-    if let Ok(mut store) = io.store.lock() {
-        sync_stored_event(&mut store, &event);
-    };
+    if event.bytes_ref != previous_bytes_ref || event.annotations != previous_annotations {
+        if let Ok(mut store) = io.store.lock() {
+            sync_stored_event(&mut store, &event);
+        };
+        if let Some(app_handle) = &io.app_handle {
+            let _ = app_handle.emit("portmate-session-event-updated", event);
+        }
+    }
 }
 
 pub(super) fn begin_event_log_shards(
