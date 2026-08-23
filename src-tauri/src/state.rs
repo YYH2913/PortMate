@@ -14,6 +14,7 @@ pub(super) static SESSION_OPEN_CANCELLATIONS: OnceLock<SessionOpenCancellations>
 #[derive(Debug, Default)]
 struct SerialWorkerState {
     active: usize,
+    active_by_session: HashMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -24,7 +25,22 @@ pub(super) struct SerialWorkerRegistry {
 }
 
 impl SerialWorkerRegistry {
+    #[cfg(test)]
     pub(super) fn register(self: &Arc<Self>) -> Result<SerialWorkerGuard, String> {
+        self.register_inner(None)
+    }
+
+    pub(super) fn register_for_session(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<SerialWorkerGuard, String> {
+        self.register_inner(Some(session_id.to_string()))
+    }
+
+    fn register_inner(
+        self: &Arc<Self>,
+        session_id: Option<String>,
+    ) -> Result<SerialWorkerGuard, String> {
         let mut state = self
             .state
             .lock()
@@ -33,8 +49,12 @@ impl SerialWorkerRegistry {
             return Err("PortMate is shutting down; serial work is not accepted".to_string());
         }
         state.active += 1;
+        if let Some(session_id) = session_id.as_ref() {
+            *state.active_by_session.entry(session_id.clone()).or_default() += 1;
+        }
         Ok(SerialWorkerGuard {
             registry: Arc::clone(self),
+            session_id,
         })
     }
 
@@ -74,10 +94,37 @@ impl SerialWorkerRegistry {
         state.active
     }
 
+    pub(super) fn wait_for_session_idle(&self, session_id: &str, timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let active = state.active_by_session.get(session_id).copied().unwrap_or(0);
+            if active == 0 {
+                return 0;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return active;
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if result.timed_out() {
+                return state.active_by_session.get(session_id).copied().unwrap_or(0);
+            }
+        }
+    }
+
 }
 
 pub(super) struct SerialWorkerGuard {
     registry: Arc<SerialWorkerRegistry>,
+    session_id: Option<String>,
 }
 
 impl Drop for SerialWorkerGuard {
@@ -88,6 +135,14 @@ impl Drop for SerialWorkerGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.active = state.active.saturating_sub(1);
+        if let Some(session_id) = self.session_id.as_ref() {
+            if let Some(active) = state.active_by_session.get_mut(session_id) {
+                *active = active.saturating_sub(1);
+                if *active == 0 {
+                    state.active_by_session.remove(session_id);
+                }
+            }
+        }
         self.registry.changed.notify_all();
     }
 }

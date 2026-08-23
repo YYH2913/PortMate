@@ -6,7 +6,7 @@ pub(super) fn spawn_serial_reconnect(
     previous_runtime_id: String,
     closed: Arc<AtomicBool>,
 ) {
-    let worker = match io.serial_workers.register() {
+    let worker = match io.serial_workers.register_for_session(&session_id) {
         Ok(worker) => worker,
         Err(_) => {
             closed.store(true, Ordering::SeqCst);
@@ -186,7 +186,7 @@ fn reconnect_serial_session(
         if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
             return;
         }
-        if let Err(error) = spawn_serial_reader(SerialReadTask {
+        let reader_handle = match spawn_serial_reader(SerialReadTask {
             io: io.clone(),
             profile: profile.clone(),
             runtime_id: runtime_id.clone(),
@@ -200,22 +200,25 @@ fn reconnect_serial_session(
                 .receive_idle_timeout_enabled
                 .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
         }) {
-            next_closed.store(true, Ordering::SeqCst);
-            reader_start_gate.cancel();
-            let error = format!("serial read thread restart failed: {error}");
-            if io.serial_workers.is_shutting_down() {
+            Ok(handle) => handle,
+            Err(error) => {
+                next_closed.store(true, Ordering::SeqCst);
+                reader_start_gate.cancel();
+                let error = format!("serial read thread restart failed: {error}");
+                if io.serial_workers.is_shutting_down() {
+                    return;
+                }
+                fail_pending_serial_reconnect_install(
+                    &io,
+                    &session_id,
+                    &previous_runtime_id,
+                    closed.as_ref(),
+                    &error,
+                );
+                eprintln!("PortMate: {error}");
                 return;
             }
-            fail_pending_serial_reconnect_install(
-                &io,
-                &session_id,
-                &previous_runtime_id,
-                closed.as_ref(),
-                &error,
-            );
-            eprintln!("PortMate: {error}");
-            return;
-        }
+        };
 
         let install = match io.runtimes.serial.lock() {
             Err(error) => SerialReconnectInstallDecision::Failed(error.to_string()),
@@ -303,6 +306,10 @@ fn reconnect_serial_session(
         if !matches!(install, SerialReconnectInstallDecision::Installed) {
             next_closed.store(true, Ordering::SeqCst);
             reader_start_gate.cancel();
+            // The gate is cancelled before the reader can enter its blocking
+            // read loop. Join it before retrying so its serial handle is
+            // released before the next open attempt.
+            let _ = reader_handle.join();
             match install {
                 SerialReconnectInstallDecision::Retry => continue,
                 SerialReconnectInstallDecision::Stop

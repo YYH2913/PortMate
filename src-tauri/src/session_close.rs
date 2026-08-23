@@ -1,4 +1,5 @@
 use super::session_open::{cancel_pending_session_opens, session_lifecycle_lane};
+use super::transport_timing::SERIAL_RUNTIME_SHUTDOWN_TIMEOUT;
 use super::*;
 
 pub(super) struct SessionCloseValidations {
@@ -206,6 +207,26 @@ pub(super) async fn close_session_under_lifecycle_lock(
     };
     if let Some(runtime) = existing_serial {
         runtime.closed.store(true, Ordering::SeqCst);
+    }
+    // Removing the runtime only drops the writer handle. The reader and an
+    // in-flight automatic reconnect can still own cloned serial handles;
+    // wait for this session's workers before allowing an immediate reopen.
+    // Windows serial drivers keep the device exclusively locked until every
+    // clone is closed, otherwise close-then-open reports access denied.
+    let serial_workers = Arc::clone(&state.serial_workers);
+    let serial_session_id = session_id.clone();
+    let remaining_serial_workers = tauri::async_runtime::spawn_blocking(move || {
+        serial_workers.wait_for_session_idle(
+            &serial_session_id,
+            SERIAL_RUNTIME_SHUTDOWN_TIMEOUT,
+        )
+    })
+    .await
+    .unwrap_or(usize::MAX);
+    if remaining_serial_workers > 0 {
+        eprintln!(
+            "PortMate: {remaining_serial_workers} serial worker(s) for {session_id} did not release before the close deadline"
+        );
     }
     let stopped_tunnel_runtimes = stop_session_tunnel_runtimes(&state.tunnels, &session_id)?;
     let timed_out_tunnels = await_tunnel_listener_shutdowns(&stopped_tunnel_runtimes).await;

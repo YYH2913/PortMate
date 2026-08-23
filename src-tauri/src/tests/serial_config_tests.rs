@@ -53,6 +53,75 @@ fn serial_worker_registry_stops_new_work_and_waits_for_active_workers() {
     assert_eq!(registry.wait_for_idle(Duration::from_millis(50)), 0);
 }
 
+#[tokio::test]
+async fn closing_serial_session_waits_for_session_workers_before_returning() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let state = test_app_state(profile.clone(), temp.path().join("portmate-store.sqlite3"));
+    let (tap, _) = broadcast::channel(8);
+    let closed = Arc::new(AtomicBool::new(false));
+    state.serial.lock().unwrap().insert(
+        profile.id.clone(),
+        SerialRuntime {
+            runtime_id: "serial-close-runtime".to_string(),
+            writer: None,
+            tap,
+            closed: Arc::clone(&closed),
+            capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
+        },
+    );
+    state
+        .store
+        .lock()
+        .unwrap()
+        .set_runtime_status(&profile.id, SessionStatus::Connected)
+        .unwrap();
+
+    let worker = state
+        .serial_workers
+        .register_for_session(&profile.id)
+        .unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        release_rx.recv().unwrap();
+        drop(worker);
+    });
+
+    let closing_state = state.clone();
+    let closing_session_id = profile.id.clone();
+    let closing = tokio::spawn(async move {
+        close_session_inner(&closing_state, closing_session_id).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !closing.is_finished(),
+        "serial close returned while a session worker still held a port handle"
+    );
+
+    release_tx.send(()).unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(2), closing)
+        .await
+        .expect("serial close did not finish after the worker released")
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.runtime.status, SessionStatus::Disconnected);
+    assert!(state.serial.lock().unwrap().is_empty());
+    assert!(closed.load(Ordering::SeqCst));
+}
+
 #[test]
 fn serial_line_updates_compensate_prior_writes_after_partial_failure() {
     let mut calls = Vec::new();

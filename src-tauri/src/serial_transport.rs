@@ -78,7 +78,7 @@ pub(super) fn prepare_serial_session(
     state: &AppState,
     profile: SessionProfile,
 ) -> Result<PreparedSerialSession, String> {
-    let _worker = state.serial_workers.register()?;
+    let _worker = state.serial_workers.register_for_session(&profile.id)?;
     let (serial, port_name) = serial_connection_details(&profile)?;
     let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
     if state.serial_workers.is_shutting_down() {
@@ -97,7 +97,7 @@ pub(super) fn install_serial_session(
     state: &AppState,
     prepared: PreparedSerialSession,
 ) -> Result<SessionSummary, String> {
-    let _worker = state.serial_workers.register()?;
+    let _worker = state.serial_workers.register_for_session(&prepared.profile.id)?;
     let PreparedSerialSession {
         profile,
         serial,
@@ -129,7 +129,7 @@ pub(super) fn install_serial_session(
         existing.closed.store(true, Ordering::SeqCst);
     }
 
-    if let Err(error) = spawn_serial_reader(SerialReadTask {
+    let reader_handle = match spawn_serial_reader(SerialReadTask {
         io: state.session_io(),
         profile: profile.clone(),
         runtime_id: runtime_id.clone(),
@@ -143,13 +143,16 @@ pub(super) fn install_serial_session(
             .receive_idle_timeout_enabled
             .then(|| Duration::from_secs(serial.receive_idle_timeout_seconds)),
     }) {
-        closed.store(true, Ordering::SeqCst);
-        reader_start_gate.cancel();
-        remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
-            runtime.runtime_id == runtime_id
-        })?;
-        return Err(format!("串口读取线程启动失败: {error}"));
-    }
+        Ok(handle) => handle,
+        Err(error) => {
+            closed.store(true, Ordering::SeqCst);
+            reader_start_gate.cancel();
+            remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
+                runtime.runtime_id == runtime_id
+            })?;
+            return Err(format!("串口读取线程启动失败: {error}"));
+        }
+    };
 
     let finalize_result = match state.store.lock() {
         Ok(mut store) => {
@@ -174,6 +177,7 @@ pub(super) fn install_serial_session(
         Err(error) => {
             closed.store(true, Ordering::SeqCst);
             reader_start_gate.cancel();
+            let _ = reader_handle.join();
             let cleanup_error = remove_runtime_if_owned(&state.serial, &profile.id, |runtime| {
                 runtime.runtime_id == runtime_id
             })
@@ -213,7 +217,7 @@ pub(super) fn spawn_serial_reader(
     let worker = task
         .io
         .serial_workers
-        .register()
+        .register_for_session(&task.profile.id)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Interrupted, error))?;
     let name = format!("portmate-serial-{}", task.profile.id);
     std::thread::Builder::new()
@@ -388,6 +392,10 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
 
         match transition {
             SerialReaderTransition::Reconnect => {
+                // The reader owns a clone of the serial handle. Drop it before
+                // starting a replacement open; Windows serial drivers keep
+                // the device exclusively locked until every clone is gone.
+                drop(reader);
                 let still_current = match io.runtimes.serial.lock() {
                     Ok(mut connections) => connections
                         .get_mut(&session_id)
@@ -403,6 +411,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 }
             }
             SerialReaderTransition::Disconnect => {
+                drop(reader);
                 if let Ok(Some(runtime)) =
                     remove_runtime_if_owned(&io.runtimes.serial, &session_id, |runtime| {
                         runtime.runtime_id == runtime_id
