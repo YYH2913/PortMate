@@ -18,7 +18,6 @@ import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptSt
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
-import { TerminalInputPump } from "./terminal-input-pump";
 import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
@@ -116,6 +115,7 @@ const MAX_SERIALIZED_SCROLLBACK = 2000;
 const TERMINAL_RESIZE_SETTLE_MS = 64;
 const TERMINAL_SEMANTIC_SETTLE_MS = 180;
 const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
+const TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS = 80;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -330,12 +330,6 @@ export default function TerminalCanvas({
   const blockSelectionRef = useRef(blockSelection);
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
-  const inputPumpRef = useRef<TerminalInputPump | null>(null);
-  if (!inputPumpRef.current) {
-    inputPumpRef.current = new TerminalInputPump((targetSessionId, text, origin) => (
-      onInputRef.current(targetSessionId, text, origin)
-    ));
-  }
   const keyModeRef = useRef(keyMode);
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
@@ -352,6 +346,7 @@ export default function TerminalCanvas({
   const oneKeyPromptSessionRef = useRef("");
   const dismissedOneKeyPromptEventsRef = useRef<Set<string>>(new Set());
   const completionInputRef = useRef<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
+  const completionEnabledRef = useRef(false);
   const completionInputTimerRef = useRef<number | null>(null);
   const pendingCompletionInputRef = useRef<TerminalCompletionInputState | null>(null);
   const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
@@ -376,11 +371,13 @@ export default function TerminalCanvas({
   const [oneKeyCompletionError, setOneKeyCompletionError] = useState("");
   const [completionInput, setCompletionInput] = useState<TerminalCompletionInputState>(emptyTerminalCompletionInputState);
   const [completionDismissedLine, setCompletionDismissedLine] = useState("");
+  const completionDismissedLineRef = useRef("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
   const [completionReadyKey, setCompletionReadyKey] = useState("");
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
   displayModeRef.current = displayMode;
+  completionDismissedLineRef.current = completionDismissedLine;
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
     ? resolveTerminalGotoLine(
@@ -413,6 +410,7 @@ export default function TerminalCanvas({
   semanticHighlightingEnabledRef.current = terminalSemanticHighlightingEnabled(completionSettings);
   semanticHighlightingSupportedRef.current = semanticHighlightingSupported;
   semanticThemeRef.current = activeTerminalTheme;
+  completionEnabledRef.current = completionSupported && completionPreferences.enabled;
   const completionContextActive = focused
     && displayMode !== "hex"
     && completionSupported
@@ -612,7 +610,7 @@ export default function TerminalCanvas({
       pendingCompletionInputRef.current = null;
       if (!pending) return;
       startTransition(() => setCompletionInput(pending));
-    }, 36);
+    }, TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS);
   }
 
   function resetCompletionInput(synchronized = true) {
@@ -625,13 +623,14 @@ export default function TerminalCanvas({
   }
 
   function updateCompletionInput(text: string) {
+    if (!completionEnabledRef.current) return;
     const current = oneKeyPromptStateRef.current.prompt
       ? { line: "", synchronized: false }
       : completionInputRef.current;
     const next = reduceTerminalCompletionInput(current, text);
     if (/[\u0000-\u001f\u007f]/.test(text)) storeCompletionInput(next);
     else storeCompletionInputDeferred(next);
-    setCompletionDismissedLine((dismissed) => dismissed ? "" : dismissed);
+    if (completionDismissedLineRef.current) setCompletionDismissedLine("");
     if (completionSelectionRef.current !== 0) {
       completionSelectionRef.current = 0;
       setCompletionSelection(0);
@@ -645,7 +644,7 @@ export default function TerminalCanvas({
     setCompletionDismissedLine(suggestion.source === "history" || suggestion.source === "quick" ? next.line : "");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
-    inputPumpRef.current?.enqueue(active.profile.id, suggestion.appendText, "interactive");
+    void onInputRef.current(active.profile.id, suggestion.appendText, "interactive");
     scheduleTerminalSurfaceFocus();
   };
   dismissCompletionRef.current = () => {
@@ -817,7 +816,7 @@ export default function TerminalCanvas({
     if (!active) return;
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
-    inputPumpRef.current?.enqueue(active.profile.id, payload, "atomic");
+    void onInputRef.current(active.profile.id, payload, "atomic");
     closeTerminalFreeInput();
   }
 
@@ -847,8 +846,6 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     if (!active || !hostRef.current) return;
-    inputPumpRef.current?.reset();
-
     const host = hostRef.current;
     const mountGeneration = ++terminalMountGenerationRef.current;
     const terminalInstanceId = String(++terminalInstanceSequence);
@@ -1502,11 +1499,25 @@ export default function TerminalCanvas({
     scheduleTimestampGutter();
     const inputDisposable = term.onData((text) => {
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
-      if (isTerminalMouseReport(text)
+      const mouseReport = isTerminalMouseReport(text);
+      if (mouseReport
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
       lastInteractiveInputAt = performance.now();
       if (/\r|\n/.test(text)) term.scrollToBottom();
-      inputPumpRef.current?.enqueue(active.profile.id, text, "interactive");
+      if (mouseReport) {
+        // Mouse press/release reports are protocol frames, not printable
+        // keystrokes. Keep each frame as an atomic ordering boundary so the
+        // fast keyboard path cannot merge or reorder them.
+        void onInputRef.current(active.profile.id, text, "atomic");
+        dismissOneKeyPrompt();
+        return;
+      }
+      const inputOrigin: SyncInputOrigin = /[\u0000-\u001f\u007f]/.test(text)
+        ? "atomic"
+        : "interactive";
+      // The App-level registry is the single ordering queue for this session.
+      // Bypassing the view-local pump removes a second IPC batching window.
+      void onInputRef.current(active.profile.id, text, inputOrigin);
       updateCompletionInput(text);
       dismissOneKeyPrompt();
     });
@@ -1527,7 +1538,7 @@ export default function TerminalCanvas({
         if (text) {
           resetCompletionInput(false);
           dismissOneKeyPrompt();
-          inputPumpRef.current?.enqueue(active.profile.id, text, "atomic");
+          void onInputRef.current(active.profile.id, text, "atomic");
         }
       }).catch(() => {});
     };
@@ -1582,7 +1593,6 @@ export default function TerminalCanvas({
         window.clearTimeout(resizeReportTimer);
         resizeReportTimer = null;
       }
-      inputPumpRef.current?.reset();
       pendingEventWrites.length = 0;
       resizeObserver.disconnect();
       semanticWriteDisposable.dispose();

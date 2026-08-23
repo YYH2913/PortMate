@@ -216,12 +216,13 @@ pub(super) fn enqueue_interactive_text(
                     let session_id = first.session_id;
                     let runtime_id = first.runtime_id;
                     let mut wire_bytes = first.wire_bytes;
-                    // Give adjacent keystrokes from separate IPC calls a tiny
-                    // coalescing window. The 1 ms delay is below a frame and
-                    // removes the one-key/one-write pattern under fast typing.
+                    // The frontend coalesces keystrokes while the previous
+                    // request is in flight. Yield once so already queued IPC
+                    // requests can arrive, but avoid imposing a fixed 1 ms
+                    // delay on the first byte of every batch.
                     tokio::select! {
                         _ = worker_cancellation.wait() => break,
-                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                        _ = tokio::task::yield_now() => {}
                     }
                     while text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES
                         && !worker_cancellation.is_cancelled()

@@ -17,6 +17,45 @@ describe("terminal input pump", () => {
     expect(calls).toEqual(["a"]);
   });
 
+  it("fast enqueue starts immediately without waiting for IPC completion", async () => {
+    const first = deferred();
+    const calls: string[] = [];
+    const pump = new TerminalInputPump((_sessionId, text) => {
+      calls.push(text);
+      return calls.length === 1 ? first.promise : Promise.resolve();
+    });
+
+    pump.enqueueFast("router", "a", "interactive");
+    pump.enqueueFast("router", "b", "interactive");
+    pump.enqueueFast("router", "c", "interactive");
+    expect(calls).toEqual(["a", "b", "c"]);
+
+    first.resolve();
+    await first.promise;
+    await expect.poll(() => calls).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps an atomic boundary behind in-flight fast input", async () => {
+    const first = deferred();
+    const calls: Array<{ text: string; origin: string }> = [];
+    const pump = new TerminalInputPump((_sessionId, text, origin) => {
+      calls.push({ text, origin });
+      return calls.length === 1 ? first.promise : Promise.resolve();
+    });
+
+    pump.enqueueFast("router", "a", "interactive");
+    const atomic = pump.enqueue("router", "paste", "atomic");
+    expect(calls).toEqual([{ text: "a", origin: "interactive" }]);
+
+    first.resolve();
+    await first.promise;
+    await atomic;
+    expect(calls).toEqual([
+      { text: "a", origin: "interactive" },
+      { text: "paste", origin: "atomic" },
+    ]);
+  });
+
   it("coalesces queued interactive input without crossing atomic boundaries", async () => {
     const first = deferred();
     const second = deferred();

@@ -3877,11 +3877,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentSessions = sessionsRef.current;
     if (!currentSessions.some((session) => session.profile.id === sessionId)) return Promise.resolve();
     const broadcastEnabled = syncInputRef.current;
-    // Normal input already has a per-terminal pump. When synchronization is
-    // disabled, keep all input origins on the shared fast pump so an external
-    // atomic send cannot overtake queued keystrokes, without waiting behind
-    // the broadcast FIFO.
+    // When synchronization is disabled, keep each session on its dedicated
+    // pump so an external atomic send cannot overtake queued keystrokes or
+    // wait behind the broadcast FIFO.
     if (!broadcastEnabled) {
+      if (origin === "interactive") {
+        directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
+        return Promise.resolve();
+      }
       return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
     }
     const settings = syncInputSettings;
@@ -3955,9 +3958,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           });
         }
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
-        if (session.profile.connection.kind === "serial") {
-          void refreshSerialCapture(sessionId);
-        }
       } else {
         const event = createLocalSystemEvent(session.profile, text);
         event.direction = "outbound";
@@ -4012,9 +4012,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (isBackendAvailable()) {
         await invokeBackend<SessionEvent>("send_bytes", { sessionId, bytes });
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
-        if (session.profile.connection.kind === "serial") {
-          void refreshSerialCapture(sessionId);
-        }
       } else {
         const event = createLocalSystemEvent(session.profile, formatHexBytes(bytes));
         event.direction = "outbound";

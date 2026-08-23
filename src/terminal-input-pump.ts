@@ -13,6 +13,10 @@ type PendingTerminalInput = {
   waiters: Array<() => void>;
 };
 
+// Bound fire-and-forget IPC calls while still allowing a short burst of
+// typing to stay ahead of a high-latency webview bridge.
+const MAX_FAST_IN_FLIGHT = 8;
+
 /**
  * Starts the first input immediately, then coalesces interactive input while
  * the transport is busy. Atomic input remains an explicit ordering boundary.
@@ -20,6 +24,7 @@ type PendingTerminalInput = {
 export class TerminalInputPump {
   private readonly pending: PendingTerminalInput[] = [];
   private active = false;
+  private fastInFlightCount = 0;
 
   constructor(private readonly send: TerminalInputSender) {}
 
@@ -42,6 +47,51 @@ export class TerminalInputPump {
     return completion;
   }
 
+  /**
+   * Queue high-frequency interactive input without allocating a completion
+   * promise for every key. The regular enqueue API remains available for
+   * callers that need to await an ordering boundary.
+   */
+  enqueueFast(sessionId: string, text: string, origin: SyncInputOrigin): void {
+    if (!sessionId || !text) return;
+    if (origin !== "interactive") {
+      void this.enqueue(sessionId, text, origin);
+      return;
+    }
+    if (
+      this.active
+      || this.fastInFlightCount >= MAX_FAST_IN_FLIGHT
+      || this.pending.some((item) => item.origin !== "interactive")
+    ) {
+      const tail = this.pending.at(-1);
+      if (tail?.origin === "interactive" && tail.sessionId === sessionId) {
+        tail.text += text;
+      } else {
+        this.pending.push({ sessionId, text, origin, waiters: [] });
+      }
+      this.drain();
+      return;
+    }
+
+    this.launchFast({ sessionId, text, origin, waiters: [] });
+  }
+
+  private launchFast(item: PendingTerminalInput): void {
+    this.fastInFlightCount += 1;
+    let result: void | Promise<void>;
+    try {
+      result = this.send(item.sessionId, item.text, item.origin);
+    } catch {
+      result = undefined;
+    }
+    void Promise.resolve(result)
+      .catch(() => {})
+      .finally(() => {
+        this.fastInFlightCount = Math.max(0, this.fastInFlightCount - 1);
+        if (this.fastInFlightCount === 0) this.drain();
+      });
+  }
+
   reset(): void {
     for (const item of this.pending) {
       for (const resolve of item.waiters) resolve();
@@ -51,8 +101,15 @@ export class TerminalInputPump {
 
   private drain(): void {
     if (this.active) return;
+    if (this.fastInFlightCount > 0) return;
     const next = this.pending.shift();
     if (!next) return;
+
+    if (next.origin === "interactive" && next.waiters.length === 0) {
+      this.launchFast(next);
+      this.drain();
+      return;
+    }
 
     this.active = true;
     let result: void | Promise<void>;
@@ -85,6 +142,16 @@ export class TerminalInputPumpRegistry {
       this.pumps.set(sessionId, pump);
     }
     return pump.enqueue(sessionId, text, origin);
+  }
+
+  enqueueFast(sessionId: string, text: string, origin: SyncInputOrigin): void {
+    if (!sessionId) return;
+    let pump = this.pumps.get(sessionId);
+    if (!pump) {
+      pump = new TerminalInputPump(this.send);
+      this.pumps.set(sessionId, pump);
+    }
+    pump.enqueueFast(sessionId, text, origin);
   }
 
   reset(sessionId?: string): void {
