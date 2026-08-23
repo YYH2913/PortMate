@@ -302,6 +302,7 @@ export function terminalByteBufferStats(buffer: TerminalByteBuffer) {
 }
 
 type TerminalByteCacheEntry = {
+  sessionId: string;
   buffer: TerminalByteBuffer;
   listeners: Set<() => void>;
   touchedAt: number;
@@ -316,7 +317,12 @@ function terminalByteCacheEntry(sessionId: string): TerminalByteCacheEntry {
     existing.touchedAt = ++cacheClock;
     return existing;
   }
-  const entry = { buffer: emptyTerminalByteBuffer(), listeners: new Set<() => void>(), touchedAt: ++cacheClock };
+  const entry = {
+    sessionId,
+    buffer: emptyTerminalByteBuffer(),
+    listeners: new Set<() => void>(),
+    touchedAt: ++cacheClock,
+  };
   terminalByteCache.set(sessionId, entry);
   trimTerminalByteCache();
   return entry;
@@ -360,9 +366,7 @@ export function appendTerminalByteCacheEvents(
     entry.buffer = next;
     changedEntries.add(entry);
   }
-  const changedSessionIds = [...changedEntries].map((entry) => (
-    [...terminalByteCache.entries()].find(([, candidate]) => candidate === entry)?.[0] ?? ""
-  )).filter(Boolean);
+  const changedSessionIds = [...changedEntries].map((entry) => entry.sessionId);
   if (notify) notifyTerminalByteCacheSessions(changedSessionIds);
   return changedSessionIds;
 }
