@@ -6,6 +6,13 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-24
+
+### Added
+
+- Added regression coverage for Store-lock contention, exact printable/control-key ordering,
+  detached-terminal input routing, prepared event identity, and delayed history ordering.
+
 ### Changed
 
 - Unified printable keys, control keys, Enter, and paste requests under one bounded per-session
@@ -36,6 +43,23 @@ or an unsigned artifact is not a production release. The complete release gates 
   payloads before rendering, and stopped truncated frames from masquerading as complete output.
 - Published Telnet application bytes after negotiation filtering, including bytes released when
   the negotiator finishes, instead of exposing protocol negotiation bytes or omitting the tail.
+
+### Security
+
+- Retained bounded per-session queues, runtime-generation revalidation, secret redaction, and
+  ordered desktop audit persistence while moving terminal I/O off the shared Store lock.
+
+### Migration
+
+- No Store schema migration is required from 0.1.4. Existing sessions, credentials, grants,
+  terminal history, transfers, scripts, host keys, and workspace state load in place.
+
+### Known Limitations
+
+- The Windows GNU portable archive remains unsigned cross-build evidence and does not replace
+  native Windows MSVC, WebView2, Credential Manager, MSI/NSIS, Authenticode, or clean-machine tests.
+- Physical serial devices and remote SSH/Telnet endpoints can add driver, network, or device echo
+  latency that automated loopback and browser compatibility matrices cannot reproduce completely.
 
 ## [0.1.4] - 2026-08-24
 
