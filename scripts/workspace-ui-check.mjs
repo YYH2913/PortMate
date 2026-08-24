@@ -6584,10 +6584,64 @@ Host staging
     && resetDockLayout.width >= 359 && resetDockLayout.width <= 361,
   `double-click did not restore the default left dock size: ${JSON.stringify(resetDockLayout)}`);
 
+  await page.locator(".workspace-dock-content.panel-explorer .tree-session").first().click({ button: "right" });
+  const restoreSplitAction = page.locator(".portmate-context-menu .context-label", { hasText: /^水平拆分视图\(H\)$/ });
+  await restoreSplitAction.click();
+  await page.waitForFunction(() => document.querySelectorAll(".terminal-pane").length > 1);
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("button", { name: "快捷栏", exact: true }).click();
+  await page.locator(".quick-command-bar").waitFor();
+  await page.getByRole("button", { name: "进入专注模式", exact: true }).click();
+  await page.locator(".wind-root.focus-mode").waitFor();
+  const restoreActiveId = await page.evaluate(() => JSON.parse(
+    localStorage.getItem("portmate.workspace.v1") || "null",
+  )?.activeId);
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("button", { name: "还原布局", exact: true }).click();
+  await page.waitForFunction(() => {
+    const workspace = JSON.parse(localStorage.getItem("portmate.workspace.v1") || "null");
+    const panels = JSON.parse(localStorage.getItem("portmate.workspacePanels.v2") || "null");
+    return document.querySelectorAll(".terminal-pane").length === 1
+      && document.querySelectorAll(".workspace-pane-tab").length === 1
+      && !document.querySelector(".wind-root.focus-mode")
+      && !document.querySelector(".quick-command-bar")
+      && workspace?.root?.kind === "pane"
+      && workspace.activeId === workspace.root.sessionId
+      && JSON.stringify(panels?.panels) === JSON.stringify({
+        explorer: true,
+        fileManager: false,
+        history: false,
+        sysmon: false,
+        sender: false,
+        statusBar: true,
+      })
+      && JSON.stringify(panels?.docks) === JSON.stringify({
+        left: ["explorer", "fileManager"],
+        right: ["sysmon", "history"],
+        bottom: ["sender"],
+        active: { left: "explorer", right: "sysmon", bottom: "sender" },
+      })
+      && JSON.stringify(panels?.sizes) === JSON.stringify({ left: null, right: null, bottom: null });
+  });
+  const restoredDefaultLayout = await page.evaluate(() => ({
+    activeId: JSON.parse(localStorage.getItem("portmate.workspace.v1")).activeId,
+    panels: JSON.parse(localStorage.getItem("portmate.workspacePanels.v2")),
+    docks: [...document.querySelectorAll(".workspace-dock")].map((dock) => ({
+      dock: dock.getAttribute("data-dock"),
+      active: dock.getAttribute("data-active-panel"),
+      width: dock.getBoundingClientRect().width,
+    })),
+    quickBar: localStorage.getItem("portmate.quickBarVisible.v1"),
+  }));
+  assert(restoredDefaultLayout.activeId === restoreActiveId
+    && JSON.stringify(restoredDefaultLayout.docks.map(({ dock, active }) => ({ dock, active })))
+      === JSON.stringify([{ dock: "left", active: "explorer" }])
+    && restoredDefaultLayout.docks[0]?.width >= 255
+    && restoredDefaultLayout.docks[0]?.width <= 257
+    && restoredDefaultLayout.quickBar === "false",
+  `one-click layout restore did not rebuild the default workspace: ${JSON.stringify(restoredDefaultLayout)}`);
+
   await togglePanel("资源管理器");
-  await togglePanel("文件管理器");
-  await togglePanel("历史命令");
-  await togglePanel("发送");
   await page.waitForFunction(() => document.querySelectorAll(".workspace-dock").length === 0);
   const desktop = await page.evaluate(() => ({
     viewportWidth: innerWidth,
@@ -9677,8 +9731,20 @@ Host staging
   assert(workspaceWindowInitial.tabs === 0,
     `a new workspace window inherited or auto-opened a main-window view: ${JSON.stringify(workspaceWindowInitial)}`);
   await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "历史命令", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "发送", exact: true }).click();
+  await workspaceWindowPage.waitForFunction(() => document.querySelectorAll(".workspace-dock").length === 3);
+  await workspaceWindowPage.getByRole("button", { name: "进入专注模式", exact: true }).click();
+  await workspaceWindowPage.locator(".wind-root.focus-mode").waitFor();
+  await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
   await workspaceWindowPage.getByRole("button", { name: "还原布局", exact: true }).click();
-  await workspaceWindowPage.waitForFunction(() => document.querySelectorAll(".workspace-pane-tab").length === 0);
+  await workspaceWindowPage.waitForFunction(() => (
+    document.querySelectorAll(".workspace-pane-tab").length === 0
+      && document.querySelectorAll(".workspace-dock").length === 1
+      && document.querySelector('.workspace-dock[data-dock="left"][data-active-panel="explorer"]')
+      && !document.querySelector(".wind-root.focus-mode")
+  ));
   assert(await workspaceWindowPage.locator(".notice-dialog").count() === 0,
     "restoring a workspace layout opened a redundant blocking notification");
   await workspaceWindowPage.locator(".tree-session", { hasText: "Edge Router" }).click();
@@ -10304,6 +10370,7 @@ Host staging
       resized: resizedDockLayout,
       restored: restoredLayout,
       reset: resetDockLayout,
+      oneClickRestore: restoredDefaultLayout,
     },
     startupHydration: startupHydrationState,
     startupDomainHydration: startupDomainState,

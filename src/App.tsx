@@ -105,7 +105,7 @@ import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
-import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
+import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDockSize, defaultWorkspaceDockLayout, defaultWorkspaceDockSizes, defaultWorkspacePanelVisibility, isWorkspaceFocusModeShortcut, LEGACY_WORKSPACE_PANEL_STORAGE_KEY, moveWorkspacePanelToDock, normalizeWorkspaceDockLayout, normalizeWorkspaceDockSizes, normalizeWorkspacePanelVisibility, resolveWorkspacePanelVisibility, setWorkspaceDockSize, setWorkspacePanelVisibility, visibleWorkspaceDockPanels, workspaceDockEffectiveSize, workspaceDockIds, workspaceDockPanelIds, workspaceDockSizeLimits, WORKSPACE_PANEL_STORAGE_KEY } from "./workspace-panel-state";
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
@@ -2710,18 +2710,37 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function restoreWorkspaceLayout() {
-    const restored = reconcileWorkspaceSnapshot(
-      loadWorkspaceSnapshot(workspaceStorageKey),
-      sessionsRef.current.map((session) => session.profile.id),
-      { fallbackToFirst: !workspaceWindowId },
-    );
+    const currentSessions = sessionsRef.current;
+    const targetSessionId = workspaceWindowId
+      ? ""
+      : currentSessions.some((session) => session.profile.id === activeIdRef.current)
+        ? activeIdRef.current
+        : currentSessions[0]?.profile.id ?? "";
+    const root = targetSessionId ? createWorkspacePane(targetSessionId, "pane-default") : null;
     invalidateWorkspaceViewDetachOperations();
     invalidateAllTerminalExportOperations();
-    setWorkspaceRoot(restored.root);
-    setActivePaneId(restored.activePaneId);
-    setActiveId(restored.activeId);
-    setTabColors(restored.tabColors);
+    setWorkspaceRoot(root);
+    setActivePaneId(root?.id ?? "");
+    setActiveId(targetSessionId);
+    setWorkspacePanels({ ...defaultWorkspacePanelVisibility });
+    setWorkspaceDockLayout({
+      left: [...defaultWorkspaceDockLayout.left],
+      right: [...defaultWorkspaceDockLayout.right],
+      bottom: [...defaultWorkspaceDockLayout.bottom],
+      active: { ...defaultWorkspaceDockLayout.active },
+    });
+    setWorkspaceDockSizes({ ...defaultWorkspaceDockSizes });
+    setFocusMode(false);
     setZoomedPaneId("");
+    setDraggedWorkspacePanel(null);
+    setClosedWorkspaceViews([]);
+    setQuickBarVisible(false);
+    setWorkspaceGroupMove(null);
+    setWorkspaceViewRename(null);
+    setWorkspaceViewContextMenu(null);
+    setContextMenu(null);
+    setOpenMenu(null);
+    clearWorkspaceDropIndicators();
   }
 
   function splitWorkspace(
