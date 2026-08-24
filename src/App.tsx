@@ -3950,7 +3950,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (origin === "command") {
           await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
         } else {
-          await invokeBackend<SessionEvent>("send_text", {
+          await invokeBackend<SessionEvent | null>("send_text", {
             sessionId,
             text,
             interactive: origin === "interactive",

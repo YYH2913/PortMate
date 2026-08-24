@@ -842,6 +842,15 @@ try {
   assert(semanticDark.pixelColors.length >= 4,
     `semantic command did not render enough distinct dark-theme colors: ${JSON.stringify(semanticDark)}`);
   const semanticSearch = await openAndAssertSearch(semanticCommand);
+  const semanticOutput = "ERROR upload failed peer=192.168.1.1 file=/tmp/firmware.bin bytes=4MiB status=503";
+  await emitSessionEvent(createEvent("a-semantic-output", "session-a", `\r\n${semanticOutput}`));
+  const semanticOutputSearch = await openAndAssertSearch(semanticOutput);
+  await page.waitForFunction(() => (
+    Number(document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticDecorationCount ?? "0") >= 12
+  ));
+  const semanticOutputDark = await inspectSemanticRendering(activeHost, ["#ff8a8a"]);
+  assert(semanticOutputDark.pixelColors.includes("#ff8a8a"),
+    `semantic output did not render its error state color: ${JSON.stringify(semanticOutputDark)}`);
   const semanticOutboundCommand = 'grep -n "wireless" /etc/config/wireless';
   await clearCalls();
   await page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea').focus();
@@ -1722,10 +1731,12 @@ try {
       topSearch,
       longLogSearch,
       semanticSearch,
+      semanticOutputSearch,
     },
     semanticHighlighting: {
       initial: initialSemanticState,
       dark: semanticDark,
+      output: semanticOutputDark,
       light: semanticLight,
       alternate: semanticAlternate,
       beforePaste: semanticBeforePaste,

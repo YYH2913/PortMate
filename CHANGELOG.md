@@ -16,6 +16,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   together with a complete Chinese MCP API reference for all tools, resources, prompts, scopes,
   parameters, transport modes, and removed legacy names.
 - Added selective deletion of MCP audit history through the desktop authorization interface.
+- Added semantic colors for unstyled terminal output, including status, severity, addresses, paths,
+  values, and quoted strings, while preserving application-provided ANSI and TrueColor output.
 
 ### Changed
 
@@ -24,6 +26,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   path.
 - Batched terminal byte notifications and isolated terminal rendering from unrelated workspace,
   transfer, and log updates to reduce interaction latency under sustained input and output.
+- Cached semantic decorations per logical terminal line and avoided per-keystroke full-screen
+  timestamp snapshots so unchanged output no longer rebuilds the visible terminal surface.
 - Consolidated MCP transfer and host-route operations under start_transfer and the tunnel lifecycle,
   while retaining structured inline and resumable content sources.
 
@@ -36,6 +40,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   destination contract that keeps deviceIp and other TFTP options at the correct boundary.
 - Removed redundant per-keystroke serial capture refreshes and fixed several frontend/backend input
   queues that made interactive typing feel delayed.
+- Reduced queued desktop input acknowledgements to a null result, removed a wire-byte clone, and
+  retained one cancellable in-flight IPC boundary so rapid input merges without surviving session
+  disconnect or deletion.
 
 ### Security
 

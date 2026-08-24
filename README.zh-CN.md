@@ -35,7 +35,7 @@ PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允�
 | --- | --- |
 | 会话与协议 | SSH、Shell PTY、Serial、Telnet、Raw TCP、Tmux；TCP/Telnet 支持 TLS，SSH/Tmux/TCP/Telnet 支持 HTTP CONNECT 与 SOCKS5 代理 |
 | 终端工作区 | 多标签、递归分屏、跨分组拖放、独立窗口、布局恢复、Insert/Normal 模式、对应光标、搜索、行跳转、文本/Hex/二分视图 |
-| 交互效率 | WindTerm 风格命令补全、参数提示、自动多色交互命令行、Quick Commands、会话范围自定义脚本、OneKeys、自由输入、同步输入 |
+| 交互效率 | WindTerm 风格命令补全、参数提示、命令与无 ANSI 输出自动多色且不覆盖远端原生配色、Quick Commands、会话范围自定义脚本、OneKeys、自由输入、同步输入 |
 | SSH 安全 | Profile 级 Host Key、TOFU 与变更阻断、Host/Client Key Manager、多级 Jump Host、ssh-agent、密码/公钥/keyboard-interactive，以及 Linux libssh GSSAPI 认证 |
 | 文件与传输 | SFTP/SCP 文件管理、一次性 TFTP、拖放、队列、限速、取消、重试、断点恢复，以及 X/Y/ZModem |
 | 运维与诊断 | SSH 健康检测、local/remote/dynamic tunnel、Sysmon 侧栏与历史趋势、结构化日志、触发器、会话诊断包 |

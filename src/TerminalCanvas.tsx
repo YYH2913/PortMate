@@ -116,6 +116,7 @@ const TERMINAL_RESIZE_SETTLE_MS = 64;
 const TERMINAL_SEMANTIC_SETTLE_MS = 180;
 const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
 const TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS = 80;
+const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -150,6 +151,12 @@ type TerminalSemanticLogicalLine = {
   cells: TerminalSemanticCell[];
   nextRow: number;
 };
+type TerminalSemanticDecorationLine = {
+  marker: IMarker;
+  fingerprint: string;
+  decorations: Array<{ dispose: () => void }>;
+  markers: IMarker[];
+};
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
   matchBackground: "#284457",
@@ -181,7 +188,13 @@ function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): Termina
     for (let column = 0; column < columns; column += 1) {
       const cell = line.getCell(column);
       if (!cell) continue;
-      bufferCells.push({ column, width: cell.getWidth(), chars: cell.getChars() });
+      const semanticCell: TerminalSemanticBufferCell = {
+        column,
+        width: cell.getWidth(),
+        chars: cell.getChars(),
+      };
+      if (!cell.isFgDefault()) semanticCell.colorable = false;
+      bufferCells.push(semanticCell);
     }
     const mapped = mapTerminalSemanticRow(row, bufferCells);
     characters.push(...Array.from(mapped.text));
@@ -245,6 +258,10 @@ function alternateTerminalScreenSnapshot(term: XTerm): string[] {
   return snapshot;
 }
 
+function terminalTextMayMoveRows(text: string): boolean {
+  return /[\r\n\f\v\x1b]/u.test(text);
+}
+
 function terminalSemanticColor(kind: TerminalSemanticTokenKind, theme: ITheme): string {
   switch (kind) {
     case "command": return theme.brightGreen ?? theme.green ?? "#86efac";
@@ -255,25 +272,30 @@ function terminalSemanticColor(kind: TerminalSemanticTokenKind, theme: ITheme): 
     case "number": return theme.brightMagenta ?? theme.magenta ?? "#d8b4fe";
     case "variable": return theme.magenta ?? "#c084fc";
     case "operator": return theme.brightRed ?? theme.red ?? "#ff8a8a";
+    case "success": return theme.brightGreen ?? theme.green ?? "#86efac";
+    case "warning": return theme.brightYellow ?? theme.yellow ?? "#fde047";
+    case "error": return theme.brightRed ?? theme.red ?? "#ff8a8a";
+    case "info": return theme.brightBlue ?? theme.blue ?? "#93c5fd";
   }
 }
 
-function terminalSemanticViewportFingerprint(
+function terminalSemanticPresentationFingerprint(
   term: XTerm,
   theme: ITheme,
   enabled: boolean,
   supported: boolean,
-  contentRevision: number,
 ): string {
   const buffer = term.buffer.active;
-  return String(contentRevision) + ":" + String(enabled ? 1 : 0) + ":"
-    + String(supported ? 1 : 0) + ":" + buffer.type + ":"
-    + String(buffer.viewportY) + ":" + String(term.rows) + ":" + String(term.cols) + ":"
-    + String(buffer.baseY + buffer.cursorY) + ":" + [
+  return String(enabled ? 1 : 0) + ":" + String(supported ? 1 : 0) + ":"
+    + buffer.type + ":" + String(term.cols) + ":" + [
     theme.green, theme.brightGreen, theme.blue, theme.brightBlue,
     theme.yellow, theme.brightYellow, theme.cyan, theme.brightCyan,
     theme.magenta, theme.brightMagenta, theme.red, theme.brightRed,
   ].join("|");
+}
+
+function terminalSemanticLineFingerprint(line: TerminalSemanticLogicalLine): string {
+  return `${line.text}\u0000${line.cells.map((cell) => cell.colorable === false ? "0" : "1").join("")}`;
 }
 
 export default function TerminalCanvas({
@@ -1035,22 +1057,27 @@ export default function TerminalCanvas({
         removed.marker.dispose();
       }
     };
-    const registerTimestampLine = (line: number, ts: string) => {
-      if (term.buffer.active.type !== "normal") return;
+    const registerTimestampLine = (line: number, ts: string): boolean => {
+      if (term.buffer.active.type !== "normal") return false;
       const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
-      if (!normalized) return;
+      if (!normalized) return false;
+      const latest = timestampMarkers.at(-1);
+      if (latest && !latest.marker.isDisposed && latest.marker.line === normalized.line) {
+        latest.lastLine = normalized.line;
+        return false;
+      }
       compactTimestampMarkers();
       const existing = timestampMarkers.find((entry) => entry.marker.line === normalized.line);
       if (existing) {
-        existing.ts = normalized.ts;
-        return;
+        return false;
       }
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
       const marker = term.registerMarker(normalized.line - cursorLine);
-      if (!marker || marker.line < 0) return;
+      if (!marker || marker.line < 0) return false;
       timestampMarkers.push({ marker, ts: normalized.ts, lastLine: marker.line });
       compactTimestampMarkers();
+      return true;
     };
     const trackTimestampLine = (line: number, ts: string): TerminalTimestampMarker | null => {
       if (term.buffer.active.type !== "normal") return null;
@@ -1061,28 +1088,34 @@ export default function TerminalCanvas({
       const marker = term.registerMarker(normalized.line - cursorLine);
       return marker ? { marker, ts: normalized.ts, lastLine: marker.line } : null;
     };
-    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number) => {
+    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number): boolean => {
       const trackedLine = tracked.marker.line;
       if (tracked.marker.isDisposed || trackedLine < 0) {
         compactTimestampMarkers();
+        const changed = normalTimestampAnchor !== tracked.ts;
         normalTimestampAnchor = tracked.ts;
-        return;
+        return changed;
       }
       tracked.lastLine = trackedLine;
       const existing = timestampMarkers.find((entry) => entry.marker.line === trackedLine);
+      let changed = false;
       if (existing) {
-        existing.ts = tracked.ts;
         tracked.marker.dispose();
       } else {
         timestampMarkers.push(tracked);
+        changed = true;
       }
-      if (cursorLine < trackedLine) registerTimestampLine(cursorLine, tracked.ts);
+      if (cursorLine !== trackedLine) {
+        const nextLine = cursorLine > trackedLine ? trackedLine + 1 : cursorLine;
+        changed = registerTimestampLine(nextLine, tracked.ts) || changed;
+      }
       compactTimestampMarkers();
+      return changed;
     };
-    const registerTimestampRange = (startLine: number, endLine: number, ts: string) => {
+    const registerTimestampRange = (startLine: number, endLine: number, ts: string): boolean => {
       const lastLine = Math.max(0, Math.max(startLine, endLine));
       const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - timestampMarkerLimit + 1);
-      registerTimestampLine(firstLine, ts);
+      return registerTimestampLine(firstLine, ts);
     };
     const restoreTimestampMarkers = () => {
       if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
@@ -1156,9 +1189,6 @@ export default function TerminalCanvas({
       host.dataset.terminalBaseY = String(buffer.baseY);
     };
     recordTerminalViewport();
-    if (!cachedState) {
-      registerTimestampRange(0, term.buffer.normal.baseY + term.buffer.normal.cursorY, new Date().toISOString());
-    }
     host.dataset.terminalBuffer = terminalBufferType(term);
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
@@ -1186,47 +1216,68 @@ export default function TerminalCanvas({
         const beforeLine = beforeBufferType === "normal"
           ? term.buffer.normal.baseY + term.buffer.normal.cursorY
           : beforeBuffer.cursorY;
-        const beforeAlternateSnapshot = beforeBufferType === "alternate"
+        const eventText = event.text ?? "";
+        const inspectAlternateRows = beforeBufferType === "alternate"
+          && eventText.length >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
+        const beforeAlternateSnapshot = inspectAlternateRows
           ? alternateTerminalScreenSnapshot(term)
           : [];
-        const trackedNormalStart = event.text && event.direction !== "outbound" && beforeBufferType === "normal"
+        const trackedNormalStart = eventText
+          && event.direction !== "outbound"
+          && beforeBufferType === "normal"
+          && terminalTextMayMoveRows(eventText)
           ? trackTimestampLine(beforeLine, event.ts)
           : null;
         let callbackCompleted = false;
         let writeReturned = false;
         writeTerminalEvent(term, event, () => {
-          if (event.text && event.direction !== "outbound") {
+          let timestampChanged = false;
+          if (eventText && event.direction !== "outbound") {
             const afterBuffer = term.buffer.active;
             if (afterBuffer.type === "normal") {
               const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
-              if (trackedNormalStart) commitTrackedTimestamp(trackedNormalStart, afterLine);
-              else registerTimestampRange(afterLine, afterLine, event.ts);
+              if (trackedNormalStart) {
+                timestampChanged = commitTrackedTimestamp(trackedNormalStart, afterLine);
+              } else {
+                const firstChangedLine = beforeBufferType !== "normal"
+                  ? afterLine
+                  : afterLine > beforeLine ? beforeLine + 1 : afterLine;
+                timestampChanged = registerTimestampRange(firstChangedLine, afterLine, event.ts);
+              }
             } else {
               trackedNormalStart?.marker.dispose();
               const normalizedTimestamp = normalizeTerminalTimestamps([
                 { line: 0, ts: event.ts },
               ], 1)[0]?.ts ?? null;
-              const afterSnapshot = alternateTerminalScreenSnapshot(term);
               alternateLatestTimestamp = normalizedTimestamp ?? alternateLatestTimestamp;
-              alternateTimestamps = beforeBufferType === "alternate"
-                ? updateAlternateTerminalTimestamps(
-                  alternateTimestamps,
-                  term.rows,
-                  changedAlternateTerminalRows(
+              if (beforeBufferType === "alternate") {
+                const changedRows = inspectAlternateRows
+                  ? changedAlternateTerminalRows(
                     beforeAlternateSnapshot,
-                    afterSnapshot,
+                    alternateTerminalScreenSnapshot(term),
                     beforeLine,
                     afterBuffer.cursorY,
-                  ),
+                  )
+                  : beforeLine === afterBuffer.cursorY && !terminalTextMayMoveRows(eventText)
+                    ? []
+                    : [...new Set([beforeLine, afterBuffer.cursorY])];
+                alternateTimestamps = updateAlternateTerminalTimestamps(
+                  alternateTimestamps,
+                  term.rows,
+                  changedRows,
                   event.ts,
-                )
-                : resizeAlternateTerminalTimestamps([], term.rows, event.ts);
+                );
+                timestampChanged = changedRows.length > 0;
+              } else {
+                alternateTimestamps = resizeAlternateTerminalTimestamps([], term.rows, event.ts);
+                timestampChanged = alternateTimestamps.length > 0;
+              }
             }
           }
           settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
           eventWriteActive = false;
           callbackCompleted = true;
-          scheduleTimestampGutter();
+          if (timestampChanged) scheduleTimestampGutter();
           if (writeReturned) drainEventWrites();
         });
         writeReturned = true;
@@ -1357,27 +1408,28 @@ export default function TerminalCanvas({
     let completionAnchorFrame: number | null = null;
     let completionAnchorRow = "";
     let lastInteractiveInputAt = 0;
-    let semanticDecorations: Array<{ dispose: () => void }> = [];
-    let semanticMarkers: Array<{ dispose: () => void }> = [];
-    let semanticFingerprint = "";
-    let semanticContentRevision = 0;
+    let semanticLines: TerminalSemanticDecorationLine[] = [];
+    let semanticPresentationFingerprint = "";
+    const disposeSemanticLine = (line: TerminalSemanticDecorationLine) => {
+      for (const decoration of line.decorations) decoration.dispose();
+      for (const marker of line.markers) marker.dispose();
+    };
     const clearSemanticHighlighting = () => {
-      for (const decoration of semanticDecorations.splice(0)) decoration.dispose();
-      for (const marker of semanticMarkers.splice(0)) marker.dispose();
+      for (const line of semanticLines.splice(0)) disposeSemanticLine(line);
       host.dataset.terminalSemanticDecorationCount = "0";
     };
     const renderSemanticHighlighting = () => {
       semanticFrame = null;
-      const fingerprint = terminalSemanticViewportFingerprint(
+      const presentationFingerprint = terminalSemanticPresentationFingerprint(
         term,
         semanticThemeRef.current,
         semanticHighlightingEnabledRef.current,
         semanticHighlightingSupportedRef.current,
-        semanticContentRevision,
       );
-      if (fingerprint === semanticFingerprint) return;
-      clearSemanticHighlighting();
-      semanticFingerprint = fingerprint;
+      if (presentationFingerprint !== semanticPresentationFingerprint) {
+        clearSemanticHighlighting();
+        semanticPresentationFingerprint = presentationFingerprint;
+      }
       if (!semanticHighlightingEnabledRef.current) {
         host.dataset.terminalSemanticHighlighting = "disabled";
         return;
@@ -1393,22 +1445,45 @@ export default function TerminalCanvas({
       }
 
       const cursorRow = buffer.baseY + buffer.cursorY;
-      const markerByRow = new Map<number, ReturnType<XTerm["registerMarker"]>>();
+      const previousByRow = new Map<number, TerminalSemanticDecorationLine>();
+      for (const line of semanticLines) {
+        if (!line.marker.isDisposed && line.marker.line >= 0) previousByRow.set(line.marker.line, line);
+      }
+      const nextLines: TerminalSemanticDecorationLine[] = [];
+      const retainedLines = new Set<TerminalSemanticDecorationLine>();
       let firstRow = buffer.viewportY;
       while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow -= 1;
       const viewportEnd = Math.min(buffer.length, buffer.viewportY + term.rows);
       let row = firstRow;
       let decorationCount = 0;
       while (row < viewportEnd) {
+        const lineStart = row;
         const logicalLine = readTerminalSemanticLogicalLine(term, row);
         row = logicalLine.nextRow;
-        for (const token of terminalSemanticTokens(logicalLine.text)) {
+        const lineFingerprint = terminalSemanticLineFingerprint(logicalLine);
+        const previous = previousByRow.get(lineStart);
+        if (previous?.fingerprint === lineFingerprint) {
+          retainedLines.add(previous);
+          nextLines.push(previous);
+          decorationCount += previous.decorations.length;
+          continue;
+        }
+        const tokens = terminalSemanticTokens(logicalLine.text);
+        if (!tokens.length) continue;
+        const startMarker = term.registerMarker(lineStart - cursorRow);
+        if (!startMarker) continue;
+        const markers = [startMarker];
+        const decorations: Array<{ dispose: () => void }> = [];
+        const markerByRow = new Map<number, IMarker>([[lineStart, startMarker]]);
+        for (const token of tokens) {
           for (const segment of terminalSemanticCellSegments(logicalLine.cells, token.start, token.end)) {
             let marker = markerByRow.get(segment.row);
-            if (marker === undefined) {
+            if (!marker) {
               marker = term.registerMarker(segment.row - cursorRow);
-              markerByRow.set(segment.row, marker);
-              if (marker) semanticMarkers.push(marker);
+              if (marker) {
+                markerByRow.set(segment.row, marker);
+                markers.push(marker);
+              }
             }
             if (!marker) continue;
             const decoration = term.registerDecoration({
@@ -1419,11 +1494,21 @@ export default function TerminalCanvas({
               layer: "top",
             });
             if (!decoration) continue;
-            semanticDecorations.push(decoration);
+            decorations.push(decoration);
             decorationCount += 1;
           }
         }
+        nextLines.push({
+          marker: startMarker,
+          fingerprint: lineFingerprint,
+          decorations,
+          markers,
+        });
       }
+      for (const previous of semanticLines) {
+        if (!retainedLines.has(previous)) disposeSemanticLine(previous);
+      }
+      semanticLines = nextLines;
       host.dataset.terminalSemanticHighlighting = "active";
       host.dataset.terminalSemanticDecorationCount = String(decorationCount);
     };
@@ -1474,7 +1559,6 @@ export default function TerminalCanvas({
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
-      semanticContentRevision += 1;
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
     });

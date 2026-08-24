@@ -2,12 +2,14 @@ export type TerminalSemanticCell = {
   row: number;
   column: number;
   width: number;
+  colorable?: false;
 };
 
 export type TerminalSemanticBufferCell = {
   column: number;
   width: number;
   chars: string;
+  colorable?: false;
 };
 
 export type TerminalSemanticMappedRow = {
@@ -28,11 +30,13 @@ export function mapTerminalSemanticRow(
     const cellCharacters = Array.from(bufferCell.chars || " ");
     for (const character of cellCharacters) {
       characters.push(character);
-      cells.push({
+      const cell: TerminalSemanticCell = {
         row,
         column: bufferCell.column,
         width: Math.max(1, bufferCell.width),
-      });
+      };
+      if (bufferCell.colorable === false) cell.colorable = false;
+      cells.push(cell);
       content.push(Boolean(bufferCell.chars));
     }
   }
@@ -51,6 +55,7 @@ export function terminalSemanticCellSegments(
 ): TerminalSemanticCell[] {
   const segments: TerminalSemanticCell[] = [];
   for (const cell of cells.slice(Math.max(0, start), Math.max(0, end))) {
+    if (cell.colorable === false) continue;
     const previous = segments.at(-1);
     if (previous && previous.row === cell.row && cell.column <= previous.column + previous.width) {
       previous.width = Math.max(previous.width, cell.column + cell.width - previous.column);

@@ -17,22 +17,24 @@ describe("terminal input pump", () => {
     expect(calls).toEqual(["a"]);
   });
 
-  it("fast enqueue starts immediately without waiting for IPC completion", async () => {
+  it("bounds fast IPC calls and coalesces the remaining burst", async () => {
     const first = deferred();
     const calls: string[] = [];
     const pump = new TerminalInputPump((_sessionId, text) => {
       calls.push(text);
-      return calls.length === 1 ? first.promise : Promise.resolve();
+      if (calls.length === 1) return first.promise;
+      return Promise.resolve();
     });
 
     pump.enqueueFast("router", "a", "interactive");
     pump.enqueueFast("router", "b", "interactive");
     pump.enqueueFast("router", "c", "interactive");
-    expect(calls).toEqual(["a", "b", "c"]);
+    pump.enqueueFast("router", "d", "interactive");
+    expect(calls).toEqual(["a"]);
 
     first.resolve();
     await first.promise;
-    await expect.poll(() => calls).toEqual(["a", "b", "c"]);
+    await expect.poll(() => calls).toEqual(["a", "bcd"]);
   });
 
   it("keeps an atomic boundary behind in-flight fast input", async () => {

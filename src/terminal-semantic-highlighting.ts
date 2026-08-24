@@ -6,7 +6,11 @@ export type TerminalSemanticTokenKind =
   | "address"
   | "number"
   | "variable"
-  | "operator";
+  | "operator"
+  | "success"
+  | "warning"
+  | "error"
+  | "info";
 
 export type TerminalSemanticToken = {
   kind: TerminalSemanticTokenKind;
@@ -36,6 +40,72 @@ const commandSeparators = new Set([";", ";;", ";&", ";;&", "|", "|&", "||", "&&"
 const redirectionOperators = new Set(["<", ">", "<<", "<<-", "<<<", ">>", "><", "<>", ">&", "<&", ">|", "&>", "&>>"]);
 const specialPromptMarkers = new Set(["❯", "➜", "λ", "➤", "»"]);
 const supportedTerminalKinds = new Set(["serial", "shell", "ssh", "tcp", "telnet", "tmux"]);
+const outputStatusKinds: Readonly<Record<string, TerminalSemanticTokenKind>> = {
+  error: "error",
+  errors: "error",
+  err: "error",
+  failed: "error",
+  failure: "error",
+  fatal: "error",
+  denied: "error",
+  invalid: "error",
+  unavailable: "error",
+  disconnected: "error",
+  timeout: "error",
+  panic: "error",
+  exception: "error",
+  "错误": "error",
+  "失败": "error",
+  "致命": "error",
+  "拒绝": "error",
+  "无效": "error",
+  "断开": "error",
+  "超时": "error",
+  warning: "warning",
+  warnings: "warning",
+  warn: "warning",
+  deprecated: "warning",
+  retry: "warning",
+  retrying: "warning",
+  pending: "warning",
+  skipped: "warning",
+  partial: "warning",
+  "警告": "warning",
+  "重试": "warning",
+  "等待": "warning",
+  "跳过": "warning",
+  ok: "success",
+  okay: "success",
+  success: "success",
+  succeeded: "success",
+  passed: "success",
+  pass: "success",
+  complete: "success",
+  completed: "success",
+  connected: "success",
+  ready: "success",
+  running: "success",
+  enabled: "success",
+  done: "success",
+  "成功": "success",
+  "完成": "success",
+  "已连接": "success",
+  "就绪": "success",
+  "运行中": "success",
+  "启用": "success",
+  info: "info",
+  debug: "info",
+  trace: "info",
+  notice: "info",
+  listening: "info",
+  loading: "info",
+  starting: "info",
+  started: "info",
+  "信息": "info",
+  "调试": "info",
+  "监听": "info",
+  "启动": "info",
+};
 
 const wrapperPositionals: Readonly<Record<string, number>> = {
   sudo: 0,
@@ -94,12 +164,113 @@ export function terminalSemanticHighlightingSupported(value: unknown): boolean {
 export function terminalSemanticTokens(line: string): TerminalSemanticToken[] {
   const characters = Array.from(line);
   if (!characters.length || characters.length > MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) return [];
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(line)) return [];
   const commandStart = terminalPromptCommandStart(characters);
-  if (commandStart === null || commandStart >= characters.length) return [];
+  if (commandStart === null || commandStart >= characters.length) {
+    return terminalOutputSemanticTokens(characters);
+  }
 
   const tokens: TerminalSemanticToken[] = [];
   scanShell(characters, commandStart, tokens, "commands", null);
   return normalizeTokens(tokens, characters.length);
+}
+
+function terminalOutputSemanticTokens(characters: readonly string[]): TerminalSemanticToken[] {
+  const tokens: TerminalSemanticToken[] = [];
+  const occupied = new Uint8Array(characters.length);
+  collectOutputQuotedTokens(characters, tokens, occupied);
+
+  let index = 0;
+  while (index < characters.length) {
+    while (index < characters.length && /\s/u.test(characters[index])) index += 1;
+    if (index >= characters.length) break;
+    const wordStart = index;
+    while (index < characters.length && !/\s/u.test(characters[index])) index += 1;
+    const wordEnd = index;
+    const bounds = outputTokenBounds(characters, wordStart, wordEnd);
+    if (!bounds || occupied.slice(bounds.start, bounds.end).some(Boolean)) continue;
+
+    const value = characters.slice(bounds.start, bounds.end).join("");
+    const assignment = outputAssignment(value);
+    if (assignment) {
+      const separator = bounds.start + assignment.separator;
+      tokens.push({ kind: "variable", start: bounds.start, end: separator + 1 });
+      const assignedStart = separator + 1;
+      const assignedValue = characters.slice(assignedStart, bounds.end).join("");
+      const assignedKind = classifyOutputValue(assignedValue);
+      if (assignedKind) tokens.push({ kind: assignedKind, start: assignedStart, end: bounds.end });
+      continue;
+    }
+
+    const kind = classifyOutputValue(value)
+      ?? (characters[wordEnd - 1] === ":" && outputLabel(value) ? "info" : null);
+    if (kind) tokens.push({ kind, start: bounds.start, end: bounds.end });
+  }
+  return normalizeTokens(tokens, characters.length);
+}
+
+function collectOutputQuotedTokens(
+  characters: readonly string[],
+  tokens: TerminalSemanticToken[],
+  occupied: Uint8Array,
+) {
+  for (let start = 0; start < characters.length; start += 1) {
+    const quote = characters[start];
+    if (quote !== '"' && quote !== "'" && quote !== "`") continue;
+    const previous = characters[start - 1];
+    if (previous && !/[\s=:[({,]/u.test(previous)) continue;
+    let end = start + 1;
+    while (end < characters.length) {
+      if (characters[end] === "\\") {
+        end += 2;
+        continue;
+      }
+      if (characters[end] === quote) {
+        end += 1;
+        tokens.push({ kind: "string", start, end });
+        occupied.fill(1, start, end);
+        start = end - 1;
+        break;
+      }
+      end += 1;
+    }
+  }
+}
+
+function outputTokenBounds(
+  characters: readonly string[],
+  start: number,
+  end: number,
+): { start: number; end: number } | null {
+  while (start < end && "[({<".includes(characters[start])) start += 1;
+  while (end > start && ",;)]}>".includes(characters[end - 1])) end -= 1;
+  if (end > start && characters[end - 1] === ":") end -= 1;
+  return end > start ? { start, end } : null;
+}
+
+function outputAssignment(value: string): { separator: number } | null {
+  const match = value.match(/^[\p{L}_][\p{L}\p{N}_.-]{0,63}=/u);
+  if (!match || match[0].length >= value.length) return null;
+  return { separator: Array.from(match[0]).length - 1 };
+}
+
+function outputLabel(value: string): boolean {
+  return /^[\p{L}_][\p{L}\p{N}_.-]{0,31}$/u.test(value);
+}
+
+function classifyOutputValue(value: string): TerminalSemanticTokenKind | null {
+  const status = outputStatusKinds[value.toLocaleLowerCase("en-US")];
+  if (status) return status;
+  if (/^[1-5]\d\d$/u.test(value)) {
+    const category = Number(value[0]);
+    if (category === 2) return "success";
+    if (category >= 4) return "error";
+    return "info";
+  }
+  if (networkAddress(value)) return "address";
+  if (/^[+-]?(?:0x[\dA-Fa-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)(?:%|ns|us|ms|s|m|h|d|B|KiB|MiB|GiB|KiB\/s|MiB\/s|GiB\/s)?$/iu.test(value)) return "number";
+  if (pathArgument(value)) return "path";
+  return null;
 }
 
 function scanShell(
@@ -538,11 +709,11 @@ function normalizeTokens(tokens: TerminalSemanticToken[], lineLength: number): T
   const normalized: TerminalSemanticToken[] = [];
   for (const token of sorted) {
     const previous = normalized.at(-1);
-    if (previous && previous.kind === token.kind && token.start < previous.end) {
-      previous.end = Math.max(previous.end, token.end);
-    } else {
-      normalized.push({ ...token });
+    if (previous && token.start < previous.end) {
+      if (previous.kind === token.kind) previous.end = Math.max(previous.end, token.end);
+      continue;
     }
+    normalized.push({ ...token });
   }
   return normalized;
 }

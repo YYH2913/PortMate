@@ -168,9 +168,9 @@ pub(super) fn enqueue_interactive_text(
     io: SessionIo,
     session_id: String,
     text: String,
-) -> Result<Vec<u8>, String> {
+) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
         .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
@@ -290,13 +290,13 @@ pub(super) fn enqueue_interactive_text(
         session_id,
         runtime_id,
         text,
-        wire_bytes: wire_bytes.clone(),
+        wire_bytes,
     })
     .map_err(|error| match error {
         mpsc::error::TrySendError::Full(_) => "终端输入队列已满，请稍后重试".to_string(),
         mpsc::error::TrySendError::Closed(_) => "终端输入队列已关闭".to_string(),
     })?;
-    Ok(wire_bytes)
+    Ok(())
 }
 
 fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: String) {

@@ -13,9 +13,9 @@ type PendingTerminalInput = {
   waiters: Array<() => void>;
 };
 
-// Bound fire-and-forget IPC calls while still allowing a short burst of
-// typing to stay ahead of a high-latency webview bridge.
-const MAX_FAST_IN_FLIGHT = 8;
+// Keep a single cancellable IPC boundary. The native queued-input command
+// returns immediately, while any burst behind it is merged into one call.
+const MAX_FAST_IN_FLIGHT = 1;
 
 /**
  * Starts the first input immediately, then coalesces interactive input while

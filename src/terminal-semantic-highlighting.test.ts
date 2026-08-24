@@ -158,10 +158,32 @@ describe("terminal semantic highlighting", () => {
     ]);
   });
 
-  it("does not color non-prompt output, percentages, or spaced prose markers", () => {
-    expect(terminalSemanticTokens("transfer progress 100% complete")).toEqual([]);
-    expect(terminalSemanticTokens("100% complete")).toEqual([]);
+  it("colors structured output without turning ordinary prose into a command", () => {
+    expect(classified("transfer progress 100% complete")).toEqual([
+      { kind: "number", text: "100%" },
+      { kind: "success", text: "complete" },
+    ]);
+    expect(classified("ERROR upload failed status=timeout peer=192.168.1.1 file=/tmp/fw.bin bytes=4MiB")).toEqual([
+      { kind: "error", text: "ERROR" },
+      { kind: "error", text: "failed" },
+      { kind: "variable", text: "status=" },
+      { kind: "error", text: "timeout" },
+      { kind: "variable", text: "peer=" },
+      { kind: "address", text: "192.168.1.1" },
+      { kind: "variable", text: "file=" },
+      { kind: "path", text: "/tmp/fw.bin" },
+      { kind: "variable", text: "bytes=" },
+      { kind: "number", text: "4MiB" },
+    ]);
+    expect(classified('INFO listening https://127.0.0.1:8787 message="bridge ready" 200')).toEqual([
+      { kind: "info", text: "INFO" },
+      { kind: "info", text: "listening" },
+      { kind: "address", text: "https://127.0.0.1:8787" },
+      { kind: "string", text: '"bridge ready"' },
+      { kind: "success", text: "200" },
+    ]);
     expect(terminalSemanticTokens("normal program output")).toEqual([]);
+    expect(classified("don't color prose just because it's ordinary")).toEqual([]);
     expect(terminalSemanticTokens("Issue # status remains open")).toEqual([]);
   });
 

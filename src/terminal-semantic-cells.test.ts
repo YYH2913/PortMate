@@ -93,4 +93,19 @@ describe("terminal semantic cell mapping", () => {
       { row: 9, column: 0, width: 2 },
     ]);
   });
+
+  it("does not decorate cells that already carry an ANSI foreground", () => {
+    const mapped = mapTerminalSemanticRow(10, [
+      ...asciiCells("ERROR "),
+      { column: 6, width: 1, chars: "4", colorable: false },
+      { column: 7, width: 1, chars: "0", colorable: false },
+      { column: 8, width: 1, chars: "4", colorable: false },
+      ...asciiCells(" failed", 9),
+    ]);
+
+    expect(terminalSemanticCellSegments(mapped.cells, 0, mapped.cells.length)).toEqual([
+      { row: 10, column: 0, width: 6 },
+      { row: 10, column: 9, width: 7 },
+    ]);
+  });
 });

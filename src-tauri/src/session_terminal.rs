@@ -199,19 +199,23 @@ pub(crate) async fn send_text(
     text: String,
     interactive: Option<bool>,
     queued: Option<bool>,
-) -> Result<SessionEvent, String> {
+) -> Result<Option<SessionEvent>, String> {
     if interactive.unwrap_or(false) {
         if queued.unwrap_or(false) {
-            let wire_bytes = enqueue_interactive_text(
+            enqueue_interactive_text(
                 state.inner().session_io(),
-                session_id.clone(),
-                text.clone(),
+                session_id,
+                text,
             )?;
-            return Ok(deferred_outbound_event(&session_id, &text, &wire_bytes));
+            return Ok(None);
         }
-        return send_text_interactive_inner(state.inner().session_io(), session_id, text).await;
+        return send_text_interactive_inner(state.inner().session_io(), session_id, text)
+            .await
+            .map(Some);
     }
-    send_text_inner(state.inner().session_io(), session_id, text).await
+    send_text_inner(state.inner().session_io(), session_id, text)
+        .await
+        .map(Some)
 }
 
 #[tauri::command]

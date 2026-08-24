@@ -35,7 +35,7 @@ PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets
 | --- | --- |
 | Sessions and protocols | SSH, local Shell PTY, Serial, Telnet, raw TCP, and Tmux; TLS for TCP/Telnet; HTTP CONNECT and SOCKS5 proxies for SSH/Tmux/TCP/Telnet |
 | Terminal workspace | Tabs, recursive splits, cross-group drag and drop, detached windows, layout restore, Insert/Normal modes with matching cursors, search, line navigation, and text/hex/split views |
-| Interactive workflow | WindTerm-style command completion and parameter hints, semantic command coloring, Quick Commands, scoped custom scripts, OneKeys, free input, and synchronized input |
+| Interactive workflow | WindTerm-style command completion and parameter hints, semantic coloring for commands and unstyled output without overriding ANSI colors, Quick Commands, scoped custom scripts, OneKeys, free input, and synchronized input |
 | SSH security | Profile-scoped host keys, TOFU and key-change blocking, Host/Client Key Managers, multi-hop Jump Hosts, ssh-agent, password/public-key/keyboard-interactive, and Linux libssh GSSAPI authentication |
 | Files and transfer | SFTP/SCP file management, one-shot TFTP, drag and drop, queues, throttling, cancellation, retry, resumable transfers, and X/Y/ZModem |
 | Operations and diagnostics | SSH health checks, local/remote/dynamic tunnels, persistent Sysmon sidebar and trends, structured logs, triggers, and diagnostic session bundles |
