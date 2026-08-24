@@ -325,6 +325,14 @@ export interface TerminalBytesEvent {
   originalLength: number;
   truncated: boolean;
   eventId?: string | null;
+  canonical?: boolean;
+}
+
+export interface TerminalLiveEvent {
+  event: SessionEvent;
+  bytes: number[];
+  originalLength: number;
+  truncated: boolean;
 }
 
 export interface SerialCaptureFrame {

@@ -7,7 +7,7 @@ import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
 import { parseWorkspaceWindowRequest } from "./workspace-window-route";
 import { useModalInteractionBoundary } from "./modal-interaction-boundary";
 import { isBackendAvailable } from "./api";
-import { listenTerminalByteEvents } from "./terminal-byte-events";
+import { listenTerminalByteEvents, listenTerminalLiveEvents } from "./terminal-byte-events";
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));
@@ -18,8 +18,10 @@ if (detachedPaneRequest) document.body.classList.add("detached-window");
 if (serialAnalyzerRequest) document.body.classList.add("serial-analyzer-window");
 
 if (isBackendAvailable()) {
-  void listenTerminalByteEvents()
-    .then((unlisten) => window.addEventListener("unload", unlisten, { once: true }))
+  void Promise.all([listenTerminalByteEvents(), listenTerminalLiveEvents()])
+    .then((unlisteners) => window.addEventListener("unload", () => {
+      for (const unlisten of unlisteners) unlisten();
+    }, { once: true }))
     .catch(() => {});
 }
 

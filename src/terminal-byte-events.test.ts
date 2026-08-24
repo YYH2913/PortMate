@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  dispatchTerminalLiveEventForTests,
   dispatchTerminalByteEventForTests,
   resetTerminalByteEventBridgeForTests,
+  subscribeTerminalLiveEvents,
   subscribeTerminalByteEvents,
 } from "./terminal-byte-events";
 import { resetTerminalByteCacheForTests } from "./terminal-byte-state";
@@ -27,6 +29,55 @@ afterEach(() => {
 });
 
 describe("terminal byte event bridge", () => {
+  it("delivers one canonical packet with metadata and bytes and replays it once", () => {
+    const received: string[] = [];
+    const packet = {
+      event: {
+        id: "event-canonical",
+        sessionId: "session-a",
+        paneId: "session-a:main",
+        ts: "2026-08-24T08:00:00.000Z",
+        direction: "inbound" as const,
+        stream: "stdout" as const,
+        bytesRef: null,
+        text: "status\\r\\n",
+        annotations: {},
+      },
+      bytes: [0x73, 0x74, 0x61, 0x74, 0x75, 0x73, 0x0d, 0x0a],
+      originalLength: 8,
+      truncated: false,
+    };
+    expect(dispatchTerminalLiveEventForTests(packet)).toBe(true);
+    expect(dispatchTerminalLiveEventForTests(packet)).toBe(false);
+    const unsubscribe = subscribeTerminalLiveEvents("session-a", (value) => {
+      received.push(value.event.id + ":" + value.bytes.length);
+    });
+    expect(received).toEqual(["event-canonical:8"]);
+    unsubscribe();
+  });
+
+  it("rejects malformed nested event metadata and inconsistent lengths", () => {
+    const base = {
+      event: {
+        id: "event-invalid",
+        sessionId: "session-a",
+        paneId: "session-a:main",
+        ts: "2026-08-24T08:00:00.000Z",
+        direction: "inbound",
+        stream: "stdout",
+        bytesRef: null,
+        text: "x",
+        annotations: {},
+      },
+      bytes: [120],
+      originalLength: 1,
+      truncated: false,
+    };
+    expect(dispatchTerminalLiveEventForTests({ ...base, event: { ...base.event, paneId: "other:main" } })).toBe(false);
+    expect(dispatchTerminalLiveEventForTests({ ...base, event: { ...base.event, text: 42 } })).toBe(false);
+    expect(dispatchTerminalLiveEventForTests({ ...base, originalLength: 2 })).toBe(false);
+  });
+
   it("delivers valid frames synchronously and in transport order", () => {
     const received: string[] = [];
     const unsubscribe = subscribeTerminalByteEvents("session-a", (event) => received.push(event.id));

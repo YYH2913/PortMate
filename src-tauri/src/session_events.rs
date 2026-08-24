@@ -127,17 +127,24 @@ fn record_accepted_channel_bytes(
     text: String,
 ) {
     if text.is_empty() {
-        // Binary/control-only traffic still gets a raw log entry, but it does
-        // not need to enter the text terminal event stream.
-        publish_terminal_bytes(
-            io.app_handle.as_ref(),
-            session_id,
-            EventDirection::Inbound,
+        // Binary/control-only traffic still gets a raw log entry. Publish the
+        // same canonical live packet as text output so mixed binary/text
+        // chunks share one ordered frontend channel.
+        let event = SessionEvent {
+            id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            pane_id: format!("{session_id}:main"),
+            ts: Utc::now(),
+            direction: EventDirection::Inbound,
             stream,
-            terminal_bytes,
-            None,
-            Utc::now(),
-        );
+            bytes_ref: None,
+            text: None,
+            annotations: BTreeMap::from([(
+                "binaryOnly".to_string(),
+                "true".to_string(),
+            )]),
+        };
+        publish_terminal_live_event(io.app_handle.as_ref(), &event, terminal_bytes);
         if let Err(error) = enqueue_inbound_log_persistence(
             io.clone(),
             session_id.to_string(),
@@ -151,15 +158,6 @@ fn record_accepted_channel_bytes(
     }
     let event_id = Uuid::new_v4().to_string();
     let event_timestamp = Utc::now();
-    publish_terminal_bytes(
-        io.app_handle.as_ref(),
-        session_id,
-        EventDirection::Inbound,
-        stream,
-        terminal_bytes,
-        Some(&event_id),
-        event_timestamp.to_owned(),
-    );
     let annotations = active_command_id(io, session_id)
         .map(|command_id| BTreeMap::from([("commandId".to_string(), command_id)]))
         .unwrap_or_default();
@@ -174,6 +172,11 @@ fn record_accepted_channel_bytes(
         text: Some(text.clone()),
         annotations,
     };
+    publish_terminal_live_event(
+        io.app_handle.as_ref(),
+        &prepared_event,
+        terminal_bytes,
+    );
     if let Err(error) = enqueue_inbound_log_persistence(
         io.clone(),
         session_id.to_string(),

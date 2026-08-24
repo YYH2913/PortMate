@@ -86,8 +86,8 @@ import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodi
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
 import { openTerminalWebLink } from "./terminal-web-link";
-import { subscribeTerminalByteEvents } from "./terminal-byte-events";
-import type { OneKeySummary, SessionEvent, SessionSummary, TerminalBytesEvent } from "./types";
+import { subscribeTerminalByteEvents, subscribeTerminalLiveEvents } from "./terminal-byte-events";
+import type { OneKeySummary, SessionEvent, SessionSummary, TerminalBytesEvent, TerminalLiveEvent } from "./types";
 
 type TerminalCanvasProps = {
   viewId?: string;
@@ -120,7 +120,7 @@ const TERMINAL_SEMANTIC_SETTLE_MS = 180;
 const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
 const TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS = 80;
 const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
-const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 12;
+const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 250;
 const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
 const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
@@ -364,7 +364,9 @@ export default function TerminalCanvas({
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
   const writeEventRef = useRef<(event: SessionEvent, awaitRaw?: boolean) => boolean>(() => false);
   const writeTerminalBytesRef = useRef<((event: TerminalBytesEvent) => boolean) | null>(null);
+  const writeTerminalLiveRef = useRef<((event: TerminalLiveEvent) => boolean) | null>(null);
   const deferredTerminalBytesRef = useRef<TerminalBytesEvent[]>([]);
+  const deferredTerminalLiveRef = useRef<TerminalLiveEvent[]>([]);
   const polledEventIdsRef = useRef(new Map<string, string[]>());
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -1395,6 +1397,7 @@ export default function TerminalCanvas({
     };
     writeEventRef.current = writeEvent;
     const writeTerminalBytes = (bytesEvent: TerminalBytesEvent) => {
+      if (bytesEvent.canonical) return false;
       if (bytesEvent.sessionId !== active.profile.id || bytesEvent.direction !== "inbound") return false;
       if (!bytesEvent.id || !Array.isArray(bytesEvent.bytes) || !bytesEvent.bytes.length
         || bytesEvent.bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)) return false;
@@ -1460,6 +1463,41 @@ export default function TerminalCanvas({
     writeTerminalBytesRef.current = writeTerminalBytes;
     const deferredBytes = deferredTerminalBytesRef.current.splice(0);
     for (const bytesEvent of deferredBytes) writeTerminalBytes(bytesEvent);
+    const writeTerminalLive = (packet: TerminalLiveEvent) => {
+      if (packet.event.sessionId !== active.profile.id) return false;
+      const pendingText = pendingTextEvents.get(packet.event.id);
+      if (pendingText) {
+        if (pendingText.fallbackTimer !== undefined) window.clearTimeout(pendingText.fallbackTimer);
+        pendingText.rawBytes = packet.truncated ? undefined : Uint8Array.from(packet.bytes);
+        pendingText.event = {
+          ...packet.event,
+          annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" },
+        };
+        enqueueFallback(pendingText, !packet.truncated);
+        return true;
+      }
+      if (seenEventsRef.current.has(packet.event.id)) return false;
+      if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, packet.event.id)) return false;
+      const event = packet.truncated
+        ? {
+          ...packet.event,
+          text: packet.event.text || "PortMate: terminal byte frame was truncated; omitted bytes were not rendered.\r\n",
+          annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" },
+        }
+        : { ...packet.event, annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" } };
+      const rawBytes = packet.event.direction === "inbound" && !packet.truncated
+        ? Uint8Array.from(packet.bytes)
+        : undefined;
+      queueEventWrite(rawBytes ? { event, rawBytes } : { event });
+      drainEventWrites();
+      if (packet.event.direction === "inbound") {
+        applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, event));
+      }
+      return true;
+    };
+    writeTerminalLiveRef.current = writeTerminalLive;
+    const deferredLive = deferredTerminalLiveRef.current.splice(0);
+    for (const packet of deferredLive) writeTerminalLive(packet);
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
     let webglGeneration = 0;
@@ -1837,6 +1875,7 @@ export default function TerminalCanvas({
 
     return () => {
       terminalDisposed = true;
+      writeTerminalLiveRef.current = null;
       window.cancelAnimationFrame(readyFrame);
       window.removeEventListener("resize", handleWindowResize);
       if (windowResizeFrame !== null) window.cancelAnimationFrame(windowResizeFrame);
@@ -1875,7 +1914,9 @@ export default function TerminalCanvas({
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
       if (writeTerminalBytesRef.current === writeTerminalBytes) writeTerminalBytesRef.current = null;
+      if (writeTerminalLiveRef.current === writeTerminalLive) writeTerminalLiveRef.current = null;
       deferredTerminalBytesRef.current = [];
+      deferredTerminalLiveRef.current = [];
       for (const pending of pendingTextEvents.values()) {
         if (pending.fallbackTimer !== undefined) window.clearTimeout(pending.fallbackTimer);
       }
@@ -2283,6 +2324,20 @@ export default function TerminalCanvas({
       disposed = true;
       unlisten?.();
     };
+  }, [active?.profile.id]);
+
+  useEffect(() => {
+    if (!active || !isBackendAvailable()) return;
+    return subscribeTerminalLiveEvents(active.profile.id, (packet) => {
+      const writeTerminalLive = writeTerminalLiveRef.current;
+      if (writeTerminalLive) writeTerminalLive(packet);
+      else {
+        deferredTerminalLiveRef.current.push(packet);
+        if (deferredTerminalLiveRef.current.length > 256) {
+          deferredTerminalLiveRef.current.splice(0, deferredTerminalLiveRef.current.length - 256);
+        }
+      }
+    });
   }, [active?.profile.id]);
 
   useEffect(() => {
