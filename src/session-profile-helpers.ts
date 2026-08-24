@@ -238,6 +238,17 @@ export function createIdentityRef(): IdentityRef {
   };
 }
 
+export async function chooseSshPrivateKeyPath(defaultPath = ""): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    title: "选择 SSH 私钥文件",
+    directory: false,
+    multiple: false,
+    defaultPath: defaultPath.trim() || undefined,
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
 export function serialPortOptions(current: string, discovered: string[]) {
   return Array.from(new Set([current, ...discovered].filter(Boolean)));
 }

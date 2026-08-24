@@ -72,6 +72,7 @@ import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
 import { normalizeSessionProfileMetadata } from "./session-settings-state";
 import { applyPuttyImportTerminal, createOpenSshImportConnection, createPuttyImportConnection, createSerialConnection, createShellConnection, createShellImportConnection, formatSshTarget } from "./session-profile-helpers";
+import { cloneImportedProfile, serializePortMateProfileTransfer } from "./portmate-profile-transfer";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
@@ -3465,6 +3466,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     return importSessionCandidates(candidates, createShellImportedProfile, (candidate) => candidate.name);
   }
 
+  async function importPortMateProfiles(profiles: SessionProfile[]) {
+    const savedIds: string[] = [];
+    const failures: Array<{ id: string; message: string }> = [];
+    for (const profile of profiles) {
+      try {
+        const imported = prepareSessionProfile(cloneImportedProfile(profile, createSessionId));
+        const saved = await saveProfile(imported, null);
+        applySavedSession(saved, false);
+        savedIds.push(profile.id || profile.name);
+      } catch (error) {
+        failures.push({ id: profile.id || profile.name, message: profile.name + ": " + formatError(error) });
+      }
+    }
+    return { savedIds, failures };
+  }
+
   async function importSessionCandidates<C extends { id: string }>(
     candidates: C[],
     createProfile: (candidate: C) => SessionProfile,
@@ -4586,6 +4603,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             onDraftChange={setDraft}
             onSave={saveDraft}
             onConnect={connectSavedDraft}
+            onOpenClientKeyManager={async () => {
+              const saved = await saveDraft();
+              if (saved) {
+                setDialog(null);
+                setUtilityDialog("keys");
+              }
+            }}
+            onExportProfile={async () => {
+              const json = serializePortMateProfileTransfer([draft]);
+              const blob = new Blob([json], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement("a");
+              anchor.href = url;
+              anchor.download = (draft.name || "portmate-profile").replace(/[^A-Za-z0-9._-]+/g, "_") + ".portmate.json";
+              anchor.click();
+              URL.revokeObjectURL(url);
+              setNotice({ title: "Profile 已导出", message: "导出文件不包含明文密码或私钥；迁移到新设备后请重新保存凭据。" });
+            }}
             onClose={() => {
               draftExpectedProfileRef.current = null;
               setDialog(null);
@@ -4599,6 +4634,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             onImportOpenSsh={importOpenSshConfigCandidates}
             onImportPutty={importPuttyConfigCandidates}
             onImportShell={importShellConfigCandidates}
+            onImportPortMate={importPortMateProfiles}
             onClose={() => setUtilityDialog(null)}
           />
         </Suspense>

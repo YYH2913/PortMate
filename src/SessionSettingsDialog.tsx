@@ -37,6 +37,7 @@ import {
   profileCredentialSecretRefs,
   protocolFromKind,
   serialPortOptions,
+  chooseSshPrivateKeyPath,
 } from "./session-profile-helpers";
 import {
   flattenSessionTree,
@@ -99,6 +100,8 @@ export default function SessionSettingsDialog({
   onDraftChange,
   onSave,
   onConnect,
+  onOpenClientKeyManager,
+  onExportProfile,
   onClose,
 }: {
   draft: SessionProfile;
@@ -109,6 +112,8 @@ export default function SessionSettingsDialog({
   onDraftChange: (draft: SessionProfile) => void;
   onSave: (proxyPasswordUpdate: ProxyPasswordUpdate) => Promise<SessionSummary | null>;
   onConnect: (saved: SessionSummary) => void;
+  onOpenClientKeyManager?: () => Promise<void>;
+  onExportProfile?: () => Promise<void>;
   onClose: () => void;
 }) {
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
@@ -119,6 +124,7 @@ export default function SessionSettingsDialog({
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
   const [writeBusy, setWriteBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
+  const [selectedIdentityId, setSelectedIdentityId] = useState("");
   const writeGate = useRef(new KeyedRequestGate<"write">());
   const stagedSecretRefs = useRef(new Set<string>());
   const connectionDrafts = useRef(new Map<ProtocolTab, SessionProfile["connection"]>([
@@ -299,6 +305,9 @@ export default function SessionSettingsDialog({
               onWriteStart={beginWriteOperation}
               onSecretCreated={registerStagedSecret}
               onWriteFinish={finishWriteOperation}
+              selectedIdentityId={selectedIdentityId}
+              onSelectedIdentityIdChange={setSelectedIdentityId}
+              onOpenClientKeyManager={onOpenClientKeyManager}
             />
           </section>
         </>
@@ -329,6 +338,7 @@ export default function SessionSettingsDialog({
           </>
         ) : (
           <>
+            {onExportProfile ? <button type="button" onClick={() => void onExportProfile()} disabled={busy}>导出可迁移 Profile</button> : null}
             <button onClick={() => void submit(false)} disabled={busy}>保存</button>
             <button onClick={() => void submit(true)} disabled={busy}>保存并连接</button>
             <button onClick={() => void cancel()} disabled={busy}>取消</button>
@@ -784,6 +794,9 @@ function SessionSettingsContent({
   onWriteStart,
   onSecretCreated,
   onWriteFinish,
+  selectedIdentityId,
+  onSelectedIdentityIdChange,
+  onOpenClientKeyManager,
 }: {
   activeProtocol: ProtocolTab;
   activeSection: string;
@@ -797,6 +810,9 @@ function SessionSettingsContent({
   onWriteStart: () => number | null;
   onSecretCreated: (secretRef: string, token: number) => boolean;
   onWriteFinish: (token: number) => void;
+  selectedIdentityId: string;
+  onSelectedIdentityIdChange: (id: string) => void;
+  onOpenClientKeyManager?: () => Promise<void>;
 }) {
   if (activeSection === "会话") {
     return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
@@ -901,11 +917,11 @@ function SessionSettingsContent({
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} />;
+    return <SshAdvancedFields section="连接" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} selectedIdentityId={selectedIdentityId} onSelectedIdentityIdChange={onSelectedIdentityIdChange} onOpenClientKeyManager={onOpenClientKeyManager} />;
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["代理", "验证", "代理人", "密码", "公钥"].includes(activeSection)) {
-    return <SshAdvancedFields section={activeSection} draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} />;
+    return <SshAdvancedFields section={activeSection} draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} selectedIdentityId={selectedIdentityId} onSelectedIdentityIdChange={onSelectedIdentityIdChange} onOpenClientKeyManager={onOpenClientKeyManager} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
@@ -1140,6 +1156,9 @@ function SshAdvancedFields({
   onWriteStart,
   onSecretCreated,
   onWriteFinish,
+  selectedIdentityId,
+  onSelectedIdentityIdChange,
+  onOpenClientKeyManager,
 }: {
   section: string;
   draft: SessionProfile;
@@ -1151,6 +1170,9 @@ function SshAdvancedFields({
   onWriteStart: () => number | null;
   onSecretCreated: (secretRef: string, token: number) => boolean;
   onWriteFinish: (token: number) => void;
+  selectedIdentityId: string;
+  onSelectedIdentityIdChange: (id: string) => void;
+  onOpenClientKeyManager?: () => Promise<void>;
 }) {
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
   const kind = draft.connection.kind === "tmux" ? "tmux" : "ssh";
@@ -1166,6 +1188,8 @@ function SshAdvancedFields({
   const [sshHealthError, setSshHealthError] = useState("");
   const [jumpSecretDrafts, setJumpSecretDrafts] = useState<Record<string, string>>({});
   const [jumpStatus, setJumpStatus] = useState("");
+  const [identityManagerBusy, setIdentityManagerBusy] = useState(false);
+  const effectiveIdentityId = selectedIdentityId || ssh.identityRefs[0]?.id || "";
   const requestGate = useRef(new KeyedRequestGate<"health" | "host-key">());
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -1283,7 +1307,19 @@ function SshAdvancedFields({
                     <input value={jump.host} onChange={(event) => updateJump(index, { host: event.target.value })} placeholder="host" />
                     <input type="number" value={jump.port} onChange={(event) => updateJump(index, { port: Number(event.target.value) || 22 })} aria-label={`Jump ${index + 1} port`} />
                     <input value={jump.username} onChange={(event) => updateJump(index, { username: event.target.value })} placeholder="user" />
-                    <input value={jump.identityRef ?? ""} onChange={(event) => updateJump(index, { identityRef: event.target.value || null })} placeholder="identity id" />
+                    <select
+                      value={jump.identityRef ?? ""}
+                      onChange={(event) => updateJump(index, { identityRef: event.target.value || null })}
+                      aria-label={`Jump ${index + 1} client identity`}
+                      title="选择用于该跳板的客户端身份；留空表示继承 Profile 身份"
+                    >
+                      <option value="">继承 Profile 身份</option>
+                      {ssh.identityRefs.map((identity) => (
+                        <option key={identity.id} value={identity.id}>
+                          {identity.label} · {identitySourceLabel(identity.source)}
+                        </option>
+                      ))}
+                    </select>
                     <button type="button" className="icon-button" onClick={() => removeJump(index)} title="删除跳板" aria-label={`删除跳板 ${index + 1}`}>
                       <Trash2 size={14} />
                     </button>
@@ -1599,15 +1635,37 @@ function SshAdvancedFields({
   }
 
   if (section === "公钥") {
-    const firstIdentity = ssh.identityRefs[0] ?? createIdentityRef();
+    const identities = ssh.identityRefs;
+    const selectedIdentity = identities.find((identity) => identity.id === effectiveIdentityId)
+      ?? identities[0]
+      ?? createIdentityRef();
+    const selectedIdentityIndex = identities.findIndex((identity) => identity.id === selectedIdentity.id);
     const authOrderValue = ssh.identityPolicy.authOrder.join(">");
     const authOrderIsPreset = SSH_AUTH_ORDER_OPTIONS.some((option) => option === authOrderValue);
     const authOrderOptions: readonly string[] = authOrderIsPreset
       ? SSH_AUTH_ORDER_OPTIONS
       : [authOrderValue, ...SSH_AUTH_ORDER_OPTIONS];
     const updateIdentity = (patch: Partial<IdentityRef>) => {
-      const identity = { ...firstIdentity, ...patch };
-      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...ssh.identityRefs.slice(1)] } });
+      const identity = { ...selectedIdentity, ...patch };
+      const nextIdentities = selectedIdentityIndex < 0
+        ? [identity, ...identities]
+        : identities.map((current, index) => index === selectedIdentityIndex ? identity : current);
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: nextIdentities } });
+    };
+    const addIdentity = () => {
+      const identity = createIdentityRef();
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...identities] } });
+      onSelectedIdentityIdChange(identity.id);
+    };
+    const removeIdentity = () => {
+      if (selectedIdentityIndex < 0) return;
+      const nextIdentities = identities.filter((_, index) => index !== selectedIdentityIndex);
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: nextIdentities } });
+      onSelectedIdentityIdChange(nextIdentities[0]?.id ?? "");
+    };
+    const choosePrivateKey = async () => {
+      const path = await chooseSshPrivateKeyPath(selectedIdentity.path ?? "");
+      if (path) updateIdentity({ path, source: "system-file", secretRef: null });
     };
     const saveVaultPrivateKey = async () => {
       if (writeBusy || !vaultPrivateKey.trim()) return;
@@ -1634,7 +1692,7 @@ function SshAdvancedFields({
       }
     };
     const deleteVaultPrivateKey = () => {
-      if (!firstIdentity.secretRef) return;
+      if (!selectedIdentity.secretRef) return;
       setVaultBusy(true);
       setVaultStatus("");
       updateIdentity({ secretRef: null });
@@ -1675,39 +1733,65 @@ function SshAdvancedFields({
             },
           })}
         />
-        <DialogField label="公钥:(K)">
-          <select value={firstIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"] })}>
-            <option>profile-vault</option>
-            <option>system-file</option>
-            <option>agent</option>
-            <option>public-key-only</option>
+        <DialogField label="公钥:(K) · 客户端身份">
+          <select value={selectedIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"], ...(event.target.value === "system-file" ? {} : { path: null }), ...(event.target.value === "profile-vault" ? {} : { secretRef: null }) })} disabled={selectedIdentityIndex < 0} aria-label="客户端身份来源">
+            <option value="system-file">本机私钥文件</option>
+            <option value="profile-vault">Profile Vault（Stronghold）</option>
+            <option value="agent">ssh-agent 身份</option>
+            <option value="public-key-only">仅公钥信息</option>
           </select>
         </DialogField>
+        <div className="session-identity-selector" role="group" aria-label="客户端身份选择">
+          <span>身份配置</span>
+          <div className="inline-actions">
+            <select value={selectedIdentity.id} onChange={(event) => onSelectedIdentityIdChange(event.target.value)} disabled={!identities.length} aria-label="客户端身份选择">
+              {!identities.length ? <option value="">尚未配置身份</option> : null}
+              {identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.label} · {identitySourceLabel(identity.source)}</option>)}
+            </select>
+            <button type="button" onClick={addIdentity} title="添加客户端身份">添加</button>
+            <button type="button" onClick={removeIdentity} disabled={selectedIdentityIndex < 0} title="移除当前身份引用">移除</button>
+          </div>
+        </div>
+        <div className="session-identity-hint" role="note">
+          <strong>{identities.length ? "身份已按顺序尝试" : "没有可用于公钥认证的身份"}</strong>
+          <span>{identities.length ? "Profile Vault、系统私钥或 ssh-agent 身份由这里选择；不要手填 identity id 或 secretRef。" : "使用下方添加系统私钥，或打开 Client Key Manager 导入/绑定身份。"}</span>
+          {onOpenClientKeyManager ? (
+            <button type="button" onClick={async () => {
+              setIdentityManagerBusy(true);
+              try { await onOpenClientKeyManager(); } finally { setIdentityManagerBusy(false); }
+            }} disabled={identityManagerBusy || writeBusy}>
+              {identityManagerBusy ? "正在打开身份管理器" : "管理客户端身份"}
+            </button>
+          ) : null}
+        </div>
         <DialogField label="名称:(N)">
-          <input value={firstIdentity.label} onChange={(event) => updateIdentity({ label: event.target.value })} />
+          <input value={selectedIdentity.label} onChange={(event) => updateIdentity({ label: event.target.value })} disabled={selectedIdentityIndex < 0} />
         </DialogField>
         <DialogField label="私钥文件:(F)">
-          <input value={firstIdentity.path ?? ""} onChange={(event) => updateIdentity({ path: event.target.value || null, source: event.target.value ? "system-file" : firstIdentity.source })} placeholder="~/.ssh/id_ed25519" />
+          <div className="inline-actions">
+            <input value={selectedIdentity.path ?? ""} onChange={(event) => updateIdentity({ path: event.target.value || null, source: event.target.value ? "system-file" : selectedIdentity.source })} placeholder="~/.ssh/id_ed25519" disabled={selectedIdentity.source !== "system-file"} />
+            <button type="button" onClick={() => void choosePrivateKey()} disabled={selectedIdentityIndex < 0} title="选择本机 SSH 私钥文件">选择</button>
+          </div>
         </DialogField>
         <DialogField label="Vault Ref:">
-          <input value={firstIdentity.secretRef ?? ""} readOnly placeholder="保存 profile-vault 私钥后生成" />
+          <input value={selectedIdentity.secretRef ? "已安全保存在 Stronghold" : ""} readOnly placeholder="未保存私钥" />
         </DialogField>
-        {firstIdentity.source === "profile-vault" ? (
+        {selectedIdentity.source === "profile-vault" ? (
           <DialogField label="私钥内容:">
             <textarea value={vaultPrivateKey} onChange={(event) => setVaultPrivateKey(event.target.value)} placeholder="粘贴 OpenSSH 私钥，保存后只保留 secretRef" />
           </DialogField>
         ) : null}
-        {firstIdentity.source === "profile-vault" ? (
+        {selectedIdentity.source === "profile-vault" ? (
           <DialogField label="密钥库:">
             <div className="inline-actions">
               <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || writeBusy || !vaultPrivateKey.trim()}>保存到 Stronghold</button>
-              <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !firstIdentity.secretRef}>删除</button>
+              <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !selectedIdentity.secretRef}>删除</button>
               <span>{vaultStatus}</span>
             </div>
           </DialogField>
         ) : null}
         <DialogField label="指纹:(P)">
-          <input value={firstIdentity.fingerprintSha256 ?? ""} onChange={(event) => updateIdentity({ fingerprintSha256: event.target.value || null })} placeholder="SHA256:..." />
+          <input value={selectedIdentity.fingerprintSha256 ?? ""} onChange={(event) => updateIdentity({ fingerprintSha256: event.target.value || null })} placeholder="SHA256:..." disabled={selectedIdentityIndex < 0} />
         </DialogField>
       </>
     );
@@ -2069,6 +2153,15 @@ function sshAuthenticationLabel(method: AuthMethod) {
     case "password": return "密码";
     case "gssapi-with-mic": return "GSSAPI";
     case "none": return "无认证";
+  }
+}
+
+function identitySourceLabel(source: IdentityRef["source"]): string {
+  switch (source) {
+    case "profile-vault": return "Stronghold";
+    case "system-file": return "本机文件";
+    case "agent": return "ssh-agent";
+    case "public-key-only": return "仅公钥";
   }
 }
 

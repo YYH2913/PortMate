@@ -60,8 +60,7 @@ export default function CredentialDialog({
     }
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
+  function submitCredentials(forceSave = false) {
     const nextUsername = (selectedOneKey?.username ?? username).trim();
     if (!nextUsername) {
       usernameRef.current?.focus();
@@ -72,9 +71,14 @@ export default function CredentialDialog({
       password: !selectedOneKey && request.needsPassword ? password : null,
       passphrase: !selectedOneKey && request.hasIdentityFiles ? passphrase : null,
       oneKeyId: selectedOneKey?.id ?? null,
-      savePassword: !selectedOneKey && request.needsPassword && savePassword,
-      savePassphrase: !selectedOneKey && request.hasIdentityFiles && savePassphrase,
+      savePassword: !selectedOneKey && request.needsPassword && (forceSave || savePassword),
+      savePassphrase: !selectedOneKey && request.hasIdentityFiles && (forceSave || savePassphrase),
     });
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    submitCredentials(false);
   }
 
   return (
@@ -149,6 +153,14 @@ export default function CredentialDialog({
         <footer className="credential-actions">
           <button type="button" onClick={onCancel}>取消</button>
           <button type="submit">连接</button>
+          {!selectedOneKey && (Boolean(password) || Boolean(passphrase)) ? (
+            <button type="button" className="primary" onClick={(event) => {
+              event.preventDefault();
+              submitCredentials(true);
+            }}>
+              <KeyRound size={14} />保存并连接
+            </button>
+          ) : null}
         </footer>
       </form>
     </div>

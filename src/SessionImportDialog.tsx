@@ -4,28 +4,33 @@ import { KeyedRequestGate } from "./keyed-request-gate";
 import OpenSshConfigImportDialog from "./OpenSshConfigImportDialog";
 import PuttyConfigImportDialog from "./PuttyConfigImportDialog";
 import ShellConfigImportDialog from "./ShellConfigImportDialog";
+import PortMateProfileImportDialog from "./PortMateProfileImportDialog";
 import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
+import type { SessionProfile } from "./types";
 
-type SessionImportMode = "openssh" | "putty" | "shell";
+type SessionImportMode = "openssh" | "putty" | "shell" | "portmate";
 
 const importModes: Array<{ id: SessionImportMode; label: string }> = [
   { id: "openssh", label: "OpenSSH" },
   { id: "putty", label: "PuTTY" },
   { id: "shell", label: "Shell" },
+  { id: "portmate", label: "PortMate Profile" },
 ];
 
 export default function SessionImportDialog({
   onImportOpenSsh,
   onImportPutty,
   onImportShell,
+  onImportPortMate,
   onClose,
 }: {
   onImportOpenSsh: (candidates: OpenSshImportCandidate[]) => Promise<SessionConfigImportSaveResult>;
   onImportPutty: (candidates: PuttySessionImportCandidate[]) => Promise<SessionConfigImportSaveResult>;
   onImportShell: (candidates: ShellSessionImportCandidate[]) => Promise<SessionConfigImportSaveResult>;
+  onImportPortMate: (profiles: SessionProfile[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
 }) {
   const [mode, setMode] = useState<SessionImportMode>("openssh");
@@ -87,6 +92,9 @@ export default function SessionImportDialog({
   }
   if (mode === "shell") {
     return <ShellConfigImportDialog onImport={onImportShell} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+  }
+  if (mode === "portmate") {
+    return <PortMateProfileImportDialog onImport={onImportPortMate} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
   return <OpenSshConfigImportDialog onImport={onImportOpenSsh} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
 }
