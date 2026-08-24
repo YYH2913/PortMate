@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Activity, LoaderCircle, Maximize2, RefreshCw } from "lucide-react";
-import { invokeBackend } from "./api";
 import { formatBytes, formatEventClock } from "./display-formatters";
-import { KeyedRequestGate } from "./keyed-request-gate";
+import { refreshSysmonLive, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { formatSysmonNetworkAddresses } from "./sysmon-network-addresses";
-import type { SessionSummary, SysmonSnapshot } from "./types";
+import type { SessionSummary } from "./types";
 
 type SysmonSidebarTab = "processes" | "disks" | "network";
 
@@ -17,55 +16,14 @@ export default function SysmonSidebar({
   enabled: boolean;
   onOpenDetails: () => void;
 }) {
-  const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
   const [tab, setTab] = useState<SysmonSidebarTab>("processes");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const gate = useRef(new KeyedRequestGate<"sample">());
   const remote = session ? isSshLikeSession(session) : false;
   const canSample = Boolean(session) && (!remote || session?.runtime.status === "connected");
-
-  useEffect(() => {
-    gate.current.invalidateAll();
-    setSnapshot(null);
-    setError("");
-    setBusy(false);
-  }, [session?.profile.id]);
-
-  useEffect(() => {
-    if (!enabled || !session || !canSample) {
-      gate.current.invalidateAll();
-      setBusy(false);
-      return;
-    }
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 10_000);
-    return () => {
-      window.clearInterval(timer);
-      gate.current.invalidateAll();
-    };
-  }, [enabled, canSample, session?.profile.id]);
-
-  async function refresh() {
-    if (!session || !canSample) return;
-    const token = gate.current.begin("sample");
-    if (token === null) return;
-    setBusy(true);
-    try {
-      const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", {
-        sessionId: session.profile.id,
-      });
-      if (!gate.current.isCurrent("sample", token)) return;
-      setSnapshot(next);
-      setError("");
-    } catch (error) {
-      if (gate.current.isCurrent("sample", token)) setError(formatError(error));
-    } finally {
-      const current = gate.current.isCurrent("sample", token);
-      gate.current.finish("sample", token);
-      if (current) setBusy(false);
-    }
-  }
+  const live = useSysmonLiveState(session?.profile.id);
+  useSysmonLivePolling(session?.profile.id, enabled && canSample);
+  const snapshot = live.snapshot;
+  const busy = enabled && canSample && live.busy;
+  const error = live.error;
 
   if (!session) {
     return <div className="workspace-sysmon-empty"><Activity size={18} /><span>选择会话后开始监控</span></div>;
@@ -82,7 +40,7 @@ export default function SysmonSidebar({
           <strong title={session.profile.name}>{session.profile.name}</strong>
           <span>{snapshot ? formatEventClock(snapshot.ts) : remote ? "远端主机" : "本机"}</span>
         </div>
-        <button type="button" title="刷新 Sysmon" aria-label="刷新 Sysmon" onClick={() => void refresh()} disabled={!canSample || busy}>
+        <button type="button" title="刷新 Sysmon" aria-label="刷新 Sysmon" onClick={() => void refreshSysmonLive(session.profile.id)} disabled={!canSample || busy}>
           <RefreshCw size={14} className={busy ? "loading" : ""} />
         </button>
         <button type="button" title="打开 Sysmon 详情" aria-label="打开 Sysmon 详情" onClick={onOpenDetails}>
@@ -158,10 +116,4 @@ function isSshLikeSession(session: SessionSummary) {
 function formatRate(kibibytesPerSecond: number) {
   if (kibibytesPerSecond >= 1024) return `${(kibibytesPerSecond / 1024).toFixed(1)}M`;
   return `${kibibytesPerSecond.toFixed(1)}K`;
-}
-
-function formatError(error: unknown) {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return String(error);
 }

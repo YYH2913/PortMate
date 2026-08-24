@@ -82,6 +82,7 @@ import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSes
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
+import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { TerminalInputPumpRegistry } from "./terminal-input-pump";
@@ -111,7 +112,7 @@ import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabi
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
-import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
+import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import { stageConnectionCredentials } from "./session-credential-state";
@@ -5857,61 +5858,20 @@ function clearWorkspaceDropIndicators() {
 
 function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: () => void }) {
   const [watching, setWatching] = useState(false);
-  const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const remote = isSshLikeProfile(session.profile);
   const canWatch = !remote || session.runtime.status === "connected";
+  const live = useSysmonLiveState(session.profile.id);
+  useSysmonLivePolling(session.profile.id, watching && canWatch);
+  const snapshot = watching ? live.snapshot : null;
+  const busy = watching && live.busy;
+  const error = watching ? live.error : "";
 
   useEffect(() => {
-    if (!canWatch) {
-      setWatching(false);
-      setSnapshot(null);
-      setBusy(false);
-      setError("");
-    }
+    if (!canWatch) setWatching(false);
   }, [canWatch]);
 
-  useEffect(() => {
-    if (!watching || !canWatch) return;
-    let disposed = false;
-    let running = false;
-
-    async function sample() {
-      if (running) return;
-      running = true;
-      if (!disposed) setBusy(true);
-      try {
-        const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id });
-        if (!disposed) {
-          setSnapshot(next);
-          setError("");
-        }
-      } catch (error) {
-        if (!disposed) setError(formatError(error));
-      } finally {
-        running = false;
-        if (!disposed) setBusy(false);
-      }
-    }
-
-    void sample();
-    const timer = window.setInterval(() => void sample(), 10_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [watching, canWatch, session.profile.id]);
-
   function toggleWatching() {
-    if (watching) {
-      setWatching(false);
-      setSnapshot(null);
-      setBusy(false);
-      setError("");
-      return;
-    }
-    setWatching(true);
+    setWatching((current) => !current);
   }
 
   const title = error

@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw, X } from "lucide-react";
-import { invokeBackend } from "./api";
 import { formatBytes, formatEventClock } from "./display-formatters";
-import { KeyedRequestGate } from "./keyed-request-gate";
-import { mergeSysmonHistory, normalizeSysmonHistory, sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
+import { sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
+import { loadSysmonLiveHistory, refreshSysmonLive, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { formatSysmonNetworkAddresses, orderedSysmonNetworkAddresses } from "./sysmon-network-addresses";
 import type { SysmonTrendMode } from "./sysmon-history";
 import type { SessionSummary, SysmonSnapshot } from "./types";
@@ -15,71 +14,23 @@ export default function SysmonDialog({
   session: SessionSummary;
   onClose: () => void;
 }) {
-  const [snapshot, setSnapshot] = useState<SysmonSnapshot | null>(null);
-  const [history, setHistory] = useState<SysmonSnapshot[]>([]);
   const [tab, setTab] = useState<"processes" | "disks" | "network" | "trends">("processes");
   const [trendMode, setTrendMode] = useState<SysmonTrendMode>("usage");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [historyError, setHistoryError] = useState("");
-  const requestGate = useRef(new KeyedRequestGate<"history" | "snapshot">());
+  const remote = isSshLikeSession(session);
+  const canSample = !remote || session.runtime.status === "connected";
+  const { snapshot, history, busy, historyBusy, error, historyError } = useSysmonLiveState(session.profile.id);
+  useSysmonLivePolling(session.profile.id, canSample);
 
   useEffect(() => {
-    requestGate.current.invalidateAll();
-    setSnapshot(null);
-    setHistory([]);
-    setError("");
-    setHistoryError("");
-    void loadSysmonHistory();
-    void refreshSysmon();
-    return () => requestGate.current.invalidateAll();
+    void loadSysmonLiveHistory(session.profile.id, 120);
   }, [session.profile.id]);
-
-  async function loadSysmonHistory() {
-    const gate = requestGate.current;
-    const token = gate.begin("history");
-    if (token === null) return;
-    try {
-      const loaded = await invokeBackend<SysmonSnapshot[]>("list_sysmon_history", {
-        sessionId: session.profile.id,
-        limit: 120,
-      });
-      if (!gate.isCurrent("history", token)) return;
-      setHistory((current) => normalizeSysmonHistory([...current, ...loaded], session.profile.id, 120));
-      setHistoryError("");
-    } catch (error) {
-      if (gate.isCurrent("history", token)) setHistoryError(formatSysmonError(error));
-    } finally {
-      gate.finish("history", token);
-    }
-  }
-
-  async function refreshSysmon() {
-    const gate = requestGate.current;
-    const token = gate.begin("snapshot");
-    if (token === null) return;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await invokeBackend<SysmonSnapshot>("refresh_sysmon", { sessionId: session.profile.id });
-      if (!gate.isCurrent("snapshot", token)) return;
-      setSnapshot(next);
-      setHistory((current) => mergeSysmonHistory(current, next, 120));
-    } catch (error) {
-      if (gate.isCurrent("snapshot", token)) setError(formatSysmonError(error));
-    } finally {
-      const current = gate.isCurrent("snapshot", token);
-      gate.finish("snapshot", token);
-      if (current) setBusy(false);
-    }
-  }
 
   const processes = snapshot?.processes ?? [];
   const disks = snapshot?.disks ?? [];
   const interfaces = snapshot?.networkInterfaces ?? [];
   const loadAverage = snapshot?.loadAverage ?? [0, 0, 0];
   const memoryUsed = snapshot ? Math.max(0, snapshot.memoryTotalBytes - snapshot.memoryAvailableBytes) : 0;
-  const scope = isSshLikeSession(session) ? "远端主机" : "本机";
+  const scope = remote ? "远端主机" : "本机";
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -115,7 +66,7 @@ export default function SysmonDialog({
 
           <div className="sysmon-table-wrap">
             {tab === "trends" ? (
-              <SysmonTrendView history={history} mode={trendMode} onModeChange={setTrendMode} error={historyError} />
+              <SysmonTrendView history={history} mode={trendMode} onModeChange={setTrendMode} error={historyError} loading={historyBusy} />
             ) : null}
             {tab === "processes" ? (
               <table className="sysmon-table sysmon-process-table">
@@ -159,13 +110,14 @@ export default function SysmonDialog({
             {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
               <div className="sysmon-empty">当前采样没有可显示的{tab === "processes" ? "进程" : tab === "disks" ? "磁盘" : "网络接口"}明细</div>
             ) : null}
-            {!snapshot && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
+            {!snapshot && canSample && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
+            {!snapshot && !canSample && tab !== "trends" ? <div className="sysmon-empty">远端会话未连接</div> : null}
           </div>
           {error ? <div className="utility-error">{error}</div> : null}
         </div>
         <footer className="sysmon-actions">
           <span>{snapshot ? `采样时间 ${formatDateTime(snapshot.ts)}` : scope}</span>
-          <button type="button" onClick={() => void refreshSysmon()} disabled={busy}>
+          <button type="button" onClick={() => void refreshSysmonLive(session.profile.id)} disabled={busy || !canSample}>
             <RefreshCw size={14} className={busy ? "sysmon-refresh-icon loading" : "sysmon-refresh-icon"} />刷新
           </button>
           <button type="button" onClick={onClose}>关闭</button>
@@ -180,11 +132,13 @@ function SysmonTrendView({
   mode,
   onModeChange,
   error,
+  loading,
 }: {
   history: SysmonSnapshot[];
   mode: SysmonTrendMode;
   onModeChange: (mode: SysmonTrendMode) => void;
   error: string;
+  loading: boolean;
 }) {
   const latest = history[history.length - 1];
   const first = history[0];
@@ -204,7 +158,7 @@ function SysmonTrendView({
       </header>
       <div className="sysmon-trend-stage">
         <SysmonTrendCanvas history={history} mode={mode} />
-        {!history.length ? <div className="sysmon-trend-empty">暂无历史样本</div> : null}
+        {!history.length ? <div className="sysmon-trend-empty">{loading ? "正在加载历史样本" : "暂无历史样本"}</div> : null}
       </div>
       <footer className="sysmon-trend-range">
         <span>{first ? formatEventClock(first.ts) : "--:--:--"}</span>
@@ -346,14 +300,4 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
-}
-
-function formatSysmonError(error: unknown) {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
 }

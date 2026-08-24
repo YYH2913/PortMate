@@ -530,6 +530,21 @@ try {
     window.__pendingTmuxReads = [];
     window.__deferSysmon = false;
     window.__pendingSysmon = [];
+    window.__sysmonFallback = (sessionId) => ({
+      sessionId,
+      ts: new Date().toISOString(),
+      uptimeSeconds: 60,
+      cpuPercent: 0,
+      memoryPercent: 0,
+      rxKbps: 0,
+      txKbps: 0,
+      loadAverage: [0, 0, 0],
+      memoryTotalBytes: 0,
+      memoryAvailableBytes: 0,
+      processes: [],
+      disks: [],
+      networkInterfaces: [],
+    });
     window.__serialCaptureFrames = [];
     window.__deferSerialCaptureReads = false;
     window.__pendingSerialCaptureReads = [];
@@ -1136,7 +1151,9 @@ try {
           }));
         }
         if (command === "list_sysmon_history" || command === "refresh_sysmon") {
-          if (!window.__deferSysmon) return command === "list_sysmon_history" ? [] : null;
+          if (!window.__deferSysmon) return command === "list_sysmon_history"
+            ? []
+            : window.__sysmonFallback(args.sessionId);
           return new Promise((resolve) => {
             window.__pendingSysmon.push({ command, args: structuredClone(args), resolve });
           });
@@ -2902,9 +2919,12 @@ Host staging
   )));
   const sysmonAppletToggle = page.getByRole("button", { name: "启动 Sysmon 监控", exact: true });
   await sysmonAppletToggle.click();
-  await page.waitForFunction(() => window.__pendingSysmon.filter((request) => (
+  await page.waitForTimeout(50);
+  const sharedEdgeRefreshes = await page.evaluate(() => window.__pendingSysmon.filter((request) => (
     request.command === "refresh_sysmon" && request.args.sessionId === "edge-router"
-  )).length >= 2);
+  )).length);
+  assert(sharedEdgeRefreshes === 1,
+    `Sysmon sidebar and applet duplicated the same pending sample: ${sharedEdgeRefreshes}`);
   const sysmonAppletStop = page.getByRole("button", { name: "停止 Sysmon 监控", exact: true });
   await sysmonAppletStop.click();
   await page.waitForFunction(() => !document.querySelector(".sysmon-applet-toggle svg")?.classList.contains("loading"));
@@ -2937,6 +2957,11 @@ Host staging
   const sysmonDialog = page.locator(".sysmon-dialog");
   await sysmonDialog.waitFor();
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "bench-uart"));
+  const sharedBenchDialogRequests = await page.evaluate(() => window.__pendingSysmon
+    .filter((request) => request.args.sessionId === "bench-uart")
+    .map((request) => request.command));
+  assert(JSON.stringify(sharedBenchDialogRequests) === JSON.stringify(["list_sysmon_history"]),
+    `opening Sysmon details duplicated the sidebar sample: ${JSON.stringify(sharedBenchDialogRequests)}`);
   await page.evaluate(({ bench }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "bench-uart")) {
       pending.resolve(pending.command === "list_sysmon_history" ? [bench] : bench);
@@ -2965,6 +2990,14 @@ Host staging
   await sysmonSidebar.getByRole("button", { name: "打开 Sysmon 详情", exact: true }).click();
   await sysmonDialog.waitFor();
   await page.waitForFunction(() => window.__pendingSysmon.some((request) => request.args.sessionId === "edge-router"));
+  await page.waitForFunction(() => window.__pendingSysmon.filter(
+    (request) => request.args.sessionId === "edge-router",
+  ).length === 2);
+  const sharedEdgeDialogRequests = await page.evaluate(() => window.__pendingSysmon
+    .filter((request) => request.args.sessionId === "edge-router")
+    .map((request) => request.command).sort());
+  assert(JSON.stringify(sharedEdgeDialogRequests) === JSON.stringify(["list_sysmon_history", "refresh_sysmon"]),
+    `Sysmon details did not share the active sample request: ${JSON.stringify(sharedEdgeDialogRequests)}`);
   await page.evaluate(({ edge }) => {
     for (const pending of window.__pendingSysmon.filter((request) => request.args.sessionId === "edge-router")) {
       pending.resolve(pending.command === "list_sysmon_history" ? [edge] : edge);
@@ -3009,10 +3042,13 @@ Host staging
   )?.sizes?.right === null);
   await togglePanel("Sysmon 侧栏");
   await sysmonSidebar.waitFor({ state: "detached" });
-  await page.evaluate(() => {
+  await page.evaluate(({ edge }) => {
+    for (const pending of window.__pendingSysmon) {
+      pending.resolve(pending.command === "list_sysmon_history" ? [edge] : edge);
+    }
     window.__pendingSysmon = [];
     window.__deferSysmon = false;
-  });
+  }, { edge: sysmonSnapshot("edge-router", 33.3) });
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
@@ -10353,6 +10389,11 @@ Host staging
     },
     terminalTheme: { ...lightThemeState, centerPixel: lightTerminalPixel },
     detachedTheme: detachedThemeState,
+    sysmonSharedState: {
+      initialEdgeRefreshes: sharedEdgeRefreshes,
+      benchDialogRequests: sharedBenchDialogRequests,
+      edgeDialogRequests: sharedEdgeDialogRequests,
+    },
     mcp: {
       tabs: mcpTabs,
       exportedRecordIds: exportCall.args.request.recordIds,

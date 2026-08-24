@@ -285,10 +285,7 @@ pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnaps
                 ),
                 exec_local_sysmon_command("df", &["-Pk"], LOCAL_SYSMON_COMMAND_TIMEOUT),
             );
-            let processes = processes?;
-            let disks = disks?;
-            snapshot.processes = parse_sysmon_processes(&processes);
-            snapshot.disks = parse_sysmon_disks(&disks);
+            apply_local_linux_auxiliary_details(&mut snapshot, processes, disks);
             Ok(snapshot)
         }
         #[cfg(target_os = "macos")]
@@ -324,6 +321,26 @@ pub(super) async fn collect_local_sysmon(session_id: &str) -> Result<SysmonSnaps
             "本机 Sysmon 暂不支持 {}",
             bounded_sysmon_label(platform, 64)
         )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn apply_local_linux_auxiliary_details(
+    snapshot: &mut SysmonSnapshot,
+    processes: Result<String, String>,
+    disks: Result<String, String>,
+) {
+    match processes {
+        Ok(output) => snapshot.processes = parse_sysmon_processes(&output),
+        Err(error) => {
+            eprintln!("PortMate: local Sysmon process details unavailable: {error}");
+        }
+    }
+    match disks {
+        Ok(output) => snapshot.disks = parse_sysmon_disks(&output),
+        Err(error) => {
+            eprintln!("PortMate: local Sysmon disk details unavailable: {error}");
+        }
     }
 }
 

@@ -94,6 +94,33 @@ async fn local_sysmon_collects_live_linux_resource_details() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn local_linux_sysmon_keeps_core_metrics_when_auxiliary_commands_fail() {
+    let mut snapshot = collect_local_linux_sysmon("local-session");
+    let cpu_percent = snapshot.cpu_percent;
+    let memory_total_bytes = snapshot.memory_total_bytes;
+    apply_local_linux_auxiliary_details(
+        &mut snapshot,
+        Err("ps unavailable".to_string()),
+        Ok("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 1000 750 250 75% /\n".to_string()),
+    );
+
+    assert!(snapshot.processes.is_empty());
+    assert_eq!(snapshot.disks.len(), 1);
+    assert_eq!(snapshot.cpu_percent, cpu_percent);
+    assert_eq!(snapshot.memory_total_bytes, memory_total_bytes);
+
+    apply_local_linux_auxiliary_details(
+        &mut snapshot,
+        Ok("2 12.5 1.5 2048 worker\n".to_string()),
+        Err("df unavailable".to_string()),
+    );
+    assert_eq!(snapshot.processes.len(), 1);
+    assert_eq!(snapshot.processes[0].name, "worker");
+    assert_eq!(snapshot.disks.len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn local_linux_sysmon_native_addresses_do_not_require_cli_tools() {
     let addresses = read_linux_network_addresses_from_getifaddrs();
     assert!(addresses
