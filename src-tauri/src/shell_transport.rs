@@ -343,7 +343,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
-                        &bytes,
+                        ChannelByteViews::same(&bytes),
                         String::from_utf8_lossy(&bytes).to_string(),
                         || {
                             let _ = tap.send(bytes.clone());

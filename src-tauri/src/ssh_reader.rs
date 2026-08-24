@@ -67,7 +67,7 @@ pub(super) fn read_ssh_channel(
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
-                        &bytes,
+                        ChannelByteViews::same(&bytes),
                         String::from_utf8_lossy(&bytes).to_string(),
                         || {
                             let _ = tap.send(bytes.clone());
@@ -86,7 +86,7 @@ pub(super) fn read_ssh_channel(
                         &session_id,
                         Some(&runtime_id),
                         stream,
-                        &bytes,
+                        ChannelByteViews::same(&bytes),
                         String::from_utf8_lossy(&bytes).to_string(),
                         || {
                             let _ = tap.send(bytes.clone());

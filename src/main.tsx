@@ -6,6 +6,8 @@ import { parseDetachedPaneRequest } from "./detached-pane-state";
 import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
 import { parseWorkspaceWindowRequest } from "./workspace-window-route";
 import { useModalInteractionBoundary } from "./modal-interaction-boundary";
+import { isBackendAvailable } from "./api";
+import { listenTerminalByteEvents } from "./terminal-byte-events";
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));
@@ -14,6 +16,12 @@ const workspaceWindowRequest = detachedPaneRequest ? null : parseWorkspaceWindow
 const serialAnalyzerRequest = detachedPaneRequest || workspaceWindowRequest ? null : parseSerialAnalyzerRequest(window.location.search);
 if (detachedPaneRequest) document.body.classList.add("detached-window");
 if (serialAnalyzerRequest) document.body.classList.add("serial-analyzer-window");
+
+if (isBackendAvailable()) {
+  void listenTerminalByteEvents()
+    .then((unlisten) => window.addEventListener("unload", unlisten, { once: true }))
+    .catch(() => {});
+}
 
 void loadBundledTerminalFont().finally(() => {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -41,10 +41,26 @@ pub(super) fn record_channel_bytes(
         session_id,
         source_runtime_id,
         stream,
-        raw_bytes,
+        ChannelByteViews::same(raw_bytes),
         text,
         || {},
     );
+}
+
+/// Original wire bytes for raw audit logs and application bytes for the
+/// terminal renderer. These views differ for negotiated transports such as Telnet.
+pub(super) struct ChannelByteViews<'a> {
+    pub(super) raw_log: &'a [u8],
+    pub(super) terminal: &'a [u8],
+}
+
+impl<'a> ChannelByteViews<'a> {
+    pub(super) fn same(bytes: &'a [u8]) -> Self {
+        Self {
+            raw_log: bytes,
+            terminal: bytes,
+        }
+    }
 }
 
 pub(super) fn record_channel_bytes_with_accepted_side_effect(
@@ -52,13 +68,25 @@ pub(super) fn record_channel_bytes_with_accepted_side_effect(
     session_id: &str,
     source_runtime_id: Option<&str>,
     stream: EventStream,
-    raw_bytes: &[u8],
+    bytes: ChannelByteViews<'_>,
     text: String,
     accepted_side_effect: impl FnOnce(),
 ) -> bool {
+    let ChannelByteViews {
+        raw_log,
+        terminal,
+    } = bytes;
     let Some(source_runtime_id) = source_runtime_id else {
         accepted_side_effect();
-        record_accepted_channel_bytes(io, session_id, None, stream, raw_bytes, text);
+        record_accepted_channel_bytes(
+            io,
+            session_id,
+            None,
+            stream,
+            raw_log,
+            terminal,
+            text,
+        );
         return true;
     };
     match with_current_session_runtime_generation(
@@ -72,7 +100,8 @@ pub(super) fn record_channel_bytes_with_accepted_side_effect(
                 session_id,
                 Some(source_runtime_id),
                 stream,
-                raw_bytes,
+                raw_log,
+                terminal,
                 text,
             );
         },
@@ -93,7 +122,8 @@ fn record_accepted_channel_bytes(
     session_id: &str,
     source_runtime_id: Option<&str>,
     stream: EventStream,
-    raw_bytes: &[u8],
+    raw_log_bytes: &[u8],
+    terminal_bytes: &[u8],
     text: String,
 ) {
     let command_id = active_command_id(io, session_id);
@@ -104,7 +134,7 @@ fn record_accepted_channel_bytes(
             io.clone(),
             session_id.to_string(),
             None,
-            raw_bytes.to_vec(),
+            raw_log_bytes.to_vec(),
         ) {
             eprintln!("PortMate: inbound raw log queue unavailable: {error}");
         }
@@ -113,7 +143,7 @@ fn record_accepted_channel_bytes(
             session_id,
             EventDirection::Inbound,
             stream,
-            raw_bytes,
+            terminal_bytes,
             None,
             Utc::now(),
         );
@@ -154,7 +184,7 @@ fn record_accepted_channel_bytes(
         session_id,
         EventDirection::Inbound,
         stream,
-        raw_bytes,
+        terminal_bytes,
         terminal_event_id,
         terminal_event_timestamp,
     );
@@ -163,7 +193,7 @@ fn record_accepted_channel_bytes(
             io.clone(),
             session_id.to_string(),
             Some(event.clone()),
-            raw_bytes.to_vec(),
+            raw_log_bytes.to_vec(),
         ) {
             append_logging_error(&mut event, error);
             if let Ok(mut store) = io.store.lock() {

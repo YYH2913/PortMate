@@ -75,7 +75,7 @@ fn serial_capture_and_event_reject_stale_runtime_input_together() {
         &profile.id,
         Some("serial-stale"),
         EventStream::Stdout,
-        b"stale",
+        ChannelByteViews::same(b"stale"),
         "stale".to_string(),
         || record_serial_capture(&capture, EventDirection::Inbound, b"stale"),
     );
@@ -93,7 +93,7 @@ fn serial_capture_and_event_reject_stale_runtime_input_together() {
         &profile.id,
         Some("serial-current"),
         EventStream::Stdout,
-        b"current",
+        ChannelByteViews::same(b"current"),
         "current".to_string(),
         || record_serial_capture(&capture, EventDirection::Inbound, b"current"),
     );

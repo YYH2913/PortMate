@@ -791,6 +791,12 @@ try {
   await page.waitForFunction(() => (
     (window.__tauriEventListeners.get("portmate-session-event") || []).length >= 2
   ));
+  await page.waitForFunction(() => (
+    (window.__tauriEventListeners.get("portmate-terminal-bytes") || []).length === 1
+  ));
+  const terminalBytesListenerCount = await page.evaluate(() => (
+    (window.__tauriEventListeners.get("portmate-terminal-bytes") || []).length
+  ));
   const replayProbeEventCount = 4_100;
   const replayProbeWindow = 600;
   const replayProbeMarker = "PORTMATE-DEDUPE-ROLLOVER-REPLAY";
@@ -851,6 +857,91 @@ try {
   const semanticOutputDark = await inspectSemanticRendering(activeHost, ["#ff8a8a"]);
   assert(semanticOutputDark.pixelColors.includes("#ff8a8a"),
     `semantic output did not render its error state color: ${JSON.stringify(semanticOutputDark)}`);
+  const fastBytesText = "FAST-BYTES-PATH ERROR peer=192.0.2.44\\r\\n";
+  await page.evaluate(({ sessionId, eventId, text }) => {
+    window.__emitTauriEvent("portmate-terminal-bytes", {
+      id: "a-fast-bytes-frame",
+      sessionId,
+      ts: "2026-07-15T00:00:07.777777Z",
+      direction: "inbound",
+      stream: "stdout",
+      bytes: [...new TextEncoder().encode(text)],
+      originalLength: new TextEncoder().encode(text).length,
+      truncated: false,
+      eventId,
+    });
+  }, { sessionId: "session-a", eventId: "a-fast-bytes", text: fastBytesText });
+  const fastBytesSearch = await openAndAssertSearch(fastBytesText);
+  await emitSessionEvent(createEvent("a-fast-bytes", "session-a", fastBytesText, "2026-07-15T00:00:07.777777Z"));
+  const fastBytesReplaySearch = await openAndAssertSearch(fastBytesText);
+  assert(fastBytesSearch === "1/1" && fastBytesReplaySearch === "1/1",
+    "raw terminal bytes fast path was delayed or replayed: " + JSON.stringify({ fastBytesSearch, fastBytesReplaySearch }));
+  const reversedBytesText = "ORDERED-OUTPUT-BEFORE-";
+  const reversedPromptText = "PROMPT";
+  await emitSessionEvent(createEvent(
+    "a-reversed-fast-bytes",
+    "session-a",
+    reversedBytesText,
+    "2026-07-15T00:00:07.888888Z",
+  ));
+  await page.evaluate(({ sessionId, outputEventId, outputText, promptText }) => {
+    const emitBytes = (id, eventId, text, ts) => window.__emitTauriEvent("portmate-terminal-bytes", {
+      id,
+      sessionId,
+      ts,
+      direction: "inbound",
+      stream: "stdout",
+      bytes: [...new TextEncoder().encode(text)],
+      originalLength: new TextEncoder().encode(text).length,
+      truncated: false,
+      eventId,
+    });
+    // Deliberately deliver the later prompt bytes before the earlier text event's bytes.
+    // The text placeholder must keep the terminal stream ordered across Tauri channels.
+    emitBytes("a-reversed-prompt-frame", "a-reversed-prompt", promptText, "2026-07-15T00:00:07.999998Z");
+    emitBytes("a-reversed-fast-bytes-frame", outputEventId, outputText, "2026-07-15T00:00:07.888888Z");
+  }, {
+    sessionId: "session-a",
+    outputEventId: "a-reversed-fast-bytes",
+    outputText: reversedBytesText,
+    promptText: reversedPromptText,
+  });
+  const reversedFastBytesSearch = await openAndAssertSearch(reversedBytesText + reversedPromptText);
+  await emitSessionEvent(createEvent(
+    "a-reversed-prompt",
+    "session-a",
+    reversedPromptText,
+    "2026-07-15T00:00:07.999998Z",
+  ));
+  const reversedFastBytesReplaySearch = await openAndAssertSearch(reversedBytesText + reversedPromptText);
+  assert(reversedFastBytesSearch === "1/1",
+    "text-first raw correlation replayed or dropped output: " + reversedFastBytesSearch);
+  assert(reversedFastBytesReplaySearch === "1/1",
+    "late prompt metadata replayed ordered raw output: " + reversedFastBytesReplaySearch);
+  const splitUtf8Text = "SPLIT-UTF8-字节-OK\\r\\n";
+  const splitUtf8Bytes = [...new TextEncoder().encode(splitUtf8Text)];
+  const splitUtf8Boundary = splitUtf8Bytes.indexOf(0xe5) + 1;
+  for (const [index, bytes] of [
+    splitUtf8Bytes.slice(0, splitUtf8Boundary),
+    splitUtf8Bytes.slice(splitUtf8Boundary),
+  ].entries()) {
+    await page.evaluate(({ sessionId, index, bytes }) => {
+      window.__emitTauriEvent("portmate-terminal-bytes", {
+        id: "a-split-utf8-frame-" + index,
+        sessionId,
+        ts: "2026-07-15T00:00:07.99999" + index + "Z",
+        direction: "inbound",
+        stream: "stdout",
+        bytes,
+        originalLength: bytes.length,
+        truncated: false,
+        eventId: null,
+      });
+    }, { sessionId: "session-a", index, bytes });
+  }
+  const splitUtf8Search = await openAndAssertSearch(splitUtf8Text);
+  assert(splitUtf8Search === "1/1",
+    "split UTF-8 raw frames were delayed or corrupted: " + splitUtf8Search);
   const semanticOutboundCommand = 'grep -n "wireless" /etc/config/wireless';
   await clearCalls();
   await page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea').focus();
@@ -1732,7 +1823,13 @@ try {
       longLogSearch,
       semanticSearch,
       semanticOutputSearch,
+      fastBytesSearch,
+      fastBytesReplaySearch,
+      reversedFastBytesSearch,
+      reversedFastBytesReplaySearch,
+      splitUtf8Search,
     },
+    terminalBytesListenerCount,
     semanticHighlighting: {
       initial: initialSemanticState,
       dark: semanticDark,

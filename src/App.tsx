@@ -85,7 +85,6 @@ import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
-import { listenTerminalByteEvents } from "./terminal-byte-events";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
@@ -1342,22 +1341,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       disposed = true;
       for (const stopListening of unlisten) stopListening();
       unlisten.clear();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isBackendAvailable()) return;
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listenTerminalByteEvents()
-      .then((nextUnlisten) => {
-        if (disposed) nextUnlisten();
-        else unlisten = nextUnlisten;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
     };
   }, []);
 

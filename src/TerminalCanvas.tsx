@@ -85,7 +85,8 @@ import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodi
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
 import { openTerminalWebLink } from "./terminal-web-link";
-import type { OneKeySummary, SessionEvent, SessionSummary } from "./types";
+import { subscribeTerminalByteEvents } from "./terminal-byte-events";
+import type { OneKeySummary, SessionEvent, SessionSummary, TerminalBytesEvent } from "./types";
 
 type TerminalCanvasProps = {
   viewId?: string;
@@ -117,12 +118,17 @@ const TERMINAL_SEMANTIC_SETTLE_MS = 180;
 const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
 const TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS = 80;
 const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
+const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 12;
+const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
+const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
 const EMPTY_COMPLETION_QUICK_COMMANDS: readonly TerminalCompletionQuickCommand[] = [];
 let terminalInstanceSequence = 0;
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
+type WebglAddonModule = typeof import("@xterm/addon-webgl");
+let webglAddonModulePromise: Promise<WebglAddonModule> | null = null;
 type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
   anchor: LocalNavigationPosition | null;
@@ -156,6 +162,12 @@ type TerminalSemanticDecorationLine = {
   fingerprint: string;
   decorations: Array<{ dispose: () => void }>;
   markers: IMarker[];
+};
+type PendingTerminalWrite = {
+  event: SessionEvent;
+  rawBytes?: Uint8Array;
+  waitingForRaw?: boolean;
+  fallbackTimer?: number;
 };
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
@@ -298,6 +310,16 @@ function terminalSemanticLineFingerprint(line: TerminalSemanticLogicalLine): str
   return `${line.text}\u0000${line.cells.map((cell) => cell.colorable === false ? "0" : "1").join("")}`;
 }
 
+function loadTerminalWebglAddon(): Promise<WebglAddonModule> {
+  if (!webglAddonModulePromise) {
+    webglAddonModulePromise = import("@xterm/addon-webgl").catch((error) => {
+      webglAddonModulePromise = null;
+      throw error;
+    });
+  }
+  return webglAddonModulePromise;
+}
+
 export default function TerminalCanvas({
   viewId = "",
   active,
@@ -337,7 +359,9 @@ export default function TerminalCanvas({
   const refreshTimestampGutterRef = useRef<() => void>(() => {});
   const exportTimestampSnapshotRef = useRef<() => TerminalTimestampEntry[]>(() => []);
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
-  const writeEventRef = useRef<(event: SessionEvent) => boolean>(() => false);
+  const writeEventRef = useRef<(event: SessionEvent, awaitRaw?: boolean) => boolean>(() => false);
+  const writeTerminalBytesRef = useRef<((event: TerminalBytesEvent) => boolean) | null>(null);
+  const deferredTerminalBytesRef = useRef<TerminalBytesEvent[]>([]);
   const polledEventIdsRef = useRef(new Map<string, string[]>());
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -1203,94 +1227,218 @@ export default function TerminalCanvas({
       scheduleTimestampGutter();
     });
     const pendingEventIds = new Set<string>();
-    const pendingEventWrites: SessionEvent[] = [];
+    const pendingEventWrites: PendingTerminalWrite[] = [];
+    const pendingTextEvents = new Map<string, PendingTerminalWrite>();
+    let fastPathTextDecoder = new TextDecoder();
+    let pendingEventWriteHead = 0;
     let eventWriteActive = false;
+
+    const compactPendingEventWrites = () => {
+      if (pendingEventWriteHead === 0) return;
+      if (pendingEventWriteHead < 256 && pendingEventWriteHead * 2 < pendingEventWrites.length) return;
+      pendingEventWrites.splice(0, pendingEventWriteHead);
+      pendingEventWriteHead = 0;
+    };
+    const queueEventWrite = (pending: PendingTerminalWrite) => {
+      pendingEventWrites.push(pending);
+    };
+    const nextEventWriteBatch = (): PendingTerminalWrite[] | null => {
+      const first = pendingEventWrites[pendingEventWriteHead];
+      if (!first || first.waitingForRaw) return null;
+      pendingEventWriteHead += 1;
+      if (!first.rawBytes) return [first];
+
+      const batch = [first];
+      let byteLength = first.rawBytes.byteLength;
+      while (batch.length < TERMINAL_WRITE_BATCH_MAX_FRAMES
+        && byteLength < TERMINAL_WRITE_BATCH_MAX_BYTES) {
+        const next = pendingEventWrites[pendingEventWriteHead];
+        if (!next || next.waitingForRaw || !next.rawBytes || next.event.direction !== "inbound") break;
+        if (byteLength + next.rawBytes.byteLength > TERMINAL_WRITE_BATCH_MAX_BYTES) break;
+        pendingEventWriteHead += 1;
+        batch.push(next);
+        byteLength += next.rawBytes.byteLength;
+      }
+      return batch;
+    };
     drainEventWrites = () => {
       if (terminalDisposed || restorePending || eventWriteActive) return;
-      while (pendingEventWrites.length) {
-        const event = pendingEventWrites.shift();
-        if (!event) break;
-        eventWriteActive = true;
-        const beforeBuffer = term.buffer.active;
-        const beforeBufferType = beforeBuffer.type === "alternate" ? "alternate" : "normal";
-        const beforeLine = beforeBufferType === "normal"
-          ? term.buffer.normal.baseY + term.buffer.normal.cursorY
-          : beforeBuffer.cursorY;
-        const eventText = event.text ?? "";
-        const inspectAlternateRows = beforeBufferType === "alternate"
-          && eventText.length >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
-        const beforeAlternateSnapshot = inspectAlternateRows
-          ? alternateTerminalScreenSnapshot(term)
-          : [];
-        const trackedNormalStart = eventText
-          && event.direction !== "outbound"
-          && beforeBufferType === "normal"
-          && terminalTextMayMoveRows(eventText)
-          ? trackTimestampLine(beforeLine, event.ts)
-          : null;
-        let callbackCompleted = false;
-        let writeReturned = false;
-        writeTerminalEvent(term, event, () => {
-          let timestampChanged = false;
-          if (eventText && event.direction !== "outbound") {
-            const afterBuffer = term.buffer.active;
-            if (afterBuffer.type === "normal") {
-              const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
-              if (trackedNormalStart) {
-                timestampChanged = commitTrackedTimestamp(trackedNormalStart, afterLine);
-              } else {
-                const firstChangedLine = beforeBufferType !== "normal"
-                  ? afterLine
-                  : afterLine > beforeLine ? beforeLine + 1 : afterLine;
-                timestampChanged = registerTimestampRange(firstChangedLine, afterLine, event.ts);
-              }
+      const batch = nextEventWriteBatch();
+      if (!batch) return;
+      compactPendingEventWrites();
+      const first = batch[0];
+      const last = batch.at(-1) ?? first;
+      const rawBytes = first.rawBytes
+        ? concatTerminalWriteBytes(batch.map((pending) => pending.rawBytes!))
+        : undefined;
+      const eventText = batch.map((pending) => pending.event.text ?? "").join("");
+      const event = { ...last.event, text: eventText };
+      eventWriteActive = true;
+      const beforeBuffer = term.buffer.active;
+      const beforeBufferType = beforeBuffer.type === "alternate" ? "alternate" : "normal";
+      const beforeLine = beforeBufferType === "normal"
+        ? term.buffer.normal.baseY + term.buffer.normal.cursorY
+        : beforeBuffer.cursorY;
+      const inspectAlternateRows = beforeBufferType === "alternate"
+        && eventText.length >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
+      const beforeAlternateSnapshot = inspectAlternateRows
+        ? alternateTerminalScreenSnapshot(term)
+        : [];
+      const trackedNormalStart = eventText
+        && event.direction !== "outbound"
+        && beforeBufferType === "normal"
+        && terminalTextMayMoveRows(eventText)
+        ? trackTimestampLine(beforeLine, first.event.ts)
+        : null;
+      let callbackCompleted = false;
+      let writeReturned = false;
+      writeTerminalEvent(term, event, rawBytes, () => {
+        let timestampChanged = false;
+        if (eventText && event.direction !== "outbound") {
+          const afterBuffer = term.buffer.active;
+          if (afterBuffer.type === "normal") {
+            const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
+            if (trackedNormalStart) {
+              timestampChanged = commitTrackedTimestamp(trackedNormalStart, afterLine);
             } else {
-              trackedNormalStart?.marker.dispose();
-              const normalizedTimestamp = normalizeTerminalTimestamps([
-                { line: 0, ts: event.ts },
-              ], 1)[0]?.ts ?? null;
-              alternateLatestTimestamp = normalizedTimestamp ?? alternateLatestTimestamp;
-              if (beforeBufferType === "alternate") {
-                const changedRows = inspectAlternateRows
-                  ? changedAlternateTerminalRows(
-                    beforeAlternateSnapshot,
-                    alternateTerminalScreenSnapshot(term),
-                    beforeLine,
-                    afterBuffer.cursorY,
-                  )
-                  : beforeLine === afterBuffer.cursorY && !terminalTextMayMoveRows(eventText)
-                    ? []
-                    : [...new Set([beforeLine, afterBuffer.cursorY])];
-                alternateTimestamps = updateAlternateTerminalTimestamps(
-                  alternateTimestamps,
-                  term.rows,
-                  changedRows,
-                  event.ts,
-                );
-                timestampChanged = changedRows.length > 0;
-              } else {
-                alternateTimestamps = resizeAlternateTerminalTimestamps([], term.rows, event.ts);
-                timestampChanged = alternateTimestamps.length > 0;
-              }
+              const firstChangedLine = beforeBufferType !== "normal"
+                ? afterLine
+                : afterLine > beforeLine ? beforeLine + 1 : afterLine;
+              timestampChanged = registerTimestampRange(firstChangedLine, afterLine, first.event.ts);
+            }
+          } else {
+            trackedNormalStart?.marker.dispose();
+            const normalizedTimestamp = normalizeTerminalTimestamps([
+              { line: 0, ts: first.event.ts },
+            ], 1)[0]?.ts ?? null;
+            alternateLatestTimestamp = normalizedTimestamp ?? alternateLatestTimestamp;
+            if (beforeBufferType === "alternate") {
+              const changedRows = inspectAlternateRows
+                ? changedAlternateTerminalRows(
+                  beforeAlternateSnapshot,
+                  alternateTerminalScreenSnapshot(term),
+                  beforeLine,
+                  afterBuffer.cursorY,
+                )
+                : beforeLine === afterBuffer.cursorY && !terminalTextMayMoveRows(eventText)
+                  ? []
+                  : [...new Set([beforeLine, afterBuffer.cursorY])];
+              alternateTimestamps = updateAlternateTerminalTimestamps(
+                alternateTimestamps,
+                term.rows,
+                changedRows,
+                first.event.ts,
+              );
+              timestampChanged = changedRows.length > 0;
+            } else {
+              alternateTimestamps = resizeAlternateTerminalTimestamps([], term.rows, first.event.ts);
+              timestampChanged = alternateTimestamps.length > 0;
             }
           }
-          settleTerminalEventId(seenEventsRef.current, pendingEventIds, event.id);
-          eventWriteActive = false;
-          callbackCompleted = true;
-          if (timestampChanged) scheduleTimestampGutter();
-          if (writeReturned) drainEventWrites();
-        });
-        writeReturned = true;
-        if (!callbackCompleted) return;
-      }
+        }
+        for (const pending of batch) {
+          settleTerminalEventId(seenEventsRef.current, pendingEventIds, pending.event.id);
+        }
+        eventWriteActive = false;
+        callbackCompleted = true;
+        if (timestampChanged) scheduleTimestampGutter();
+        if (writeReturned) drainEventWrites();
+      });
+      writeReturned = true;
+      if (callbackCompleted) drainEventWrites();
     };
-    const writeEvent = (event: SessionEvent) => {
+    const enqueueFallback = (pending: PendingTerminalWrite, rawMatched = false) => {
+      pending.waitingForRaw = false;
+      pending.fallbackTimer = undefined;
+      pendingTextEvents.delete(pending.event.id);
+      if (!rawMatched) fastPathTextDecoder = new TextDecoder();
+      drainEventWrites();
+    };
+    const writeEvent = (event: SessionEvent, awaitRaw = false) => {
+      if (!event.id) return false;
+      if (seenEventsRef.current.has(event.id)) return false;
+      const isLiveInboundText = event.direction === "inbound"
+        && Boolean(event.text)
+        && (event.stream === "stdout" || event.stream === "stderr");
       if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, event.id)) return false;
-      pendingEventWrites.push(event);
+      if (isLiveInboundText && awaitRaw) {
+        const pending: PendingTerminalWrite = { event, waitingForRaw: true };
+        pending.fallbackTimer = window.setTimeout(() => enqueueFallback(pending), TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS);
+        pendingTextEvents.set(event.id, pending);
+        queueEventWrite(pending);
+      } else {
+        queueEventWrite({ event });
+      }
       drainEventWrites();
       return true;
     };
     writeEventRef.current = writeEvent;
+    const writeTerminalBytes = (bytesEvent: TerminalBytesEvent) => {
+      if (bytesEvent.sessionId !== active.profile.id || bytesEvent.direction !== "inbound") return false;
+      if (!bytesEvent.id || !Array.isArray(bytesEvent.bytes) || !bytesEvent.bytes.length
+        || bytesEvent.bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)) return false;
+      const rawBytes = Uint8Array.from(bytesEvent.bytes);
+      if (bytesEvent.eventId) {
+        if (bytesEvent.truncated) {
+          fastPathTextDecoder = new TextDecoder();
+          return false;
+        }
+        const pendingText = pendingTextEvents.get(bytesEvent.eventId);
+        if (pendingText) {
+          if (pendingText.fallbackTimer !== undefined) window.clearTimeout(pendingText.fallbackTimer);
+          pendingText.rawBytes = rawBytes;
+          pendingText.event = {
+            ...pendingText.event,
+            text: fastPathTextDecoder.decode(rawBytes, { stream: true }),
+            annotations: { ...pendingText.event.annotations, "terminalBytesFastPath": "true" },
+          };
+          enqueueFallback(pendingText, true);
+          return true;
+        }
+        if (seenEventsRef.current.has(bytesEvent.eventId)) {
+          fastPathTextDecoder.decode(rawBytes, { stream: true });
+          return false;
+        }
+        const syntheticEvent: SessionEvent = {
+          id: bytesEvent.eventId,
+          sessionId: bytesEvent.sessionId,
+          paneId: bytesEvent.sessionId + ":main",
+          ts: bytesEvent.ts,
+          direction: "inbound",
+          stream: bytesEvent.stream,
+          bytesRef: null,
+          text: fastPathTextDecoder.decode(rawBytes, { stream: true }),
+          annotations: { "terminalBytesFastPath": "true" },
+        };
+        if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, syntheticEvent.id)) return false;
+        queueEventWrite({ event: syntheticEvent, rawBytes });
+        drainEventWrites();
+        applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, syntheticEvent));
+        return true;
+      }
+      const eventId = "terminal-bytes:" + bytesEvent.id;
+      if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, eventId)) return false;
+      if (bytesEvent.truncated) fastPathTextDecoder = new TextDecoder();
+      const event: SessionEvent = {
+        id: eventId,
+        sessionId: bytesEvent.sessionId,
+        paneId: bytesEvent.sessionId + ":main",
+        ts: bytesEvent.ts,
+        direction: "inbound",
+        stream: bytesEvent.stream,
+        bytesRef: null,
+        text: bytesEvent.truncated
+          ? "PortMate: terminal byte frame was truncated; omitted bytes were not rendered.\r\n"
+          : fastPathTextDecoder.decode(rawBytes, { stream: true }),
+        annotations: { "terminalBytesFastPath": "true" },
+      };
+      queueEventWrite(bytesEvent.truncated ? { event } : { event, rawBytes });
+      drainEventWrites();
+      return true;
+    };
+    writeTerminalBytesRef.current = writeTerminalBytes;
+    const deferredBytes = deferredTerminalBytesRef.current.splice(0);
+    for (const bytesEvent of deferredBytes) writeTerminalBytes(bytesEvent);
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
     let webglGeneration = 0;
@@ -1307,7 +1455,7 @@ export default function TerminalCanvas({
         return;
       }
       if (webglAddon) return;
-      void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
+      void loadTerminalWebglAddon().then(({ WebglAddon }) => {
         if (terminalDisposed || generation !== webglGeneration || termRef.current !== term) return;
         // Chromium automation can discard the WebGL back buffer before Playwright
         // captures it, which makes rendered cursor checks observe an empty canvas.
@@ -1698,6 +1846,13 @@ export default function TerminalCanvas({
       }
       if (fitAndReportRef.current === fitAndReport) fitAndReportRef.current = () => {};
       if (writeEventRef.current === writeEvent) writeEventRef.current = () => false;
+      if (writeTerminalBytesRef.current === writeTerminalBytes) writeTerminalBytesRef.current = null;
+      deferredTerminalBytesRef.current = [];
+      for (const pending of pendingTextEvents.values()) {
+        if (pending.fallbackTimer !== undefined) window.clearTimeout(pending.fallbackTimer);
+      }
+      pendingTextEvents.clear();
+      fastPathTextDecoder.decode();
       mouseEncodingSetDisposable.dispose();
       mouseEncodingResetDisposable.dispose();
       webglContextLossDisposable?.dispose();
@@ -2080,7 +2235,7 @@ export default function TerminalCanvas({
     void listen<SessionEvent>("portmate-session-event", (event) => {
       if (disposed || event.payload.sessionId !== active.profile.id) return;
       const term = termRef.current;
-      if (!term || !writeEventRef.current(event.payload)) return;
+      if (!term || !writeEventRef.current(event.payload, true)) return;
       applyOneKeyPromptState(reduceOneKeyPromptDetection(
         oneKeyPromptStateRef.current,
         event.payload,
@@ -2096,6 +2251,21 @@ export default function TerminalCanvas({
       disposed = true;
       unlisten?.();
     };
+  }, [active?.profile.id]);
+
+  useEffect(() => {
+    if (!active || !isBackendAvailable()) return;
+    return subscribeTerminalByteEvents(active.profile.id, (event) => {
+      const writeTerminalBytes = writeTerminalBytesRef.current;
+      if (writeTerminalBytes) {
+        writeTerminalBytes(event);
+      } else {
+        deferredTerminalBytesRef.current.push(event);
+        if (deferredTerminalBytesRef.current.length > 256) {
+          deferredTerminalBytesRef.current.splice(0, deferredTerminalBytesRef.current.length - 256);
+        }
+      }
+    });
   }, [active?.profile.id]);
 
   useEffect(() => {
@@ -2631,7 +2801,16 @@ function moveTerminalWord(
   return next;
 }
 
-function writeTerminalEvent(term: XTerm, event: SessionEvent, onParsed: () => void) {
+function writeTerminalEvent(
+  term: XTerm,
+  event: SessionEvent,
+  rawBytes: Uint8Array | undefined,
+  onParsed: () => void,
+) {
+  if (rawBytes) {
+    term.write(rawBytes, onParsed);
+    return;
+  }
   if (!event.text || event.direction === "outbound") {
     onParsed();
     return;
@@ -2641,6 +2820,18 @@ function writeTerminalEvent(term: XTerm, event: SessionEvent, onParsed: () => vo
     return;
   }
   term.write(event.text, onParsed);
+}
+
+function concatTerminalWriteBytes(frames: readonly Uint8Array[]): Uint8Array {
+  if (frames.length === 1) return frames[0];
+  const length = frames.reduce((total, frame) => total + frame.byteLength, 0);
+  const merged = new Uint8Array(length);
+  let offset = 0;
+  for (const frame of frames) {
+    merged.set(frame, offset);
+    offset += frame.byteLength;
+  }
+  return merged;
 }
 
 function sameTerminalTimestampViewport(

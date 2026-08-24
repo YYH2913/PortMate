@@ -206,7 +206,10 @@ pub(super) fn read_tcp_stream(
                         &session_id,
                         Some(&runtime_id),
                         EventStream::Stdout,
-                        &buffer[..size],
+                        ChannelByteViews {
+                            raw_log: &buffer[..size],
+                            terminal: &bytes,
+                        },
                         String::from_utf8_lossy(&bytes).to_string(),
                         || {
                             if has_protocol_bytes {
@@ -276,7 +279,10 @@ pub(super) fn read_tcp_stream(
                     &session_id,
                     Some(&runtime_id),
                     EventStream::Stdout,
-                    &[],
+                    ChannelByteViews {
+                        raw_log: &[],
+                        terminal: &bytes,
+                    },
                     String::from_utf8_lossy(&bytes).to_string(),
                     || {
                         let _ = tap.send(bytes.clone());

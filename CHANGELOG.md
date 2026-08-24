@@ -6,6 +6,23 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Changed
+
+- Routed live terminal bytes through one window-level listener, replayed the bounded pre-mount
+  cache, and merged adjacent frames before handing them to xterm so split panes do not multiply
+  native event work or serialize every transport read behind a separate parser callback.
+- Reused the lazily loaded xterm WebGL module across terminal instances while retaining the DOM
+  fallback for transparent terminals, Linux WebKitGTK, context loss, and incompatible GPU drivers.
+
+### Fixed
+
+- Preserved transport order when raw-byte and persisted text events arrive on different Tauri
+  channels, preventing a new command prompt from rendering ahead of the preceding command output.
+- Kept split UTF-8 and control-sequence bytes intact on the raw xterm path, validated live byte
+  payloads before rendering, and stopped truncated frames from masquerading as complete output.
+- Published Telnet application bytes after negotiation filtering, including bytes released when
+  the negotiator finishes, instead of exposing protocol negotiation bytes or omitting the tail.
+
 ## [0.1.4] - 2026-08-24
 
 ### Added
