@@ -22,6 +22,7 @@ import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
+  reduceTerminalCompletionInputWithSubmissions,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
   terminalCompletionSupported,
@@ -104,6 +105,7 @@ type TerminalCanvasProps = {
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (mode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onCommandSubmit?: (sessionId: string, command: string) => void;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,
@@ -336,6 +338,7 @@ export default function TerminalCanvas({
   keyMode = "remote",
   onKeyModeChange = () => {},
   onInput,
+  onCommandSubmit,
   onOneKeyCompletion,
 }: TerminalCanvasProps) {
   const themeId = normalizeTerminalTheme(active?.profile.terminal.theme);
@@ -376,6 +379,7 @@ export default function TerminalCanvas({
   const blockSelectionRef = useRef(blockSelection);
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
+  const onCommandSubmitRef = useRef(onCommandSubmit);
   const keyModeRef = useRef(keyMode);
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
@@ -385,7 +389,7 @@ export default function TerminalCanvas({
   const semanticThemeRef = useRef(activeTerminalTheme);
   const localNavigationRef = useRef<LocalNavigationState | null>(null);
   const openSearchRef = useRef<() => void>(() => {});
-  const openFreeInputRef = useRef<() => void>(() => {});
+  const openFreeInputRef = useRef<(value?: string) => void>(() => {});
   const openGotoLineRef = useRef<() => void>(() => {});
   const runSearchRef = useRef<(direction: "next" | "previous") => void>(() => {});
   const oneKeyPromptStateRef = useRef<OneKeyPromptDetectionState>(emptyOneKeyPromptDetectionState());
@@ -542,6 +546,7 @@ export default function TerminalCanvas({
     ));
   };
   onInputRef.current = onInput;
+  onCommandSubmitRef.current = onCommandSubmit;
   focusedRef.current = focused;
   mouseReportingRef.current = mouseReporting;
   copyOnSelectRef.current = copyOnSelect;
@@ -588,7 +593,7 @@ export default function TerminalCanvas({
       searchInputRef.current?.select();
     });
   };
-  openFreeInputRef.current = () => {
+  openFreeInputRef.current = (value = "") => {
     if (!focusedRef.current || displayModeRef.current === "hex") return;
     closeTerminalGotoLine(true, false);
     dismissOneKeyPrompt();
@@ -596,7 +601,9 @@ export default function TerminalCanvas({
     setSearchOpen(false);
     setSearchResult(null);
     setSearchInvalid(false);
-    if (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource) setFreeInputValue("");
+    if (value || (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource)) {
+      setFreeInputValue(normalizeTerminalFreeInput(value));
+    }
     setFreeInputSource("manual");
     scheduleTerminalSurfaceFocus();
   };
@@ -668,12 +675,17 @@ export default function TerminalCanvas({
     }
   }
 
-  function updateCompletionInput(text: string) {
-    if (!completionEnabledRef.current) return;
+  function updateCompletionInput(text: string): string[] {
     const current = oneKeyPromptStateRef.current.prompt
       ? { line: "", synchronized: false }
       : completionInputRef.current;
-    const next = reduceTerminalCompletionInput(current, text);
+    const reduction = reduceTerminalCompletionInputWithSubmissions(current, text);
+    const next = reduction.state;
+    if (!completionEnabledRef.current) {
+      cancelScheduledCompletionInput();
+      completionInputRef.current = next;
+      return reduction.submittedCommands;
+    }
     if (/[\u0000-\u001f\u007f]/.test(text)) storeCompletionInput(next);
     else storeCompletionInputDeferred(next);
     if (completionDismissedLineRef.current) setCompletionDismissedLine("");
@@ -681,6 +693,7 @@ export default function TerminalCanvas({
       completionSelectionRef.current = 0;
       setCompletionSelection(0);
     }
+    return reduction.submittedCommands;
   }
 
   acceptCompletionRef.current = (suggestion) => {
@@ -863,6 +876,14 @@ export default function TerminalCanvas({
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
     void onInputRef.current(active.profile.id, payload, "atomic");
+    if (termRef.current?.buffer.active.type === "normal"
+      && !terminalInputLooksSensitive(termRef.current, oneKeyPromptStateRef.current.prompt)) {
+      const submitted = reduceTerminalCompletionInputWithSubmissions(
+        emptyTerminalCompletionInputState,
+        payload,
+      ).submittedCommands;
+      for (const command of submitted) onCommandSubmitRef.current?.(active.profile.id, command);
+    }
     closeTerminalFreeInput();
   }
 
@@ -1750,7 +1771,14 @@ export default function TerminalCanvas({
       // Bypassing the view-local pump removes a second IPC batching window.
       void onInputRef.current(active.profile.id, text, inputOrigin);
       if (/\r|\n/.test(text)) term.scrollToBottom();
-      updateCompletionInput(text);
+      const submittedCommands = updateCompletionInput(text);
+      if (term.buffer.active.type === "normal"
+        && submittedCommands.length
+        && !terminalInputLooksSensitive(term, oneKeyPromptStateRef.current.prompt)) {
+        for (const command of submittedCommands) {
+          onCommandSubmitRef.current?.(active.profile.id, command);
+        }
+      }
       dismissOneKeyPrompt();
     });
     const selectionDisposable = term.onSelectionChange(() => {
@@ -1994,8 +2022,11 @@ export default function TerminalCanvas({
   }, [active?.profile.id, focused]);
 
   useEffect(() => {
-    const requestFreeInput = () => {
-      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) openFreeInputRef.current();
+    const requestFreeInput = (event: Event) => {
+      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) {
+        const value = (event as CustomEvent<{ value?: unknown }>).detail?.value;
+        openFreeInputRef.current(typeof value === "string" ? value : "");
+      }
     };
     window.addEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
     return () => window.removeEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
@@ -2312,7 +2343,7 @@ export default function TerminalCanvas({
             />
           </div>
           <div className={`terminal-workspace mode-${displayMode}`}>
-            <div className="terminal-terminal-region" aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
+            <div className={`terminal-terminal-region${focused && freeInputOpen ? " free-input-open" : ""}`} aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
               <div
                 className="terminal-timestamp-gutter"
                 role="list"
@@ -2821,6 +2852,17 @@ function writeTerminalEvent(
     return;
   }
   term.write(event.text, onParsed);
+}
+
+function terminalInputLooksSensitive(
+  term: XTerm,
+  prompt: OneKeyTerminalPrompt | null,
+): boolean {
+  if (prompt) return true;
+  const buffer = term.buffer.active;
+  const row = buffer.type === "normal" ? buffer.baseY + buffer.cursorY : buffer.cursorY;
+  const line = buffer.getLine(row)?.translateToString(true) ?? "";
+  return /\b(?:password|passphrase|secret|token|pin|otp|verification\s+code)\b[^\r\n]{0,80}[:?]\s*\S*$/i.test(line);
 }
 
 function concatTerminalWriteBytes(frames: readonly Uint8Array[]): Uint8Array {

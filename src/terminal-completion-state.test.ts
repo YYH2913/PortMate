@@ -3,6 +3,7 @@ import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
+  reduceTerminalCompletionInputWithSubmissions,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
   terminalCompletionSupported,
@@ -60,6 +61,27 @@ describe("terminal completion state", () => {
     expect(state).toEqual({ line: "", synchronized: false });
     expect(reduceTerminalCompletionInput(state, "ignored").synchronized).toBe(false);
     expect(reduceTerminalCompletionInput(state, "\rnext")).toEqual({ line: "next", synchronized: true });
+  });
+
+  it("reports only real synchronized command submissions", () => {
+    let state = emptyTerminalCompletionInputState;
+    let reduction = reduceTerminalCompletionInputWithSubmissions(state, "git stats\u007fus\r\n");
+    expect(reduction.submittedCommands).toEqual(["git status"]);
+    state = reduction.state;
+
+    reduction = reduceTerminalCompletionInputWithSubmissions(state, "printf one\nprintf two\r\nprintf three\r");
+    expect(reduction.submittedCommands).toEqual(["printf one", "printf two", "printf three"]);
+
+    state = reduceTerminalCompletionInput(state, "secret");
+    reduction = reduceTerminalCompletionInputWithSubmissions(state, "\u001b[A\r");
+    expect(reduction.submittedCommands).toEqual([]);
+    expect(reduction.state).toEqual({ line: "", synchronized: true });
+
+    reduction = reduceTerminalCompletionInputWithSubmissions(
+      reduceTerminalCompletionInput(emptyTerminalCompletionInputState, "cancelled"),
+      "\u0003",
+    );
+    expect(reduction.submittedCommands).toEqual([]);
   });
 
   it("suggests commands, options, and subcommands as append-only suffixes", () => {

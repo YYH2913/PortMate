@@ -15,8 +15,9 @@ pub const MAX_COMMAND_HISTORY_ENTRIES: usize = 10_000;
 pub const MAX_COMMAND_HISTORY_RETENTION_DAYS: u32 = 3_650;
 pub const MAX_COMMAND_HISTORY_COMMAND_CHARACTERS: usize = 8_192;
 pub const MAX_COMMAND_HISTORY_STORAGE_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_COMMAND_HISTORY_SESSION_ID_CHARACTERS: usize = 256;
 const MAX_COMMAND_HISTORY_INPUT_ENTRIES: usize = MAX_COMMAND_HISTORY_ENTRIES * 2;
-const COMMAND_HISTORY_EMPTY_SNAPSHOT_BYTES: usize = b"{\"version\":2,\"entries\":[]}".len();
+const COMMAND_HISTORY_EMPTY_SNAPSHOT_BYTES: usize = b"{\"version\":3,\"entries\":[]}".len();
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 impl SessionStore {
@@ -46,10 +47,15 @@ impl SessionStore {
         let mut normalized = Vec::new();
         let mut bytes = COMMAND_HISTORY_EMPTY_SNAPSHOT_BYTES;
         for entry in entries.iter().take(MAX_COMMAND_HISTORY_INPUT_ENTRIES) {
+            let session_id = entry
+                .session_id
+                .as_deref()
+                .and_then(normalize_history_session_id);
+            let identity = (entry.command.clone(), session_id.clone());
             if entry.command.trim().is_empty()
                 || entry.command.contains('\0')
                 || entry.command.chars().count() > MAX_COMMAND_HISTORY_COMMAND_CHARACTERS
-                || seen.contains(&entry.command)
+                || seen.contains(&identity)
             {
                 continue;
             }
@@ -60,6 +66,7 @@ impl SessionStore {
             let candidate = CommandHistoryEntry {
                 command: entry.command.clone(),
                 recorded_at,
+                session_id,
             };
             let entry_bytes = serde_json::to_vec(&candidate)
                 .map_err(|error| format!("failed to size command history entry: {error}"))?
@@ -69,7 +76,7 @@ impl SessionStore {
                 continue;
             }
             bytes += entry_bytes;
-            seen.insert(candidate.command.clone());
+            seen.insert(identity);
             normalized.push(candidate);
             if normalized.len() >= limit {
                 break;
@@ -118,6 +125,7 @@ impl SessionStore {
     pub fn record_command_history(
         &mut self,
         command: String,
+        session_id: Option<String>,
         limit: usize,
         retention_days: u32,
         now_ms: i64,
@@ -126,6 +134,7 @@ impl SessionStore {
             &[CommandHistoryEntry {
                 command: command.clone(),
                 recorded_at: now_ms,
+                session_id: session_id.clone(),
             }],
             1,
             0,
@@ -138,15 +147,19 @@ impl SessionStore {
             );
         }
         let recorded_command = command.clone();
+        let recorded_session_id = candidate[0].session_id.clone();
         let mut entries = Vec::with_capacity(self.command_history.len().saturating_add(1));
         entries.push(CommandHistoryEntry {
             command,
             recorded_at: now_ms,
+            session_id: recorded_session_id.clone(),
         });
         entries.extend(
             self.command_history
                 .iter()
-                .filter(|entry| entry.command != recorded_command)
+                .filter(|entry| {
+                    entry.command != recorded_command || entry.session_id != recorded_session_id
+                })
                 .cloned(),
         );
         self.replace_command_history(&entries, limit, retention_days, now_ms)
@@ -346,6 +359,14 @@ impl SessionStore {
             .cloned()
             .collect()
     }
+}
+
+fn normalize_history_session_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.chars().count() <= MAX_COMMAND_HISTORY_SESSION_ID_CHARACTERS
+        && !value.chars().any(char::is_control))
+    .then(|| value.to_string())
 }
 
 fn trim_oldest_matching<T>(

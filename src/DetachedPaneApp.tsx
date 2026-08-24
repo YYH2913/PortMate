@@ -5,7 +5,14 @@ import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { AsyncOperationQueue } from "./async-operation-queue";
 import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
-import { COMMAND_HISTORY_STORAGE_KEY, commandHistoryCommands, normalizeCommandHistory, normalizeCommandHistoryPolicy } from "./command-history-state";
+import {
+  COMMAND_HISTORY_STORAGE_KEY,
+  commandHistoryCommands,
+  commandHistorySnapshot,
+  normalizeCommandHistory,
+  normalizeCommandHistoryPolicy,
+  recordCommandHistory,
+} from "./command-history-state";
 import {
   buildDetachedPanePath,
   DETACHED_PANE_EVENT,
@@ -28,18 +35,28 @@ import TerminalCanvas from "./TerminalCanvas";
 import { TerminalInputPumpRegistry } from "./terminal-input-pump";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
-import type { DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
+import type { CommandHistorySnapshot, DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 type DetachedOwnerControlAction = Exclude<DetachedPaneCommand["action"], "lock-screen">;
 const DETACHED_REATTACH_RESULT_TIMEOUT_MS = 5_000;
 
+type DetachedTerminalInteractionPrefs = {
+  oneKeyCompletionEnabled: boolean;
+  completionSettings: Record<string, unknown>;
+  completionHistory: string[];
+  completionQuickCommands: ReturnType<typeof readCompletionQuickCommands>;
+  historyEnabled: boolean;
+  mouseReporting: boolean;
+  copyOnSelect: boolean;
+};
+
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
-  const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(readTerminalInteractionPrefs);
+  const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(() => readTerminalInteractionPrefs(request.sessionId));
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
   const errorRef = useRef(error);
@@ -47,6 +64,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [ownerCommandBusy, setOwnerCommandBusy] = useState<DetachedOwnerControlAction | null>(null);
   const sessionRefreshGenerationRef = useRef(0);
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
+  const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef(new AsyncOperationQueue());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const inputEpochRef = useRef(0);
@@ -202,7 +220,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         setSessions(loadLocalSessions());
       }
       if (["portmate.terminalPrefs", COMMAND_HISTORY_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, null].includes(event.key)) {
-        setTerminalInteractionPrefs(readTerminalInteractionPrefs());
+        setTerminalInteractionPrefs(readTerminalInteractionPrefs(request.sessionId));
       }
     };
     window.addEventListener("storage", handleStorage);
@@ -249,6 +267,43 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       return Promise.resolve();
     }
     return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
+  }
+
+  function rememberDetachedCommand(sessionId: string, command: string) {
+    if (!terminalInteractionPrefs.historyEnabled) return;
+    const policy = normalizeCommandHistoryPolicy(
+      terminalInteractionPrefs.completionSettings.historyLimit,
+      terminalInteractionPrefs.completionSettings.historyRetentionDays,
+    );
+    const localEntries = readCommandHistoryEntries(policy);
+    const optimistic = recordCommandHistory(localEntries, command, policy, Date.now(), sessionId);
+    persistDetachedCommandHistory(optimistic);
+    setTerminalInteractionPrefs((current) => ({
+      ...current,
+      completionHistory: commandHistoryCommands(optimistic, request.sessionId),
+    }));
+    if (!isBackendAvailable()) return;
+    commandHistoryOperationRef.current = commandHistoryOperationRef.current.then(async () => {
+      try {
+        const snapshot = await invokeBackend<CommandHistorySnapshot>("record_command_history", {
+          command,
+          sessionId,
+          limit: policy.limit,
+          retentionDays: policy.retentionDays,
+        });
+        const canonical = normalizeCommandHistory(
+          { version: 3, entries: snapshot.entries },
+          policy,
+        );
+        persistDetachedCommandHistory(canonical);
+        setTerminalInteractionPrefs((current) => ({
+          ...current,
+          completionHistory: commandHistoryCommands(canonical, request.sessionId),
+        }));
+      } catch (error) {
+        console.warn("PortMate detached command history persistence failed", error);
+      }
+    });
   }
 
   async function sendInput(
@@ -368,7 +423,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         </button>
       </header>
       <section className="detached-pane-terminal">
-        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={enqueueTerminalInput} onOneKeyCompletion={completeOneKeyPrompt} />
+        <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={enqueueTerminalInput} onCommandSubmit={rememberDetachedCommand} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={statusError ? "detached-pane-status error" : "detached-pane-status"}>
         <span title={statusText} aria-live="polite">{statusText}</span>
@@ -460,30 +515,26 @@ function loadLocalSessions(): SessionSummary[] {
   }
 }
 
-function readTerminalInteractionPrefs() {
-  const defaults = {
+function readTerminalInteractionPrefs(sessionId: string): DetachedTerminalInteractionPrefs {
+  const defaults: DetachedTerminalInteractionPrefs = {
     oneKeyCompletionEnabled: true,
     completionSettings: {},
-    completionHistory: readCompletionHistory(),
+    completionHistory: readCompletionHistory(sessionId),
     completionQuickCommands: readCompletionQuickCommands(),
+    historyEnabled: true,
     mouseReporting: true,
     copyOnSelect: true,
   };
   try {
     const raw = window.localStorage.getItem("portmate.terminalPrefs");
     if (!raw) return defaults;
-    const value = JSON.parse(raw) as {
-      oneKeyCompletionEnabled?: unknown;
-      historyLimit?: unknown;
-      historyRetentionDays?: unknown;
-      mouseReporting?: unknown;
-      mouseCopyOnSelect?: unknown;
-    };
+    const value = JSON.parse(raw) as Record<string, unknown>;
     return {
       oneKeyCompletionEnabled: typeof value.oneKeyCompletionEnabled === "boolean" ? value.oneKeyCompletionEnabled : true,
       completionSettings: value,
-      completionHistory: readCompletionHistory(value.historyLimit, value.historyRetentionDays),
+      completionHistory: readCompletionHistory(sessionId, value.historyLimit, value.historyRetentionDays),
       completionQuickCommands: readCompletionQuickCommands(),
+      historyEnabled: typeof value.historyEnabled === "boolean" ? value.historyEnabled : true,
       mouseReporting: typeof value.mouseReporting === "boolean" ? value.mouseReporting : true,
       copyOnSelect: typeof value.mouseCopyOnSelect === "boolean" ? value.mouseCopyOnSelect : true,
     };
@@ -492,15 +543,34 @@ function readTerminalInteractionPrefs() {
   }
 }
 
-function readCompletionHistory(limit?: unknown, retentionDays?: unknown): string[] {
+function readCompletionHistory(sessionId: string, limit?: unknown, retentionDays?: unknown): string[] {
   try {
     const value = JSON.parse(window.localStorage.getItem(COMMAND_HISTORY_STORAGE_KEY) ?? "null") as unknown;
     return commandHistoryCommands(normalizeCommandHistory(
       value,
       normalizeCommandHistoryPolicy(limit, retentionDays),
-    ));
+    ), sessionId);
   } catch {
     return [];
+  }
+}
+
+function readCommandHistoryEntries(policy: ReturnType<typeof normalizeCommandHistoryPolicy>) {
+  try {
+    return normalizeCommandHistory(
+      JSON.parse(window.localStorage.getItem(COMMAND_HISTORY_STORAGE_KEY) ?? "null") as unknown,
+      policy,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistDetachedCommandHistory(entries: Parameters<typeof commandHistorySnapshot>[0]) {
+  try {
+    window.localStorage.setItem(COMMAND_HISTORY_STORAGE_KEY, JSON.stringify(commandHistorySnapshot(entries)));
+  } catch {
+    // The detached terminal keeps its in-memory completion list when storage is unavailable.
   }
 }
 

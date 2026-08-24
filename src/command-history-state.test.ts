@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   commandHistoryCommands,
+  commandHistoryEntriesForSession,
   commandHistoryEntriesEqual,
   commandHistorySnapshot,
   MAX_COMMAND_HISTORY_COMMAND_CHARACTERS,
@@ -31,6 +32,7 @@ describe("command history state", () => {
       "bad\0command",
       "x".repeat(MAX_COMMAND_HISTORY_COMMAND_CHARACTERS + 1),
       42,
+      null,
     ], { limit: 10, retentionDays: 30 }, now);
     expect(commandHistoryCommands(entries)).toEqual(["git status", "npm test"]);
     expect(entries[0].recordedAt).toBe(now);
@@ -49,8 +51,8 @@ describe("command history state", () => {
       ],
     };
     expect(normalizeCommandHistory(value, { limit: 10, retentionDays: 30 }, now)).toEqual([
-      { command: "future", recordedAt: now },
-      { command: "recent", recordedAt: now - 2 * 86_400_000 },
+      { command: "future", recordedAt: now, sessionId: null },
+      { command: "recent", recordedAt: now - 2 * 86_400_000, sessionId: null },
     ]);
     expect(commandHistoryCommands(normalizeCommandHistory(value, { limit: 10, retentionDays: 0 }, now))).toEqual([
       "future",
@@ -65,8 +67,8 @@ describe("command history state", () => {
     const second = recordCommandHistory(first, "npm test", policy, 200);
     const repeated = recordCommandHistory(second, "git status", policy, 300);
     expect(repeated).toEqual([
-      { command: "git status", recordedAt: 300 },
-      { command: "npm test", recordedAt: 200 },
+      { command: "git status", recordedAt: 300, sessionId: null },
+      { command: "npm test", recordedAt: 200, sessionId: null },
     ]);
     expect(recordCommandHistory(repeated, "   ", policy, 400)).toEqual(repeated);
   });
@@ -81,20 +83,49 @@ describe("command history state", () => {
     let pending = queuePendingCommandHistory([], "a", policy, 1_000);
     pending = queuePendingCommandHistory(pending, "b", policy, 1_001);
     pending = queuePendingCommandHistory(pending, "a", policy, 1_002);
-    expect(pending).toEqual(["b", "a"]);
+    expect(pending).toEqual([
+      { command: "b", sessionId: null },
+      { command: "a", sessionId: null },
+    ]);
     expect(queuePendingCommandHistory(pending, "   ", policy, 1_003)).toEqual(pending);
-    expect(queuePendingCommandHistory(pending, "c", policy, 1_004)).toEqual(["a", "c"]);
+    expect(queuePendingCommandHistory(pending, "c", policy, 1_004)).toEqual([
+      { command: "a", sessionId: null },
+      { command: "c", sessionId: null },
+    ]);
     expect(normalizePendingCommandHistory(
       ["old", "a", "bad\0command", "b", "a"],
       policy,
       1_005,
-    )).toEqual(["b", "a"]);
-    expect(normalizePendingCommandHistory(pending, { ...policy, limit: 1 }, 1_006)).toEqual(["a"]);
+    )).toEqual([
+      { command: "b", sessionId: null },
+      { command: "a", sessionId: null },
+    ]);
+    expect(normalizePendingCommandHistory(pending, { ...policy, limit: 1 }, 1_006)).toEqual([
+      { command: "a", sessionId: null },
+    ]);
+  });
+
+  it("keeps identical commands separate by session and scopes completion history", () => {
+    const policy = { limit: 10, retentionDays: 30 };
+    let entries = recordCommandHistory([], "show status", policy, 100, "router-a");
+    entries = recordCommandHistory(entries, "show status", policy, 200, "router-b");
+    entries = recordCommandHistory(entries, "global legacy", policy, 250, null);
+    entries = recordCommandHistory(entries, "show status", policy, 300, "router-a");
+
+    expect(entries).toEqual([
+      { command: "show status", recordedAt: 300, sessionId: "router-a" },
+      { command: "global legacy", recordedAt: 250, sessionId: null },
+      { command: "show status", recordedAt: 200, sessionId: "router-b" },
+    ]);
+    expect(commandHistoryEntriesForSession(entries, "router-a").map((entry) => entry.command))
+      .toEqual(["show status", "global legacy"]);
+    expect(commandHistoryEntriesForSession(entries, "router-b").map((entry) => entry.command))
+      .toEqual(["global legacy", "show status"]);
   });
 
   it("bounds pending backend writes by the persisted UTF-8 payload budget", () => {
     const command = "\"\\\n界".repeat(2_000);
-    let pending: string[] = [];
+    let pending: ReturnType<typeof queuePendingCommandHistory> = [];
     for (let index = 0; index < 200; index += 1) {
       pending = queuePendingCommandHistory(
         pending,
@@ -103,8 +134,12 @@ describe("command history state", () => {
         10_000 + index,
       );
     }
-    const entries = [...pending].reverse().map((item, index) => ({ command: item, recordedAt: 20_000 - index }));
-    const bytes = new TextEncoder().encode(JSON.stringify({ version: 2, entries })).byteLength;
+    const entries = [...pending].reverse().map((item, index) => ({
+      command: item.command,
+      recordedAt: 20_000 - index,
+      sessionId: item.sessionId,
+    }));
+    const bytes = new TextEncoder().encode(JSON.stringify({ version: 3, entries })).byteLength;
     expect(bytes).toBeLessThanOrEqual(MAX_COMMAND_HISTORY_STORAGE_BYTES);
     expect(pending.length).toBeLessThan(200);
   });

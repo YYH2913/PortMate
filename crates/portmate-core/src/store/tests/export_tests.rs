@@ -37,6 +37,7 @@ fn export_bundle_includes_diagnostics_and_redacts_text() {
     store
         .record_command_history(
             "deploy --password command-history-secret".to_string(),
+            Some("test-session".to_string()),
             100,
             30,
             Utc::now().timestamp_millis(),

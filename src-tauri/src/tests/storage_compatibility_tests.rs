@@ -86,7 +86,13 @@ fn sqlite_save_updates_the_json_compatibility_snapshot() {
     store.upsert_profile(test_shell_profile());
     let history_recorded_at = Utc::now().timestamp_millis();
     store
-        .record_command_history("git status".to_string(), 100, 30, history_recorded_at)
+        .record_command_history(
+            "git status".to_string(),
+            Some("test-session".to_string()),
+            100,
+            30,
+            history_recorded_at,
+        )
         .unwrap();
 
     save_store(&store_path, &store).unwrap();

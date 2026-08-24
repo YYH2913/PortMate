@@ -38,6 +38,11 @@ export function cutTerminalFreeInputRange(value: string, start: number, end: num
   };
 }
 
-export function requestTerminalFreeInput(target: Pick<EventTarget, "dispatchEvent"> = window): boolean {
-  return target.dispatchEvent(new Event(TERMINAL_FREE_INPUT_REQUEST_EVENT));
+export function requestTerminalFreeInput(
+  target: Pick<EventTarget, "dispatchEvent"> = window,
+  value = "",
+): boolean {
+  return target.dispatchEvent(new CustomEvent(TERMINAL_FREE_INPUT_REQUEST_EVENT, {
+    detail: { value: normalizeTerminalFreeInput(value) },
+  }));
 }

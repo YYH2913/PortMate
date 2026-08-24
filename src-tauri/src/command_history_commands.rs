@@ -93,13 +93,25 @@ fn should_skip_empty_migration(
 pub(crate) fn record_command_history(
     state: State<'_, AppState>,
     command: String,
+    session_id: Option<String>,
     limit: usize,
     retention_days: u32,
 ) -> Result<CommandHistorySnapshot, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let now = now_millis();
     let result = commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        let entries = next_store.record_command_history(command, limit, retention_days, now)?;
+        if let Some(session_id) = session_id.as_deref() {
+            if next_store.profile(session_id).is_none() {
+                return Err(format!("unknown session: {session_id}"));
+            }
+        }
+        let entries = next_store.record_command_history(
+            command,
+            session_id,
+            limit,
+            retention_days,
+            now,
+        )?;
         Ok(snapshot(next_store, entries))
     })?;
     emit_snapshot(&state, &result);
@@ -178,6 +190,7 @@ mod tests {
             .push(portmate_core::CommandHistoryEntry {
                 command: "git status".to_string(),
                 recorded_at: 1,
+                session_id: None,
             });
         assert!(!should_skip_empty_migration(&store_with_history, &[]));
 

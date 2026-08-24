@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
+import type { ComponentType, MouseEvent as ReactMouseEvent, SVGProps } from "react";
+import type { CommandHistoryEntry } from "./command-history-state";
 import { filterWorkspaceSessions } from "./session-search-state";
 import { sessionRuntimeHealthDescription } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
@@ -46,41 +47,81 @@ export function SessionExplorerPanel({
 }
 
 export function CommandHistoryList({
-  history,
-  beforeList,
+  entries,
+  sessions,
+  activeId,
   icons,
   onPick,
 }: {
-  history: readonly string[];
-  beforeList?: ReactNode;
+  entries: readonly CommandHistoryEntry[];
+  sessions: readonly SessionSummary[];
+  activeId: string;
   icons: UtilityPanelIcons;
-  onPick: (value: string) => void;
+  onPick: (entry: CommandHistoryEntry) => void;
 }) {
   const [query, setQuery] = useState("");
-  const visible = useMemo(() => filterCommandHistory(history, query), [history, query]);
+  const [scope, setScope] = useState<"session" | "all">("session");
+  const sessionLabels = useMemo(() => new Map(
+    sessions.map((session) => [session.profile.id, session.profile.name]),
+  ), [sessions]);
+  const scoped = useMemo(() => (
+    scope === "session" && activeId
+      ? entries.filter((entry) => entry.sessionId === activeId)
+      : entries
+  ), [activeId, entries, scope]);
+  const visible = useMemo(
+    () => filterCommandHistory(scoped, query, sessionLabels),
+    [query, scoped, sessionLabels],
+  );
+  const activeSessionName = sessionLabels.get(activeId) ?? "当前会话";
   return (
     <>
       <PanelFilter label="筛选历史命令" value={query} icons={icons} onChange={setQuery} />
+      <div className="history-scope-switch" role="group" aria-label="历史命令范围">
+        <button type="button" className={scope === "session" ? "active" : ""} aria-pressed={scope === "session"} onClick={() => setScope("session")}>当前会话</button>
+        <button type="button" className={scope === "all" ? "active" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>全部</button>
+      </div>
       <div className="right-tools-list">
-        {beforeList}
         {visible.length ? (
           <div className="history-list">
-            {visible.map((item, index) => (
-              <button key={`${index}-${item}`} type="button" onClick={() => onPick(item)}>
-                <span>{displayCommand(item)}</span>
+            {visible.map((entry, index) => (
+              <button
+                key={`${entry.sessionId ?? "legacy"}-${entry.recordedAt}-${index}-${entry.command}`}
+                type="button"
+                title={entry.command}
+                onClick={() => onPick(entry)}
+              >
+                <span>{displayCommand(entry.command)}</span>
+                <small>
+                  <span>{commandHistorySessionLabel(entry, sessionLabels)}</span>
+                  <time dateTime={new Date(entry.recordedAt).toISOString()}>{formatCommandHistoryTime(entry.recordedAt)}</time>
+                </small>
               </button>
             ))}
           </div>
-        ) : <div className="empty-pane top">{history.length ? "没有匹配的历史命令" : "没有可用的历史命令"}</div>}
+        ) : <div className="empty-pane top">{
+          scoped.length
+            ? "没有匹配的历史命令"
+            : scope === "session" && activeId
+              ? `${activeSessionName} 尚无历史命令`
+              : "没有可用的历史命令"
+        }</div>}
       </div>
     </>
   );
 }
 
-export function filterCommandHistory(history: readonly string[], query: string): string[] {
+export function filterCommandHistory(
+  history: readonly CommandHistoryEntry[],
+  query: string,
+  sessionLabels: ReadonlyMap<string, string> = new Map(),
+): CommandHistoryEntry[] {
   const needle = normalizeFilter(query);
   if (!needle) return [...history];
-  return history.filter((command) => normalizeFilter(displayCommand(command)).includes(needle));
+  return history.filter((entry) => normalizeFilter([
+    displayCommand(entry.command),
+    commandHistorySessionLabel(entry, sessionLabels),
+  ].join(" ")).includes(needle));
 }
 
 function PanelFilter({
@@ -173,6 +214,19 @@ function groupSessions(
 
 function displayCommand(command: string): string {
   return command.replace(/\s+/g, " ").trim() || command;
+}
+
+function commandHistorySessionLabel(
+  entry: CommandHistoryEntry,
+  sessionLabels: ReadonlyMap<string, string>,
+): string {
+  if (!entry.sessionId) return "未关联会话";
+  return sessionLabels.get(entry.sessionId) ?? `已删除会话 · ${entry.sessionId}`;
+}
+
+function formatCommandHistoryTime(value: number): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString();
 }
 
 function normalizeFilter(value: string): string {

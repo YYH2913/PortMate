@@ -888,6 +888,7 @@ fn sensitive_snapshot_store() -> SessionStore {
     store
         .record_command_history(
             "deploy --password command-history-secret".to_string(),
+            Some(session_id.to_string()),
             100,
             30,
             diagnostic_ts.timestamp_millis(),

@@ -35,7 +35,21 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import { waitForChildWindowReady } from "./child-window-launch";
-import type { CommandHistoryEntry } from "./command-history-state";
+import {
+  COMMAND_HISTORY_STORAGE_KEY,
+  commandHistoryCommands,
+  commandHistoryEntriesEqual,
+  commandHistorySnapshot,
+  MAX_COMMAND_HISTORY_LIMIT,
+  MAX_COMMAND_HISTORY_RETENTION_DAYS,
+  normalizeCommandHistory,
+  normalizeCommandHistoryCommand,
+  normalizeCommandHistorySessionId,
+  normalizePendingCommandHistory,
+  queuePendingCommandHistory,
+  recordCommandHistory,
+} from "./command-history-state";
+import type { CommandHistoryEntry, PendingCommandHistoryEntry } from "./command-history-state";
 import { mergeTransfers } from "./transfer-state";
 import { addDismissedTransferId } from "./transfer-visibility";
 import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
@@ -65,8 +79,6 @@ import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
-import { filterSerialCaptureFrames, mergeSerialCaptureSnapshot, serialCaptureAscii, serialCaptureHex } from "./serial-capture-state";
-import type { SerialCaptureDirectionFilter } from "./serial-capture-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
@@ -99,7 +111,7 @@ import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabi
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
-import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportSerialCaptureResult, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SerialCaptureFrame, SerialCaptureSnapshot, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
+import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, SysmonSnapshot, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import { stageConnectionCredentials } from "./session-credential-state";
@@ -140,9 +152,6 @@ const WORKSPACE_WINDOW_HEIGHT = 820;
 const WORKSPACE_WINDOW_MIN_WIDTH = 1100;
 const WORKSPACE_WINDOW_MIN_HEIGHT = 720;
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
-const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
-const MAX_COMMAND_HISTORY_LIMIT = 10_000;
-const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 const MAX_RESOLVED_MCP_APPROVAL_IDS = 256;
 const COMMAND_HISTORY_UPDATED_EVENT = "portmate-command-history-updated";
 type StartupHydrationDomain = "transfers" | "audit" | "grants" | "host-keys" | "one-keys" | "serial-ports";
@@ -278,8 +287,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
-  const [serialCaptures, setSerialCaptures] = useState<Record<string, SerialCaptureFrame[]>>({});
-  const [serialCaptureActionIds, setSerialCaptureActionIds] = useState<Set<string>>(() => new Set());
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
   const [terminalExportBusyViewIds, setTerminalExportBusyViewIds] = useState<Set<string>>(() => new Set());
@@ -319,16 +326,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const commandHistoryRevisionRef = useRef(0);
   const commandHistoryBackendReadyRef = useRef(false);
   const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
-  const pendingCommandHistoryRef = useRef<string[]>([]);
+  const pendingCommandHistoryRef = useRef<PendingCommandHistoryEntry[]>([]);
   const commandHistoryPolicyRef = useRef(commandHistoryPolicy);
   const commandHistoryEnabledRef = useRef(terminalPrefs.historyEnabled);
   const commandHistoryPersistedSettingsRef = useRef<{ enabled: boolean; limit: number; retentionDays: number } | null>(null);
   commandHistoryPolicyRef.current = commandHistoryPolicy;
   commandHistoryEnabledRef.current = terminalPrefs.historyEnabled;
-  const commandHistory = useMemo(
-    () => commandHistoryEntries.map((entry) => entry.command),
-    [commandHistoryEntries],
-  );
+  const commandHistoryBySession = useMemo(() => Object.fromEntries(sessions.map((session) => [
+    session.profile.id,
+    commandHistoryCommands(commandHistoryEntries, session.profile.id),
+  ])), [commandHistoryEntries, sessions]);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
     normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
   ));
@@ -413,9 +420,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const sessionSettingsProfileMutationGateRef = useRef(new KeyedRequestGate<string>());
   const profileShortcutOperationGateRef = useRef(new KeyedRequestGate<string>());
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
-  const serialCapturesRef = useRef<Record<string, SerialCaptureFrame[]>>({});
-  const serialCaptureOperationGateRef = useRef(new KeyedRequestGate<string>());
-  const serialCaptureActionTokensRef = useRef(new Map<string, number>());
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
@@ -463,7 +467,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     right: Boolean(workspaceContextPane && findWorkspacePaneInDirection(workspaceRoot, workspaceContextPane.id, "right")),
   };
   const activeStatus = active?.runtime.status;
-  const activeSerial = active?.profile.connection.kind === "serial" ? active.profile.connection : null;
   const menuCapabilityContext: MenuCapabilityContext = {
     hasActiveSession: Boolean(active),
     hasActiveView: Boolean(activeWorkspaceView),
@@ -497,6 +500,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   // event handlers current without forcing every pane to rerender when an
   // unrelated dialog, transfer, or audit state changes.
   const terminalPaneOnInput = useStableEvent(routeTerminalInput);
+  const terminalPaneOnCommandSubmit = useStableEvent((sessionId: string, command: string) => {
+    rememberCommand(command, sessionId);
+  });
   const terminalPaneOnOneKeyCompletion = useStableEvent(completeOneKeyPrompt);
   const terminalPaneOnKeyModeChange = useStableEvent((paneId: string, viewId: string, mode: TerminalKeyMode) => {
     setActiveWorkspaceViewKeyMode(mode, paneId, viewId);
@@ -619,35 +625,43 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setTransfers(update);
   }
 
-  function applyCommandHistorySnapshot(snapshot: CommandHistorySnapshot, committedCommand?: string) {
+  function applyCommandHistorySnapshot(
+    snapshot: CommandHistorySnapshot,
+    committed?: PendingCommandHistoryEntry,
+  ) {
     if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < commandHistoryRevisionRef.current) return;
     commandHistoryRevisionRef.current = snapshot.revision;
-    if (committedCommand !== undefined) {
-      const index = pendingCommandHistoryRef.current.indexOf(committedCommand);
+    if (committed) {
+      const index = pendingCommandHistoryRef.current.findIndex((entry) => (
+        entry.command === committed.command && entry.sessionId === committed.sessionId
+      ));
       if (index >= 0) pendingCommandHistoryRef.current.splice(index, 1);
     }
     if (!commandHistoryEnabledRef.current) return;
-    void import("./command-history-state").then(({ normalizeCommandHistory, recordCommandHistory }) => {
-      if (snapshot.revision < commandHistoryRevisionRef.current) return;
-      let entries = normalizeCommandHistory(
-        { version: 2, entries: Array.isArray(snapshot.entries) ? snapshot.entries : [] },
+    let entries = normalizeCommandHistory(
+      { version: 3, entries: Array.isArray(snapshot.entries) ? snapshot.entries : [] },
+      commandHistoryPolicyRef.current,
+    );
+    for (const pending of pendingCommandHistoryRef.current) {
+      entries = recordCommandHistory(
+        entries,
+        pending.command,
         commandHistoryPolicyRef.current,
+        Date.now(),
+        pending.sessionId,
       );
-      for (const command of pendingCommandHistoryRef.current) {
-        entries = recordCommandHistory(entries, command, commandHistoryPolicyRef.current);
-      }
-      commandHistoryEntriesRef.current = entries;
-      setCommandHistoryEntries(entries);
-    });
+    }
+    commandHistoryEntriesRef.current = entries;
+    setCommandHistoryEntries(entries);
   }
 
   function enqueueCommandHistoryOperation(
     operation: () => Promise<CommandHistorySnapshot>,
-    committedCommand?: string,
+    committed?: PendingCommandHistoryEntry,
   ) {
     commandHistoryOperationRef.current = commandHistoryOperationRef.current.then(async () => {
       try {
-        applyCommandHistorySnapshot(await operation(), committedCommand);
+        applyCommandHistorySnapshot(await operation(), committed);
       } catch (error) {
         console.warn("PortMate command history persistence failed", error);
       }
@@ -1230,7 +1244,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     let disposed = false;
     let stopListening: (() => void) | undefined;
-    void import("./command-history-state").then(async ({ normalizeCommandHistory }) => {
+    void (async () => {
       if (disposed) return;
       const localEntries = normalizeCommandHistory(
         loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null),
@@ -1278,14 +1292,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (disposed) return;
         commandHistoryBackendReadyRef.current = true;
         applyCommandHistorySnapshot(enabledSnapshot);
-        for (const command of [...pendingCommandHistoryRef.current]) {
+        for (const pending of [...pendingCommandHistoryRef.current]) {
           enqueueCommandHistoryOperation(
             () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
-              command,
+              command: pending.command,
+              sessionId: pending.sessionId,
               limit: commandHistoryPolicyRef.current.limit,
               retentionDays: commandHistoryPolicyRef.current.retentionDays,
             }),
-            command,
+            pending,
           );
         }
       } catch (error) {
@@ -1297,7 +1312,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       } finally {
         if (!disposed) setCommandHistoryReady(true);
       }
-    });
+    })();
     return () => {
       disposed = true;
       stopListening?.();
@@ -1347,26 +1362,26 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     if (!commandHistoryReady) return;
     let disposed = false;
-    void import("./command-history-state").then((history) => {
+    queueMicrotask(() => {
       if (disposed) return;
       pendingCommandHistoryRef.current = terminalPrefs.historyEnabled
-        ? history.normalizePendingCommandHistory(
+        ? normalizePendingCommandHistory(
           pendingCommandHistoryRef.current,
           commandHistoryPolicy,
         )
         : [];
-      const normalized = history.normalizeCommandHistory(
-        history.commandHistorySnapshot(commandHistoryEntries),
+      const normalized = normalizeCommandHistory(
+        commandHistorySnapshot(commandHistoryEntries),
         commandHistoryPolicy,
       );
-      if (!history.commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
+      if (!commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
         commandHistoryEntriesRef.current = normalized;
         setCommandHistoryEntries(normalized);
         return;
       }
       try {
         if (terminalPrefs.historyEnabled && normalized.length) {
-          window.localStorage.setItem(COMMAND_HISTORY_STORAGE_KEY, JSON.stringify(history.commandHistorySnapshot(normalized)));
+          window.localStorage.setItem(COMMAND_HISTORY_STORAGE_KEY, JSON.stringify(commandHistorySnapshot(normalized)));
         } else {
           window.localStorage.removeItem(COMMAND_HISTORY_STORAGE_KEY);
         }
@@ -1469,14 +1484,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }, activeStatus === "connected" ? 2000 : 1200);
     return () => window.clearInterval(timer);
   }, [activeId, activeStatus]);
-
-  useEffect(() => {
-    if (!activeId || !activeSerial || !isBackendAvailable()) return;
-    void refreshSerialCapture(activeId);
-    if (activeStatus === "disconnected") return;
-    const timer = window.setInterval(() => void refreshSerialCapture(activeId), 750);
-    return () => window.clearInterval(timer);
-  }, [activeId, activeStatus, active?.profile.kind]);
 
   useEffect(() => {
     if (!activeId || !isBackendAvailable()) return;
@@ -1753,118 +1760,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     activeLogRefreshGateRef.current.invalidate(sessionId);
     logSignatureRef.current[sessionId] = logSignature(nextLog);
     setLogs((current) => ({ ...current, [sessionId]: nextLog }));
-  }
-
-  function storeSerialCapture(sessionId: string, frames: SerialCaptureFrame[]) {
-    serialCapturesRef.current = { ...serialCapturesRef.current, [sessionId]: frames };
-    setSerialCaptures((current) => ({ ...current, [sessionId]: frames }));
-  }
-
-  function beginSerialCaptureAction(sessionId: string): number | null {
-    const session = sessionsRef.current.find((candidate) => candidate.profile.id === sessionId);
-    if (!session || session.profile.connection.kind !== "serial") return null;
-    if (serialCaptureActionTokensRef.current.has(sessionId)) return null;
-    const token = serialCaptureOperationGateRef.current.replace(sessionId);
-    serialCaptureActionTokensRef.current.set(sessionId, token);
-    setSerialCaptureActionIds((current) => {
-      if (current.has(sessionId)) return current;
-      return new Set(current).add(sessionId);
-    });
-    return token;
-  }
-
-  function finishSerialCaptureAction(sessionId: string, token: number) {
-    if (serialCaptureActionTokensRef.current.get(sessionId) !== token) return;
-    serialCaptureActionTokensRef.current.delete(sessionId);
-    serialCaptureOperationGateRef.current.finish(sessionId, token);
-    setSerialCaptureActionIds((current) => {
-      if (!current.has(sessionId)) return current;
-      const next = new Set(current);
-      next.delete(sessionId);
-      return next;
-    });
-  }
-
-  async function refreshSerialCapture(sessionId: string) {
-    const session = sessionsRef.current.find((candidate) => candidate.profile.id === sessionId);
-    if (!session || session.profile.connection.kind !== "serial") return;
-    const gate = serialCaptureOperationGateRef.current;
-    const token = gate.begin(sessionId);
-    if (token === null) return;
-    try {
-      const current = serialCapturesRef.current[sessionId] ?? [];
-      const snapshot = await invokeBackend<SerialCaptureSnapshot>("list_serial_capture", {
-        sessionId,
-        afterId: current.at(-1)?.id ?? null,
-      });
-      if (!gate.isCurrent(sessionId, token)) return;
-      const next = mergeSerialCaptureSnapshot(current, snapshot);
-      if (next !== current) storeSerialCapture(sessionId, next);
-    } catch {
-      // Capture polling is best-effort; transport status and terminal output remain authoritative.
-    } finally {
-      gate.finish(sessionId, token);
-    }
-  }
-
-  function appendLocalSerialCapture(sessionId: string, bytes: number[]) {
-    const captured = bytes.slice(0, 64 * 1024);
-    const frame: SerialCaptureFrame = {
-      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-      ts: new Date().toISOString(),
-      direction: "outbound",
-      bytes: captured,
-      originalLength: bytes.length,
-      truncated: captured.length !== bytes.length,
-    };
-    const next = [...(serialCapturesRef.current[sessionId] ?? []), frame].slice(-512);
-    while (next.reduce((total, item) => total + item.bytes.length, 0) > 1024 * 1024) {
-      next.shift();
-    }
-    storeSerialCapture(sessionId, next);
-  }
-
-  async function clearSerialCapture(sessionId: string) {
-    const token = beginSerialCaptureAction(sessionId);
-    if (token === null) return;
-    const gate = serialCaptureOperationGateRef.current;
-    try {
-      if (!isBackendAvailable()) {
-        storeSerialCapture(sessionId, []);
-        return;
-      }
-      const snapshot = await invokeBackend<SerialCaptureSnapshot>("clear_serial_capture", { sessionId });
-      if (!gate.isCurrent(sessionId, token)) return;
-      storeSerialCapture(sessionId, mergeSerialCaptureSnapshot([], snapshot));
-    } catch (error) {
-      if (gate.isCurrent(sessionId, token)) {
-        setNotice({ title: "清空串口捕获失败", message: formatError(error) });
-      }
-    } finally {
-      finishSerialCaptureAction(sessionId, token);
-    }
-  }
-
-  async function exportSerialCapture(sessionId: string, frameIds: string[]) {
-    const token = beginSerialCaptureAction(sessionId);
-    if (token === null) return;
-    const gate = serialCaptureOperationGateRef.current;
-    try {
-      const result = await invokeBackend<ExportSerialCaptureResult>("export_serial_capture", {
-        request: { sessionId, frameIds },
-      });
-      if (!gate.isCurrent(sessionId, token)) return;
-      setNotice({
-        title: "串口捕获已导出",
-        message: `${result.frames} 帧 · ${formatBytes(result.capturedBytes)} · ${result.path}\nSHA-256 ${result.sha256}`,
-      });
-    } catch (error) {
-      if (gate.isCurrent(sessionId, token)) {
-        setNotice({ title: "导出串口捕获失败", message: formatError(error) });
-      }
-    } finally {
-      finishSerialCaptureAction(sessionId, token);
-    }
   }
 
   async function refreshSessionSummaries() {
@@ -2448,14 +2343,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       hostKeyPromptOperationGateRef.current.invalidateAll();
       setHostKeyPrompt(null);
     }
-    serialCaptureOperationGateRef.current.invalidate(profileId);
-    serialCaptureActionTokensRef.current.delete(profileId);
-    setSerialCaptureActionIds((current) => {
-      if (!current.has(profileId)) return current;
-      const next = new Set(current);
-      next.delete(profileId);
-      return next;
-    });
     serialControlOperationGateRef.current.invalidate(profileId);
     serialAnalyzerWindowOperationGateRef.current.invalidate(profileId);
     setSerialControlBusyIds((current) => {
@@ -2506,9 +2393,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
     ));
     updateTransfers((current) => current.filter((transfer) => transfer.sessionId !== profileId));
-    setSerialCaptures((current) => Object.fromEntries(
-      Object.entries(current).filter(([sessionId]) => sessionId !== profileId),
-    ));
     setMcpApprovals((current) => current.filter((approval) => approval.sessionId !== profileId));
     setClosedWorkspaceViews((current) => current.filter((closed) => closed.view.sessionId !== profileId));
     setTerminalPrefs((current) => ({
@@ -2527,7 +2411,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       draftExpectedProfileRef.current = null;
     }
     setDraft((current) => current.id === profileId ? createSessionDraft() : current);
-    delete serialCapturesRef.current[profileId];
   }
 
   async function deleteSessionFromContext(sessionId?: string | null) {
@@ -3947,9 +3830,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         event.direction = "outbound";
         event.stream = "stdout";
         setLogs((current) => ({ ...current, [sessionId]: [...(current[sessionId] ?? []), event] }));
-        if (session.profile.connection.kind === "serial") {
-          appendLocalSerialCapture(sessionId, Array.from(new TextEncoder().encode(text)));
-        }
       }
     } catch (error) {
       if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
@@ -4005,9 +3885,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         event.direction = "outbound";
         event.stream = "stdout";
         setLogs((current) => ({ ...current, [sessionId]: [...(current[sessionId] ?? []), event] }));
-        if (session.profile.connection.kind === "serial") {
-          appendLocalSerialCapture(sessionId, bytes);
-        }
       }
     } catch (error) {
       if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
@@ -4060,7 +3937,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }
       });
       if (sendMode === "text" && textPayload.trim()) {
-        rememberCommand(textPayload);
+        for (const target of targets) rememberCommand(textPayload, target);
       }
     } catch (error) {
       setNotice({ title: "发送失败", message: formatError(error) });
@@ -4075,40 +3952,58 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (command.appendEnter && command.command.trim()) {
-      rememberCommand(command.command);
+      rememberCommand(command.command, active.profile.id);
     }
     const dispatch = quickCommandDispatch(command);
     void routeTerminalInput(active.profile.id, dispatch.text, dispatch.origin);
   }
 
-  function rememberCommand(command: string) {
-    void import("./command-history-state").then((history) => {
-      const valid = history.normalizeCommandHistoryCommand(command);
-      if (!valid) return;
-      const normalized = history.recordCommandHistory(
-        commandHistoryEntriesRef.current,
-        valid,
-        commandHistoryPolicyRef.current,
-      );
-      commandHistoryEntriesRef.current = normalized;
-      setCommandHistoryEntries(normalized);
-      setCommandHistoryReady(true);
-      if (!commandHistoryEnabledRef.current || !isBackendAvailable()) return;
-      pendingCommandHistoryRef.current = history.queuePendingCommandHistory(
-        pendingCommandHistoryRef.current,
-        valid,
-        commandHistoryPolicyRef.current,
-      );
-      if (!commandHistoryBackendReadyRef.current) return;
-      enqueueCommandHistoryOperation(
-        () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
-          command: valid,
-          limit: commandHistoryPolicyRef.current.limit,
-          retentionDays: commandHistoryPolicyRef.current.retentionDays,
-        }),
-        valid,
-      );
-    });
+  function rememberCommand(command: string, sessionId: string | null = activeIdRef.current || null) {
+    if (!commandHistoryEnabledRef.current) return;
+    const valid = normalizeCommandHistoryCommand(command);
+    if (!valid) return;
+    const normalizedSessionId = normalizeCommandHistorySessionId(sessionId);
+    const normalized = recordCommandHistory(
+      commandHistoryEntriesRef.current,
+      valid,
+      commandHistoryPolicyRef.current,
+      Date.now(),
+      normalizedSessionId,
+    );
+    commandHistoryEntriesRef.current = normalized;
+    setCommandHistoryEntries(normalized);
+    setCommandHistoryReady(true);
+    if (!isBackendAvailable()) return;
+    pendingCommandHistoryRef.current = queuePendingCommandHistory(
+      pendingCommandHistoryRef.current,
+      valid,
+      commandHistoryPolicyRef.current,
+      Date.now(),
+      normalizedSessionId,
+    );
+    if (!commandHistoryBackendReadyRef.current) return;
+    const pending = { command: valid, sessionId: normalizedSessionId };
+    enqueueCommandHistoryOperation(
+      () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
+        command: valid,
+        sessionId: normalizedSessionId,
+        limit: commandHistoryPolicyRef.current.limit,
+        retentionDays: commandHistoryPolicyRef.current.retentionDays,
+      }),
+      pending,
+    );
+  }
+
+  function pickCommandHistoryEntry(entry: CommandHistoryEntry) {
+    const targetSessionId = entry.sessionId;
+    if (targetSessionId
+      && targetSessionId !== activeIdRef.current
+      && sessionsRef.current.some((session) => session.profile.id === targetSessionId)) {
+      activateSession(targetSessionId);
+      window.requestAnimationFrame(() => requestTerminalFreeInput(window, entry.command));
+      return;
+    }
+    requestTerminalFreeInput(window, entry.command);
   }
 
   function clearCommandHistory() {
@@ -4294,20 +4189,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return (
         <Suspense fallback={null}>
           <LazyCommandHistoryList
-            history={commandHistory}
+            entries={commandHistoryEntries}
+            sessions={sessions}
+            activeId={activeId}
             icons={workspaceUtilityIcons}
-            onPick={setSendText}
-            beforeList={activeSerial && active ? (
-              <SerialMonitorPanel
-                key={active.profile.id}
-                frames={serialCaptures[active.profile.id] ?? []}
-                onOpen={() => void openSerialAnalyzer(active)}
-                onClear={() => void clearSerialCapture(active.profile.id)}
-                onExport={(frameIds) => void exportSerialCapture(active.profile.id, frameIds)}
-                canExport={isBackendAvailable()}
-                busy={serialCaptureActionIds.has(active.profile.id)}
-              />
-            ) : null}
+            onPick={pickCommandHistoryEntry}
           />
         </Suspense>
       );
@@ -4530,7 +4416,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             oneKeys={oneKeys}
             oneKeyCompletionEnabled={terminalPrefs.oneKeyCompletionEnabled}
             completionSettings={terminalPrefs}
-            completionHistory={commandHistory}
+            completionHistoryBySession={commandHistoryBySession}
             completionQuickCommands={quickCommands}
             mouseReporting={terminalPrefs.mouseReporting}
             copyOnSelect={terminalPrefs.mouseCopyOnSelect}
@@ -4538,6 +4424,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             connectionBusyIds={disconnectingSessionIds}
             serialControlBusyIds={serialControlBusyIds}
             onInput={terminalPaneOnInput}
+            onCommandSubmit={terminalPaneOnCommandSubmit}
             onOneKeyCompletion={terminalPaneOnOneKeyCompletion}
             onKeyModeChange={terminalPaneOnKeyModeChange}
             onConnect={terminalPaneOnConnect}
@@ -5269,83 +5156,6 @@ function QuickCommandBar({
   );
 }
 
-function SerialMonitorPanel({
-  frames,
-  onOpen,
-  onClear,
-  onExport,
-  canExport,
-  busy,
-}: {
-  frames: SerialCaptureFrame[];
-  onOpen: () => void;
-  onClear: () => void;
-  onExport: (frameIds: string[]) => void;
-  canExport: boolean;
-  busy: boolean;
-}) {
-  const [direction, setDirection] = useState<SerialCaptureDirectionFilter>("all");
-  const [query, setQuery] = useState("");
-  const visible = useMemo(
-    () => filterSerialCaptureFrames(frames, direction, query),
-    [frames, direction, query],
-  );
-
-  return (
-    <div className="serial-monitor" aria-busy={busy}>
-      <div className="serial-monitor-controls">
-        <div className="serial-monitor-filters" aria-label="串口捕获方向">
-          {(["all", "inbound", "outbound"] as const).map((value) => (
-            <button
-              type="button"
-              key={value}
-              aria-pressed={direction === value}
-              onClick={() => setDirection(value)}
-            >
-              {value === "all" ? "全部" : value === "inbound" ? "RX" : "TX"}
-            </button>
-          ))}
-          <span>{visible.length}/{frames.length}</span>
-        </div>
-        <div className="serial-monitor-search">
-          <Search size={13} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hex / ASCII" aria-label="筛选串口捕获" />
-          <button type="button" title="在独立窗口中分析" aria-label="打开串口分析器" onClick={onOpen}>
-            <Maximize2 size={13} />
-          </button>
-          <button
-            type="button"
-            title="导出可见帧（原始字节，不脱敏）"
-            aria-label="导出可见串口帧"
-            disabled={busy || !canExport || !visible.length}
-            onClick={() => onExport(visible.map((frame) => frame.id))}
-          >
-            <Download size={13} />
-          </button>
-          <button type="button" title="清空串口捕获" aria-label="清空串口捕获" disabled={busy || !frames.length} onClick={onClear}>
-            <Trash2 size={13} />
-          </button>
-        </div>
-      </div>
-      <div className="serial-monitor-list">
-        {!visible.length ? <div className="empty-pane top">没有匹配的串口帧</div> : null}
-        {visible.slice().reverse().map((frame) => (
-          <div key={frame.id} className={`serial-monitor-row ${frame.direction}`}>
-            <div className="serial-monitor-meta">
-              <span>{formatEventClock(frame.ts)}</span>
-              <span>{frame.truncated ? `${frame.bytes.length}/${frame.originalLength} B` : `${frame.originalLength} B`}</span>
-              <strong>{frame.direction === "inbound" ? "RX" : "TX"}</strong>
-            </div>
-            <code>{serialCaptureHex(frame.bytes) || "--"}</code>
-            <small>{serialCaptureAscii(frame.bytes)}</small>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
 function WorkspaceGroupMoveDialog({
   root,
   sourcePaneId,
@@ -5417,7 +5227,7 @@ function TerminalPaneGrid({
   oneKeys,
   oneKeyCompletionEnabled,
   completionSettings,
-  completionHistory,
+  completionHistoryBySession,
   completionQuickCommands,
   mouseReporting,
   copyOnSelect,
@@ -5425,6 +5235,7 @@ function TerminalPaneGrid({
   connectionBusyIds,
   serialControlBusyIds,
   onInput,
+  onCommandSubmit,
   onOneKeyCompletion,
   onKeyModeChange,
   onConnect,
@@ -5448,7 +5259,7 @@ function TerminalPaneGrid({
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
   completionSettings: unknown;
-  completionHistory: readonly string[];
+  completionHistoryBySession: Readonly<Record<string, readonly string[]>>;
   completionQuickCommands: readonly QuickCommand[];
   mouseReporting: boolean;
   copyOnSelect: boolean;
@@ -5456,6 +5267,7 @@ function TerminalPaneGrid({
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onCommandSubmit: (sessionId: string, command: string) => void;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -5482,7 +5294,7 @@ function TerminalPaneGrid({
 }) {
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={completionHistory} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onOneKeyCompletion={onOneKeyCompletion} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={active ? completionHistoryBySession[active.profile.id] ?? [] : []} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onCommandSubmit={onCommandSubmit} onOneKeyCompletion={onOneKeyCompletion} />;
   }
 
   return (
@@ -5498,7 +5310,7 @@ function TerminalPaneGrid({
         oneKeys={oneKeys}
         oneKeyCompletionEnabled={oneKeyCompletionEnabled}
         completionSettings={completionSettings}
-        completionHistory={completionHistory}
+        completionHistoryBySession={completionHistoryBySession}
         completionQuickCommands={completionQuickCommands}
         mouseReporting={mouseReporting}
         copyOnSelect={copyOnSelect}
@@ -5506,6 +5318,7 @@ function TerminalPaneGrid({
         connectionBusyIds={connectionBusyIds}
         serialControlBusyIds={serialControlBusyIds}
         onInput={onInput}
+        onCommandSubmit={onCommandSubmit}
         onOneKeyCompletion={onOneKeyCompletion}
         onKeyModeChange={onKeyModeChange}
         onConnect={onConnect}
@@ -5537,7 +5350,7 @@ type TerminalWorkspaceNodeProps = {
   oneKeys: readonly OneKeySummary[];
   oneKeyCompletionEnabled: boolean;
   completionSettings: unknown;
-  completionHistory: readonly string[];
+  completionHistoryBySession: Readonly<Record<string, readonly string[]>>;
   completionQuickCommands: readonly QuickCommand[];
   mouseReporting: boolean;
   copyOnSelect: boolean;
@@ -5545,6 +5358,7 @@ type TerminalWorkspaceNodeProps = {
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onCommandSubmit: (sessionId: string, command: string) => void;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -5806,7 +5620,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         oneKeys={props.oneKeys}
         oneKeyCompletionEnabled={props.oneKeyCompletionEnabled}
         completionSettings={props.completionSettings}
-        completionHistory={props.completionHistory}
+        completionHistory={props.completionHistoryBySession[activeView.sessionId] ?? []}
         completionQuickCommands={props.completionQuickCommands}
         mouseReporting={props.mouseReporting}
         copyOnSelect={props.copyOnSelect}
@@ -5814,6 +5628,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         keyMode={activeView.keyMode}
         onKeyModeChange={(keyMode) => props.onKeyModeChange(node.id, activeView.id, keyMode)}
         onInput={props.onInput}
+        onCommandSubmit={props.onCommandSubmit}
         onOneKeyCompletion={props.onOneKeyCompletion}
       />
     </section>
@@ -5917,6 +5732,7 @@ type TerminalCanvasProps = {
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
   onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onCommandSubmit?: (sessionId: string, command: string) => void;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,

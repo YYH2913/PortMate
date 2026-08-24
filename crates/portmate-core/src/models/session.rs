@@ -202,4 +202,6 @@ pub struct TimelineMark {
 pub struct CommandHistoryEntry {
     pub command: String,
     pub recorded_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }

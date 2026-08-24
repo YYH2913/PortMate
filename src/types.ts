@@ -448,7 +448,7 @@ export interface TransferTask {
 }
 
 export interface CommandHistorySnapshot {
-  entries: Array<{ command: string; recordedAt: number }>;
+  entries: Array<{ command: string; recordedAt: number; sessionId?: string | null }>;
   migrated: boolean;
   revision: number;
 }

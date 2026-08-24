@@ -32,26 +32,32 @@ fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
         CommandHistoryEntry {
             command: "git status".to_string(),
             recorded_at: future,
+            session_id: Some("test-session".to_string()),
         },
         CommandHistoryEntry {
             command: "npm test".to_string(),
             recorded_at: now - 1,
+            session_id: None,
         },
         CommandHistoryEntry {
             command: "git status".to_string(),
             recorded_at: now - 2,
+            session_id: Some("test-session".to_string()),
         },
         CommandHistoryEntry {
             command: "expired".to_string(),
             recorded_at: old,
+            session_id: None,
         },
         CommandHistoryEntry {
             command: "bad\0command".to_string(),
             recorded_at: now,
+            session_id: None,
         },
         CommandHistoryEntry {
             command: "界".repeat(MAX_COMMAND_HISTORY_COMMAND_CHARACTERS + 1),
             recorded_at: now,
+            session_id: None,
         },
     ];
 
@@ -64,10 +70,12 @@ fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
             CommandHistoryEntry {
                 command: "git status".to_string(),
                 recorded_at: now,
+                session_id: Some("test-session".to_string()),
             },
             CommandHistoryEntry {
                 command: "npm test".to_string(),
                 recorded_at: now - 1,
+                session_id: None,
             },
         ]
     );
@@ -79,13 +87,13 @@ fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
         .unwrap();
     assert_eq!(store.command_history_revision, 1);
     let recorded = store
-        .record_command_history("npm test".to_string(), 10, 30, now + 1)
+        .record_command_history("npm test".to_string(), None, 10, 30, now + 1)
         .unwrap();
     assert_eq!(recorded[0].command, "npm test");
     assert_eq!(recorded.len(), 2);
     assert_eq!(store.command_history_revision, 2);
     assert!(store
-        .record_command_history("bad\0command".to_string(), 10, 30, now + 2)
+        .record_command_history("bad\0command".to_string(), None, 10, 30, now + 2)
         .is_err());
 
     let merged = store
@@ -93,6 +101,7 @@ fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
             &[CommandHistoryEntry {
                 command: "local while disabled".to_string(),
                 recorded_at: now + 2,
+                session_id: None,
             }],
             10,
             30,
@@ -110,9 +119,46 @@ fn command_history_is_deduplicated_unicode_bounded_and_revisioned() {
     store.command_history_revision = 9_007_199_254_740_991;
     let before = store.command_history.clone();
     assert!(store
-        .record_command_history("must fail closed".to_string(), 10, 30, now + 4)
+        .record_command_history("must fail closed".to_string(), None, 10, 30, now + 4)
         .is_err());
     assert_eq!(store.command_history, before);
+}
+
+#[test]
+fn command_history_keeps_identical_commands_for_distinct_sessions() {
+    let mut store = test_store();
+    let now = 1_800_000_000_000_i64;
+    store
+        .record_command_history(
+            "show status".to_string(),
+            Some("test-session".to_string()),
+            10,
+            30,
+            now,
+        )
+        .unwrap();
+    store
+        .record_command_history(
+            "show status".to_string(),
+            Some("second-session".to_string()),
+            10,
+            30,
+            now + 1,
+        )
+        .unwrap();
+    let entries = store
+        .record_command_history(
+            "show status".to_string(),
+            Some("test-session".to_string()),
+            10,
+            30,
+            now + 2,
+        )
+        .unwrap();
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].session_id.as_deref(), Some("test-session"));
+    assert_eq!(entries[1].session_id.as_deref(), Some("second-session"));
 }
 
 #[test]
@@ -136,12 +182,13 @@ fn command_history_rejects_invalid_policy_and_bounds_utf8_storage() {
         .map(|index| CommandHistoryEntry {
             command: format!("{index}-{command}"),
             recorded_at: now - index,
+            session_id: None,
         })
         .collect::<Vec<_>>();
     let normalized =
         SessionStore::normalized_command_history(&entries, MAX_COMMAND_HISTORY_ENTRIES, 0, now)
             .unwrap();
-    let snapshot = serde_json::json!({ "version": 2, "entries": normalized });
+    let snapshot = serde_json::json!({ "version": 3, "entries": normalized });
     assert!(serde_json::to_vec(&snapshot).unwrap().len() <= MAX_COMMAND_HISTORY_STORAGE_BYTES);
 }
 

@@ -53,9 +53,15 @@ describe("workspace utility filters", () => {
   });
 
   it("filters normalized multi-line command labels without changing stored commands", () => {
-    const history = ["git status --short", "docker compose\nup -d", "cargo test"];
-    expect(filterCommandHistory(history, "COMPOSE UP")).toEqual(["docker compose\nup -d"]);
-    expect(filterCommandHistory(history, " test ")).toEqual(["cargo test"]);
+    const history = [
+      { command: "git status --short", recordedAt: 3, sessionId: "router" },
+      { command: "docker compose\nup -d", recordedAt: 2, sessionId: "shell" },
+      { command: "cargo test", recordedAt: 1, sessionId: null },
+    ];
+    const labels = new Map([["router", "Edge Router"], ["shell", "Local Fish"]]);
+    expect(filterCommandHistory(history, "COMPOSE UP", labels)).toEqual([history[1]]);
+    expect(filterCommandHistory(history, " local fish ", labels)).toEqual([history[1]]);
+    expect(filterCommandHistory(history, " test ", labels)).toEqual([history[2]]);
     expect(filterCommandHistory(history, "")).toEqual(history);
   });
 });

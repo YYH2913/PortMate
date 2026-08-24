@@ -1,15 +1,19 @@
 export const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
-export const COMMAND_HISTORY_VERSION = 2;
+export const COMMAND_HISTORY_VERSION = 3;
 export const DEFAULT_COMMAND_HISTORY_LIMIT = 10_000;
 export const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 export const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 export const MAX_COMMAND_HISTORY_COMMAND_CHARACTERS = 8_192;
 export const MAX_COMMAND_HISTORY_STORAGE_BYTES = 2 * 1024 * 1024;
+export const MAX_COMMAND_HISTORY_SESSION_ID_CHARACTERS = 256;
 
 export type CommandHistoryEntry = {
   command: string;
   recordedAt: number;
+  sessionId: string | null;
 };
+
+export type PendingCommandHistoryEntry = Pick<CommandHistoryEntry, "command" | "sessionId">;
 
 export type CommandHistoryPolicy = {
   limit: number;
@@ -46,22 +50,28 @@ export function normalizeCommandHistory(
 
   for (let index = 0; index < Math.min(source.length, MAX_COMMAND_HISTORY_LIMIT * 2); index += 1) {
     const item = source[index];
+    const record = item && typeof item === "object" && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : null;
     const command = typeof item === "string"
       ? normalizeCommandHistoryCommand(item)
-      : item && typeof item === "object" && !Array.isArray(item)
-        ? normalizeCommandHistoryCommand((item as Record<string, unknown>).command)
-        : null;
-    if (!command || seen.has(command)) continue;
+      : normalizeCommandHistoryCommand(record?.command);
+    const sessionId = typeof item === "string"
+      ? null
+      : normalizeCommandHistorySessionId(record?.sessionId);
+    if (!command) continue;
+    const identity = commandHistoryIdentity(command, sessionId);
+    if (seen.has(identity)) continue;
     const rawTimestamp = typeof item === "string"
       ? now - index
-      : Number((item as Record<string, unknown>).recordedAt);
+      : Number(record?.recordedAt);
     if (!Number.isFinite(rawTimestamp)) continue;
     const recordedAt = Math.min(now, Math.max(0, Math.trunc(rawTimestamp)));
     if (recordedAt < cutoff) continue;
-    const entryBytes = utf8Bytes(JSON.stringify({ command, recordedAt })) + (entries.length ? 1 : 0);
+    const entryBytes = utf8Bytes(JSON.stringify({ command, recordedAt, sessionId })) + (entries.length ? 1 : 0);
     if (bytes + entryBytes > MAX_COMMAND_HISTORY_STORAGE_BYTES) continue;
-    seen.add(command);
-    entries.push({ command, recordedAt });
+    seen.add(identity);
+    entries.push({ command, recordedAt, sessionId });
     bytes += entryBytes;
     if (entries.length >= policy.limit) break;
   }
@@ -73,49 +83,77 @@ export function recordCommandHistory(
   command: string,
   policy: CommandHistoryPolicy,
   now = Date.now(),
+  sessionId: string | null = null,
 ): CommandHistoryEntry[] {
   const valid = normalizeCommandHistoryCommand(command);
+  const normalizedSessionId = normalizeCommandHistorySessionId(sessionId);
   const withoutDuplicate = valid
-    ? current.filter((entry) => entry.command !== valid)
+    ? current.filter((entry) => (
+      entry.command !== valid || entry.sessionId !== normalizedSessionId
+    ))
     : current;
   return normalizeCommandHistory({
     version: COMMAND_HISTORY_VERSION,
-    entries: valid ? [{ command: valid, recordedAt: now }, ...withoutDuplicate] : withoutDuplicate,
+    entries: valid
+      ? [{ command: valid, recordedAt: now, sessionId: normalizedSessionId }, ...withoutDuplicate]
+      : withoutDuplicate,
   }, policy, now);
 }
 
 export function queuePendingCommandHistory(
-  current: readonly string[],
+  current: readonly PendingCommandHistoryEntry[],
   command: string,
   policy: CommandHistoryPolicy,
   now = Date.now(),
-): string[] {
+  sessionId: string | null = null,
+): PendingCommandHistoryEntry[] {
   const valid = normalizeCommandHistoryCommand(command);
   if (!valid) return [...current];
+  const normalizedSessionId = normalizeCommandHistorySessionId(sessionId);
   return normalizePendingCommandHistory(
-    [...current.filter((item) => item !== valid), valid],
+    [
+      ...current.filter((item) => (
+        item.command !== valid || item.sessionId !== normalizedSessionId
+      )),
+      { command: valid, sessionId: normalizedSessionId },
+    ],
     policy,
     now,
   );
 }
 
 export function normalizePendingCommandHistory(
-  current: readonly string[],
+  current: readonly (PendingCommandHistoryEntry | string)[],
   policy: CommandHistoryPolicy,
   now = Date.now(),
-): string[] {
+): PendingCommandHistoryEntry[] {
   const candidates = current
     .slice(-MAX_COMMAND_HISTORY_LIMIT * 2)
     .reverse()
-    .map((item, index) => ({ command: item, recordedAt: Math.max(0, now - index) }));
-  return commandHistoryCommands(normalizeCommandHistory({
+    .map((item, index) => ({
+      command: typeof item === "string" ? item : item.command,
+      sessionId: typeof item === "string" ? null : item.sessionId,
+      recordedAt: Math.max(0, now - index),
+    }));
+  return normalizeCommandHistory({
     version: COMMAND_HISTORY_VERSION,
     entries: candidates,
-  }, policy, now)).reverse();
+  }, policy, now).reverse().map(({ command, sessionId }) => ({ command, sessionId }));
 }
 
-export function commandHistoryCommands(entries: readonly CommandHistoryEntry[]): string[] {
-  return entries.map((entry) => entry.command);
+export function commandHistoryEntriesForSession(
+  entries: readonly CommandHistoryEntry[],
+  sessionId: string | null | undefined,
+): CommandHistoryEntry[] {
+  if (!sessionId) return [...entries];
+  return entries.filter((entry) => entry.sessionId === null || entry.sessionId === sessionId);
+}
+
+export function commandHistoryCommands(
+  entries: readonly CommandHistoryEntry[],
+  sessionId?: string | null,
+): string[] {
+  return commandHistoryEntriesForSession(entries, sessionId).map((entry) => entry.command);
 }
 
 export function commandHistorySnapshot(entries: readonly CommandHistoryEntry[]): CommandHistorySnapshot {
@@ -131,7 +169,9 @@ export function commandHistoryEntriesEqual(
 ): boolean {
   return left.length === right.length
     && left.every((entry, index) => (
-      entry.command === right[index]?.command && entry.recordedAt === right[index]?.recordedAt
+      entry.command === right[index]?.command
+      && entry.recordedAt === right[index]?.recordedAt
+      && entry.sessionId === right[index]?.sessionId
     ));
 }
 
@@ -139,7 +179,7 @@ function commandHistorySource(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== "object") return [];
   const root = value as Record<string, unknown>;
-  return root.version === COMMAND_HISTORY_VERSION && Array.isArray(root.entries)
+  return (root.version === 2 || root.version === COMMAND_HISTORY_VERSION) && Array.isArray(root.entries)
     ? root.entries
     : [];
 }
@@ -147,6 +187,20 @@ function commandHistorySource(value: unknown): unknown[] {
 export function normalizeCommandHistoryCommand(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim() || value.includes("\0")) return null;
   return Array.from(value).length <= MAX_COMMAND_HISTORY_COMMAND_CHARACTERS ? value : null;
+}
+
+export function normalizeCommandHistorySessionId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized
+    && Array.from(normalized).length <= MAX_COMMAND_HISTORY_SESSION_ID_CHARACTERS
+    && !/[\u0000-\u001f\u007f]/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function commandHistoryIdentity(command: string, sessionId: string | null): string {
+  return `${sessionId ?? ""}\u0000${command}`;
 }
 
 function clampInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {

@@ -41,8 +41,9 @@ describe("terminal free input", () => {
     expect(requestTerminalFreeInput({ dispatchEvent: (event) => {
       events.push(event);
       return true;
-    } })).toBe(true);
+    } }, "git status")).toBe(true);
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe(TERMINAL_FREE_INPUT_REQUEST_EVENT);
+    expect((events[0] as CustomEvent).detail).toEqual({ value: "git status" });
   });
 });

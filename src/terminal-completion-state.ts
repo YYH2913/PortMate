@@ -26,6 +26,11 @@ export type TerminalCompletionInputState = {
   synchronized: boolean;
 };
 
+export type TerminalCompletionInputReduction = {
+  state: TerminalCompletionInputState;
+  submittedCommands: string[];
+};
+
 export type TerminalCompletionUsageHint = {
   label: string;
   detail: string;
@@ -87,10 +92,24 @@ export function reduceTerminalCompletionInput(
   current: TerminalCompletionInputState,
   text: string,
 ): TerminalCompletionInputState {
+  return reduceTerminalCompletionInputWithSubmissions(current, text).state;
+}
+
+export function reduceTerminalCompletionInputWithSubmissions(
+  current: TerminalCompletionInputState,
+  text: string,
+): TerminalCompletionInputReduction {
   let line = current.line;
   let synchronized = current.synchronized;
+  const submittedCommands: string[] = [];
   for (const character of text) {
-    if (character === "\r" || character === "\n" || character === "\u0003" || character === "\u0004") {
+    if (character === "\r" || character === "\n") {
+      if (synchronized && line.trim()) submittedCommands.push(line);
+      line = "";
+      synchronized = true;
+      continue;
+    }
+    if (character === "\u0003" || character === "\u0004") {
       line = "";
       synchronized = true;
       continue;
@@ -120,7 +139,7 @@ export function reduceTerminalCompletionInput(
     line = "";
     synchronized = false;
   }
-  return { line, synchronized };
+  return { state: { line, synchronized }, submittedCommands };
 }
 
 export function terminalCompletionSuggestions({

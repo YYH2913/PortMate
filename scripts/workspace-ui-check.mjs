@@ -349,10 +349,10 @@ try {
         },
       }));
       localStorage.setItem("portmate.commandHistory", JSON.stringify({
-        version: 2,
+        version: 3,
         entries: [
-          { command: "git status --short", recordedAt: historyTimestamp },
-          { command: "docker compose\nup -d", recordedAt: historyTimestamp - 1 },
+          { command: "git status --short", recordedAt: historyTimestamp, sessionId: "edge-router" },
+          { command: "docker compose\nup -d", recordedAt: historyTimestamp - 1, sessionId: "edge-router" },
         ],
       }));
       localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
@@ -633,7 +633,7 @@ try {
           if (window.__injectCommandHistoryStartupRace) {
             window.__injectCommandHistoryStartupRace = false;
             window.__commandHistory.entries = [
-              { command: "cross-window during startup", recordedAt: Date.now() },
+              { command: "cross-window during startup", recordedAt: Date.now(), sessionId: "edge-router" },
               ...window.__commandHistory.entries,
             ];
             window.__commandHistory.revision += 1;
@@ -645,9 +645,12 @@ try {
           return snapshot;
         }
         if (command === "record_command_history") {
+          const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
           window.__commandHistory.entries = [
-            { command: args.command, recordedAt: Date.now() },
-            ...window.__commandHistory.entries.filter((entry) => entry.command !== args.command),
+            { command: args.command, recordedAt: Date.now(), sessionId },
+            ...window.__commandHistory.entries.filter((entry) => (
+              entry.command !== args.command || (entry.sessionId ?? null) !== sessionId
+            )),
           ].slice(0, args.limit);
           window.__commandHistory.migrated = true;
           window.__commandHistory.revision += 1;
@@ -658,8 +661,9 @@ try {
         if (command === "merge_command_history") {
           const byCommand = new Map();
           for (const entry of [...(args.entries ?? []), ...window.__commandHistory.entries]) {
-            const current = byCommand.get(entry.command);
-            if (!current || entry.recordedAt > current.recordedAt) byCommand.set(entry.command, entry);
+            const key = `${entry.sessionId ?? ""}\0${entry.command}`;
+            const current = byCommand.get(key);
+            if (!current || entry.recordedAt > current.recordedAt) byCommand.set(key, entry);
           }
           window.__commandHistory.entries = [...byCommand.values()]
             .sort((left, right) => right.recordedAt - left.recordedAt)
@@ -3914,101 +3918,9 @@ Host staging
   assert(await page.locator(".notice-dialog").count() === 0,
     "a transfer response from the previous SSH session produced a stale notice");
   await togglePanel("历史命令");
-  const serialMonitor = page.locator(".serial-monitor");
-  await serialMonitor.waitFor();
-  await page.evaluate(() => {
-    window.__serialCaptureFrames = [{
-      id: "main-rx-before-clear",
-      ts: new Date().toISOString(),
-      direction: "inbound",
-      bytes: [0x31, 0x32, 0x33],
-      originalLength: 3,
-      truncated: false,
-    }];
-  });
-  await serialMonitor.locator(".serial-monitor-row", { hasText: "31 32 33" }).waitFor();
-  await page.evaluate(() => {
-    window.__serialCaptureFrames = [{
-      id: "main-stale-read",
-      ts: new Date().toISOString(),
-      direction: "inbound",
-      bytes: [0x53, 0x54, 0x41, 0x4c, 0x45],
-      originalLength: 5,
-      truncated: false,
-    }];
-    window.__deferSerialCaptureReads = true;
-    window.__pendingSerialCaptureReads = [];
-    window.__deferSerialCaptureOperations = true;
-    window.__pendingSerialCaptureOperations = [];
-  });
-  await page.waitForFunction(() => window.__pendingSerialCaptureReads.length === 1);
-  await serialMonitor.getByRole("button", { name: "清空串口捕获", exact: true }).evaluate((button) => {
-    button.click();
-    button.click();
-  });
-  await page.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
-  const mainSerialClearState = await page.evaluate(() => ({
-    clearCalls: window.__invokeCalls.filter((call) => call.command === "clear_serial_capture").length,
-    pendingReads: window.__pendingSerialCaptureReads.length,
-    pendingActions: window.__pendingSerialCaptureOperations.length,
-    busy: document.querySelector(".serial-monitor")?.getAttribute("aria-busy"),
-  }));
-  assert(mainSerialClearState.clearCalls === 1
-    && mainSerialClearState.pendingReads === 1
-    && mainSerialClearState.pendingActions === 1
-    && mainSerialClearState.busy === "true"
-    && await serialMonitor.getByRole("button", { name: "清空串口捕获", exact: true }).isDisabled()
-    && await serialMonitor.getByRole("button", { name: "导出可见串口帧", exact: true }).isDisabled(),
-  `main serial clear duplicated or left conflicting controls enabled: ${JSON.stringify(mainSerialClearState)}`);
-  await page.evaluate(() => {
-    window.__pendingSerialCaptureOperations.shift().resolve();
-  });
-  await serialMonitor.locator(".serial-monitor-row").waitFor({ state: "detached" });
-  await page.evaluate(() => {
-    const pending = window.__pendingSerialCaptureReads.shift();
-    pending.resolve(pending.result);
-  });
-  await page.waitForTimeout(100);
-  assert(await serialMonitor.locator(".serial-monitor-row").count() === 0,
-    "a stale main-window serial read restored frames after clearing");
-  await page.evaluate(() => {
-    window.__deferSerialCaptureReads = false;
-    window.__serialCaptureFrames = [{
-      id: "main-tx-after-clear",
-      ts: new Date().toISOString(),
-      direction: "outbound",
-      bytes: [0x41, 0x46, 0x54, 0x45, 0x52],
-      originalLength: 5,
-      truncated: false,
-    }];
-  });
-  await serialMonitor.locator(".serial-monitor-row", { hasText: "41 46 54 45 52" }).waitFor();
-  assert(await serialMonitor.getAttribute("aria-busy") === "false",
-    "main serial monitor did not resume polling after clearing");
-  await serialMonitor.getByRole("button", { name: "导出可见串口帧", exact: true }).evaluate((button) => {
-    button.click();
-    button.click();
-  });
-  await page.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
-  const mainSerialExportState = await page.evaluate(() => ({
-    exportCalls: window.__invokeCalls.filter((call) => call.command === "export_serial_capture").length,
-    pendingActions: window.__pendingSerialCaptureOperations.length,
-    busy: document.querySelector(".serial-monitor")?.getAttribute("aria-busy"),
-  }));
-  assert(mainSerialExportState.exportCalls === 1
-    && mainSerialExportState.pendingActions === 1
-    && mainSerialExportState.busy === "true",
-  `main serial export duplicated: ${JSON.stringify(mainSerialExportState)}`);
-  await page.evaluate(() => {
-    window.__pendingSerialCaptureOperations.shift().resolve();
-    window.__deferSerialCaptureOperations = false;
-    window.__serialCaptureFrames = [];
-  });
-  const mainSerialExportNotice = page.locator(".notice-dialog", { hasText: "串口捕获已导出" });
-  await mainSerialExportNotice.waitFor();
-  await mainSerialExportNotice.getByRole("button", { name: "确定", exact: true }).click();
+  assert(await page.locator(".serial-monitor").count() === 0,
+    "history panel still embeds the independent serial analyzer");
   await togglePanel("历史命令");
-  await serialMonitor.waitFor({ state: "detached" });
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).click();
   await page.waitForFunction(() => (
     document.querySelector(".workspace-dock-content.panel-explorer .tree-session.active")?.textContent?.includes("Edge Router")
@@ -4052,6 +3964,11 @@ Host staging
   assert(await page.locator(".history-list button").count() === 1,
     "history filter did not normalize case and multiline whitespace");
   await page.locator(".history-list button").click();
+  const historyFreeInput = page.getByRole("textbox", { name: "自由输入内容", exact: true });
+  await historyFreeInput.waitFor();
+  assert(await historyFreeInput.inputValue() === "docker compose\nup -d",
+    "history selection did not open the editable terminal input with the stored command");
+  await page.getByRole("button", { name: "取消自由输入", exact: true }).click();
 
   await togglePanel("发送");
   const bottomDock = page.locator('.workspace-dock[data-dock="bottom"][data-active-panel="sender"]');
@@ -4110,8 +4027,8 @@ Host staging
     && resizedDockLayout.right >= 295 && resizedDockLayout.right <= 297
     && resizedDockLayout.bottom >= 225 && resizedDockLayout.bottom <= 227,
   `dock resize did not update all three grid tracks: ${JSON.stringify(resizedDockLayout)}`);
-  assert(await page.locator(".send-textarea").inputValue() === "docker compose\nup -d",
-    "history selection changed the stored command before insertion");
+  assert(await page.locator(".send-textarea").inputValue() === "",
+    "history selection leaked into the separate sender panel");
 
   const sender = bottomDock;
   assert(!(await sender.textContent()).includes("Shell"), "unused Shell sender tab is visible");
@@ -4175,17 +4092,22 @@ Host staging
     .map((call) => call.args.text), senderLifecycleStart);
   assert(JSON.stringify(orderedSenderWrites) === JSON.stringify(["q", "uname -a"]),
     `sender changed terminal input order: ${JSON.stringify(orderedSenderWrites)}`);
-  await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length === 2);
+  await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length >= 3);
+  await page.waitForTimeout(100);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");
   const recordedCommandHistory = await page.evaluate(() => ({
     commands: window.__commandHistory.entries.map((entry) => entry.command),
     calls: window.__invokeCalls.filter((call) => call.command === "record_command_history")
-      .map((call) => call.args.command),
+      .map((call) => ({ command: call.args.command, sessionId: call.args.sessionId })),
     revision: window.__commandHistory.revision,
   }));
-  assert(JSON.stringify(recordedCommandHistory.calls) === JSON.stringify(["docker compose\nup -d", "uname -a"])
-    && JSON.stringify(recordedCommandHistory.commands.slice(0, 4)) === JSON.stringify(["uname -a", "docker compose\nup -d", "cross-window during startup", "git status --short"])
-    && recordedCommandHistory.revision === 4,
+  assert(JSON.stringify(recordedCommandHistory.calls) === JSON.stringify([
+    { command: "portmate-input-probe", sessionId: "edge-router" },
+    { command: "split-input-probe", sessionId: "edge-router" },
+    { command: "uname -a", sessionId: "edge-router" },
+  ])
+    && JSON.stringify(recordedCommandHistory.commands.slice(0, 6)) === JSON.stringify(["uname -a", "split-input-probe", "portmate-input-probe", "cross-window during startup", "git status --short", "docker compose\nup -d"])
+    && recordedCommandHistory.revision === 5,
   `rapid commands were not serialized into canonical history: ${JSON.stringify(recordedCommandHistory)}`);
 
   await historyFilter.fill("");
