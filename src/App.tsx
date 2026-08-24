@@ -4,11 +4,9 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   Activity,
-  AlertCircle,
   ArrowRightLeft,
   Check,
   Clock3,
-  Download,
   Files,
   Folder,
   Lock,
@@ -28,7 +26,6 @@ import {
   SlidersHorizontal,
   Square,
   SquareTerminal,
-  Trash2,
   Unlock,
   X,
 } from "lucide-react";
@@ -65,7 +62,7 @@ import { buildDetachedPanePath, DETACHED_PANE_EVENT, DETACHED_PANE_RESULT_EVENT,
 import type { DetachedPaneCommand, DetachedPaneRequest, DetachedPaneResult } from "./detached-pane-state";
 import { detachedPaneWindowGeometryKey, placeAndTrackChildWindow } from "./window-geometry";
 import { buildWorkspaceWindowPath } from "./workspace-window-route";
-import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
+import { formatBytes } from "./display-formatters";
 import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
@@ -79,7 +76,7 @@ import type { OpenSshImportCandidate } from "./openssh-config-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
-import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, MAX_SCREEN_LOCK_TIMEOUT_MINUTES, MIN_SCREEN_LOCK_TIMEOUT_MINUTES, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
+import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
 import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
@@ -110,9 +107,9 @@ import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDoc
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, replaceWorkspacePaneSession, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
-import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyObservation, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
+import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import { stageConnectionCredentials } from "./session-credential-state";
@@ -5972,54 +5969,6 @@ function HostKeyConfirmDialog({
   );
 }
 
-
-
-function DialogFrame({
-  title,
-  className,
-  onClose,
-  closeDisabled = false,
-  children,
-}: {
-  title: string;
-  className: string;
-  onClose: () => void;
-  closeDisabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="dialog-backdrop">
-      <section className={`wind-dialog ${className}`}>
-        <header className="dialog-title">
-          <span className="app-icon" />
-          <strong>{title}</strong>
-          <button onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
-        </header>
-        {children}
-      </section>
-    </div>
-  );
-}
-
-function DialogField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="dialog-field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function DialogToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
-  return (
-    <label className="dialog-field dialog-toggle-field">
-      <span>{label}</span>
-      <button type="button" className={checked ? "switch-toggle on" : "switch-toggle"} onClick={() => onChange(!checked)} aria-pressed={checked}>
-        <span />
-      </button>
-    </label>
-  );
-}
 
 
 function createTerminalPrefs() {
