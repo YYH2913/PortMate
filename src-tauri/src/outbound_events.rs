@@ -7,6 +7,39 @@ struct DeferredInteractiveEvent {
     wire_bytes: Vec<u8>,
 }
 
+struct DeferredInteractiveBatch {
+    request: DeferredInteractiveEvent,
+    request_count: usize,
+}
+
+impl DeferredInteractiveBatch {
+    fn new(request: DeferredInteractiveEvent) -> Self {
+        Self {
+            request,
+            request_count: 1,
+        }
+    }
+
+    fn can_append(&self, request: &DeferredInteractiveEvent) -> bool {
+        self.request
+            .wire_bytes
+            .len()
+            .saturating_add(request.wire_bytes.len())
+            <= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
+    }
+
+    fn append(&mut self, request: DeferredInteractiveEvent) {
+        self.request.text.push_str(&request.text);
+        self.request.wire_bytes.extend_from_slice(&request.wire_bytes);
+        self.request_count = self.request_count.saturating_add(1);
+    }
+
+    fn should_flush(&self) -> bool {
+        self.request.wire_bytes.len() >= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
+            || deferred_interactive_input_boundary(&self.request.text)
+    }
+}
+
 type DeferredInteractiveQueues =
     Mutex<HashMap<(PathBuf, String), DeferredInteractiveQueue>>;
 
@@ -14,7 +47,6 @@ static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLo
 static DEFERRED_INTERACTIVE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 const DEFERRED_INTERACTIVE_QUEUE_CAPACITY: usize = 1024;
 const DEFERRED_INTERACTIVE_BATCH_MAX_BYTES: usize = 16 * 1024;
-const DEFERRED_INTERACTIVE_BATCH_WINDOW: Duration = Duration::from_millis(100);
 
 struct DeferredInteractiveQueueState {
     pending: AtomicUsize,
@@ -413,49 +445,35 @@ pub(super) fn enqueue_deferred_interactive_event(
             let state = Arc::new(DeferredInteractiveQueueState::new());
             let worker_state = Arc::clone(&state);
             tauri::async_runtime::spawn(async move {
-                let mut pending = None;
-                loop {
-                    let first = match pending.take() {
-                        Some(request) => Some(request),
-                        None => receiver.recv().await,
-                    };
-                    let Some(mut request) = first else { break };
-                    let mut request_count = 1_usize;
-                    let batch_window = tokio::time::sleep(DEFERRED_INTERACTIVE_BATCH_WINDOW);
-                    tokio::pin!(batch_window);
-                    while request.text.len() < DEFERRED_INTERACTIVE_BATCH_MAX_BYTES {
-                        let next = tokio::select! {
-                            _ = &mut batch_window => None,
-                            request = receiver.recv() => request,
-                        };
-                        let Some(next) = next else { break };
-                        let remaining = DEFERRED_INTERACTIVE_BATCH_MAX_BYTES - request.text.len();
-                        if next.text.len() <= remaining {
-                            request.text.push_str(&next.text);
-                            request.wire_bytes.extend_from_slice(&next.wire_bytes);
-                            request_count += 1;
-                        } else {
-                            pending = Some(next);
-                            break;
-                        }
+                let mut batch = None;
+                while let Some(request) = receiver.recv().await {
+                    if batch
+                        .as_ref()
+                        .is_some_and(|current: &DeferredInteractiveBatch| !current.can_append(&request))
+                    {
+                        persist_deferred_interactive_batch(
+                            batch.take().expect("deferred batch exists"),
+                            &worker_state,
+                        )
+                        .await;
                     }
-                    let result = tauri::async_runtime::spawn_blocking(move || {
-                        let _ = record_outbound_user_event_with_context(
-                            &request.io,
-                            &request.session_id,
-                            &request.text,
-                            &request.wire_bytes,
-                            "desktop-user",
-                            Some("send_text"),
-                            BTreeMap::new(),
-                        );
-                    }).await;
-                    for _ in 0..request_count {
-                        worker_state.complete();
+                    match &mut batch {
+                        Some(current) => current.append(request),
+                        None => batch = Some(DeferredInteractiveBatch::new(request)),
                     }
-                    if result.is_err() {
-                        eprintln!("PortMate: deferred interactive event persistence worker failed");
+                    if batch
+                        .as_ref()
+                        .is_some_and(DeferredInteractiveBatch::should_flush)
+                    {
+                        persist_deferred_interactive_batch(
+                            batch.take().expect("deferred batch exists"),
+                            &worker_state,
+                        )
+                        .await;
                     }
+                }
+                if let Some(batch) = batch {
+                    persist_deferred_interactive_batch(batch, &worker_state).await;
                 }
             });
             let queue = DeferredInteractiveQueue { sender, state };
@@ -476,6 +494,41 @@ pub(super) fn enqueue_deferred_interactive_event(
     };
     if result.is_err() {
         eprintln!("PortMate: deferred interactive event queue is unavailable");
+    }
+}
+
+fn deferred_interactive_input_boundary(text: &str) -> bool {
+    text.chars().any(|character| {
+        matches!(
+            character,
+            '\r' | '\n' | '\u{0003}' | '\u{0004}'
+        )
+    })
+}
+
+async fn persist_deferred_interactive_batch(
+    batch: DeferredInteractiveBatch,
+    state: &DeferredInteractiveQueueState,
+) {
+    let request_count = batch.request_count;
+    let request = batch.request;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _ = record_outbound_user_event_with_context(
+            &request.io,
+            &request.session_id,
+            &request.text,
+            &request.wire_bytes,
+            "desktop-user",
+            Some("send_text"),
+            BTreeMap::new(),
+        );
+    })
+    .await;
+    for _ in 0..request_count {
+        state.complete();
+    }
+    if result.is_err() {
+        eprintln!("PortMate: deferred interactive event persistence worker failed");
     }
 }
 

@@ -253,7 +253,11 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
         });
         store_locked_rx.recv().unwrap();
 
-        for (text, coalesce) in [("a", true), ("b", true), ("\r", false), ("c", true)] {
+        for (index, (text, coalesce)) in
+            [("a", true), ("b", true), ("\r", false), ("c", true)]
+                .into_iter()
+                .enumerate()
+        {
             enqueue_interactive_text(
                 state.session_io(),
                 profile.id.clone(),
@@ -261,6 +265,9 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
                 coalesce,
             )
             .unwrap();
+            if index < 2 {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
         }
         let received = tokio::time::timeout(Duration::from_secs(1), received_rx)
             .await
@@ -270,9 +277,9 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
 
         release_store_tx.send(()).unwrap();
         store_holder.join().unwrap();
-        let persisted_input = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let persisted = state
+                let submitted = state
                     .store
                     .lock()
                     .unwrap()
@@ -285,17 +292,30 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
                     })
                     .filter_map(|event| event.text.as_deref())
                     .collect::<String>();
-                if persisted.len() >= 4 {
-                    break persisted;
+                if submitted == "ab\r" {
+                    break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("deferred queued input was not persisted");
-        assert_eq!(persisted_input, "ab\rc");
+        .expect("submitted terminal line was not persisted as one event");
         clear_interactive_write_queue(&state.store_path, &profile.id);
         clear_deferred_interactive_queue(&state.store_path, &profile.id);
+        let persisted_input = state
+            .store
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| {
+                event.session_id == profile.id
+                    && event.direction == EventDirection::Outbound
+                    && event.stream == EventStream::Stdout
+            })
+            .filter_map(|event| event.text.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_input, ["ab\r", "c"]);
         let _ = release_server_tx.send(());
         server.await.unwrap();
         let _ = fs::remove_dir_all(root);

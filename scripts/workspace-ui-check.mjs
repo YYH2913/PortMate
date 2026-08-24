@@ -3356,7 +3356,9 @@ Host staging
   assert(await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "send_text").length) === 0,
   "Insert/Normal mode controls leaked into SSH terminal input");
-  await page.keyboard.type("portmate-input-probe");
+  const historyCallsBeforeSlowInput = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "record_command_history").length);
+  await page.keyboard.type("portmate-input-probe", { delay: 125 });
   await page.keyboard.press("Enter");
   await page.waitForFunction((expected) => window.__invokeCalls
     .filter((call) => call.command === "send_text")
@@ -3371,6 +3373,13 @@ Host staging
     && terminalInputWrites.at(-1)?.args.interactive === false
     && terminalInputWrites.map((call) => call.args.text).join("") === terminalInputProbe,
   `terminal keyboard input was lost or routed to another session: ${JSON.stringify(terminalInputWrites)}`);
+  await page.waitForFunction((start) => window.__invokeCalls
+    .filter((call) => call.command === "record_command_history").length === start + 1, historyCallsBeforeSlowInput);
+  const slowHistoryCall = await page.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "record_command_history").slice(start)
+    .map((call) => call.args.command), historyCallsBeforeSlowInput);
+  assert(JSON.stringify(slowHistoryCall) === JSON.stringify(["portmate-input-probe"]),
+    `slow terminal typing was persisted byte-by-byte: ${JSON.stringify(slowHistoryCall)}`);
 
   const terminalCanvas = page.locator(".terminal-pane.active .terminal-canvas");
   assert(await terminalCanvas.getAttribute("data-terminal-display-mode") === "text",
