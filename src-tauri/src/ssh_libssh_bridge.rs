@@ -31,6 +31,7 @@ fn run_libssh_agent_channel_operation<T>(
         .map_err(|error| format!("{label} operation gate failed: {error}"))?
 }
 
+#[cfg(unix)]
 fn write_libssh_agent_channel(
     channel: &libssh_rs::Channel,
     mut data: &[u8],
@@ -72,6 +73,7 @@ fn close_libssh_agent_channel(channel: &libssh_rs::Channel) -> Result<(), String
     )
 }
 
+#[cfg(unix)]
 fn eof_libssh_agent_channel(channel: &libssh_rs::Channel) -> Result<(), String> {
     run_libssh_agent_channel_operation(
         channel,
