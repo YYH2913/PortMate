@@ -1427,6 +1427,10 @@ body[data-portmate-modal-open] .portmate-context-menu {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.workspace-dock-content.panel-history {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .workspace-dock-left .file-manager.dual .file-panels,
 .workspace-dock-right .file-manager.dual .file-panels {
   grid-template-columns: minmax(0, 1fr);

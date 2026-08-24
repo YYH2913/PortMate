@@ -1015,7 +1015,8 @@ try {
       rows: Number(host?.dataset.terminalTimestampRows ?? "-1"),
     };
   });
-  assert(longLogTimestamps.count === longLogTimestamps.rows
+  assert(longLogTimestamps.count > 0
+    && longLogTimestamps.count <= longLogTimestamps.rows
     && longLogTimestamps.clocks.every((clock) => /^\d{2}:\d{2}:\d{2}\.\d{6}$/.test(clock))
     && longLogTimestamps.values.every((timestamp) => timestamp === retainedLogTimestamp)
     && longLogTimestamps.markerCount >= 0

@@ -100,16 +100,24 @@ export function visibleTerminalTimestamps(
   const normalized = normalizeTerminalTimestamps(entries, Math.max(1, entries.length));
   if (!normalized.length) return [];
 
+  const transitions = normalized.filter((entry, index) => (
+    index === 0 || entry.ts !== normalized[index - 1].ts
+  ));
+
   let timestampIndex = -1;
-  while (timestampIndex + 1 < normalized.length
-    && normalized[timestampIndex + 1].line <= firstLine) timestampIndex += 1;
+  while (timestampIndex + 1 < transitions.length
+    && transitions[timestampIndex + 1].line <= firstLine) timestampIndex += 1;
 
   const visible: VisibleTerminalTimestamp[] = [];
-  for (let row = 0; row < rowCount; row += 1) {
-    const line = firstLine + row;
-    while (timestampIndex + 1 < normalized.length
-      && normalized[timestampIndex + 1].line <= line) timestampIndex += 1;
-    if (timestampIndex >= 0) visible.push({ line, row, ts: normalized[timestampIndex].ts });
+  if (timestampIndex >= 0) {
+    visible.push({ line: firstLine, row: 0, ts: transitions[timestampIndex].ts });
+  }
+  const lastLineExclusive = firstLine + rowCount;
+  for (let index = timestampIndex + 1; index < transitions.length; index += 1) {
+    const entry = transitions[index];
+    if (entry.line >= lastLineExclusive) break;
+    if (entry.line < firstLine) continue;
+    visible.push({ ...entry, row: entry.line - firstLine });
   }
   return visible;
 }

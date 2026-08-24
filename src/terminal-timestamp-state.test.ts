@@ -23,7 +23,7 @@ describe("terminal timestamp state", () => {
     ]);
   });
 
-  it("fills every visible row from the nearest preceding timestamp", () => {
+  it("shows the active interval once and labels timestamp transitions", () => {
     expect(visibleTerminalTimestamps([
       { line: 8, ts: "2026-08-09T01:02:01Z" },
       { line: 10, ts: "2026-08-09T01:02:02Z" },
@@ -32,7 +32,6 @@ describe("terminal timestamp state", () => {
       { line: 13, ts: "2026-08-09T01:02:05Z" },
     ], 10, 3)).toEqual([
       { line: 10, row: 0, ts: "2026-08-09T01:02:02.000000Z" },
-      { line: 11, row: 1, ts: "2026-08-09T01:02:02.000000Z" },
       { line: 12, row: 2, ts: "2026-08-09T01:02:04.000000Z" },
     ]);
   });
@@ -45,7 +44,11 @@ describe("terminal timestamp state", () => {
       { line: 12, ts: "2026-08-09T01:02:04.123456Z" },
     ], 11, 3)).toEqual([
       { line: 12, row: 1, ts: "2026-08-09T01:02:04.123456Z" },
-      { line: 13, row: 2, ts: "2026-08-09T01:02:04.123456Z" },
+    ]);
+    expect(visibleTerminalTimestamps([
+      { line: 12, ts: "2026-08-09T01:02:04.123456Z" },
+    ], 13, 3)).toEqual([
+      { line: 13, row: 0, ts: "2026-08-09T01:02:04.123456Z" },
     ]);
   });
 

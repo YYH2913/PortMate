@@ -3230,8 +3230,8 @@ Host staging
     };
   });
   assert(terminalTimestampLayout.bufferType === "normal"
-    && terminalTimestampLayout.count > 1
-    && terminalTimestampLayout.count === Number(terminalTimestampLayout.rowCount)
+    && terminalTimestampLayout.count > 0
+    && terminalTimestampLayout.count <= Number(terminalTimestampLayout.rowCount)
     && /^\d{2}:\d{2}:\d{2}\.\d{6}$/.test(terminalTimestampLayout.clock)
     && Math.abs(terminalTimestampLayout.gutterLeft - terminalTimestampLayout.regionLeft) <= 1
     && Math.abs(terminalTimestampLayout.gutterWidth - 96) <= 1
