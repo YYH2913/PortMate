@@ -6,6 +6,61 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-24
+
+### Added
+
+- Added a PortMate local Shell session and the scoped run_local_command MCP tool without allowing
+  MCP clients to choose an arbitrary host program, argument vector, or working directory.
+- Added bounded UDP datagram request/response exchanges through client-owned PortMate-host routes,
+  together with a complete Chinese MCP API reference for all tools, resources, prompts, scopes,
+  parameters, transport modes, and removed legacy names.
+- Added selective deletion of MCP audit history through the desktop authorization interface.
+
+### Changed
+
+- Reworked terminal input into one session-level bridge path with bounded fast sends, explicit
+  ordering boundaries for control sequences, and deferred persistence outside the transport hot
+  path.
+- Batched terminal byte notifications and isolated terminal rendering from unrelated workspace,
+  transfer, and log updates to reduce interaction latency under sustained input and output.
+- Consolidated MCP transfer and host-route operations under start_transfer and the tunnel lifecycle,
+  while retaining structured inline and resumable content sources.
+
+### Fixed
+
+- Released serial device handles before reconnect and serialized modem/TFTP command writes so a
+  disconnected or bursty device does not leave the Windows COM port inaccessible or lose setup
+  characters.
+- Added U-Boot LWIP-compatible TFTP high-port commands, automatic port 69 fallback, and a structured
+  destination contract that keeps deviceIp and other TFTP options at the correct boundary.
+- Removed redundant per-keystroke serial capture refreshes and fixed several frontend/backend input
+  queues that made interactive typing feel delayed.
+
+### Security
+
+- Bounded terminal input and byte-event memory, UDP datagrams, TCP tunnel exchanges, MCP request
+  bodies, and host-route targets while preserving per-client ownership, route rules, approval,
+  commit-time revalidation, and audit records.
+- Kept terminal input persistence asynchronous without weakening secret redaction or the ordered
+  audit boundary for MCP and desktop writes.
+
+### Migration
+
+- No Store schema migration is required from 0.1.3. Existing sessions, grants, audit history,
+  scripts, transfers, host keys, and encrypted credential references load in place.
+- Preserve a backup of the application-data directory before upgrading and test rollback only on a
+  copy of the Store, as required by RELEASE.md.
+
+### Known Limitations
+
+- The Windows GNU portable archive is unsigned cross-build evidence; it does not replace native
+  Windows MSVC, WebView2, Credential Manager, MSI/NSIS, Authenticode, or clean-machine validation.
+- Persistent UDP associations, SOCKS5 UDP ASSOCIATE, multicast, broadcast, DTLS, and QUIC session
+  management are not implemented; udp_request carries one bounded datagram exchange.
+- Physical serial hardware, U-Boot variants, real network routes, GSSAPI/Active Directory, and the
+  complete native Windows/macOS compatibility matrix still require external validation.
+
 ## [0.1.3] - 2026-08-21
 
 ### Changed
