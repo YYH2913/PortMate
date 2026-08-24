@@ -126,18 +126,9 @@ fn record_accepted_channel_bytes(
     terminal_bytes: &[u8],
     text: String,
 ) {
-    let command_id = active_command_id(io, session_id);
     if text.is_empty() {
         // Binary/control-only traffic still gets a raw log entry, but it does
         // not need to enter the text terminal event stream.
-        if let Err(error) = enqueue_inbound_log_persistence(
-            io.clone(),
-            session_id.to_string(),
-            None,
-            raw_log_bytes.to_vec(),
-        ) {
-            eprintln!("PortMate: inbound raw log queue unavailable: {error}");
-        }
         publish_terminal_bytes(
             io.app_handle.as_ref(),
             session_id,
@@ -147,98 +138,50 @@ fn record_accepted_channel_bytes(
             None,
             Utc::now(),
         );
+        if let Err(error) = enqueue_inbound_log_persistence(
+            io.clone(),
+            session_id.to_string(),
+            source_runtime_id.map(str::to_string),
+            None,
+            raw_log_bytes.to_vec(),
+        ) {
+            eprintln!("PortMate: inbound raw log queue unavailable: {error}");
+        }
         return;
     }
-    let live_event = if let Ok(mut store) = io.store.lock() {
-        let annotations = command_id
-            .map(|command_id| BTreeMap::from([("commandId".to_string(), command_id)]))
-            .unwrap_or_default();
-        let event = store
-            .record_event(
-                session_id,
-                EventDirection::Inbound,
-                stream,
-                Some(text.clone()),
-                None,
-                annotations,
-            )
-            .ok();
-        if let Some(event) = event.as_ref() {
-            sync_stored_event(&mut store, event);
-        }
-        event
-    } else {
-        eprintln!(
-            "PortMate: session store lock poisoned; dropping event for {session_id} \
-             (live push and persistence degraded until the app restarts)"
-        );
-        None
-    };
-    let terminal_event_id = live_event.as_ref().map(|event| event.id.as_str());
-    let terminal_event_timestamp = live_event
-        .as_ref()
-        .map(|event| event.ts.to_owned())
-        .unwrap_or_else(Utc::now);
+    let event_id = Uuid::new_v4().to_string();
+    let event_timestamp = Utc::now();
     publish_terminal_bytes(
         io.app_handle.as_ref(),
         session_id,
         EventDirection::Inbound,
         stream,
         terminal_bytes,
-        terminal_event_id,
-        terminal_event_timestamp,
+        Some(&event_id),
+        event_timestamp.to_owned(),
     );
-    if let Some(mut event) = live_event {
-        if let Err(error) = enqueue_inbound_log_persistence(
-            io.clone(),
-            session_id.to_string(),
-            Some(event.clone()),
-            raw_log_bytes.to_vec(),
-        ) {
-            append_logging_error(&mut event, error);
-            if let Ok(mut store) = io.store.lock() {
-                sync_stored_event(&mut store, &event);
-            }
-        }
-        if let Some(app_handle) = &io.app_handle {
-            let _ = app_handle.emit("portmate-session-event", event);
-        }
-    }
-    let trigger_dispatch = if let Ok(mut store) = io.store.lock() {
-        let (trigger_dispatch, trigger_changed_store) =
-            apply_trigger_actions_locked(&mut store, session_id, &text);
-        if trigger_changed_store {
-            if let Err(error) =
-                persist_applied_store(&store, &io.store_path, "trigger action state")
-            {
-                eprintln!("PortMate: failed to persist trigger actions: {error}");
-            }
-        }
-        trigger_dispatch
-    } else {
-        eprintln!(
-            "PortMate: session store lock poisoned; dropping trigger actions for {session_id}"
-        );
-        TriggerDispatch::default()
+    let annotations = active_command_id(io, session_id)
+        .map(|command_id| BTreeMap::from([("commandId".to_string(), command_id)]))
+        .unwrap_or_default();
+    let prepared_event = SessionEvent {
+        id: event_id,
+        session_id: session_id.to_string(),
+        pane_id: format!("{session_id}:main"),
+        ts: event_timestamp,
+        direction: EventDirection::Inbound,
+        stream,
+        bytes_ref: None,
+        text: Some(text.clone()),
+        annotations,
     };
-    if let Some(app_handle) = &io.app_handle {
-        for effect in trigger_dispatch.effects {
-            let _ = app_handle.emit("portmate-trigger-effect", effect);
-        }
-    }
-    spawn_trigger_commands(
+    if let Err(error) = enqueue_inbound_log_persistence(
         io.clone(),
         session_id.to_string(),
         source_runtime_id.map(str::to_string),
-        trigger_dispatch.local_commands,
-    );
-    if let Some(source_runtime_id) = source_runtime_id {
-        spawn_trigger_send_text_batch(
-            io.clone(),
-            session_id.to_string(),
-            source_runtime_id.to_string(),
-            trigger_dispatch.send_texts,
-        );
+        Some(prepared_event),
+        raw_log_bytes.to_vec(),
+    ) {
+        eprintln!("PortMate: inbound event queue unavailable: {error}");
     }
 }
 
@@ -379,10 +322,13 @@ pub(super) struct PendingEventLogs {
 }
 
 const INBOUND_LOG_QUEUE_CAPACITY: usize = 1024;
+const INBOUND_LOG_BATCH_MAX_REQUESTS: usize = 64;
+const INBOUND_LOG_BATCH_MAX_BYTES: usize = 256 * 1024;
 
 struct InboundLogPersistenceRequest {
     io: SessionIo,
     session_id: String,
+    source_runtime_id: Option<String>,
     event: Option<SessionEvent>,
     raw_bytes: Vec<u8>,
 }
@@ -444,6 +390,7 @@ static INBOUND_LOG_ACCEPTING: AtomicBool = AtomicBool::new(true);
 fn enqueue_inbound_log_persistence(
     io: SessionIo,
     session_id: String,
+    source_runtime_id: Option<String>,
     event: Option<SessionEvent>,
     raw_bytes: Vec<u8>,
 ) -> Result<(), String> {
@@ -451,6 +398,7 @@ fn enqueue_inbound_log_persistence(
         persist_inbound_log_request(InboundLogPersistenceRequest {
             io,
             session_id,
+            source_runtime_id,
             event,
             raw_bytes,
         });
@@ -468,16 +416,33 @@ fn enqueue_inbound_log_persistence(
         let queue = if let Some(queue) = queues.get(&key) {
             queue.clone()
         } else {
-            let (sender, mut receiver) = mpsc::channel(INBOUND_LOG_QUEUE_CAPACITY);
+            let (sender, mut receiver) =
+                mpsc::channel::<InboundLogPersistenceRequest>(INBOUND_LOG_QUEUE_CAPACITY);
             let state = Arc::new(InboundLogQueueState::new());
             let worker_state = Arc::clone(&state);
             tauri::async_runtime::spawn(async move {
-                while let Some(request) = receiver.recv().await {
+                while let Some(first) = receiver.recv().await {
+                    let mut batch_bytes = first.raw_bytes.len();
+                    let mut batch = vec![first];
+                    while batch.len() < INBOUND_LOG_BATCH_MAX_REQUESTS
+                        && batch_bytes < INBOUND_LOG_BATCH_MAX_BYTES
+                    {
+                        let Ok(next) = receiver.try_recv() else {
+                            break;
+                        };
+                        batch_bytes = batch_bytes.saturating_add(next.raw_bytes.len());
+                        batch.push(next);
+                    }
+                    let request_count = batch.len();
                     let result = tauri::async_runtime::spawn_blocking(move || {
-                        persist_inbound_log_request(request);
+                        for request in batch {
+                            persist_inbound_log_request(request);
+                        }
                     })
                     .await;
-                    worker_state.complete();
+                    for _ in 0..request_count {
+                        worker_state.complete();
+                    }
                     if result.is_err() {
                         eprintln!("PortMate: inbound log persistence worker failed");
                     }
@@ -494,13 +459,14 @@ fn enqueue_inbound_log_persistence(
         queue.sender.try_send(InboundLogPersistenceRequest {
             io,
             session_id,
+            source_runtime_id,
             event,
             raw_bytes,
         }).map_err(|error| {
             queue.state.complete();
             match error {
                 mpsc::error::TrySendError::Full(_) =>
-                    "终端日志队列已满，已跳过本次磁盘日志写入".to_string(),
+                    "终端事件队列已满，已跳过本次持久化和触发器处理".to_string(),
                 mpsc::error::TrySendError::Closed(_) => "终端日志 worker 已关闭".to_string(),
             }
         })
@@ -531,9 +497,37 @@ fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
     let InboundLogPersistenceRequest {
         io,
         session_id,
+        source_runtime_id,
         mut event,
         raw_bytes,
     } = request;
+    let mut event_recorded = false;
+    if let Some(prepared_event) = event.as_ref().cloned() {
+        if let Ok(mut store) = io.store.lock() {
+            match store.record_prepared_event(prepared_event) {
+                Ok(recorded) => {
+                    event = Some(recorded);
+                    event_recorded = true;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "PortMate: live output continued but event recording failed for \
+                         {session_id}: {error}"
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "PortMate: session store lock poisoned; live output continued but persistence \
+                 degraded for {session_id} until the app restarts"
+            );
+        }
+    }
+    if let Some(live_event) = event.as_ref() {
+        if let Some(app_handle) = &io.app_handle {
+            let _ = app_handle.emit("portmate-session-event", live_event.clone());
+        }
+    }
     let PendingEventLogs {
         profile,
         bytes_ref,
@@ -549,13 +543,57 @@ fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
     if let Some(profile) = profile {
         append_event_text_and_jsonl_log_shards(&io.store_path, &profile, &mut event);
     }
+    let trigger_text = event.text.clone().unwrap_or_default();
     if event.bytes_ref != previous_bytes_ref || event.annotations != previous_annotations {
-        if let Ok(mut store) = io.store.lock() {
-            sync_stored_event(&mut store, &event);
+        if event_recorded {
+            if let Ok(mut store) = io.store.lock() {
+                sync_stored_event(&mut store, &event);
+            }
         };
         if let Some(app_handle) = &io.app_handle {
-            let _ = app_handle.emit("portmate-session-event-updated", event);
+            let _ = app_handle.emit("portmate-session-event-updated", event.clone());
         }
+    }
+
+    let trigger_dispatch = if event_recorded {
+        if let Ok(mut store) = io.store.lock() {
+            let (trigger_dispatch, trigger_changed_store) =
+                apply_trigger_actions_locked(&mut store, &session_id, &trigger_text);
+            if trigger_changed_store {
+                if let Err(error) =
+                    persist_applied_store(&store, &io.store_path, "trigger action state")
+                {
+                    eprintln!("PortMate: failed to persist trigger actions: {error}");
+                }
+            }
+            trigger_dispatch
+        } else {
+            eprintln!(
+                "PortMate: session store lock poisoned; dropping trigger actions for {session_id}"
+            );
+            TriggerDispatch::default()
+        }
+    } else {
+        TriggerDispatch::default()
+    };
+    if let Some(app_handle) = &io.app_handle {
+        for effect in trigger_dispatch.effects {
+            let _ = app_handle.emit("portmate-trigger-effect", effect);
+        }
+    }
+    spawn_trigger_commands(
+        io.clone(),
+        session_id.clone(),
+        source_runtime_id.clone(),
+        trigger_dispatch.local_commands,
+    );
+    if let Some(source_runtime_id) = source_runtime_id {
+        spawn_trigger_send_text_batch(
+            io,
+            session_id,
+            source_runtime_id,
+            trigger_dispatch.send_texts,
+        );
     }
 }
 

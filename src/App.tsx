@@ -3925,8 +3925,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin, inputEpoch: number) {
     if (!sessionId || !text || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
-    const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
-    if (!session) throw new Error(`unknown session: ${sessionId}`);
+    let session: SessionSummary | undefined;
 
     try {
       if (isBackendAvailable()) {
@@ -3937,11 +3936,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             sessionId,
             text,
             interactive: origin === "interactive",
-            queued: origin === "interactive",
+            queued: true,
           });
         }
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
       } else {
+        session = sessionsRef.current.find((item) => item.profile.id === sessionId);
+        if (!session) throw new Error(`unknown session: ${sessionId}`);
         const event = createLocalSystemEvent(session.profile, text);
         event.direction = "outbound";
         event.stream = "stdout";
@@ -3952,10 +3953,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     } catch (error) {
       if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
-      setLogs((current) => ({
-        ...current,
-        [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(session.profile, `PortMate: send failed: ${formatError(error)}`)],
-      }));
+      session ??= sessionsRef.current.find((item) => item.profile.id === sessionId);
+      if (session) {
+        const failedSession = session;
+        setLogs((current) => ({
+          ...current,
+          [sessionId]: [...(current[sessionId] ?? []), createLocalSystemEvent(failedSession.profile, `PortMate: send failed: ${formatError(error)}`)],
+        }));
+      }
       throw error;
     }
   }

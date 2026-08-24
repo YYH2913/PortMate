@@ -23,7 +23,9 @@ import { decodeStoredScreenLockMarker, isScreenLockShortcut, SCREEN_LOCK_STORAGE
 import type { ScreenLockMarker } from "./screen-lock-state";
 import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
+import type { SyncInputOrigin } from "./sync-input-state";
 import TerminalCanvas from "./TerminalCanvas";
+import { TerminalInputPumpRegistry } from "./terminal-input-pump";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
@@ -40,13 +42,24 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(readTerminalInteractionPrefs);
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
   const [error, setError] = useState("");
+  const errorRef = useRef(error);
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const [ownerCommandBusy, setOwnerCommandBusy] = useState<DetachedOwnerControlAction | null>(null);
   const sessionRefreshGenerationRef = useRef(0);
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
   const inputQueueRef = useRef(new AsyncOperationQueue());
+  const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const inputEpochRef = useRef(0);
   const profileDeletedRef = useRef(false);
+  errorRef.current = error;
+  if (!directInputPumpRef.current) {
+    directInputPumpRef.current = new TerminalInputPumpRegistry((sessionId, text, origin) => {
+      const inputEpoch = captureTerminalInputEpoch();
+      return inputEpoch === null
+        ? Promise.resolve()
+        : sendInput(sessionId, text, origin, inputEpoch);
+    });
+  }
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
@@ -218,23 +231,41 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   function invalidateTerminalInput() {
     profileDeletedRef.current = true;
     inputEpochRef.current += 1;
+    directInputPumpRef.current?.reset(request.sessionId);
   }
 
   function restoreTerminalInput() {
     profileDeletedRef.current = false;
   }
 
-  function enqueueTerminalInput(sessionId: string, text: string): Promise<void> {
-    const inputEpoch = captureTerminalInputEpoch();
-    if (inputEpoch === null) return Promise.resolve();
-    return inputQueueRef.current.enqueue(() => sendInput(sessionId, text, inputEpoch));
+  function enqueueTerminalInput(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+  ): Promise<void> {
+    if (captureTerminalInputEpoch() === null) return Promise.resolve();
+    if (origin === "interactive") {
+      directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
+      return Promise.resolve();
+    }
+    return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
   }
 
-  async function sendInput(sessionId: string, text: string, inputEpoch: number) {
+  async function sendInput(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    inputEpoch: number,
+  ) {
     if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
     try {
-      await invokeBackend("send_text", { sessionId, text, interactive: true, queued: true });
-      if (terminalInputIsCurrent(inputEpoch)) setError("");
+      await invokeBackend("send_text", {
+        sessionId,
+        text,
+        interactive: origin === "interactive",
+        queued: true,
+      });
+      if (terminalInputIsCurrent(inputEpoch) && errorRef.current) setError("");
     } catch (inputError) {
       if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));
     }

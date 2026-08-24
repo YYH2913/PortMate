@@ -247,6 +247,27 @@ pub(super) fn outbound_text_for_session(
     }
 }
 
+/// Encodes queued desktop input from the installed runtime only. The caller
+/// already captured and later revalidates the runtime generation, so the hot
+/// path does not need to wait for the persisted Store lock.
+pub(super) fn outbound_text_for_active_runtime(
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
+    text: &str,
+) -> Result<String, String> {
+    let tcp = runtimes.tcp.lock().map_err(|error| error.to_string())?;
+    let Some(runtime) = tcp.get(session_id) else {
+        return Ok(text.to_string());
+    };
+    let Some(telnet) = runtime.telnet.as_ref() else {
+        return Ok(text.to_string());
+    };
+    Ok(encode_telnet_outbound_text(
+        text,
+        telnet.local_binary.load(Ordering::SeqCst),
+    ))
+}
+
 pub(super) fn outbound_bytes_for_session(
     store: &Arc<Mutex<SessionStore>>,
     session_id: &str,

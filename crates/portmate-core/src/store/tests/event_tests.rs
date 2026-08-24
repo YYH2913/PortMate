@@ -97,6 +97,43 @@ fn binary_control_events_allow_bytes_without_fake_text() {
 }
 
 #[test]
+fn prepared_events_preserve_live_identity_without_regressing_activity() {
+    let mut store = test_store();
+    let previous_activity = store.runtimes[0].last_activity;
+    let timestamp = previous_activity + chrono::Duration::seconds(2);
+    let prepared = SessionEvent {
+        id: "live-event-id".to_string(),
+        session_id: "test-session".to_string(),
+        pane_id: "test-session:main".to_string(),
+        ts: timestamp,
+        direction: EventDirection::Inbound,
+        stream: EventStream::Stdout,
+        bytes_ref: None,
+        text: Some("ready\r\n".to_string()),
+        annotations: BTreeMap::new(),
+    };
+
+    let recorded = store.record_prepared_event(prepared.clone()).unwrap();
+    assert_eq!(recorded, prepared);
+    assert_eq!(store.runtimes[0].last_activity, timestamp);
+
+    let mut stale = prepared;
+    stale.id = "older-live-event-id".to_string();
+    stale.ts = previous_activity;
+    store.record_prepared_event(stale).unwrap();
+    assert_eq!(store.runtimes[0].last_activity, timestamp);
+    assert_eq!(
+        store
+            .events
+            .iter()
+            .filter(|event| event.session_id == "test-session")
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["older-live-event-id", "live-event-id"]
+    );
+}
+
+#[test]
 fn deferred_profile_delete_keeps_shared_outbox_until_commit() {
     let mut store = test_store();
     store.runtimes[0].status = SessionStatus::Disconnected;

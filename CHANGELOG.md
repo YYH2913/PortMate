@@ -8,6 +8,14 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Changed
 
+- Unified printable keys, control keys, Enter, and paste requests under one bounded per-session
+  native input queue with explicit coalescing barriers, and moved detached terminals onto the same
+  frontend input pump as the main workspace.
+- Coalesced short bursts of deferred desktop-input audit events before Store persistence, reducing
+  per-character snapshot and log writes without moving persistence back onto the transport path.
+- Moved inbound event recording, log shards, and trigger evaluation onto ordered per-session
+  workers that drain ready bursts together, keeping SSH, serial, shell, TCP, and Telnet readers
+  available while storage is busy.
 - Routed live terminal bytes through one window-level listener, replayed the bounded pre-mount
   cache, and merged adjacent frames before handing them to xterm so split panes do not multiply
   native event work or serialize every transport read behind a separate parser callback.
@@ -16,6 +24,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Published inbound transport bytes before event persistence and moved subsequent Store work out of
+  transport readers, so remote echo and command output continue while audit or storage locks are busy.
+- Removed persisted Store lookups from queued SSH, serial, shell, TCP, and Telnet keystroke
+  enqueueing while retaining runtime-generation revalidation immediately before each write.
+- Kept delayed inbound persistence in chronological event order when a later system or outbound
+  event acquires the Store first, without regressing the session's last-activity timestamp.
 - Preserved transport order when raw-byte and persisted text events arrive on different Tauri
   channels, preventing a new command prompt from rendering ahead of the preceding command output.
 - Kept split UTF-8 and control-sequence bytes intact on the raw xterm path, validated live byte

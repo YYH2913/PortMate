@@ -200,15 +200,12 @@ pub(crate) async fn send_text(
     interactive: Option<bool>,
     queued: Option<bool>,
 ) -> Result<Option<SessionEvent>, String> {
-    if interactive.unwrap_or(false) {
-        if queued.unwrap_or(false) {
-            enqueue_interactive_text(
-                state.inner().session_io(),
-                session_id,
-                text,
-            )?;
-            return Ok(None);
-        }
+    let interactive = interactive.unwrap_or(false);
+    if queued.unwrap_or(false) {
+        enqueue_interactive_text(state.inner().session_io(), session_id, text, interactive)?;
+        return Ok(None);
+    }
+    if interactive {
         return send_text_interactive_inner(state.inner().session_io(), session_id, text)
             .await
             .map(Some);

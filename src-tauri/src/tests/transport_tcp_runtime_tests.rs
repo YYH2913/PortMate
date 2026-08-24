@@ -217,6 +217,92 @@ fn tcp_write_deadline_includes_the_writer_lock_and_recovers_after_timeout() {
 }
 
 #[test]
+fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+        let (release_server_tx, release_server_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = [0_u8; 4];
+            socket.read_exact(&mut received).await.unwrap();
+            let _ = received_tx.send(received);
+            let _ = release_server_rx.await;
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-queued-input-store-lock-test-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let (store_locked_tx, store_locked_rx) = std::sync::mpsc::channel();
+        let (release_store_tx, release_store_rx) = std::sync::mpsc::channel();
+        let store = Arc::clone(&state.store);
+        let store_holder = std::thread::spawn(move || {
+            let _guard = store.lock().unwrap();
+            store_locked_tx.send(()).unwrap();
+            release_store_rx.recv().unwrap();
+        });
+        store_locked_rx.recv().unwrap();
+
+        for (text, coalesce) in [("a", true), ("b", true), ("\r", false), ("c", true)] {
+            enqueue_interactive_text(
+                state.session_io(),
+                profile.id.clone(),
+                text.to_string(),
+                coalesce,
+            )
+            .unwrap();
+        }
+        let received = tokio::time::timeout(Duration::from_secs(1), received_rx)
+            .await
+            .expect("queued input waited for the Store lock")
+            .expect("queued input server dropped its response");
+        assert_eq!(&received, b"ab\rc");
+
+        release_store_tx.send(()).unwrap();
+        store_holder.join().unwrap();
+        let persisted_input = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let persisted = state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        event.session_id == profile.id
+                            && event.direction == EventDirection::Outbound
+                            && event.stream == EventStream::Stdout
+                    })
+                    .filter_map(|event| event.text.as_deref())
+                    .collect::<String>();
+                if persisted.len() >= 4 {
+                    break persisted;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("deferred queued input was not persisted");
+        assert_eq!(persisted_input, "ab\rc");
+        clear_interactive_write_queue(&state.store_path, &profile.id);
+        clear_deferred_interactive_queue(&state.store_path, &profile.id);
+        let _ = release_server_tx.send(());
+        server.await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn outbound_lane_deadline_recovers_after_timeout() {
     tauri::async_runtime::block_on(async {
         let store_path = canonical_test_temp_path("portmate-outbound-lane-timeout")

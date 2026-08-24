@@ -1735,7 +1735,6 @@ export default function TerminalCanvas({
       if (mouseReport
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
       lastInteractiveInputAt = performance.now();
-      if (/\r|\n/.test(text)) term.scrollToBottom();
       if (mouseReport) {
         // Mouse press/release reports are protocol frames, not printable
         // keystrokes. Keep each frame as an atomic ordering boundary so the
@@ -1750,6 +1749,7 @@ export default function TerminalCanvas({
       // The App-level registry is the single ordering queue for this session.
       // Bypassing the view-local pump removes a second IPC batching window.
       void onInputRef.current(active.profile.id, text, inputOrigin);
+      if (/\r|\n/.test(text)) term.scrollToBottom();
       updateCompletionInput(text);
       dismissOneKeyPrompt();
     });
@@ -2235,7 +2235,8 @@ export default function TerminalCanvas({
     void listen<SessionEvent>("portmate-session-event", (event) => {
       if (disposed || event.payload.sessionId !== active.profile.id) return;
       const term = termRef.current;
-      if (!term || !writeEventRef.current(event.payload, true)) return;
+      if (!term) return;
+      writeEventRef.current(event.payload, true);
       applyOneKeyPromptState(reduceOneKeyPromptDetection(
         oneKeyPromptStateRef.current,
         event.payload,

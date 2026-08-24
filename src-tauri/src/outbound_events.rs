@@ -13,6 +13,8 @@ type DeferredInteractiveQueues =
 static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLock::new();
 static DEFERRED_INTERACTIVE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 const DEFERRED_INTERACTIVE_QUEUE_CAPACITY: usize = 1024;
+const DEFERRED_INTERACTIVE_BATCH_MAX_BYTES: usize = 16 * 1024;
+const DEFERRED_INTERACTIVE_BATCH_WINDOW: Duration = Duration::from_millis(100);
 
 struct DeferredInteractiveQueueState {
     pending: AtomicUsize,
@@ -103,6 +105,7 @@ struct InteractiveWriteRequest {
     runtime_id: String,
     text: String,
     wire_bytes: Vec<u8>,
+    coalesce: bool,
 }
 
 type InteractiveWriteQueues =
@@ -161,21 +164,21 @@ impl InteractiveWorkerCompletion {
 static INTERACTIVE_WRITE_QUEUES: OnceLock<InteractiveWriteQueues> = OnceLock::new();
 static INTERACTIVE_WRITE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
-/// Enqueues desktop keystrokes without making the webview wait for the
-/// transport writer. Each session owns one bounded worker, so ordering is
-/// preserved while unrelated sessions remain independent.
+/// Enqueues desktop input without making the webview wait for the transport
+/// writer. Printable input may coalesce; control keys and paste requests are
+/// explicit ordering barriers in the same per-session queue.
 pub(super) fn enqueue_interactive_text(
     io: SessionIo,
     session_id: String,
     text: String,
+    coalesce: bool,
 ) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
         .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
-    let wire_bytes = outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?
-        .into_bytes();
+    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
     let key = (io.store_path.clone(), session_id.clone());
     let sender = {
         let mut queues = INTERACTIVE_WRITE_QUEUES
@@ -216,22 +219,22 @@ pub(super) fn enqueue_interactive_text(
                     let session_id = first.session_id;
                     let runtime_id = first.runtime_id;
                     let mut wire_bytes = first.wire_bytes;
-                    // The frontend coalesces keystrokes while the previous
-                    // request is in flight. Yield once so already queued IPC
-                    // requests can arrive, but avoid imposing a fixed 1 ms
-                    // delay on the first byte of every batch.
-                    tokio::select! {
-                        _ = worker_cancellation.wait() => break,
-                        _ = tokio::task::yield_now() => {}
-                    }
-                    while text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES
+                    let coalesce = first.coalesce;
+                    // Drain anything already queued, but never delay the first
+                    // byte solely to enlarge a batch. The frontend coalesces
+                    // bursts while an IPC call is in flight.
+                    while coalesce
+                        && text.len() < INTERACTIVE_WRITE_BATCH_MAX_BYTES
                         && !worker_cancellation.is_cancelled()
                     {
                         let Ok(next) = receiver.try_recv() else {
                             break;
                         };
                         let remaining = INTERACTIVE_WRITE_BATCH_MAX_BYTES - text.len();
-                        if next.runtime_id == runtime_id && next.text.len() <= remaining {
+                        if next.coalesce
+                            && next.runtime_id == runtime_id
+                            && next.text.len() <= remaining
+                        {
                             text.push_str(&next.text);
                             wire_bytes.extend_from_slice(&next.wire_bytes);
                         } else {
@@ -291,6 +294,7 @@ pub(super) fn enqueue_interactive_text(
         runtime_id,
         text,
         wire_bytes,
+        coalesce,
     })
     .map_err(|error| match error {
         mpsc::error::TrySendError::Full(_) => "终端输入队列已满，请稍后重试".to_string(),
@@ -409,7 +413,32 @@ pub(super) fn enqueue_deferred_interactive_event(
             let state = Arc::new(DeferredInteractiveQueueState::new());
             let worker_state = Arc::clone(&state);
             tauri::async_runtime::spawn(async move {
-                while let Some(request) = receiver.recv().await {
+                let mut pending = None;
+                loop {
+                    let first = match pending.take() {
+                        Some(request) => Some(request),
+                        None => receiver.recv().await,
+                    };
+                    let Some(mut request) = first else { break };
+                    let mut request_count = 1_usize;
+                    let batch_window = tokio::time::sleep(DEFERRED_INTERACTIVE_BATCH_WINDOW);
+                    tokio::pin!(batch_window);
+                    while request.text.len() < DEFERRED_INTERACTIVE_BATCH_MAX_BYTES {
+                        let next = tokio::select! {
+                            _ = &mut batch_window => None,
+                            request = receiver.recv() => request,
+                        };
+                        let Some(next) = next else { break };
+                        let remaining = DEFERRED_INTERACTIVE_BATCH_MAX_BYTES - request.text.len();
+                        if next.text.len() <= remaining {
+                            request.text.push_str(&next.text);
+                            request.wire_bytes.extend_from_slice(&next.wire_bytes);
+                            request_count += 1;
+                        } else {
+                            pending = Some(next);
+                            break;
+                        }
+                    }
                     let result = tauri::async_runtime::spawn_blocking(move || {
                         let _ = record_outbound_user_event_with_context(
                             &request.io,
@@ -421,7 +450,9 @@ pub(super) fn enqueue_deferred_interactive_event(
                             BTreeMap::new(),
                         );
                     }).await;
-                    worker_state.complete();
+                    for _ in 0..request_count {
+                        worker_state.complete();
+                    }
                     if result.is_err() {
                         eprintln!("PortMate: deferred interactive event persistence worker failed");
                     }

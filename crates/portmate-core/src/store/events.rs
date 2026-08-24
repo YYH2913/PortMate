@@ -79,18 +79,8 @@ impl SessionStore {
         bytes_ref: Option<String>,
         annotations: BTreeMap<String, String>,
     ) -> Result<SessionEvent, String> {
-        if !self.profiles.iter().any(|profile| profile.id == session_id) {
-            return Err(format!("unknown session: {session_id}"));
-        }
         let now = Utc::now();
-        if let Some(runtime) = self
-            .runtimes
-            .iter_mut()
-            .find(|runtime| runtime.session_id == session_id)
-        {
-            runtime.last_activity = now;
-        }
-        let event = SessionEvent {
+        self.record_prepared_event(SessionEvent {
             id: Uuid::new_v4().to_string(),
             session_id: session_id.to_string(),
             pane_id: format!("{session_id}:main"),
@@ -100,9 +90,39 @@ impl SessionStore {
             bytes_ref,
             text,
             annotations,
-        };
+        })
+    }
+
+    /// Commits an event whose identity was allocated before acquiring the
+    /// Store lock, allowing live transport bytes to be published immediately.
+    pub fn record_prepared_event(&mut self, event: SessionEvent) -> Result<SessionEvent, String> {
+        let session_id = event.session_id.clone();
+        if !self.profiles.iter().any(|profile| profile.id == session_id) {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        if event.id.is_empty()
+            || event.id.len() > 128
+            || event.id.chars().any(char::is_control)
+            || event.pane_id != format!("{session_id}:main")
+        {
+            return Err("invalid prepared session event identity".to_string());
+        }
+        if let Some(runtime) = self
+            .runtimes
+            .iter_mut()
+            .find(|runtime| runtime.session_id == session_id)
+        {
+            runtime.last_activity = runtime.last_activity.max(event.ts);
+        }
+        let arrived_out_of_order = self
+            .events
+            .last()
+            .is_some_and(|recorded| recorded.ts > event.ts);
         self.events.push(event.clone());
-        self.trim_events_if_needed(session_id);
+        if arrived_out_of_order {
+            self.events.sort_by_key(|recorded| recorded.ts);
+        }
+        self.trim_events_if_needed(&session_id);
         Ok(event)
     }
 

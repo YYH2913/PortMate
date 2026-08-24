@@ -3326,6 +3326,9 @@ Host staging
     .filter((call) => call.command === "send_text"));
   assert(terminalInputWrites.length > 0
     && terminalInputWrites.every((call) => call.args.sessionId === "edge-router")
+    && terminalInputWrites.every((call) => call.args.queued === true)
+    && terminalInputWrites.slice(0, -1).every((call) => call.args.interactive === true)
+    && terminalInputWrites.at(-1)?.args.interactive === false
     && terminalInputWrites.map((call) => call.args.text).join("") === terminalInputProbe,
   `terminal keyboard input was lost or routed to another session: ${JSON.stringify(terminalInputWrites)}`);
 
@@ -5295,6 +5298,7 @@ Host staging
   const detachedOrderedInput = await detachedPage.evaluate((start) => window.__invokeCalls
     .filter((call) => call.command === "send_text").slice(start), detachedInputStart);
   assert(detachedOrderedInput.length === 2
+    && detachedOrderedInput.every((call) => call.args.queued === true && call.args.interactive === true)
     && detachedOrderedInput.map((call) => call.args.text).join("") === "ab",
   `detached terminal input order changed: ${JSON.stringify(detachedOrderedInput)}`);
   await detachedPage.evaluate(() => {
