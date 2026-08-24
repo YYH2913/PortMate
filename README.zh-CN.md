@@ -124,6 +124,9 @@ Host Key 变化默认阻断连接。请在确认设备替换、系统重装或�
 
 ## MCP Bridge
 
+完整的当前 MCP 工具、资源、Prompt、参数、scope 和传输参考见
+[MCP API 接口文档](./docs/MCP-API.zh-CN.md)。运行时 tools/list 返回值始终是最终 schema。
+
 ### 推荐配置方式
 
 1. 保持 PortMate 桌面应用运行。

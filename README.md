@@ -124,6 +124,10 @@ A changed host key blocks the connection by default. Use one-time trust, append,
 
 ## MCP Bridge
 
+The complete current MCP tool, resource, prompt, parameter, scope, and transport reference is
+available in [MCP API reference (简体中文)](./docs/MCP-API.zh-CN.md). The runtime tools/list
+response remains authoritative.
+
 ### Recommended Setup
 
 1. Keep the PortMate desktop application running.
