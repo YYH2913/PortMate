@@ -6697,6 +6697,38 @@ fieldset label {
   font-size: 12px;
 }
 
+.mcp-session-access-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.mcp-session-access-mode label,
+.mcp-session-checkboxes label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.mcp-session-checkboxes {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.mcp-session-access-hint,
+.mcp-session-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .session-settings-dialog .session-identity-hint {
   grid-column: 1 / -1;
 }
@@ -11350,7 +11382,7 @@ fieldset label {
 }
 
 .mcp-dialog[data-tab="grants"] {
-  height: min(660px, calc(100vh - 56px));
+  height: min(760px, calc(100vh - 40px));
 }
 
 .mcp-dialog[data-tab="http"] {

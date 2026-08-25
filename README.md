@@ -209,7 +209,7 @@ The JSON is empty until a Token is explicitly generated or rotated. Treat copied
 | `manage-sessions` | Open or close sessions |
 | `run-scripts` | Run saved MCP-enabled scripts in authorized sessions; also implies `read-scripts` |
 
-Grants support expiration, revocation, allowed-session lists, and per-write confirmation. Allowed-session lists constrain session tools; host-route tools have no session target and are controlled directly by the `tunnel`/`read-tunnels` scopes. Every MCP write operation is audited.
+Grants support expiration, revocation, session access modes, and per-write confirmation. New grants deny every session by default; the UI can switch to all sessions or explicitly select one or more sessions. Session lists and queries without a `sessionId` return only the visible subset, while session-specific tools still require an authorized `sessionId`. Host-route tools have no session target and are controlled directly by the `tunnel`/`read-tunnels` scopes. Every MCP write operation is audited.
 
 ### Custom Script Tools
 

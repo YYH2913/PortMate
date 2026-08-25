@@ -208,7 +208,7 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | `manage-sessions` | 打开或关闭会话 |
 | `run-scripts` | 在已授权会话运行已保存且开放给 MCP 的脚本，并隐含 `read-scripts` |
 
-授权可以设置到期时间、撤销状态、允许会话列表和写操作逐次确认。允许会话列表约束会话工具；主机路由没有会话目标，直接由 `tunnel`/`read-tunnels` scope 控制。所有 MCP 写操作都会进入审计记录。
+授权可以设置到期时间、撤销状态、会话范围和写操作逐次确认。新建授权默认不授权任何会话；可以切换为全部会话，或明确勾选一个/多个会话。会话列表和无 `sessionId` 的查询会按范围返回可见子集，具体会话工具仍需提交已授权的 `sessionId`。主机路由没有会话目标，直接由 `tunnel`/`read-tunnels` scope 控制。所有 MCP 写操作都会进入审计记录。
 
 ### 自定义脚本工具
 

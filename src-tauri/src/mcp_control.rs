@@ -97,9 +97,17 @@ pub(super) fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, Strin
             "MCP grant session limit exceeded ({MAX_MCP_GRANT_SESSIONS})"
         ));
     }
-    let mut allowed_sessions = Vec::with_capacity(grant.allowed_sessions.len());
+    let allowed_session_count = grant.allowed_sessions.len();
+    let mut allowed_sessions = Vec::with_capacity(allowed_session_count);
     for session_id in grant.allowed_sessions {
         let session_id = session_id.trim();
+        if session_id == MCP_NO_SESSIONS_SENTINEL {
+            if !allowed_sessions.is_empty() || allowed_session_count != 1 {
+                return Err("MCP no-session marker cannot be combined with session IDs".to_string());
+            }
+            allowed_sessions.push(MCP_NO_SESSIONS_SENTINEL.to_string());
+            continue;
+        }
         if session_id.is_empty()
             || session_id.len() > MAX_MCP_GRANT_SESSION_ID_BYTES
             || session_id.chars().any(char::is_control)

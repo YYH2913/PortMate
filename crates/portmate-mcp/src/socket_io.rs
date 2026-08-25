@@ -12,7 +12,14 @@ pub(super) fn read_stream_chunk_before(
     if remaining.is_zero() {
         return Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message));
     }
-    stream.set_read_timeout(Some(remaining))?;
+    if let Err(error) =
+        stream.set_read_timeout(Some(remaining.max(std::time::Duration::from_millis(1))))
+    {
+        if error.kind() == io::ErrorKind::InvalidInput {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message));
+        }
+        return Err(error);
+    }
     stream.read(buffer).map_err(|error| {
         if error.kind() == io::ErrorKind::WouldBlock {
             io::Error::new(io::ErrorKind::TimedOut, timeout_message)

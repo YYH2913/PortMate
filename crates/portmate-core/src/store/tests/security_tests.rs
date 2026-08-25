@@ -54,6 +54,23 @@ fn read_scopes_default_open_then_follow_explicit_grants() {
 }
 
 #[test]
+fn explicit_no_session_grant_allows_collection_filtering_but_no_session_data() {
+    let now = Utc::now();
+    let grant = McpGrant {
+        client_id: "none-reader".to_string(),
+        name: "No session reader".to_string(),
+        scopes: vec![McpScope::ReadSessions, McpScope::ReadLogs],
+        allowed_sessions: vec![MCP_NO_SESSIONS_SENTINEL.to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    };
+    assert!(grant.allows(McpScope::ReadSessions, None, now));
+    assert!(!grant.allows(McpScope::ReadSessions, Some("test-session"), now));
+    assert!(!grant.allows(McpScope::ReadLogs, Some("test-session"), now));
+}
+
+#[test]
 fn grant_is_expired_at_its_exact_deadline() {
     let now = Utc::now();
     let grant = McpGrant {

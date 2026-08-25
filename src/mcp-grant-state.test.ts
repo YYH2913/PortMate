@@ -3,8 +3,11 @@ import {
   createMcpGrant,
   formatMcpGrantExpiryInput,
   generateMcpClientId,
+  mcpSessionAccessMode,
   mcpGrantDraftHasUnsavedChanges,
   parseMcpGrantExpiryInput,
+  setMcpSessionAccessMode,
+  MCP_NO_SESSIONS_SENTINEL,
 } from "./mcp-grant-state";
 
 describe("MCP grant editor state", () => {
@@ -13,7 +16,7 @@ describe("MCP grant editor state", () => {
       clientId: "",
       name: "",
       scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp"],
-      allowedSessions: [],
+      allowedSessions: [MCP_NO_SESSIONS_SENTINEL],
       confirmWrites: true,
       expiresAt: null,
       revokedAt: null,
@@ -41,6 +44,19 @@ describe("MCP grant editor state", () => {
     ]) {
       expect(mcpGrantDraftHasUnsavedChanges({ ...saved, ...changed }, saved)).toBe(true);
     }
+  });
+
+  it("keeps explicit none/all/selected session access modes distinct", () => {
+    const draft = createMcpGrant();
+    expect(mcpSessionAccessMode(draft)).toBe("none");
+    const all = setMcpSessionAccessMode(draft, "all");
+    expect(all.allowedSessions).toEqual([]);
+    expect(mcpSessionAccessMode(all)).toBe("all");
+    const selected = setMcpSessionAccessMode(all, "selected");
+    expect(selected.allowedSessions).toEqual([MCP_NO_SESSIONS_SENTINEL]);
+    expect(mcpSessionAccessMode(selected)).toBe("none");
+    const one = setMcpSessionAccessMode({ ...selected, allowedSessions: ["session-a"] }, "selected");
+    expect(mcpSessionAccessMode(one)).toBe("selected");
   });
 
   it("keeps a pristine new grant clean until the user enters a value", () => {

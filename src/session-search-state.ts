@@ -16,9 +16,16 @@ export function filterWorkspaceSessions(
   sessions: readonly SessionSummary[],
   query: string,
 ): SessionSummary[] {
+  // Hydration and profile-update events can briefly contain the same profile
+  // twice. Keep the explorer/search contract one row per session ID while
+  // retaining the newest matching summary.
   const needle = normalizeSearchText(query);
-  if (!needle) return [...sessions];
-  return sessions.filter((session) => sessionSearchText(session).includes(needle));
+  const candidates = needle
+    ? sessions.filter((session) => sessionSearchText(session).includes(needle))
+    : [...sessions];
+  const unique = new Map<string, SessionSummary>();
+  for (const session of candidates) unique.set(session.profile.id, session);
+  return [...unique.values()];
 }
 
 export function buildSessionSearchResults(

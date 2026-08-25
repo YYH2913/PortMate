@@ -23,6 +23,12 @@ describe("session search state", () => {
     expect(filterWorkspaceSessions(sessions, "ttyUSB0 115200").map(id)).toEqual(["serial"]);
   });
 
+  it("deduplicates duplicate hydration summaries by session ID", () => {
+    const duplicate = { ...sessions[0], profile: { ...sessions[0].profile, name: "Edge Router (latest)" } };
+    expect(filterWorkspaceSessions([sessions[0], duplicate], "production").map((session) => session.profile.name))
+      .toEqual(["Edge Router (latest)"]);
+  });
+
   it("builds globally sorted log results and searches session context", () => {
     const logs = {
       router: [event("old", "router", "2026-01-01T00:00:00Z", "route ready", "command-123")],

@@ -92,7 +92,7 @@ pub(super) fn normalized_session_profile_id(value: &str) -> String {
 
 pub(super) fn normalize_session_profile(mut profile: SessionProfile) -> SessionProfile {
     profile.id = normalized_session_profile_id(&profile.id);
-    if profile.id.is_empty() {
+    if profile.id.is_empty() || profile.id == MCP_NO_SESSIONS_SENTINEL {
         profile.id = format!("session-{}", Uuid::new_v4());
     }
     profile.name =

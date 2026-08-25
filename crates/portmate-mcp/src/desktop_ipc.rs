@@ -1,6 +1,6 @@
 use crate::keyring_store::read_secret_from_keyring;
 use crate::socket_io::read_stream_chunk_before;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -72,7 +72,14 @@ pub(crate) fn call_ipc_value(
         Ok(stream) => stream,
         Err(_) => return Ok(None),
     };
-    stream.set_write_timeout(Some(IPC_WRITE_TIMEOUT))?;
+    // Some socket runtimes reject SO_SNDTIMEO with EINVAL. The request is
+    // bounded and the IPC endpoint is loopback, so a blocking write is safe;
+    // the response still has an explicit deadline below.
+    if let Err(error) = stream.set_write_timeout(Some(IPC_WRITE_TIMEOUT)) {
+        if error.kind() != io::ErrorKind::InvalidInput {
+            return Err(error).context("failed to configure desktop IPC write timeout");
+        }
+    }
     let request = IpcRequest {
         token: endpoint_ipc_token(endpoint)?,
         client_id: client_id.to_string(),
@@ -81,8 +88,12 @@ pub(crate) fn call_ipc_value(
         args,
     };
     let request = encode_ipc_request(&request, MAX_IPC_REQUEST_BYTES)?;
-    stream.write_all(&request)?;
-    stream.shutdown(Shutdown::Write)?;
+    stream
+        .write_all(&request)
+        .context("failed to write desktop IPC request")?;
+    stream
+        .shutdown(Shutdown::Write)
+        .context("failed to finish desktop IPC request")?;
     let raw =
         read_ipc_response_with_limits(&mut stream, MAX_IPC_RESPONSE_BYTES, IPC_RESPONSE_TIMEOUT)?;
     let response = serde_json::from_slice::<IpcResponse>(&raw)?;

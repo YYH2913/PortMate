@@ -1,17 +1,37 @@
 import type { McpGrant } from "./types";
 
 const MCP_CLIENT_ID_RANDOM_BYTES = 16;
+// Kept as a reserved value so older stores that use [] for "all sessions"
+// remain compatible while new grants can explicitly deny every session.
+export const MCP_NO_SESSIONS_SENTINEL = "__portmate_no_sessions__";
+export type McpSessionAccessMode = "none" | "all" | "selected";
 
 export function createMcpGrant(): McpGrant {
   return {
     clientId: "",
     name: "",
     scopes: ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp"],
-    allowedSessions: [],
+    allowedSessions: [MCP_NO_SESSIONS_SENTINEL],
     confirmWrites: true,
     expiresAt: null,
     revokedAt: null,
   };
+}
+
+export function mcpSessionAccessMode(grant: Pick<McpGrant, "allowedSessions">): McpSessionAccessMode {
+  if (grant.allowedSessions.length === 1
+    && grant.allowedSessions[0] === MCP_NO_SESSIONS_SENTINEL) return "none";
+  return grant.allowedSessions.length ? "selected" : "all";
+}
+
+export function setMcpSessionAccessMode(
+  grant: McpGrant,
+  mode: McpSessionAccessMode,
+): McpGrant {
+  if (mode === "none") return { ...grant, allowedSessions: [MCP_NO_SESSIONS_SENTINEL] };
+  if (mode === "all") return { ...grant, allowedSessions: [] };
+  const selected = grant.allowedSessions.filter((id) => id !== MCP_NO_SESSIONS_SENTINEL);
+  return { ...grant, allowedSessions: selected.length ? selected : [MCP_NO_SESSIONS_SENTINEL] };
 }
 
 export function mcpGrantDraftHasUnsavedChanges(

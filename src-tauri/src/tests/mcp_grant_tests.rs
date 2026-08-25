@@ -137,6 +137,27 @@ fn mcp_grant_validation_normalizes_and_rejects_ambiguous_inputs() {
     assert!(normalize_mcp_grant(invalid)
         .unwrap_err()
         .contains("duplicate session IDs"));
+
+    let no_sessions = McpGrant {
+        client_id: "none-client".to_string(),
+        name: "No sessions".to_string(),
+        scopes: vec![McpScope::ReadSessions],
+        allowed_sessions: vec![MCP_NO_SESSIONS_SENTINEL.to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    };
+    assert_eq!(
+        normalize_mcp_grant(no_sessions.clone())
+            .unwrap()
+            .allowed_sessions,
+        [MCP_NO_SESSIONS_SENTINEL]
+    );
+    let mut ambiguous = no_sessions;
+    ambiguous.allowed_sessions.push("edge".to_string());
+    assert!(normalize_mcp_grant(ambiguous)
+        .unwrap_err()
+        .contains("no-session marker"));
 }
 
 #[test]

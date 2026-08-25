@@ -4,7 +4,7 @@ import { CalendarClock, Check, Copy, Dices, Download, KeyRound, ListX, Play, Plu
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, parseMcpGrantExpiryInput } from "./mcp-grant-state";
+import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpSessionAccessMode, parseMcpGrantExpiryInput, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -647,8 +647,25 @@ export default function McpDialog({
     if (grantBusy) return;
     setDraft((current) => current ? ({
       ...current,
-      allowedSessions: current.allowedSessions.includes(sessionId) ? current.allowedSessions.filter((item) => item !== sessionId) : [...current.allowedSessions, sessionId],
+      allowedSessions: (() => {
+        const selected = current.allowedSessions.filter((item) => item !== MCP_NO_SESSIONS_SENTINEL);
+        return selected.includes(sessionId)
+          ? (selected.length === 1 ? [MCP_NO_SESSIONS_SENTINEL] : selected.filter((item) => item !== sessionId))
+          : [...selected, sessionId];
+      })(),
     }) : current);
+  }
+
+  function changeSessionAccessMode(mode: "none" | "all" | "selected") {
+    if (grantBusy) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const next = setMcpSessionAccessMode(current, mode);
+      if (mode === "selected" && mcpSessionAccessMode(next) === "none" && sessions[0]) {
+        return { ...next, allowedSessions: [sessions[0].profile.id] };
+      }
+      return next;
+    });
   }
 
   function confirmDiscardGrant(action: string): boolean {
@@ -755,8 +772,20 @@ export default function McpDialog({
                   {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" disabled={grantBusy} checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
                 </fieldset>
                 <fieldset className="mcp-session-list">
-                  <legend>允许会话 · {draft.allowedSessions.length ? `${draft.allowedSessions.length} 个` : "全部"}</legend>
-                  {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={grantBusy} checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
+                  <legend>允许会话</legend>
+                  <div className="mcp-session-access-mode" role="radiogroup" aria-label="MCP 会话授权范围">
+                    {([["none", "不授权会话"], ["all", "全部会话"], ["selected", "仅选中会话"]] as const).map(([mode, label]) => (
+                      <label key={mode}><input type="radio" name="mcp-session-access-mode" value={mode} disabled={grantBusy} checked={mcpSessionAccessMode(draft) === mode} onChange={() => changeSessionAccessMode(mode)} />{label}</label>
+                    ))}
+                  </div>
+                  {mcpSessionAccessMode(draft) === "selected" ? (
+                    <div className="mcp-session-checkboxes">
+                      {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={grantBusy} checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
+                      {!sessions.length ? <span className="mcp-session-empty">没有可选会话</span> : null}
+                    </div>
+                  ) : (
+                    <small className="mcp-session-access-hint">{mcpSessionAccessMode(draft) === "none" ? "默认不允许访问任何会话。" : "允许访问当前 PortMate 中的全部会话。"}</small>
+                  )}
                 </fieldset>
                 {error ? <div className="utility-error">{error}</div> : null}
                 <div className="mcp-actions">

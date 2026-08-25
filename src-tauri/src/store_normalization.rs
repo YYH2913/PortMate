@@ -68,10 +68,14 @@ fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
             needs_review = true;
             continue;
         };
-        let was_session_scoped = !grant.allowed_sessions.is_empty();
+        let was_session_scoped = !grant.allowed_sessions.is_empty()
+            && !grant.denies_all_sessions();
         grant
             .allowed_sessions
-            .retain(|session_id| session_ids.contains(session_id.as_str()));
+            .retain(|session_id| {
+                session_id == MCP_NO_SESSIONS_SENTINEL
+                    || session_ids.contains(session_id.as_str())
+            });
         if was_session_scoped && grant.allowed_sessions.is_empty() && grant.revoked_at.is_none() {
             grant.revoked_at = Some(revoked_at);
         }
@@ -284,6 +288,9 @@ pub(super) fn normalize_loaded_store_at(
     }
     for grant in &mut store.grants {
         for session_id in &mut grant.allowed_sessions {
+            if session_id == MCP_NO_SESSIONS_SENTINEL {
+                continue;
+            }
             *session_id = remap_loaded_session_id(session_id, &session_id_remap);
         }
     }

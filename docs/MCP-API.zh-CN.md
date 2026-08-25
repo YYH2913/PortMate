@@ -94,6 +94,11 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 每个 MCP Client 由 PORTMATE_MCP_CLIENT_ID 标识。桌面端 工具 -> MCP Bridge -> 授权
 中的 grant 决定 scope、允许的 session、到期时间、撤销状态和是否逐次确认写操作。
 
+新建授权默认不允许访问任何会话。界面中的“允许会话”有三个明确模式：
+“不授权会话”、“全部会话”和“仅选中会话”。选择单个或多个会话后，
+`list_sessions`、无 `sessionId` 的日志/传输查询会返回授权范围内的子集，不会因为
+授权只包含一个会话而整体失败；需要具体会话的工具仍必须提交已选中的 `sessionId`。
+
 | Scope | 能力 |
 | --- | --- |
 | read-sessions | 读取会话摘要和运行状态 |

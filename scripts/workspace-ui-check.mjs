@@ -3143,11 +3143,13 @@ Host staging
 
   const explorerFilter = page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true });
   await explorerFilter.fill("production");
+  await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session").count() === 1,
     "resource tag filter did not remove unrelated sessions");
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource tag filter missed Edge Router");
   await explorerFilter.fill("10.0.0.1");
+  await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource endpoint filter missed Edge Router");
   await page.getByRole("button", { name: "清除筛选资源管理器会话", exact: true }).click();

@@ -150,10 +150,14 @@ describe("CI command logging", () => {
     expect(opensslSetup).not.toMatch(/(?:^|\n)\s*["']?MAKEFLAGS=/m);
     const sodiumSetup = workflowStep(workflow, "Install release CRT libsodium on Windows");
     expect(sodiumSetup).toContain("Get-Command vcpkg.exe");
-    expect(sodiumSetup).toContain("--triplet=x64-windows-static-md");
-    expect(sodiumSetup).toContain("x64-windows-static-md\\lib");
+    expect(sodiumSetup).toContain("--triplet=x64-windows-static");
+    expect(sodiumSetup).toContain("x64-windows-static\\lib");
     expect(sodiumSetup).toContain("libsodium.lib");
     expect(sodiumSetup).toContain('"SODIUM_LIB_DIR=$sodiumLib"');
+    const crtSetup = workflowStep(workflow, "Use one static CRT for Windows native builds");
+    expect(crtSetup).toContain("RUSTFLAGS=-C target-feature=+crt-static");
+    expect(crtSetup).toContain("CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded");
+    expect(crtSetup).toContain("CMAKE_BUILD_TYPE=Release");
     const vcpkgManifest = JSON.parse(readFileSync(
       resolve(import.meta.dirname, "..", "vcpkg.json"),
       "utf8",

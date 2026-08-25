@@ -283,7 +283,7 @@ impl SessionStore {
         }
 
         for grant in &mut self.grants {
-            if grant.allowed_sessions.is_empty() {
+            if grant.allowed_sessions.is_empty() || grant.denies_all_sessions() {
                 continue;
             }
             let previous_session_count = grant.allowed_sessions.len();
