@@ -206,7 +206,9 @@ pub(crate) fn save_mcp_grant(
     let grant = normalize_mcp_grant(grant)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        upsert_mcp_grant_in_store(next_store, grant)
+        let saved = upsert_mcp_grant_in_store(next_store, grant)?;
+        synchronize_mcp_http_client_id_in_store(next_store);
+        Ok(saved)
     })
 }
 
@@ -218,18 +220,15 @@ pub(crate) fn revoke_mcp_grant(
     let client_id = normalize_mcp_client_id(&client_id)?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        Ok(revoke_mcp_grant_from_store(next_store, &client_id))
+        let saved = revoke_mcp_grant_from_store(next_store, &client_id);
+        synchronize_mcp_http_client_id_in_store(next_store);
+        Ok(saved)
     })
 }
 
 #[tauri::command]
 pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfig, String> {
-    let settings = state
-        .store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .mcp_http_settings
-        .clone();
+    let settings = synchronize_mcp_http_client_id(state.inner())?;
     build_mcp_http_config_for_request(
         has_secret_ref(MCP_HTTP_TOKEN_REF),
         &mcp_sidecar_executable_path(),
@@ -242,12 +241,7 @@ pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfi
 pub(crate) fn mcp_http_access_config(
     state: State<'_, AppState>,
 ) -> Result<McpHttpAccessResponse, String> {
-    let settings = state
-        .store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .mcp_http_settings
-        .clone();
+    let settings = synchronize_mcp_http_client_id(state.inner())?;
     let token = mcp_http_token_from_probe(probe_secret_from_keyring(MCP_HTTP_TOKEN_REF))?;
     let config = build_mcp_http_config_for_request(
         token.is_some(),

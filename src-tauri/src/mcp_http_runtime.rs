@@ -304,12 +304,7 @@ fn start_mcp_http_process(state: &AppState) -> Result<McpHttpProcessOwner, Strin
     if registry.process.is_some() {
         return Err("MCP HTTP 服务已经由 PortMate 托管运行".to_string());
     }
-    let settings = state
-        .store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .mcp_http_settings
-        .clone();
+    let settings = synchronize_mcp_http_client_id(state)?;
     if !has_secret_ref(MCP_HTTP_TOKEN_REF) {
         return Err("请先生成 MCP HTTP Token".to_string());
     }

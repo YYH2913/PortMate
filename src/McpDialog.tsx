@@ -4,7 +4,7 @@ import { CalendarClock, Check, Copy, Dices, Download, KeyRound, ListX, Play, Plu
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpSessionAccessMode, parseMcpGrantExpiryInput, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
+import { createMcpGrant, DEFAULT_MCP_HTTP_CLIENT_ID, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpSessionAccessMode, parseMcpGrantExpiryInput, resolveMcpHttpClientId, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -106,6 +106,10 @@ export default function McpDialog({
   const httpRuntimeActive = httpRuntime?.phase === "starting" || httpRuntime?.phase === "running";
   const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
   const httpControlsLocked = httpBusy || httpRuntimeLocked;
+  const resolvedHttpClientId = resolveMcpHttpClientId(
+    (httpConfig?.clientId ?? httpSettings.clientId) || DEFAULT_MCP_HTTP_CLIENT_ID,
+    grants,
+  );
   const savedDraftGrant = editingClientId ? grants.find((grant) => grant.clientId === editingClientId) : null;
   const grantDirty = mcpGrantDraftHasUnsavedChanges(draft, savedDraftGrant);
   const expiryCandidate = expiryEditor
@@ -132,7 +136,7 @@ export default function McpDialog({
       })
     : "";
   const selectedGrantIsHttpClient = Boolean(
-    draft && editingClientId === draft.clientId && httpConfig?.clientId === draft.clientId,
+    draft && editingClientId === draft.clientId && resolvedHttpClientId === draft.clientId,
   );
 
   useEffect(() => {
@@ -376,7 +380,7 @@ export default function McpDialog({
   }
 
   function grantCcSwitchActionDisabled(grant: McpGrant): boolean {
-    const requiresHttpMutation = !httpToken || httpConfig?.clientId !== grant.clientId;
+    const requiresHttpMutation = !httpToken || resolvedHttpClientId !== grant.clientId;
     return grantBusy
       || httpBusy
       || httpDirty
@@ -388,7 +392,7 @@ export default function McpDialog({
   function grantCcSwitchActionLabel(grant: McpGrant): string {
     const label = grant.name.trim() || grant.clientId;
     if (grantCcSwitchCopiedClientId === grant.clientId) return `已复制 ${label} 的 CC Switch JSON`;
-    return httpConfig?.clientId === grant.clientId && httpToken
+    return resolvedHttpClientId === grant.clientId && httpToken
       ? `复制 ${label} 的 CC Switch JSON`
       : `应用并复制 ${label} 的 CC Switch JSON`;
   }
@@ -403,7 +407,7 @@ export default function McpDialog({
     try {
       let config = httpConfig;
       let tokenValue = httpToken;
-      if (config.clientId !== grant.clientId) {
+      if (resolveMcpHttpClientId(config.clientId, grants) !== grant.clientId) {
         config = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
           settings: {
             ...mcpHttpSettingsFromConfig(config),

@@ -133,7 +133,7 @@ Host Key 变化默认阻断连接。请在确认设备替换、系统重装或�
 2. 打开 `工具 -> MCP Bridge -> 授权`，创建独立 Client ID，并选择权限和允许访问的会话。
 3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
 4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
-5. HTTP 客户端在 `HTTP` 页设置监听 IP、客户端地址、端口、Origin、Client ID，生成 Token 后启动托管服务。
+5. HTTP 客户端在 `HTTP` 页设置监听 IP、客户端地址、端口、Origin、Client ID，生成 Token 后启动托管服务。授权 Client ID 与 HTTP Client ID 会自动统一：旧配置使用默认 portmate-local 且只有一个有效授权时，PortMate 会自动采用该授权；存在多个授权时不会猜测或合并权限。
 6. 先生成或轮换 Token，再从 `HTTP` 页复制 CC Switch JSON。复制出的 JSON 包含该 Token，必须按敏感凭据保存。
 
 ### stdio 示例

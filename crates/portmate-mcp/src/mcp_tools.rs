@@ -340,6 +340,8 @@ impl PortMateMcp {
         Ok(json!({
             "transport": if std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1") { "http" } else { "stdio" },
             "managedByDesktop": is_desktop_managed_http_sidecar(),
+            "clientId": self.client_id,
+            "configuredHttpClientId": self.store.mcp_http_settings.client_id,
             "storePath": self.store_path.as_ref().map(|path| path.display().to_string()),
             "desktopIpcAvailable": desktop_ipc_available,
             "managedHttp": runtime,

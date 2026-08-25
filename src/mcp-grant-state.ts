@@ -4,6 +4,7 @@ const MCP_CLIENT_ID_RANDOM_BYTES = 16;
 // Kept as a reserved value so older stores that use [] for "all sessions"
 // remain compatible while new grants can explicitly deny every session.
 export const MCP_NO_SESSIONS_SENTINEL = "__portmate_no_sessions__";
+export const DEFAULT_MCP_HTTP_CLIENT_ID = "portmate-local";
 export type McpSessionAccessMode = "none" | "all" | "selected";
 
 export function createMcpGrant(): McpGrant {
@@ -32,6 +33,22 @@ export function setMcpSessionAccessMode(
   if (mode === "all") return { ...grant, allowedSessions: [] };
   const selected = grant.allowedSessions.filter((id) => id !== MCP_NO_SESSIONS_SENTINEL);
   return { ...grant, allowedSessions: selected.length ? selected : [MCP_NO_SESSIONS_SENTINEL] };
+}
+
+export function resolveMcpHttpClientId(
+  configured: string,
+  grants: readonly Pick<McpGrant, "clientId" | "expiresAt" | "revokedAt">[],
+): string {
+  const configuredId = configured.trim();
+  const active = grants.filter((grant) => (
+    !grant.revokedAt
+    && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
+  ));
+  if (active.some((grant) => grant.clientId === configuredId)) return configuredId;
+  const storedIsLegacyDefault = configuredId === "" || configuredId === DEFAULT_MCP_HTTP_CLIENT_ID;
+  if (active.length === 1 && storedIsLegacyDefault) return active[0].clientId;
+  if (configuredId && configuredId !== DEFAULT_MCP_HTTP_CLIENT_ID) return configuredId;
+  return configuredId || DEFAULT_MCP_HTTP_CLIENT_ID;
 }
 
 export function mcpGrantDraftHasUnsavedChanges(

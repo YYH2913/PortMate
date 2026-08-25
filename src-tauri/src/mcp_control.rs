@@ -470,6 +470,35 @@ pub(super) fn set_mcp_http_settings_in_store(
     store.mcp_http_settings.clone()
 }
 
+/// Keep the persisted HTTP bridge identity aligned with an unambiguous grant.
+/// This is deliberately a narrow migration: multiple active grants are left
+/// untouched so the bridge never guesses or combines authorization boundaries.
+pub(super) fn synchronize_mcp_http_client_id_in_store(store: &mut SessionStore) -> bool {
+    let current = store.mcp_http_settings.client_id.clone();
+    let resolved = store.mcp_resolved_client_id(Some(&current));
+    if resolved == current {
+        return false;
+    }
+    store.mcp_http_settings.client_id = resolved;
+    true
+}
+
+pub(super) fn synchronize_mcp_http_client_id(
+    state: &AppState,
+) -> Result<McpHttpSettings, String> {
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    if store.mcp_resolved_client_id(Some(&store.mcp_http_settings.client_id))
+        == store.mcp_http_settings.client_id
+    {
+        return Ok(store.mcp_http_settings.clone());
+    }
+    commit_store_mutation(&mut store, &state.store_path, |next_store| {
+        synchronize_mcp_http_client_id_in_store(next_store);
+        Ok(())
+    })?;
+    Ok(store.mcp_http_settings.clone())
+}
+
 fn normalize_mcp_http_origin(origin: &str) -> Result<String, String> {
     let origin = origin.trim();
     if origin.is_empty()

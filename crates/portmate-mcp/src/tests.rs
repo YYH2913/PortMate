@@ -68,6 +68,30 @@ fn content_upload_server(root: &std::path::Path, client_id: &str) -> PortMateMcp
 }
 
 #[test]
+fn standalone_bridge_unifies_a_legacy_default_with_one_active_grant() {
+    let mut store = test_snapshot_store("client identity");
+    store.grants.clear();
+    store.mcp_http_settings.client_id = "portmate-local".to_string();
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "remote-console".to_string(),
+        name: "Remote console".to_string(),
+        scopes: vec![McpScope::ReadSessions],
+        allowed_sessions: Vec::new(),
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    assert_eq!(
+        resolve_mcp_client_id(&store, Some("portmate-local")),
+        "remote-console"
+    );
+    assert_eq!(
+        resolve_mcp_client_id(&store, Some("explicit-unknown")),
+        "explicit-unknown"
+    );
+}
+
+#[test]
 fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     let root = std::env::temp_dir().join(format!("portmate-content-upload-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

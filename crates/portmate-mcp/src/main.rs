@@ -79,15 +79,16 @@ impl PortMateMcp {
             .map(PathBuf::from);
         let store = load_initial_store(store_path.as_deref())?;
         let ipc = store_path.as_deref().and_then(load_ipc_endpoint);
+        let configured_client_id = std::env::var("PORTMATE_MCP_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let client_id = resolve_mcp_client_id(&store, configured_client_id.as_deref());
         Ok(Self {
             store,
             store_path,
             ipc,
-            client_id: std::env::var("PORTMATE_MCP_CLIENT_ID")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "portmate-local".to_string()),
+            client_id,
             allow_write: std::env::var("PORTMATE_MCP_TRUSTED").ok().as_deref() == Some("1"),
         })
     }
@@ -97,6 +98,11 @@ impl PortMateMcp {
             return;
         };
         self.store = load_store_from_path(&store_path).unwrap_or_default();
+        let configured_client_id = std::env::var("PORTMATE_MCP_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.client_id = resolve_mcp_client_id(&self.store, configured_client_id.as_deref());
         self.ipc = load_ipc_endpoint(&store_path);
     }
 
@@ -318,6 +324,10 @@ fn main() -> Result<()> {
 fn handle_json_rpc_value(server: &mut PortMateMcp, value: Value) -> Result<Option<Value>> {
     server.refresh_runtime_sources();
     dispatch_json_rpc_value(value, |request| server.handle(request))
+}
+
+fn resolve_mcp_client_id(store: &SessionStore, configured: Option<&str>) -> String {
+    store.mcp_resolved_client_id(configured)
 }
 
 #[cfg(test)]

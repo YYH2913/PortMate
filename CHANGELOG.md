@@ -8,6 +8,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Unified MCP HTTP sidecar Client ID resolution with saved grants. Legacy
+  portmate-local configurations now adopt a single active grant automatically;
+  explicit non-default IDs remain fail-closed when unauthorized, and standalone
+  MCP sidecars refresh the same identity after Store changes.
+
 - Stopped draining the physical serial driver after every interactive write, moved blocking serial
   writes off async runtime workers, and tracked them through session shutdown so XOFF, CTS stalls,
   USB driver faults, and login bursts cannot freeze the input queue or retain a Windows COM handle.

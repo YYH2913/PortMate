@@ -318,6 +318,7 @@ pub(super) fn normalize_loaded_store_at(
     store.mcp_http_settings = normalize_mcp_http_settings(store.mcp_http_settings)
         .map(|(settings, _)| settings)
         .unwrap_or_default();
+    synchronize_mcp_http_client_id_in_store(&mut store);
     normalize_loaded_one_keys(&mut store);
     let known_session_ids = store
         .profiles

@@ -54,6 +54,54 @@ fn read_scopes_default_open_then_follow_explicit_grants() {
 }
 
 #[test]
+fn http_client_identity_auto_unifies_only_when_the_boundary_is_unambiguous() {
+    let mut store = test_store();
+    store.grants.clear();
+    store.mcp_http_settings.client_id = DEFAULT_MCP_HTTP_CLIENT_ID.to_string();
+    store.grants.push(McpGrant {
+        client_id: "remote-console".to_string(),
+        name: "Remote console".to_string(),
+        scopes: vec![McpScope::ReadSessions],
+        allowed_sessions: vec![],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    assert_eq!(
+        store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
+        "remote-console"
+    );
+
+    store.grants.push(McpGrant {
+        client_id: "audit-console".to_string(),
+        name: "Audit console".to_string(),
+        scopes: vec![McpScope::ReadLogs],
+        allowed_sessions: vec![],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    assert_eq!(
+        store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
+        DEFAULT_MCP_HTTP_CLIENT_ID
+    );
+    assert_eq!(
+        store.mcp_resolved_client_id(Some("audit-console")),
+        "audit-console"
+    );
+
+    store.grants[0].revoked_at = Some(Utc::now());
+    assert_eq!(
+        store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
+        "audit-console"
+    );
+    assert_eq!(
+        store.mcp_resolved_client_id(Some("unknown-explicit-client")),
+        "unknown-explicit-client"
+    );
+}
+
+#[test]
 fn explicit_no_session_grant_allows_collection_filtering_but_no_session_data() {
     let now = Utc::now();
     let grant = McpGrant {

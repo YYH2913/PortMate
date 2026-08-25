@@ -46,7 +46,7 @@ X-PortMate-MCP-Token: token。
 | PORTMATE_MCP_HTTP_ALLOW_REMOTE=1 | 允许非回环监听；绑定 0.0.0.0 前必须设置 |
 | PORTMATE_MCP_HTTP_ORIGINS | 逗号分隔的 Origin allowlist |
 | PORTMATE_MCP_HTTP_TOKEN | HTTP Token；未设置时从内部密钥存储读取或生成 |
-| PORTMATE_MCP_CLIENT_ID | 当前 MCP Client ID，默认 portmate-local |
+| PORTMATE_MCP_CLIENT_ID | 当前 MCP Client ID，默认 portmate-local；若未显式选择且 Store 中只有一个有效授权，Bridge 自动采用该授权的 Client ID |
 | PORTMATE_MCP_TRUSTED=1 | 仅在 Store 尚无任何 grant 时启用可信 bootstrap 写入；已有 grant 后仍严格按 scope、会话范围和审批执行 |
 | PORTMATE_MCP_PARENT_PID | 托管 sidecar 的父进程 ID；父进程退出时 sidecar 自动退出 |
 

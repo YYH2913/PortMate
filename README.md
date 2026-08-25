@@ -134,7 +134,7 @@ response remains authoritative.
 2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.
 3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.
 4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
-5. For HTTP clients, configure the listen IP, client address, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service.
+5. For HTTP clients, configure the listen IP, client address, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service. Authorization and HTTP Client IDs are reconciled automatically: a legacy portmate-local setup with exactly one active grant adopts that grant; multiple grants are never guessed or merged.
 6. For CC Switch, generate or rotate the Token, then copy the generated JSON from the HTTP page. The copied JSON includes that Token and must be treated as a secret.
 
 ### stdio Example

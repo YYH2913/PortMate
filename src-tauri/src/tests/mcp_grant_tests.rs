@@ -283,3 +283,32 @@ fn mcp_http_settings_change_memory_only_after_persistence_succeeds() {
     .unwrap();
     assert_eq!(store.mcp_http_settings, settings);
 }
+
+#[test]
+fn mcp_http_authorization_sync_persists_only_an_unambiguous_client() {
+    let mut store = SessionStore::default();
+    store.grants.push(McpGrant {
+        client_id: "single-client".to_string(),
+        name: "Single client".to_string(),
+        scopes: vec![McpScope::ReadSessions],
+        allowed_sessions: Vec::new(),
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    assert!(synchronize_mcp_http_client_id_in_store(&mut store));
+    assert_eq!(store.mcp_http_settings.client_id, "single-client");
+
+    store.grants.push(McpGrant {
+        client_id: "second-client".to_string(),
+        name: "Second client".to_string(),
+        scopes: vec![McpScope::ReadLogs],
+        allowed_sessions: Vec::new(),
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    store.mcp_http_settings.client_id = "portmate-local".to_string();
+    assert!(!synchronize_mcp_http_client_id_in_store(&mut store));
+    assert_eq!(store.mcp_http_settings.client_id, "portmate-local");
+}

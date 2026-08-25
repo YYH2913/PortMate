@@ -2,6 +2,7 @@ use super::SessionStore;
 use crate::host_keys::{HostKeyEvaluation, HostKeyObservation};
 use crate::models::{
     AuthMethod, ConnectionConfig, HostKeyDecision, McpScope, SshConnection, TrustedHostKey,
+    DEFAULT_MCP_HTTP_CLIENT_ID,
 };
 use chrono::Utc;
 
@@ -73,6 +74,56 @@ impl SessionStore {
             && client_id.len() <= 128
             && !client_id.chars().any(char::is_control)
             && (self.grants.is_empty() || self.mcp_can(client_id, scope, session_id))
+    }
+
+    /// Resolve the client identity used by the HTTP bridge without widening a
+    /// grant. A matching explicit or stored identity wins; a single active
+    /// grant is adopted only for the legacy default/empty identity. With
+    /// multiple unmatched grants we retain the configured identity so the
+    /// request fails closed instead of guessing an authorization boundary.
+    pub fn mcp_resolved_client_id(&self, configured: Option<&str>) -> String {
+        let configured = configured.map(str::trim).filter(|value| !value.is_empty());
+        let stored = self.mcp_http_settings.client_id.trim();
+        let now = Utc::now();
+        let active = self
+            .grants
+            .iter()
+            .filter(|grant| {
+                grant.revoked_at.is_none()
+                    && !grant.expires_at.is_some_and(|expires| expires <= now)
+            })
+            .map(|grant| grant.client_id.as_str())
+            .collect::<Vec<_>>();
+
+        if let Some(configured) = configured
+            .filter(|candidate| *candidate != DEFAULT_MCP_HTTP_CLIENT_ID)
+            .filter(|candidate| active.contains(candidate))
+        {
+            return configured.to_string();
+        }
+        if !stored.is_empty() && active.contains(&stored) {
+            return stored.to_string();
+        }
+        let legacy_default = (stored.is_empty() || stored == DEFAULT_MCP_HTTP_CLIENT_ID)
+            && configured.is_none_or(|candidate| candidate == DEFAULT_MCP_HTTP_CLIENT_ID);
+        if active.len() == 1 && legacy_default {
+            return active[0].to_string();
+        }
+        // Multiple active grants are ambiguous. Preserve a non-default
+        // operator choice in that case so the bridge fails closed instead of
+        // guessing or combining authorization boundaries.
+        if let Some(configured) =
+            configured.filter(|candidate| *candidate != DEFAULT_MCP_HTTP_CLIENT_ID)
+        {
+            return configured.to_string();
+        }
+        if let Some(configured) = configured {
+            return configured.to_string();
+        }
+        if !stored.is_empty() {
+            return stored.to_string();
+        }
+        DEFAULT_MCP_HTTP_CLIENT_ID.to_string()
     }
 
     fn ssh_profile(&self, profile_id: &str) -> Option<&SshConnection> {
