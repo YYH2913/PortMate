@@ -596,6 +596,7 @@ async fn send_text_interactive_inner_for_optional_runtime(
     write_session_bytes_for_runtime(
         &io.store,
         &io.runtimes,
+        &io.serial_workers,
         &session_id,
         &wire_bytes,
         expected_runtime_id,
@@ -658,14 +659,13 @@ pub(super) async fn send_one_key_value(
         text.as_str(),
     )?);
     clear_active_command(&io, session_id);
-    write_session_bytes(
+    write_session_bytes_for_runtime(
         &io.store,
-        &io.runtimes.ssh,
-        &io.runtimes.shell,
-        &io.runtimes.tcp,
-        &io.runtimes.serial,
+        &io.runtimes,
+        &io.serial_workers,
         session_id,
         wire_text.as_bytes(),
+        None,
     )
     .await?;
     Ok(record_outbound_control_event(
@@ -754,6 +754,7 @@ pub(super) async fn send_text_under_outbound_lane(
     write_session_bytes_for_runtime(
         &io.store,
         &io.runtimes,
+        &io.serial_workers,
         session_id,
         wire_text.as_bytes(),
         expected_runtime_id,
@@ -889,6 +890,7 @@ pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display
     if let Err(error) = write_session_bytes_for_runtime(
         &io.store,
         &io.runtimes,
+        &io.serial_workers,
         session_id,
         wire_text.as_bytes(),
         expected_runtime_id,
@@ -962,14 +964,13 @@ pub(super) async fn send_bytes_inner_with_context(
     }
     let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
     clear_active_command(&io, &session_id);
-    write_session_bytes(
+    write_session_bytes_for_runtime(
         &io.store,
-        &io.runtimes.ssh,
-        &io.runtimes.shell,
-        &io.runtimes.tcp,
-        &io.runtimes.serial,
+        &io.runtimes,
+        &io.serial_workers,
         &session_id,
         &wire_bytes,
+        None,
     )
     .await?;
     let text = format_outbound_byte_summary(&bytes);

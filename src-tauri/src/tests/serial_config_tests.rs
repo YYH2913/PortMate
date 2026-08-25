@@ -1,4 +1,27 @@
 #[test]
+fn serial_payload_writes_do_not_drain_the_physical_device_queue() {
+    struct StalledDrainWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl Write for StalledDrainWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let size = bytes.len().min(2);
+            self.bytes.extend_from_slice(&bytes[..size]);
+            Ok(size)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            panic!("interactive serial writes must not drain the device queue")
+        }
+    }
+
+    let mut writer = StalledDrainWriter { bytes: Vec::new() };
+    write_serial_payload(&mut writer, b"root\rpassword\r").unwrap();
+    assert_eq!(writer.bytes, b"root\rpassword\r");
+}
+
+#[test]
 fn serial_connection_details_validate_port_and_reconnect_flag() {
     let mut profile = test_serial_profile(portmate_core::SerialConnection {
         port: " /dev/ttyUSB0 ".to_string(),

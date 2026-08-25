@@ -324,6 +324,11 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
+        // Abort a driver-level write before releasing the reader clone. This
+        // is especially important on Windows, where a pending COM write keeps
+        // the exclusive device handle alive and makes an immediate reopen fail.
+        let _ = reader.clear(serialport::ClearBuffer::Output);
+
         if has_unpersisted_stream {
             if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
                 eprintln!("PortMate: failed to persist final serial stream data: {error}");

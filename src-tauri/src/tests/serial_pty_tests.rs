@@ -118,6 +118,60 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
         assert_eq!(capture.frames[1].direction, EventDirection::Inbound);
         assert_eq!(capture.frames[1].bytes, peer_reply);
 
+        peer.write_all(b"login: ").unwrap();
+        peer.flush().unwrap();
+        let login_prompt = tokio::time::timeout(Duration::from_secs(3), inbound.recv())
+            .await
+            .expect("serial runtime did not publish the login prompt")
+            .expect("serial runtime tap closed before login");
+        assert_eq!(login_prompt, b"login: ");
+        for character in ["r", "o", "o", "t"] {
+            enqueue_interactive_text(
+                state.session_io(),
+                profile.id.clone(),
+                character.to_string(),
+                true,
+            )
+            .unwrap();
+        }
+        enqueue_interactive_text(
+            state.session_io(),
+            profile.id.clone(),
+            "\r".to_string(),
+            false,
+        )
+        .unwrap();
+        let mut username = [0_u8; 5];
+        peer.read_exact(&mut username).unwrap();
+        assert_eq!(&username, b"root\r");
+
+        peer.write_all(b"Password: ").unwrap();
+        peer.flush().unwrap();
+        let password_prompt = tokio::time::timeout(Duration::from_secs(3), inbound.recv())
+            .await
+            .expect("serial runtime did not publish the password prompt")
+            .expect("serial runtime tap closed before password entry");
+        assert_eq!(password_prompt, b"Password: ");
+        for character in ["p", "a", "s", "s", "w", "o", "r", "d"] {
+            enqueue_interactive_text(
+                state.session_io(),
+                profile.id.clone(),
+                character.to_string(),
+                true,
+            )
+            .unwrap();
+        }
+        enqueue_interactive_text(
+            state.session_io(),
+            profile.id.clone(),
+            "\r".to_string(),
+            false,
+        )
+        .unwrap();
+        let mut password = [0_u8; 9];
+        peer.read_exact(&mut password).unwrap();
+        assert_eq!(&password, b"password\r");
+
         let disconnected = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let summary = state
