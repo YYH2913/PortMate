@@ -2,6 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
   appendTerminalByteCacheEvents,
   notifyTerminalByteCacheSessions,
+  terminalByteCacheHasEventId,
+  terminalByteCacheHasFrameId,
   terminalByteCacheSnapshot,
 } from "./terminal-byte-state";
 import type { TerminalBytesEvent } from "./types";
@@ -16,11 +18,13 @@ const TERMINAL_BYTE_FRAME_MAX_BYTES = 64 * 1024;
 type TerminalByteEventSubscriber = (event: TerminalBytesEvent) => void;
 type TerminalLiveEventSubscriber = (event: TerminalLiveEvent) => void;
 
-let pendingFrameCount = 0;
-const pendingSessionIds = new Set<string>();
+const pendingTerminalByteFrames: TerminalBytesEvent[] = [];
+const pendingTerminalByteFrameKeys = new Set<string>();
+const pendingTerminalByteEventKeys = new Set<string>();
 const terminalByteEventSubscribers = new Map<string, Set<TerminalByteEventSubscriber>>();
 const terminalLiveEventSubscribers = new Map<string, Set<TerminalLiveEventSubscriber>>();
 const terminalLiveEventCache = new Map<string, TerminalLiveEvent[]>();
+const terminalLiveEventIds = new Map<string, Set<string>>();
 const MAX_TERMINAL_LIVE_EVENT_CACHE = 256;
 const MAX_TERMINAL_LIVE_EVENT_CACHE_SESSIONS = 32;
 const MAX_TERMINAL_LIVE_EVENT_CACHE_BYTES = 8 * 1024 * 1024;
@@ -35,10 +39,11 @@ function flushPendingTerminalByteFrames() {
   if (scheduledTimer !== null) clearTimeout(scheduledTimer);
   scheduledFrame = null;
   scheduledTimer = null;
-  if (!pendingFrameCount && !pendingSessionIds.size) return;
-  const sessionIds = [...pendingSessionIds];
-  pendingFrameCount = 0;
-  pendingSessionIds.clear();
+  if (!pendingTerminalByteFrames.length) return;
+  const frames = pendingTerminalByteFrames.splice(0);
+  pendingTerminalByteFrameKeys.clear();
+  pendingTerminalByteEventKeys.clear();
+  const sessionIds = appendTerminalByteCacheEvents(frames, false);
   notifyTerminalByteCacheSessions(sessionIds);
 }
 
@@ -110,11 +115,18 @@ function normalizeTerminalLiveEvent(value: unknown): TerminalLiveEvent | null {
 function dispatchTerminalLiveEvent(packet: TerminalLiveEvent) {
   const sessionId = packet.event.sessionId;
   const cache = terminalLiveEventCache.get(sessionId) ?? [];
-  if (!cache.some((existing) => existing.event.id === packet.event.id)) {
+  let eventIds = terminalLiveEventIds.get(sessionId);
+  if (!eventIds) {
+    eventIds = new Set<string>();
+    terminalLiveEventIds.set(sessionId, eventIds);
+  }
+  if (!eventIds.has(packet.event.id)) {
     cache.push(packet);
+    eventIds.add(packet.event.id);
     terminalLiveEventCacheBytes += terminalLiveEventSize(packet);
     if (cache.length > MAX_TERMINAL_LIVE_EVENT_CACHE) {
       const removed = cache.splice(0, cache.length - MAX_TERMINAL_LIVE_EVENT_CACHE);
+      for (const item of removed) eventIds.delete(item.event.id);
       terminalLiveEventCacheBytes -= removed.reduce((sum, item) => sum + terminalLiveEventSize(item), 0);
     }
     terminalLiveEventCache.delete(sessionId);
@@ -132,14 +144,33 @@ function dispatchTerminalLiveEvent(packet: TerminalLiveEvent) {
   }
 }
 
+function terminalByteFrameKey(sessionId: string, id: string): string {
+  return sessionId + "\u0000" + id;
+}
+
+function queueTerminalByteCacheFrame(frame: TerminalBytesEvent): boolean {
+  const frameKey = terminalByteFrameKey(frame.sessionId, frame.id);
+  if (pendingTerminalByteFrameKeys.has(frameKey)
+    || terminalByteCacheHasFrameId(frame.sessionId, frame.id)) return false;
+  pendingTerminalByteFrames.push(frame);
+  pendingTerminalByteFrameKeys.add(frameKey);
+  if (frame.eventId) {
+    pendingTerminalByteEventKeys.add(terminalByteFrameKey(frame.sessionId, frame.eventId));
+  }
+  return true;
+}
+
+function terminalLiveEventSeen(sessionId: string, eventId: string): boolean {
+  return Boolean(terminalLiveEventIds.get(sessionId)?.has(eventId));
+}
+
 function queueTerminalLiveEvent(value: unknown): boolean {
   const packet = normalizeTerminalLiveEvent(value);
   if (!packet) return false;
-  if (terminalLiveEventCache.get(packet.event.sessionId)?.some((existing) => existing.event.id === packet.event.id)) {
-    return false;
-  }
-  const hasLegacyFrame = terminalByteCacheSnapshot(packet.event.sessionId).frames
-    .some((frame) => frame.eventId === packet.event.id);
+  if (terminalLiveEventSeen(packet.event.sessionId, packet.event.id)) return false;
+  const eventKey = terminalByteFrameKey(packet.event.sessionId, packet.event.id);
+  const hasLegacyFrame = pendingTerminalByteEventKeys.has(eventKey)
+    || terminalByteCacheHasEventId(packet.event.sessionId, packet.event.id);
   const frame: TerminalBytesEvent = {
     id: "live:" + packet.event.id,
     sessionId: packet.event.sessionId,
@@ -152,34 +183,30 @@ function queueTerminalLiveEvent(value: unknown): boolean {
     eventId: packet.event.id,
     canonical: true,
   };
-  const changed = hasLegacyFrame
-    ? [packet.event.sessionId]
-    : appendTerminalByteCacheEvents([frame], false);
+  const cacheQueued = !hasLegacyFrame && queueTerminalByteCacheFrame(frame);
   dispatchTerminalLiveEvent(packet);
-  pendingFrameCount += 1;
-  for (const sessionId of changed) pendingSessionIds.add(sessionId);
-  if (pendingFrameCount >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) flushPendingTerminalByteFrames();
-  else schedulePendingTerminalByteFrames();
+  if (cacheQueued) {
+    if (pendingTerminalByteFrames.length >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) flushPendingTerminalByteFrames();
+    else schedulePendingTerminalByteFrames();
+  }
   return true;
 }
 
 function queueTerminalByteFrame(value: unknown): boolean {
   const frame = normalizeTerminalByteFrame(value);
   if (!frame) return false;
-  if (frame.eventId && terminalLiveEventCache.get(frame.sessionId)?.some((packet) => packet.event.id === frame.eventId)) {
+  if (frame.eventId && terminalLiveEventSeen(frame.sessionId, frame.eventId)) {
     return false;
   }
-  const changed = appendTerminalByteCacheEvents([frame], false);
-  if (!changed.length) return false;
+  if (!queueTerminalByteCacheFrame(frame)) return false;
 
   // Live terminal delivery is synchronous and ordered. Hex/split inspector
-  // notifications remain frame-batched below so they cannot stall xterm.
+  // cache writes and notifications remain frame-batched below so they cannot
+  // copy a bounded 512-frame buffer for every single-byte serial echo.
   dispatchTerminalByteFrame(frame);
-  pendingFrameCount += 1;
-  for (const sessionId of changed) pendingSessionIds.add(sessionId);
   // Under a sustained stream, keep latency bounded even when animation frames
   // are throttled (background windows, minimized desktops, or slow WebViews).
-  if (pendingFrameCount >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) {
+  if (pendingTerminalByteFrames.length >= TERMINAL_BYTE_FRAME_BATCH_LIMIT) {
     flushPendingTerminalByteFrames();
   } else {
     schedulePendingTerminalByteFrames();
@@ -215,6 +242,8 @@ export function subscribeTerminalByteEvents(
   subscriber: TerminalByteEventSubscriber,
 ): () => void {
   if (!sessionId) return () => {};
+  // Make frames accepted before this late subscription visible in its replay.
+  flushPendingTerminalByteFrames();
   let subscribers = terminalByteEventSubscribers.get(sessionId);
   if (!subscribers) {
     subscribers = new Set();
@@ -253,10 +282,13 @@ export function subscribeTerminalLiveEvents(
   };
 }
 
-/** Exposed for deterministic unit tests and controlled window teardown. */
-export function flushTerminalByteEventsForTests() {
+/** Commit the pending inspector burst before an explicit read or clear boundary. */
+export function flushTerminalByteEvents() {
   flushPendingTerminalByteFrames();
 }
+
+/** Exposed under the existing name for deterministic bridge tests. */
+export const flushTerminalByteEventsForTests = flushTerminalByteEvents;
 
 /** Exposed for deterministic bridge validation without a native Tauri event loop. */
 export function dispatchTerminalByteEventForTests(value: unknown): boolean {
@@ -268,9 +300,11 @@ export function resetTerminalByteEventBridgeForTests() {
   terminalByteEventSubscribers.clear();
   terminalLiveEventSubscribers.clear();
   terminalLiveEventCache.clear();
+  terminalLiveEventIds.clear();
   terminalLiveEventCacheBytes = 0;
-  pendingFrameCount = 0;
-  pendingSessionIds.clear();
+  pendingTerminalByteFrames.length = 0;
+  pendingTerminalByteFrameKeys.clear();
+  pendingTerminalByteEventKeys.clear();
 }
 
 function terminalLiveEventSize(packet: TerminalLiveEvent): number {
@@ -285,6 +319,7 @@ function trimTerminalLiveEventCache() {
     const removed = terminalLiveEventCache.get(oldest) ?? [];
     terminalLiveEventCacheBytes -= removed.reduce((sum, item) => sum + terminalLiveEventSize(item), 0);
     terminalLiveEventCache.delete(oldest);
+    terminalLiveEventIds.delete(oldest);
   }
 }
 

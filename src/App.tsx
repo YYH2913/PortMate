@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -1754,7 +1754,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const signature = logSignature(nextLog);
       if (logSignatureRef.current[sessionId] === signature) return;
       logSignatureRef.current[sessionId] = signature;
-      setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+      // Persisted log hydration is secondary to the xterm live path. Keeping
+      // it in a transition prevents a 600-event snapshot from delaying input.
+      startTransition(() => {
+        setLogs((current) => ({ ...current, [sessionId]: nextLog }));
+      });
     } catch {
       // Polling failures retain the last valid log snapshot.
     } finally {

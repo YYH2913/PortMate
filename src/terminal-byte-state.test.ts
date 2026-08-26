@@ -3,6 +3,7 @@ import {
   appendTerminalByteCacheEvent,
   appendTerminalByteCacheEvents,
   appendTerminalByteEvent,
+  appendTerminalByteEvents,
   emptyTerminalByteBuffer,
   moveTerminalByteSelection,
   readTerminalDisplayMode,
@@ -85,6 +86,24 @@ describe("terminal byte buffer", () => {
     stop();
     expect(notifications).toBe(1);
     expect(terminalByteCacheSnapshot("session-a").capturedBytes).toBe(3);
+  });
+
+  it("applies a long single-byte burst without changing sequential eviction semantics", () => {
+    const events = Array.from({ length: 700 }, (_, index) => byteEvent(`burst-${index}`, [index & 0xff]));
+    const buffer = appendTerminalByteEvents(
+      emptyTerminalByteBuffer(),
+      events,
+      { maxBytes: 128, maxFrames: 128 },
+    );
+
+    expect(buffer.frames).toHaveLength(128);
+    expect(buffer.frames[0]?.id).toBe("burst-572");
+    expect(buffer.frames.at(-1)?.id).toBe("burst-699");
+    expect(buffer.capturedBytes).toBe(128);
+    expect(buffer.droppedBytes).toBe(572);
+    expect(buffer.droppedFrames).toBe(572);
+    expect(buffer.nextOffset).toBe(700);
+    expect(buffer.revision).toBe(700);
   });
 });
 

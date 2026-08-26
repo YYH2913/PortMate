@@ -3398,7 +3398,9 @@ Host staging
       truncated: false,
       eventId: null,
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The live terminal path is synchronous, while the byte inspector commits
+    // one bounded cache burst per animation frame to avoid per-byte copies.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     const state = await import("/src/terminal-byte-state.ts");
     return state.terminalByteCacheSnapshot("bench-uart").capturedBytes;
   });

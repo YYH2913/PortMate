@@ -86,7 +86,7 @@ import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodi
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
 import { openTerminalWebLink } from "./terminal-web-link";
-import { subscribeTerminalByteEvents, subscribeTerminalLiveEvents } from "./terminal-byte-events";
+import { flushTerminalByteEvents, subscribeTerminalByteEvents, subscribeTerminalLiveEvents } from "./terminal-byte-events";
 import type { OneKeySummary, SessionEvent, SessionSummary, TerminalBytesEvent, TerminalLiveEvent } from "./types";
 
 type TerminalCanvasProps = {
@@ -120,7 +120,10 @@ const TERMINAL_SEMANTIC_SETTLE_MS = 180;
 const TERMINAL_SEMANTIC_INPUT_IDLE_MS = 220;
 const TERMINAL_COMPLETION_INPUT_DEBOUNCE_MS = 80;
 const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
-const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 250;
+// Canonical live packets are emitted before the legacy session-event fallback.
+// Keep only a short cross-channel grace period so a late raw packet cannot
+// stall the terminal write queue for hundreds of milliseconds.
+const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 32;
 const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
 const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
@@ -2706,7 +2709,7 @@ function TerminalByteToolbar({
         <span className="tx">TX {formatBytes(stats.txBytes)}</span>
       </span>
       <button type="button" className={follow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label="跟随最新字节" aria-pressed={follow} title="跟随最新字节" disabled={!snapshot.frames.length} onClick={() => onFollowChange(!follow)}><ArrowDownToLine size={13} /></button>
-      <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!snapshot.frames.length} onClick={() => { clearTerminalByteCache(sessionId); onClear(); }}><Trash2 size={13} /></button>
+      <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!snapshot.frames.length} onClick={() => { flushTerminalByteEvents(); clearTerminalByteCache(sessionId); onClear(); }}><Trash2 size={13} /></button>
     </>
   );
 }

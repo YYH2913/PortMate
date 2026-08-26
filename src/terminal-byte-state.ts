@@ -112,41 +112,79 @@ export function appendTerminalByteEvent(
   event: TerminalBytesEvent,
   limits: TerminalByteBufferLimits = defaultTerminalByteBufferLimits,
 ): TerminalByteBuffer {
-  if (!event.id || current.frames.some((frame) => frame.id === event.id)) return current;
+  return appendTerminalByteEvents(current, [event], limits);
+}
+
+/**
+ * Append a transport burst with one bounded frame walk. Serial devices often
+ * deliver an interactive echo one byte at a time; cloning and shifting the
+ * entire inspector buffer for every byte makes that echo compete with xterm.
+ */
+export function appendTerminalByteEvents(
+  current: TerminalByteBuffer,
+  events: readonly TerminalBytesEvent[],
+  limits: TerminalByteBufferLimits = defaultTerminalByteBufferLimits,
+): TerminalByteBuffer {
   const maxBytes = Math.max(0, Math.trunc(limits.maxBytes));
   const maxFrames = Math.max(0, Math.trunc(limits.maxFrames));
-  const normalizedBytes = (Array.isArray(event.bytes) ? event.bytes : [])
-    .filter((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)
-    .slice(0, maxBytes);
-  if (!normalizedBytes.length || maxBytes === 0 || maxFrames === 0) return current;
+  if (maxBytes === 0 || maxFrames === 0 || !events.length) return current;
 
-  const originalLength = Math.max(normalizedBytes.length, Math.trunc(event.originalLength) || 0);
-  const frame: TerminalByteFrame = {
-    ...event,
-    bytes: normalizedBytes,
-    originalLength,
-    truncated: event.truncated || normalizedBytes.length < originalLength,
-    startOffset: current.nextOffset,
-  };
-  const frames = [...current.frames];
+  let frames: TerminalByteFrame[] = [...current.frames];
+  const frameIds = new Set(frames.map((frame) => frame.id));
+  let frameHead = 0;
   let capturedBytes = current.capturedBytes;
   let droppedBytes = current.droppedBytes;
   let droppedFrames = current.droppedFrames;
-  while (frames.length >= maxFrames || capturedBytes + frame.bytes.length > maxBytes) {
-    const removed = frames.shift();
-    if (!removed) break;
-    capturedBytes = Math.max(0, capturedBytes - removed.bytes.length);
-    droppedBytes += removed.bytes.length;
-    droppedFrames += 1;
+  let nextOffset = current.nextOffset;
+  let revision = current.revision;
+  let changed = false;
+
+  for (const event of events) {
+    if (!event.id || frameIds.has(event.id)) continue;
+    const normalizedBytes = (Array.isArray(event.bytes) ? event.bytes : [])
+      .filter((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)
+      .slice(0, maxBytes);
+    if (!normalizedBytes.length) continue;
+
+    const originalLength = Math.max(normalizedBytes.length, Math.trunc(event.originalLength) || 0);
+    const frame: TerminalByteFrame = {
+      ...event,
+      bytes: normalizedBytes,
+      originalLength,
+      truncated: event.truncated || normalizedBytes.length < originalLength,
+      startOffset: nextOffset,
+    };
+    frames.push(frame);
+    frameIds.add(frame.id);
+    capturedBytes += frame.bytes.length;
+    nextOffset += originalLength;
+    revision += 1;
+    changed = true;
+
+    while (frames.length - frameHead > maxFrames || capturedBytes > maxBytes) {
+      const removed = frames[frameHead];
+      frameHead += 1;
+      if (!removed) break;
+      frameIds.delete(removed.id);
+      capturedBytes = Math.max(0, capturedBytes - removed.bytes.length);
+      droppedBytes += removed.bytes.length;
+      droppedFrames += 1;
+    }
+    if (frameHead >= 256 && frameHead * 2 >= frames.length) {
+      frames = frames.slice(frameHead);
+      frameHead = 0;
+    }
   }
-  frames.push(frame);
+
+  if (!changed) return current;
+  if (frameHead) frames = frames.slice(frameHead);
   return {
     frames,
-    capturedBytes: capturedBytes + frame.bytes.length,
+    capturedBytes,
     droppedBytes,
     droppedFrames,
-    nextOffset: current.nextOffset + originalLength,
-    revision: current.revision + 1,
+    nextOffset,
+    revision,
   };
 }
 
@@ -304,6 +342,8 @@ export function terminalByteBufferStats(buffer: TerminalByteBuffer) {
 type TerminalByteCacheEntry = {
   sessionId: string;
   buffer: TerminalByteBuffer;
+  frameIds: Set<string>;
+  eventIds: Set<string>;
   listeners: Set<() => void>;
   touchedAt: number;
 };
@@ -320,6 +360,8 @@ function terminalByteCacheEntry(sessionId: string): TerminalByteCacheEntry {
   const entry = {
     sessionId,
     buffer: emptyTerminalByteBuffer(),
+    frameIds: new Set<string>(),
+    eventIds: new Set<string>(),
     listeners: new Set<() => void>(),
     touchedAt: ++cacheClock,
   };
@@ -343,6 +385,14 @@ export function terminalByteCacheSnapshot(sessionId: string): TerminalByteBuffer
   return terminalByteCache.get(sessionId)?.buffer ?? emptyBuffer;
 }
 
+export function terminalByteCacheHasFrameId(sessionId: string, frameId: string): boolean {
+  return Boolean(sessionId && frameId && terminalByteCache.get(sessionId)?.frameIds.has(frameId));
+}
+
+export function terminalByteCacheHasEventId(sessionId: string, eventId: string): boolean {
+  return Boolean(sessionId && eventId && terminalByteCache.get(sessionId)?.eventIds.has(eventId));
+}
+
 export function appendTerminalByteCacheEvent(event: TerminalBytesEvent): TerminalByteBuffer {
   appendTerminalByteCacheEvents([event]);
   return event.sessionId ? terminalByteCacheSnapshot(event.sessionId) : emptyBuffer;
@@ -358,12 +408,20 @@ export function appendTerminalByteCacheEvents(
   notify = true,
 ): readonly string[] {
   const changedEntries = new Set<TerminalByteCacheEntry>();
+  const eventsBySession = new Map<string, TerminalBytesEvent[]>();
   for (const event of events) {
     if (!event.sessionId) continue;
-    const entry = terminalByteCacheEntry(event.sessionId);
-    const next = appendTerminalByteEvent(entry.buffer, event);
+    const sessionEvents = eventsBySession.get(event.sessionId);
+    if (sessionEvents) sessionEvents.push(event);
+    else eventsBySession.set(event.sessionId, [event]);
+  }
+  for (const [sessionId, sessionEvents] of eventsBySession) {
+    const entry = terminalByteCacheEntry(sessionId);
+    const next = appendTerminalByteEvents(entry.buffer, sessionEvents);
     if (next === entry.buffer) continue;
     entry.buffer = next;
+    entry.frameIds = new Set(next.frames.map((frame) => frame.id));
+    entry.eventIds = new Set(next.frames.flatMap((frame) => frame.eventId ? [frame.eventId] : []));
     changedEntries.add(entry);
   }
   const changedSessionIds = [...changedEntries].map((entry) => entry.sessionId);
@@ -386,6 +444,8 @@ export function clearTerminalByteCache(sessionId: string): TerminalByteBuffer {
   if (!sessionId) return emptyBuffer;
   const entry = terminalByteCacheEntry(sessionId);
   entry.buffer = { ...emptyTerminalByteBuffer(), revision: entry.buffer.revision + 1 };
+  entry.frameIds.clear();
+  entry.eventIds.clear();
   for (const listener of entry.listeners) listener();
   return entry.buffer;
 }

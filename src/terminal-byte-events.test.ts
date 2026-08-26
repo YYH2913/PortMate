@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   dispatchTerminalLiveEventForTests,
   dispatchTerminalByteEventForTests,
+  flushTerminalByteEventsForTests,
   resetTerminalByteEventBridgeForTests,
   subscribeTerminalLiveEvents,
   subscribeTerminalByteEvents,
 } from "./terminal-byte-events";
-import { resetTerminalByteCacheForTests } from "./terminal-byte-state";
+import {
+  resetTerminalByteCacheForTests,
+  subscribeTerminalByteCache,
+  terminalByteCacheSnapshot,
+} from "./terminal-byte-state";
 import type { TerminalBytesEvent } from "./types";
 
 function frame(id: string, bytes: number[], sessionId = "session-a"): TerminalBytesEvent {
@@ -54,6 +59,44 @@ describe("terminal byte event bridge", () => {
     });
     expect(received).toEqual(["event-canonical:8"]);
     unsubscribe();
+  });
+
+  it("keeps live text synchronous while committing byte-inspector bursts once", () => {
+    const received: string[] = [];
+    let cacheNotifications = 0;
+    const unsubscribeLive = subscribeTerminalLiveEvents("session-a", (value) => {
+      received.push(value.event.id);
+    });
+    const unsubscribeCache = subscribeTerminalByteCache("session-a", () => {
+      cacheNotifications += 1;
+    });
+
+    for (let index = 0; index < 120; index += 1) {
+      expect(dispatchTerminalLiveEventForTests({
+        event: {
+          id: `event-${index}`,
+          sessionId: "session-a",
+          paneId: "session-a:main",
+          ts: "2026-08-24T08:00:00.000Z",
+          direction: "inbound",
+          stream: "stdout",
+          bytesRef: null,
+          text: "x",
+          annotations: {},
+        },
+        bytes: [0x78],
+        originalLength: 1,
+        truncated: false,
+      })).toBe(true);
+    }
+
+    expect(received).toHaveLength(120);
+    expect(terminalByteCacheSnapshot("session-a").frames).toHaveLength(0);
+    flushTerminalByteEventsForTests();
+    expect(cacheNotifications).toBe(1);
+    expect(terminalByteCacheSnapshot("session-a").frames).toHaveLength(120);
+    unsubscribeCache();
+    unsubscribeLive();
   });
 
   it("rejects malformed nested event metadata and inconsistent lengths", () => {
