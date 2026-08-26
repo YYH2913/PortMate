@@ -6,6 +6,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-27
+
+### Added
+
+- Added regression coverage for low-latency terminal output, batched byte-cache updates,
+  and cross-window input/rendering behavior.
+
+### Changed
+
+- Reduced the cross-channel terminal event grace period from 250 ms to 32 ms now that canonical
+  live packets are emitted first.
+- Batched Hex/byte inspector cache commits and replaced repeated bounded-frame scans with indexed
+  duplicate checks, keeping high-rate serial output off the interactive rendering path.
+
 ### Fixed
 
 - Unified MCP HTTP sidecar Client ID resolution with saved grants. Legacy
@@ -16,6 +30,23 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Stopped draining the physical serial driver after every interactive write, moved blocking serial
   writes off async runtime workers, and tracked them through session shutdown so XOFF, CTS stalls,
   USB driver faults, and login bursts cannot freeze the input queue or retain a Windows COM handle.
+
+### Security
+
+- Kept terminal live delivery and input ordering unchanged while bounding deferred byte-cache
+  memory and retaining per-session duplicate and runtime-generation checks.
+
+### Migration
+
+- No Store schema migration is required from 0.1.5. Existing sessions, credentials, grants,
+  terminal history, transfers, scripts, host keys, and workspace state load in place.
+
+### Known Limitations
+
+- The Windows GNU portable archive is unsigned cross-build evidence and does not replace native
+  Windows MSVC, WebView2, Credential Manager, MSI/NSIS, Authenticode, or clean-machine tests.
+- Physical serial drivers and remote endpoints can still add device or network latency that
+  automated browser and loopback tests cannot reproduce completely.
 
 ## [0.1.5] - 2026-08-24
 

@@ -1,6 +1,6 @@
 [package]
 name = "portmate"
-version = "0.1.5"
+version = "0.1.6"
 description = "MCP-ready serial and SSH co-debugging assistant"
 edition.workspace = true
 license.workspace = true
