@@ -15,6 +15,9 @@ pub(super) static SESSION_OPEN_CANCELLATIONS: OnceLock<SessionOpenCancellations>
 struct SerialWorkerState {
     active: usize,
     active_by_session: HashMap<String, usize>,
+    // Kept under the same mutex as the worker counters so a close cannot
+    // race a new worker registration between its check and the idle wait.
+    closing_sessions: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -47,6 +50,13 @@ impl SerialWorkerRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err("PortMate is shutting down; serial work is not accepted".to_string());
+        }
+        if let Some(session_id) = session_id.as_ref() {
+            if state.closing_sessions.contains(session_id) {
+                return Err(format!(
+                    "serial session {session_id} is closing; serial work is not accepted"
+                ));
+            }
         }
         state.active += 1;
         if let Some(session_id) = session_id.as_ref() {
@@ -120,11 +130,97 @@ impl SerialWorkerRegistry {
         }
     }
 
+    /// Marks a session as closing before its runtime handles are removed.
+    /// Registration and this transition share the worker state mutex, which
+    /// prevents a late writer from appearing after the close's idle snapshot.
+    pub(super) fn begin_session_shutdown(&self, session_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closing_sessions.insert(session_id.to_string());
+        self.changed.notify_all();
+    }
+
+    pub(super) fn end_session_shutdown(&self, session_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closing_sessions.remove(session_id);
+        self.changed.notify_all();
+    }
+
+    pub(super) fn is_session_shutting_down(&self, session_id: &str) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closing_sessions.contains(session_id)
+    }
+
+    pub(super) fn active_for_session(&self, session_id: &str) -> usize {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active_by_session.get(session_id).copied().unwrap_or(0)
+    }
+
 }
 
 pub(super) struct SerialWorkerGuard {
     registry: Arc<SerialWorkerRegistry>,
     session_id: Option<String>,
+}
+
+/// RAII close barrier for one serial session. Dropping it releases the
+/// registration gate even when close_session exits through an error path.
+pub(super) struct SerialSessionShutdownGuard {
+    registry: Arc<SerialWorkerRegistry>,
+    session_id: String,
+}
+
+impl SerialSessionShutdownGuard {
+    pub(super) fn new(registry: Arc<SerialWorkerRegistry>, session_id: String) -> Self {
+        registry.begin_session_shutdown(&session_id);
+        Self {
+            registry,
+            session_id,
+        }
+    }
+
+    /// Transfers ownership of the barrier to a small cleanup thread when a
+    /// close deadline expires. Reopen remains blocked until every worker has
+    /// actually dropped its serial handle.
+    pub(super) fn defer_until_idle(self) {
+        let registry = Arc::clone(&self.registry);
+        let session_id = self.session_id.clone();
+        let cleanup_session_id = session_id.clone();
+        let cleanup = std::thread::Builder::new()
+            .name(format!("portmate-serial-close-{session_id}"))
+            .spawn(move || {
+                while registry.active_for_session(&cleanup_session_id) > 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                registry.end_session_shutdown(&cleanup_session_id);
+            });
+        if let Err(error) = cleanup {
+            // Keeping the guard leaked is intentionally fail-closed: a
+            // failed cleanup thread must never permit a COM-port reopen while
+            // the old worker may still own a handle.
+            eprintln!(
+                "PortMate: failed to start serial close cleanup for {session_id}; reopen remains blocked: {error}"
+            );
+        }
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for SerialSessionShutdownGuard {
+    fn drop(&mut self) {
+        self.registry.end_session_shutdown(&self.session_id);
+    }
 }
 
 impl Drop for SerialWorkerGuard {

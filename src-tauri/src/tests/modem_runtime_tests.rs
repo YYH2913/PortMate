@@ -587,6 +587,7 @@ fn load_baud_restore_rejects_a_replaced_serial_runtime() {
         SerialRuntime {
             runtime_id: "old-serial-runtime".to_string(),
             writer: None,
+            abort: None,
             tap: old_tap,
             closed: Arc::clone(&old_closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
@@ -607,6 +608,7 @@ fn load_baud_restore_rejects_a_replaced_serial_runtime() {
         SerialRuntime {
             runtime_id: "new-serial-runtime".to_string(),
             writer: None,
+            abort: None,
             tap: new_tap,
             closed: Arc::new(AtomicBool::new(false)),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),

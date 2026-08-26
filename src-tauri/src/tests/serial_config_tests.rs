@@ -76,6 +76,17 @@ fn serial_worker_registry_stops_new_work_and_waits_for_active_workers() {
     assert_eq!(registry.wait_for_idle(Duration::from_millis(50)), 0);
 }
 
+#[test]
+fn serial_worker_registry_close_barrier_rejects_late_session_work() {
+    let registry = Arc::new(SerialWorkerRegistry::default());
+    let session_id = "serial-close-barrier";
+    registry.begin_session_shutdown(session_id);
+    assert!(registry.register_for_session(session_id).is_err());
+    assert!(registry.is_session_shutting_down(session_id));
+    registry.end_session_shutdown(session_id);
+    assert!(registry.register_for_session(session_id).is_ok());
+}
+
 #[tokio::test]
 async fn closing_serial_session_waits_for_session_workers_before_returning() {
     let temp = tempfile::tempdir().unwrap();
@@ -101,6 +112,7 @@ async fn closing_serial_session_waits_for_session_workers_before_returning() {
         SerialRuntime {
             runtime_id: "serial-close-runtime".to_string(),
             writer: None,
+            abort: None,
             tap,
             closed: Arc::clone(&closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
@@ -349,6 +361,7 @@ fn disabling_serial_reconnect_removes_pending_runtime() {
         SerialRuntime {
             runtime_id: runtime_id.clone(),
             writer: None,
+            abort: None,
             tap,
             closed: Arc::clone(&closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
@@ -421,6 +434,7 @@ fn serial_reconnect_install_failure_requires_the_pending_runtime_owner() {
         SerialRuntime {
             runtime_id: "pending-runtime".to_string(),
             writer: None,
+            abort: None,
             tap: tap.clone(),
             closed: Arc::clone(&pending_closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
@@ -464,6 +478,7 @@ fn serial_reconnect_install_failure_requires_the_pending_runtime_owner() {
         SerialRuntime {
             runtime_id: "replacement-runtime".to_string(),
             writer: None,
+            abort: None,
             tap,
             closed: Arc::clone(&replacement_closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),
@@ -537,6 +552,7 @@ fn serial_reconnect_store_poison_removes_the_pending_runtime() {
         SerialRuntime {
             runtime_id: "poisoned-store-runtime".to_string(),
             writer: None,
+            abort: None,
             tap,
             closed: Arc::clone(&closed),
             capture: serial_capture_for_session(&state.serial_captures, &profile.id).unwrap(),

@@ -129,7 +129,11 @@ fn reconnect_serial_session(
         if io.serial_workers.is_shutting_down() || closed.load(Ordering::SeqCst) {
             return;
         }
-        let (port, reader) = match open_configured_serial_port(&serial, &port_name) {
+        let SerialPortPair {
+            writer: port,
+            reader,
+            abort,
+        } = match open_configured_serial_port(&serial, &port_name) {
             Ok(port) => port,
             Err(error) => {
                 match record_serial_reconnect_failure_if_pending(
@@ -240,7 +244,7 @@ fn reconnect_serial_session(
                                 }
                                 SerialReconnectProfileState::Disabled => {
                                     if let Some(runtime) = connections.remove(&session_id) {
-                                        runtime.closed.store(true, Ordering::SeqCst);
+                                        stop_serial_runtime(&runtime);
                                     }
                                     let reason = "automatic reconnect disabled while the previous attempt was running";
                                     let _ = store.set_runtime_status_with_reason(
@@ -285,6 +289,9 @@ fn reconnect_serial_session(
                                                 SerialRuntime {
                                                     runtime_id: runtime_id.clone(),
                                                     writer: Some(Arc::clone(&writer)),
+                                                    abort: abort.map(|abort| {
+                                                        Arc::new(Mutex::new(abort))
+                                                    }),
                                                     tap: tap.clone(),
                                                     closed: Arc::clone(&next_closed),
                                                     capture: Arc::clone(&capture),

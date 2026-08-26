@@ -1,5 +1,5 @@
 use super::session_open::{cancel_pending_session_opens, session_lifecycle_lane};
-use super::transport_timing::SERIAL_RUNTIME_SHUTDOWN_TIMEOUT;
+use super::transport_timing::SERIAL_RUNTIME_CLOSE_TIMEOUT;
 use super::*;
 
 pub(super) struct SessionCloseValidations {
@@ -163,6 +163,14 @@ pub(super) async fn close_session_under_lifecycle_lock(
     state: &AppState,
     session_id: String,
 ) -> Result<SessionSummary, String> {
+    // Close registration first. This shares the worker counter mutex, so a
+    // late interactive write or reconnect worker cannot start after the idle
+    // wait has observed zero workers.
+    let serial_shutdown = SerialSessionShutdownGuard::new(
+        Arc::clone(&state.serial_workers),
+        session_id.clone(),
+    );
+
     // Stop queued keystrokes before removing the runtime. This prevents a
     // close/reconnect race from leaving an orphan worker holding old input.
     clear_interactive_write_queue(&state.store_path, &session_id);
@@ -206,7 +214,7 @@ pub(super) async fn close_session_under_lifecycle_lock(
         connections.remove(&session_id)
     };
     if let Some(runtime) = existing_serial {
-        runtime.closed.store(true, Ordering::SeqCst);
+        stop_serial_runtime(&runtime);
     }
     // Removing the runtime only drops the writer handle. The reader and an
     // in-flight automatic reconnect can still own cloned serial handles;
@@ -218,7 +226,7 @@ pub(super) async fn close_session_under_lifecycle_lock(
     let remaining_serial_workers = tauri::async_runtime::spawn_blocking(move || {
         serial_workers.wait_for_session_idle(
             &serial_session_id,
-            SERIAL_RUNTIME_SHUTDOWN_TIMEOUT,
+            SERIAL_RUNTIME_CLOSE_TIMEOUT,
         )
     })
     .await
@@ -227,6 +235,25 @@ pub(super) async fn close_session_under_lifecycle_lock(
         eprintln!(
             "PortMate: {remaining_serial_workers} serial worker(s) for {session_id} did not release before the close deadline"
         );
+        // Keep the close barrier until the final worker drops. A background
+        // cleanup removes it later; reopening during this window would still
+        // be able to hit Windows' exclusive COM-port lock.
+        serial_shutdown.defer_until_idle();
+        if let Ok(mut store) = state.store.lock() {
+            let reason = "serial handles are still releasing; retry reconnect after close finishes";
+            let _ = store.set_runtime_status_with_reason(
+                &session_id,
+                SessionStatus::Disconnected,
+                Some(reason.to_string()),
+            );
+            store.record_system_event(&session_id, format!("PortMate: {reason}"));
+            if let Err(error) = persist_applied_store(&store, &state.store_path, "serial close timeout state") {
+                eprintln!("PortMate: failed to persist serial close timeout state: {error}");
+            }
+        }
+        return Err(format!(
+            "串口会话仍有 {remaining_serial_workers} 个后台任务正在释放，请稍后重新连接"
+        ));
     }
     let stopped_tunnel_runtimes = stop_session_tunnel_runtimes(&state.tunnels, &session_id)?;
     let timed_out_tunnels = await_tunnel_listener_shutdowns(&stopped_tunnel_runtimes).await;

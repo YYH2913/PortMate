@@ -179,4 +179,21 @@ describe("terminal input pump", () => {
     first.resolve();
     await slow;
   });
+
+  it("starts a fresh registry pump immediately after a session reset", async () => {
+    const oldRequest = deferred();
+    const calls: string[] = [];
+    const registry = new TerminalInputPumpRegistry((_sessionId, text) => {
+      calls.push(text);
+      return calls.length === 1 ? oldRequest.promise : Promise.resolve();
+    });
+
+    registry.enqueueFast("router", "old", "interactive");
+    registry.reset("router");
+    registry.enqueueFast("router", "new", "interactive");
+
+    expect(calls).toEqual(["old", "new"]);
+    oldRequest.resolve();
+    await oldRequest.promise;
+  });
 });

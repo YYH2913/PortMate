@@ -156,9 +156,16 @@ export class TerminalInputPumpRegistry {
 
   reset(sessionId?: string): void {
     if (sessionId) {
-      this.pumps.get(sessionId)?.reset();
+      // Do not make a newly reconnected session wait for an IPC request that
+      // belonged to the old runtime. The old pump still finishes its request
+      // in isolation, while all subsequent keystrokes use a fresh pump.
+      const pump = this.pumps.get(sessionId);
+      this.pumps.delete(sessionId);
+      pump?.reset();
       return;
     }
-    for (const pump of this.pumps.values()) pump.reset();
+    const pumps = [...this.pumps.values()];
+    this.pumps.clear();
+    for (const pump of pumps) pump.reset();
   }
 }

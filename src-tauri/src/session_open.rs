@@ -405,6 +405,13 @@ pub(super) async fn open_session_under_lifecycle_lock(
 }
 
 pub(super) fn ensure_session_can_open(state: &AppState, session_id: &str) -> Result<(), String> {
+    if state.serial_workers.is_session_shutting_down(session_id)
+        || state.serial_workers.active_for_session(session_id) > 0
+    {
+        return Err(
+            "串口会话仍在释放旧句柄，请等待关闭完成后再重新连接".to_string(),
+        );
+    }
     let status = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         if !store

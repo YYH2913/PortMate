@@ -63,6 +63,7 @@ fn serial_capture_and_event_reject_stale_runtime_input_together() {
         SerialRuntime {
             runtime_id: "serial-current".to_string(),
             writer: None,
+            abort: None,
             tap,
             closed: Arc::new(AtomicBool::new(false)),
             capture: Arc::clone(&capture),

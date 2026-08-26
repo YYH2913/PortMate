@@ -421,6 +421,107 @@ fn serial_socat_reconnects_after_pty_replacement() {
 }
 
 #[cfg(unix)]
+#[test]
+fn serial_manual_close_reopen_releases_handles_and_accepts_login_input() {
+    if Command::new("socat").arg("-V").output().is_err() {
+        eprintln!("skipping serial manual reconnect test: socat is not installed");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("portmate-serial-manual-reconnect-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let portmate_pty = root.join("portmate.pty");
+    let peer_pty = root.join("peer.pty");
+    let mut socat = Command::new("socat")
+        .args(["-d", "-d"])
+        .arg(format!("pty,raw,echo=0,link={}", portmate_pty.display()))
+        .arg(format!("pty,raw,echo=0,link={}", peer_pty.display()))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|child| ChildGuard(Some(child)))
+        .unwrap();
+
+    tauri::async_runtime::block_on(async {
+        wait_for_socat_pty_pair(&mut socat, &portmate_pty, &peer_pty).await;
+        let profile = test_serial_profile(portmate_core::SerialConnection {
+            port: portmate_pty.display().to_string(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".to_string(),
+            flow_control: "none".to_string(),
+            dtr: false,
+            rts: false,
+            reconnect: false,
+            reconnect_delay_ms: 200,
+            receive_idle_timeout_enabled: false,
+            receive_idle_timeout_seconds: 60,
+        });
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        let mut peer = serialport::new(peer_pty.display().to_string(), 115_200)
+            .timeout(Duration::from_secs(2))
+            .open()
+            .unwrap();
+
+        open_serial_session(&state, profile.clone()).unwrap();
+        let mut inbound = state
+            .serial
+            .lock()
+            .unwrap()
+            .get(&profile.id)
+            .unwrap()
+            .tap
+            .subscribe();
+        peer.write_all(b"login: ").unwrap();
+        peer.flush().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        enqueue_interactive_text(state.session_io(), profile.id.clone(), "root".to_string(), true)
+            .unwrap();
+        enqueue_interactive_text(state.session_io(), profile.id.clone(), "\r".to_string(), false)
+            .unwrap();
+        let mut first_login = [0_u8; 5];
+        peer.read_exact(&mut first_login).unwrap();
+        assert_eq!(&first_login, b"root\r");
+
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
+        assert_eq!(state.serial_workers.active_for_session(&profile.id), 0);
+
+        open_serial_session(&state, profile.clone()).unwrap();
+        let mut inbound = state
+            .serial
+            .lock()
+            .unwrap()
+            .get(&profile.id)
+            .unwrap()
+            .tap
+            .subscribe();
+        peer.write_all(b"login: ").unwrap();
+        peer.flush().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        enqueue_interactive_text(state.session_io(), profile.id.clone(), "root".to_string(), true)
+            .unwrap();
+        enqueue_interactive_text(state.session_io(), profile.id.clone(), "\r".to_string(), false)
+            .unwrap();
+        let mut second_login = [0_u8; 5];
+        peer.read_exact(&mut second_login).unwrap();
+        assert_eq!(&second_login, b"root\r");
+
+        close_session_inner(&state, profile.id).await.unwrap();
+    });
+
+    socat.stop();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
 async fn wait_for_socat_pty_pair(socat: &mut ChildGuard, portmate_pty: &Path, peer_pty: &Path) {
     tokio::time::timeout(Duration::from_secs(3), async {
         while !portmate_pty.exists() || !peer_pty.exists() {

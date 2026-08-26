@@ -2,7 +2,13 @@ use super::transport_timing::{SERIAL_RUNTIME_SHUTDOWN_TIMEOUT, STREAM_PERSIST_IN
 use super::*;
 
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;
-pub(super) type SerialPortPair = (SerialPortHandle, SerialPortHandle);
+pub(super) struct SerialPortPair {
+    pub(super) writer: SerialPortHandle,
+    pub(super) reader: SerialPortHandle,
+    // A dedicated clone lets close_session abort a pending driver write
+    // without waiting for the writer mutex held by that write.
+    pub(super) abort: Option<SerialPortHandle>,
+}
 
 pub(super) struct PreparedSerialSession {
     profile: SessionProfile,
@@ -10,14 +16,36 @@ pub(super) struct PreparedSerialSession {
     port_name: String,
     port: SerialPortHandle,
     reader: SerialPortHandle,
+    abort: Option<SerialPortHandle>,
 }
 
 pub(super) struct SerialRuntime {
     pub(super) runtime_id: String,
     pub(super) writer: Option<Arc<Mutex<SerialPortHandle>>>,
+    pub(super) abort: Option<Arc<Mutex<SerialPortHandle>>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) capture: Arc<Mutex<SerialCaptureBuffer>>,
+}
+
+/// Interrupts driver-level serial I/O before the runtime is dropped. The
+/// abort clone is deliberately separate from the writer mutex: a blocked
+/// WriteFile/Write can therefore be purged without waiting for that mutex.
+pub(super) fn stop_serial_runtime(runtime: &SerialRuntime) {
+    runtime.closed.store(true, Ordering::SeqCst);
+    if let Some(abort) = runtime.abort.as_ref() {
+        if let Ok(abort) = abort.lock() {
+            let _ = abort.clear(serialport::ClearBuffer::All);
+        }
+    }
+    // Older or unusual serial implementations may not support cloning an
+    // abort handle. Best-effort clearing of the writer still helps those
+    // implementations when the writer is not currently locked.
+    if let Some(writer) = runtime.writer.as_ref() {
+        if let Ok(writer) = writer.try_lock() {
+            let _ = writer.clear(serialport::ClearBuffer::All);
+        }
+    }
 }
 
 pub(super) fn serial_connection_details(
@@ -63,7 +91,18 @@ pub(super) fn open_configured_serial_port(
     let reader = port
         .try_clone()
         .map_err(|error| format!("串口 reader 克隆失败: {error}"))?;
-    Ok((port, reader))
+    let abort = match port.try_clone() {
+        Ok(abort) => Some(abort),
+        Err(error) => {
+            eprintln!("PortMate: serial abort handle clone unavailable for {port_name}: {error}");
+            None
+        }
+    };
+    Ok(SerialPortPair {
+        writer: port,
+        reader,
+        abort,
+    })
 }
 
 #[cfg(test)]
@@ -80,7 +119,11 @@ pub(super) fn prepare_serial_session(
 ) -> Result<PreparedSerialSession, String> {
     let _worker = state.serial_workers.register_for_session(&profile.id)?;
     let (serial, port_name) = serial_connection_details(&profile)?;
-    let (port, reader) = open_configured_serial_port(&serial, &port_name)?;
+    let SerialPortPair {
+        writer: port,
+        reader,
+        abort,
+    } = open_configured_serial_port(&serial, &port_name)?;
     if state.serial_workers.is_shutting_down() {
         return Err("PortMate is shutting down; serial port was released".to_string());
     }
@@ -90,6 +133,7 @@ pub(super) fn prepare_serial_session(
         port_name,
         port,
         reader,
+        abort,
     })
 }
 
@@ -104,6 +148,7 @@ pub(super) fn install_serial_session(
         port_name,
         port,
         reader,
+        abort,
     } = prepared;
 
     let runtime_id = Uuid::new_v4().to_string();
@@ -119,6 +164,7 @@ pub(super) fn install_serial_session(
             SerialRuntime {
                 runtime_id: runtime_id.clone(),
                 writer: Some(writer),
+                abort: abort.map(|abort| Arc::new(Mutex::new(abort))),
                 tap: tap.clone(),
                 closed: Arc::clone(&closed),
                 capture: Arc::clone(&capture),
@@ -126,7 +172,7 @@ pub(super) fn install_serial_session(
         )
     };
     if let Some(existing) = existing {
-        existing.closed.store(true, Ordering::SeqCst);
+        stop_serial_runtime(&existing);
     }
 
     let reader_handle = match spawn_serial_reader(SerialReadTask {
@@ -327,7 +373,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
         // Abort a driver-level write before releasing the reader clone. This
         // is especially important on Windows, where a pending COM write keeps
         // the exclusive device handle alive and makes an immediate reopen fail.
-        let _ = reader.clear(serialport::ClearBuffer::Output);
+        let _ = reader.clear(serialport::ClearBuffer::All);
 
         if has_unpersisted_stream {
             if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
@@ -389,7 +435,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                             runtime.runtime_id == runtime_id
                         })
                     {
-                        runtime.closed.store(true, Ordering::SeqCst);
+                        stop_serial_runtime(&runtime);
                     }
                     return;
                 }
@@ -407,6 +453,11 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                         .filter(|runtime| runtime.runtime_id == runtime_id)
                         .map(|runtime| {
                             runtime.writer = None;
+                            if let Some(abort) = runtime.abort.take() {
+                                if let Ok(abort) = abort.lock() {
+                                    let _ = abort.clear(serialport::ClearBuffer::All);
+                                }
+                            }
                         })
                         .is_some(),
                     Err(_) => false,
@@ -422,7 +473,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                         runtime.runtime_id == runtime_id
                     })
                 {
-                    runtime.closed.store(true, Ordering::SeqCst);
+                    stop_serial_runtime(&runtime);
                 }
             }
         }

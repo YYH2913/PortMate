@@ -611,6 +611,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     terminalInputEpochsRef.current.set(sessionId, (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1);
   }
 
+  function advanceTerminalInputEpoch(sessionId: string) {
+    terminalInputEpochsRef.current.set(
+      sessionId,
+      (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1,
+    );
+  }
+
   function restoreTerminalInputSession(sessionId: string) {
     deletedTerminalInputSessionsRef.current.delete(sessionId);
   }
@@ -3732,6 +3739,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
     const closeToken = beginSessionDisconnect(sessionId);
     if (closeToken === null) return null;
+    // In-flight IPC from the old runtime must not append stale errors or
+    // mutate terminal state after a manual reconnect starts.
+    advanceTerminalInputEpoch(sessionId);
     directInputPumpRef.current?.reset(sessionId);
     const closeIsCurrent = () => connectionCloseGateRef.current.isCurrent(sessionId, closeToken);
     try {
