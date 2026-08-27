@@ -138,6 +138,9 @@ export default function McpDialog({
   const selectedGrantIsHttpClient = Boolean(
     draft && editingClientId === draft.clientId && resolvedHttpClientId === draft.clientId,
   );
+  const activeGrantCount = grants.filter((grant) => !grant.revokedAt).length;
+  const runtimePhase = httpRuntime?.phase ?? "stopped";
+  const runtimeEndpoint = httpRuntime?.endpoint ?? httpConfig?.endpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-";
 
   useEffect(() => {
     if (httpConfig || !isBackendAvailable()) return;
@@ -691,6 +694,12 @@ export default function McpDialog({
           <strong>MCP Bridge</strong>
           <button type="button" title="关闭" aria-label="关闭 MCP Bridge" onClick={closeDialog}><X size={20} /></button>
         </header>
+        <div className="mcp-overview" aria-label="MCP Bridge 当前状态">
+          <span className={`mcp-overview-service ${runtimePhase}`}><i aria-hidden="true" /><strong>{mcpHttpRuntimeLabel(httpRuntime)}</strong></span>
+          <code title={runtimeEndpoint}>{runtimeEndpoint}</code>
+          <span>{activeGrantCount} 个有效授权</span>
+          <span>{audit.length} 条审计</span>
+        </div>
         <nav className="mcp-tabs" role="tablist" aria-label="MCP Bridge 视图">
           {([['grants', '授权'], ['http', 'HTTP'], ['audit', '审计']] as const).map(([id, label]) => (
             <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => { setTab(id); setError(""); }}>{label}</button>
@@ -729,6 +738,7 @@ export default function McpDialog({
             </aside>
             {draft ? (
               <section className="mcp-editor">
+                <header className="mcp-section-heading"><div><strong>{editingClientId ? "授权详情" : "新建授权"}</strong><span>定义客户端身份、权限和可访问会话</span></div>{grantDirty ? <em>未保存</em> : null}</header>
                 <McpFieldGroup label="Client ID:">
                   <div className="mcp-client-id-control">
                     <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} disabled={grantBusy} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
@@ -832,8 +842,9 @@ export default function McpDialog({
         {tab === "http" ? (
           <section className="mcp-http-view" role="tabpanel">
             <div className="mcp-http-panel">
-              <header><strong>Streamable HTTP</strong><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
+              <header><div><strong>服务与访问</strong><small>管理监听边界、进程和客户端接入配置</small></div><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
               <div className="mcp-http-settings">
+                <div className="mcp-section-heading"><div><strong>监听配置</strong><span>服务运行时锁定以下参数</span></div></div>
                 <div className="mcp-http-field-grid">
                   <McpFieldGroup label="监听 IP:">
                     <div className="mcp-http-listen-editor">
@@ -864,7 +875,7 @@ export default function McpDialog({
               </div>
               <section className="mcp-cc-switch" aria-labelledby="mcp-cc-switch-title">
                 <header>
-                  <strong id="mcp-cc-switch-title">CC Switch JSON</strong>
+                  <div><strong id="mcp-cc-switch-title">客户端接入</strong><small>生成可直接粘贴到 CC Switch 的完整 JSON</small></div>
                   <button type="button" title="复制 CC Switch JSON" aria-label="复制 CC Switch JSON" disabled={!ccSwitchJson || !httpPreviewCurrent} onClick={() => void copyCcSwitchJson()}><Copy size={14} /><span>{ccSwitchCopied ? "已复制" : "复制 JSON"}</span></button>
                 </header>
                 <div className="mcp-cc-switch-options">
@@ -879,6 +890,7 @@ export default function McpDialog({
               <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
               <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
               <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>
+              <div className="mcp-section-heading"><div><strong>服务进程</strong><span>启动前需要先保存配置并生成 Token</span></div></div>
               <div className={`mcp-http-runtime ${httpRuntime?.phase ?? "stopped"}`} role="status" aria-live="polite">
                 <span className="mcp-http-runtime-indicator" />
                 <strong>{mcpHttpRuntimeLabel(httpRuntime)}</strong>

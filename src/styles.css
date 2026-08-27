@@ -856,13 +856,31 @@ button {
   top: 31px;
   left: 0;
   display: grid;
-  min-width: 188px;
+  min-width: 196px;
   max-height: calc(100vh - 40px);
   overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line);
   background: var(--panel-2);
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.38);
+}
+
+.menu-popover-section {
+  display: grid;
+}
+
+.menu-popover-section + .menu-popover-section {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.menu-popover-heading {
+  min-height: 22px;
+  padding: 5px 12px 2px;
+  color: #718396;
+  font-size: 10px;
+  line-height: 15px;
 }
 
 body[data-portmate-interaction-layer-open] .portmate-context-menu[data-interaction-layer="inactive"],
@@ -11375,18 +11393,72 @@ fieldset label {
 }
 
 .mcp-dialog {
-  grid-template-rows: 46px 38px minmax(0, 1fr);
+  grid-template-rows: 46px 32px 38px minmax(0, 1fr);
   width: min(980px, calc(100vw - 48px));
-  height: min(720px, calc(100vh - 56px));
+  height: min(760px, calc(100vh - 40px));
   transition: height 140ms ease;
 }
 
+.mcp-overview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  min-width: 0;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(8, 14, 20, 0.42);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-overview-service {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.mcp-overview-service i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.mcp-overview-service strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.mcp-overview-service.starting i {
+  background: #eab308;
+}
+
+.mcp-overview-service.running i {
+  background: #22c55e;
+}
+
+.mcp-overview-service.failed i {
+  background: #ef4444;
+}
+
+.mcp-overview code {
+  min-width: 0;
+  overflow: hidden;
+  color: #94a8bb;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
 .mcp-dialog[data-tab="grants"] {
-  height: min(760px, calc(100vh - 40px));
+  height: min(800px, calc(100vh - 24px));
 }
 
 .mcp-dialog[data-tab="http"] {
-  height: min(680px, calc(100vh - 56px));
+  height: min(720px, calc(100vh - 40px));
 }
 
 .mcp-tabs {
@@ -11412,6 +11484,40 @@ fieldset label {
 .mcp-tabs button.active {
   border-bottom-color: var(--cyan);
   color: var(--cyan);
+}
+
+.mcp-section-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-section-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mcp-section-heading strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-section-heading span,
+.mcp-section-heading em,
+.mcp-http-panel header small,
+.mcp-cc-switch header small {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.mcp-section-heading em {
+  color: #facc15;
 }
 
 .mcp-content {
@@ -11846,6 +11952,13 @@ fieldset label {
   align-items: center;
 }
 
+.mcp-http-panel header > div,
+.mcp-cc-switch header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
 .mcp-http-panel header strong {
   color: var(--text);
   font-size: 13px;
@@ -11856,6 +11969,10 @@ fieldset label {
   gap: 10px;
   padding-block: 12px;
   border-block: 1px solid var(--line);
+}
+
+.mcp-http-settings > .mcp-section-heading {
+  margin-bottom: 2px;
 }
 
 .mcp-http-field-grid {
@@ -12318,6 +12435,16 @@ fieldset label {
   .mcp-tabs button {
     flex: 1;
     min-width: 0;
+  }
+
+  .mcp-overview {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding-inline: 10px;
+  }
+
+  .mcp-overview > span:last-child {
+    display: none;
   }
 
   .mcp-content {

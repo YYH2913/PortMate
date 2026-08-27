@@ -2312,12 +2312,26 @@ Host staging
   })}`);
 
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  const toolMenuHeadings = await page.locator(".menu-popover-heading").allTextContents();
   const toolMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),
   ));
-  assert(!toolMenuState["传输任务"] && !toolMenuState["端口转发"] && !toolMenuState.Tmux
+  const transferMenuButton = page.locator(".menu-popover button", { hasText: "传输任务" });
+  await transferMenuButton.press("ArrowDown");
+  const toolMenuKeyboardFocus = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+  await page.locator(".menu-popover button", { hasText: "端口转发" }).press("ArrowUp");
+  await transferMenuButton.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".menu-popover")
+    && document.activeElement?.classList.contains("menu-trigger"));
+  const toolMenuEscapeFocus = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+  await page.locator(".menu-trigger", { hasText: "工具" }).click();
+  assert(JSON.stringify(toolMenuHeadings.map((heading) => heading.trim())) === JSON.stringify(["连接工具", "自动化", "管理"])
+    && await page.locator(".menu-trigger", { hasText: "工具" }).getAttribute("aria-expanded") === "true"
+    && toolMenuKeyboardFocus === "端口转发"
+    && toolMenuEscapeFocus === "工具"
+    && !toolMenuState["传输任务"] && !toolMenuState["端口转发"] && !toolMenuState.Tmux
     && toolMenuState["串口分析器"],
-  `SSH tool capabilities are wrong: ${JSON.stringify(toolMenuState)}`);
+  `tool menu grouping, keyboard navigation, or SSH capabilities are wrong: ${JSON.stringify({ toolMenuHeadings, toolMenuKeyboardFocus, toolMenuEscapeFocus, toolMenuState })}`);
   const transferOperationFixtures = [
     { id: "retry-transfer-a", status: "failed", source: "/tmp/retry-a.bin", message: "failed A" },
     { id: "retry-transfer-b", status: "cancelled", source: "/tmp/retry-b.bin", message: "cancelled B" },
@@ -2340,7 +2354,7 @@ Host staging
     window.__pendingTransferMutations = [];
     for (const task of tasks) window.__emitTauriEvent("portmate-transfer-task", task);
   }, transferOperationFixtures);
-  await page.locator(".menu-popover button", { hasText: "传输任务" }).click();
+  await transferMenuButton.click();
   const transferDialog = page.locator(".transfer-dialog");
   await transferDialog.waitFor();
   const sshTransferOptions = await transferDialog.locator("select").locator("option")

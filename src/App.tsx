@@ -52,7 +52,7 @@ import { addDismissedTransferId } from "./transfer-visibility";
 import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
-import { menuGroups, menuItemDisabled } from "./menu-capabilities";
+import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import {
   hasActiveInteractionLayer,
@@ -4357,33 +4357,75 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           <div className="menu-row">
             {menuGroups.map((group) => (
               <div key={group.label} className="menu-item" onMouseLeave={() => setOpenMenu(null)}>
-                <button type="button" className={openMenu === group.label ? "menu-trigger active" : "menu-trigger"} onClick={() => setOpenMenu(openMenu === group.label ? null : group.label)}>
+                <button
+                  type="button"
+                  className={openMenu === group.label ? "menu-trigger active" : "menu-trigger"}
+                  aria-haspopup="true"
+                  aria-expanded={openMenu === group.label}
+                  aria-controls={`menu-${group.label}`}
+                  onClick={() => setOpenMenu(openMenu === group.label ? null : group.label)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setOpenMenu(null);
+                      return;
+                    }
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                    event.preventDefault();
+                    const trigger = event.currentTarget;
+                    setOpenMenu(group.label);
+                    requestAnimationFrame(() => {
+                      const buttons = [...(trigger.parentElement?.querySelectorAll<HTMLButtonElement>(".menu-popover button:not(:disabled)") ?? [])];
+                      (event.key === "ArrowUp" ? buttons.at(-1) : buttons[0])?.focus();
+                    });
+                  }}
+                >
                   {group.label}
                 </button>
                 {openMenu === group.label && (
-                  <div className="menu-popover">
-                    {group.items.map((item) => {
-                      const toggleState = menuToggleState(item);
-                      const disabled = menuItemDisabled(item, menuCapabilityContext)
-                        || (disconnectingSessionIds.has(activeId) && (item === "启动会话" || item === "关闭会话"));
-                      return (
-                        <button
-                          type="button"
-                          key={item}
-                          className={toggleState === undefined ? "" : "menu-toggle"}
-                          aria-pressed={toggleState}
-                          disabled={disabled}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            handleMenuAction(item);
-                            setOpenMenu(null);
-                          }}
-                        >
-                          <span>{item}</span>
-                          {toggleState ? <Check size={13} /> : null}
-                        </button>
-                      );
-                    })}
+                  <div className="menu-popover" id={`menu-${group.label}`} aria-label={`${group.label}菜单`} onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      const trigger = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".menu-trigger");
+                      setOpenMenu(null);
+                      requestAnimationFrame(() => trigger?.focus());
+                      return;
+                    }
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+                    const index = buttons.indexOf(event.target as HTMLButtonElement);
+                    if (!buttons.length || index < 0) return;
+                    event.preventDefault();
+                    const offset = event.key === "ArrowDown" ? 1 : -1;
+                    buttons[(index + offset + buttons.length) % buttons.length]?.focus();
+                  }}>
+                    {menuSectionsForGroup(group.label, group.items).map((section) => (
+                      <div className="menu-popover-section" key={section.label || group.label}>
+                        {section.label ? <span className="menu-popover-heading">{section.label}</span> : null}
+                        {section.items.map((item) => {
+                          const toggleState = menuToggleState(item);
+                          const disabled = menuItemDisabled(item, menuCapabilityContext)
+                            || (disconnectingSessionIds.has(activeId) && (item === "启动会话" || item === "关闭会话"));
+                          return (
+                            <button
+                              type="button"
+                              key={item}
+                              className={toggleState === undefined ? "" : "menu-toggle"}
+                              aria-pressed={toggleState}
+                              disabled={disabled}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleMenuAction(item);
+                                setOpenMenu(null);
+                              }}
+                            >
+                              <span>{item}</span>
+                              {toggleState ? <Check size={13} /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

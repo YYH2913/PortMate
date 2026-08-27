@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { menuGroups, menuItemDisabled } from "./menu-capabilities";
+import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 
 const ready: MenuCapabilityContext = {
@@ -21,6 +21,14 @@ describe("top menu capabilities", () => {
     expect(items).not.toContain("会话搜索");
     expect(items).not.toContain("复制");
     expect(items).not.toContain("关闭窗格");
+  });
+
+  it("separates connection, automation, and management tools without duplicating commands", () => {
+    const tools = menuGroups.find((group) => group.label === "工具");
+    expect(tools).toBeDefined();
+    const sections = menuSectionsForGroup("工具", tools?.items ?? []);
+    expect(sections.map((section) => section.label)).toEqual(["连接工具", "自动化", "管理"]);
+    expect(sections.flatMap((section) => section.items)).toEqual(tools?.items);
   });
 
   it("disables session and terminal commands without changing always-available tools", () => {
