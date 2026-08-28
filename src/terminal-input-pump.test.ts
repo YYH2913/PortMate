@@ -165,6 +165,33 @@ describe("terminal input pump", () => {
     expect(secondDone).toBe(true);
   });
 
+  it("forwards write acknowledgement options without changing queue ordering", async () => {
+    const calls: Array<{ text: string; options?: { awaitWrite?: boolean } }> = [];
+    const pump = new TerminalInputPump((_sessionId, text, _origin, options) => {
+      calls.push({ text, options });
+    });
+
+    await pump.enqueue("router", "paced", "atomic", { awaitWrite: true });
+    await pump.enqueue("router", "paste", "atomic");
+
+    expect(calls).toEqual([
+      { text: "paced", options: { awaitWrite: true } },
+      { text: "paste", options: undefined },
+    ]);
+  });
+
+  it("propagates requested write failures while keeping ordinary input fail-soft", async () => {
+    const pump = new TerminalInputPump(async (_sessionId, _text, _origin, options) => {
+      if (options?.awaitWrite) throw new Error("write failed");
+      throw new Error("ordinary input failure");
+    });
+
+    await expect(pump.enqueue("router", "paced", "atomic", { awaitWrite: true }))
+      .rejects.toThrow("write failed");
+    await expect(pump.enqueue("router", "ordinary", "atomic"))
+      .resolves.toBeUndefined();
+  });
+
   it("runs independent registry sessions concurrently", async () => {
     const first = deferred();
     const calls: string[] = [];

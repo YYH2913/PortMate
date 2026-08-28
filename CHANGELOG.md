@@ -12,6 +12,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   keyboard navigation and focus restoration, while preserving the existing command entry points.
 - Added an always-visible MCP Bridge status summary and clearer authorization, listener, client,
   and service-process sections without changing the existing grant, HTTP, and audit workflows.
+- Sender-panel atomic writes now acknowledge completion from the native per-session transport queue;
+  configured repeat intervals are measured against actual writes while printable keyboard input keeps
+  its asynchronous coalescing path.
 
 ## [0.1.6] - 2026-08-27
 

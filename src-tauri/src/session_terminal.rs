@@ -199,10 +199,23 @@ pub(crate) async fn send_text(
     text: String,
     interactive: Option<bool>,
     queued: Option<bool>,
+    await_write: Option<bool>,
 ) -> Result<Option<SessionEvent>, String> {
     let interactive = interactive.unwrap_or(false);
+    // `queued` keeps the low-latency keyboard path asynchronous. Callers that
+    // submit an atomic payload (paste or the sender panel) can retain the
+    // queue contract while requesting an acknowledgement after the actual
+    // transport write, so their pacing is measured against real writes.
     if queued.unwrap_or(false) {
-        enqueue_interactive_text(state.inner().session_io(), session_id, text, interactive)?;
+        let io = state.inner().session_io();
+        // Acknowledgement is deliberately restricted to atomic payloads;
+        // printable interactive input must remain fire-and-forget even if a
+        // caller sends an unexpected `awaitWrite` flag.
+        if await_write.unwrap_or(false) && !interactive {
+            enqueue_interactive_text_and_wait(io, session_id, text, interactive).await?;
+        } else {
+            enqueue_interactive_text(io, session_id, text, interactive)?;
+        }
         return Ok(None);
     }
     if interactive {

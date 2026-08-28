@@ -323,6 +323,65 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
 }
 
 #[test]
+fn paced_terminal_input_ack_waits_for_the_outbound_write_lane() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = vec![0_u8; 5];
+            socket.read_exact(&mut received).await.unwrap();
+            let _ = received_tx.send(received);
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-paced-input-ack-test-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let mut request = Box::pin(enqueue_interactive_text_and_wait(
+            state.session_io(),
+            profile.id.clone(),
+            "paced".to_string(),
+            false,
+        ));
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut request)
+            .await
+            .is_err());
+        drop(lane_guard);
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), &mut request)
+                .await
+                .expect("paced input acknowledgement timed out")
+                .expect("paced input write failed"),
+            ()
+        );
+        let received = tokio::time::timeout(Duration::from_secs(1), received_rx)
+            .await
+            .expect("paced input server did not receive the payload")
+            .expect("paced input server dropped its response");
+        assert_eq!(received, b"paced");
+
+        clear_interactive_write_queue(&state.store_path, &profile.id);
+        clear_deferred_interactive_queue(&state.store_path, &profile.id);
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        server.await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn outbound_lane_deadline_recovers_after_timeout() {
     tauri::async_runtime::block_on(async {
         let store_path = canonical_test_temp_path("portmate-outbound-lane-timeout")

@@ -4,13 +4,23 @@ export type TerminalInputSender = (
   sessionId: string,
   text: string,
   origin: SyncInputOrigin,
+  options?: TerminalInputSendOptions,
 ) => void | Promise<void>;
+
+export type TerminalInputSendOptions = {
+  awaitWrite?: boolean;
+};
 
 type PendingTerminalInput = {
   sessionId: string;
   text: string;
   origin: SyncInputOrigin;
-  waiters: Array<() => void>;
+  options?: TerminalInputSendOptions;
+  waiters: Array<{
+    resolve: () => void;
+    reject: (reason?: unknown) => void;
+    propagateErrors: boolean;
+  }>;
 };
 
 // Keep a single cancellable IPC boundary. The native queued-input command
@@ -28,19 +38,31 @@ export class TerminalInputPump {
 
   constructor(private readonly send: TerminalInputSender) {}
 
-  enqueue(sessionId: string, text: string, origin: SyncInputOrigin): Promise<void> {
+  enqueue(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ): Promise<void> {
     if (!sessionId || !text) return Promise.resolve();
-    const completion = new Promise<void>((resolve) => {
+    const completion = new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        propagateErrors: Boolean(options?.awaitWrite),
+      };
       const tail = this.pending.at(-1);
       if (
         origin === "interactive"
         && tail?.origin === "interactive"
         && tail.sessionId === sessionId
+        && !options?.awaitWrite
+        && !tail.options?.awaitWrite
       ) {
         tail.text += text;
-        tail.waiters.push(resolve);
+        tail.waiters.push(waiter);
       } else {
-        this.pending.push({ sessionId, text, origin, waiters: [resolve] });
+        this.pending.push({ sessionId, text, origin, options, waiters: [waiter] });
       }
     });
     this.drain();
@@ -80,7 +102,7 @@ export class TerminalInputPump {
     this.fastInFlightCount += 1;
     let result: void | Promise<void>;
     try {
-      result = this.send(item.sessionId, item.text, item.origin);
+      result = this.send(item.sessionId, item.text, item.origin, item.options);
     } catch {
       result = undefined;
     }
@@ -94,7 +116,7 @@ export class TerminalInputPump {
 
   reset(): void {
     for (const item of this.pending) {
-      for (const resolve of item.waiters) resolve();
+      for (const waiter of item.waiters) waiter.resolve();
     }
     this.pending.length = 0;
   }
@@ -114,17 +136,26 @@ export class TerminalInputPump {
     this.active = true;
     let result: void | Promise<void>;
     try {
-      result = this.send(next.sessionId, next.text, next.origin);
-    } catch {
-      result = undefined;
+      result = this.send(next.sessionId, next.text, next.origin, next.options);
+    } catch (error) {
+      result = Promise.reject(error);
     }
     void Promise.resolve(result)
-      .catch(() => {})
+      .then(
+        () => this.resolveWaiters(next),
+        (error) => this.resolveWaiters(next, error, true),
+      )
       .finally(() => {
-        for (const resolve of next.waiters) resolve();
         this.active = false;
         this.drain();
       });
+  }
+
+  private resolveWaiters(item: PendingTerminalInput, error?: unknown, failed = false): void {
+    for (const waiter of item.waiters) {
+      if (failed && waiter.propagateErrors) waiter.reject(error);
+      else waiter.resolve();
+    }
   }
 }
 
@@ -134,14 +165,19 @@ export class TerminalInputPumpRegistry {
 
   constructor(private readonly send: TerminalInputSender) {}
 
-  enqueue(sessionId: string, text: string, origin: SyncInputOrigin): Promise<void> {
+  enqueue(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ): Promise<void> {
     if (!sessionId) return Promise.resolve();
     let pump = this.pumps.get(sessionId);
     if (!pump) {
       pump = new TerminalInputPump(this.send);
       this.pumps.set(sessionId, pump);
     }
-    return pump.enqueue(sessionId, text, origin);
+    return pump.enqueue(sessionId, text, origin, options);
   }
 
   enqueueFast(sessionId: string, text: string, origin: SyncInputOrigin): void {

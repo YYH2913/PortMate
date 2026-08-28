@@ -84,6 +84,7 @@ import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { TerminalInputPumpRegistry } from "./terminal-input-pump";
+import type { TerminalInputSendOptions } from "./terminal-input-pump";
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
@@ -101,6 +102,7 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
 import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp-connection-settings";
+import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, dispatchPacedSends, normalizeSendCount, normalizeSendInterval } from "./send-panel-state";
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
@@ -304,8 +306,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const draftExpectedProfileRef = useRef<SessionProfile | null>(null);
   const [sendText, setSendText] = useState("");
   const [sendMode, setSendMode] = useState<SendMode>("text");
-  const [sendCount, setSendCount] = useState(1);
-  const [sendIntervalMs, setSendIntervalMs] = useState(1000);
+  const [sendCount, setSendCount] = useState(DEFAULT_SEND_COUNT);
+  const [sendIntervalMs, setSendIntervalMs] = useState(DEFAULT_SEND_INTERVAL_MS);
   const [sendTarget, setSendTarget] = useState<SendTarget>("active");
   const [sendAdvancedOpen, setSendAdvancedOpen] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
@@ -396,11 +398,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const syncInputRef = useRef(false);
   if (!directInputPumpRef.current) {
-    directInputPumpRef.current = new TerminalInputPumpRegistry((targetSessionId, text, origin) => {
+    directInputPumpRef.current = new TerminalInputPumpRegistry((targetSessionId, text, origin, options) => {
       const inputEpoch = captureTerminalInputEpoch(targetSessionId);
       return inputEpoch === null
         ? Promise.resolve()
-        : sendTerminalInput(targetSessionId, text, origin, inputEpoch);
+        : sendTerminalInput(targetSessionId, text, origin, inputEpoch, options);
     });
   }
   const terminalInputEpochsRef = useRef(new Map<string, number>());
@@ -3788,7 +3790,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  function routeTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin = "interactive"): Promise<void> {
+  function routeTerminalInput(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin = "interactive",
+    options?: TerminalInputSendOptions,
+  ): Promise<void> {
     const currentSessions = sessionsRef.current;
     if (!currentSessions.some((session) => session.profile.id === sessionId)) return Promise.resolve();
     const broadcastEnabled = syncInputRef.current;
@@ -3800,7 +3807,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
         return Promise.resolve();
       }
-      return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
+      return directInputPumpRef.current?.enqueue(sessionId, text, origin, options) ?? Promise.resolve();
     }
     const settings = syncInputSettings;
     const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
@@ -3838,7 +3845,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const epoch = inputEpochs.get(targetId);
       return epoch === null || epoch === undefined
         ? Promise.resolve()
-        : sendTerminalInput(targetId, payload, origin, epoch);
+        : sendTerminalInput(targetId, payload, origin, epoch, options);
     }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
@@ -3855,7 +3862,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     });
   }
 
-  async function sendTerminalInput(sessionId: string, text: string, origin: SyncInputOrigin, inputEpoch: number) {
+  async function sendTerminalInput(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    inputEpoch: number,
+    options?: TerminalInputSendOptions,
+  ) {
     if (!sessionId || !text || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
     let session: SessionSummary | undefined;
 
@@ -3869,6 +3882,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             text,
             interactive: origin === "interactive",
             queued: true,
+            ...(options?.awaitWrite ? { awaitWrite: true } : {}),
           });
         }
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
@@ -3947,9 +3961,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   async function runSendPanel() {
     if (sendBusy) return;
-    const textPayload = sendMode === "text" ? sendText : "";
-    const bytePayload = sendMode === "hex" ? parseHexBytes(sendText) : [];
-    if (sendMode === "text" ? !textPayload : !bytePayload.length) return;
+    const sendModeSnapshot = sendMode;
+    const textPayload = sendModeSnapshot === "text" ? sendText : "";
+    const bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(sendText) : [];
+    if (sendModeSnapshot === "text" ? !textPayload : !bytePayload.length) return;
     if (sendTarget === "active" && activeId !== activeIdRef.current) return;
     const currentSessions = sessionsRef.current;
     const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
@@ -3963,29 +3978,29 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     const inputEpochs = new Map(targets.map((target) => [target, captureTerminalInputEpoch(target)]));
+    const syncInputSnapshot = syncInputRef.current;
     const sendToken = sendOperationGateRef.current.begin("send");
     if (sendToken === null) return;
     setSendBusy(true);
     try {
+      const countSnapshot = normalizeSendCount(sendCount);
+      const intervalSnapshot = normalizeSendInterval(sendIntervalMs);
       await syncInputDispatcherRef.current.enqueueOperation(async () => {
-        for (let index = 0; index < Math.max(1, sendCount); index += 1) {
+        await dispatchPacedSends(countSnapshot, intervalSnapshot, async () => {
           await Promise.all(
             targets.map((target) => {
               const inputEpoch = inputEpochs.get(target);
               if (inputEpoch === null || inputEpoch === undefined) return Promise.resolve();
-              return sendMode === "hex"
+              return sendModeSnapshot === "hex"
                 ? sendTerminalBytes(target, bytePayload, inputEpoch)
-                : !syncInputRef.current
-                  ? routeTerminalInput(target, textPayload, "atomic")
-                  : sendTerminalInput(target, textPayload, "atomic", inputEpoch);
+                : !syncInputSnapshot
+                  ? routeTerminalInput(target, textPayload, "atomic", { awaitWrite: true })
+                  : sendTerminalInput(target, textPayload, "atomic", inputEpoch, { awaitWrite: true });
             }),
           );
-          if (index + 1 < Math.max(1, sendCount)) {
-            await delay(sendIntervalMs);
-          }
-        }
+        });
       });
-      if (sendMode === "text" && textPayload.trim()) {
+      if (sendModeSnapshot === "text" && textPayload.trim()) {
         for (const target of targets) rememberCommand(textPayload, target);
       }
     } catch (error) {
@@ -4258,7 +4273,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         </Suspense>
       );
     }
-    const sendAdvancedActive = sendCount !== 1 || sendIntervalMs !== 1000 || sendTarget !== "active";
+    const sendAdvancedActive = sendCount !== DEFAULT_SEND_COUNT || sendIntervalMs !== DEFAULT_SEND_INTERVAL_MS || sendTarget !== "active";
     return (
       <>
         <div className="send-toolbar" data-advanced-open={sendAdvancedOpen ? "true" : "false"}>
@@ -4289,11 +4304,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <div className="send-advanced-controls" role="group" aria-label="高级发送选项">
               <label>
                 <span>计数</span>
-                <input type="number" min={1} className="number-input" aria-label="发送次数" value={sendCount} onChange={(event) => setSendCount(Math.max(1, Number(event.target.value) || 1))} />
+                <input type="number" min={1} max={MAX_SEND_COUNT} className="number-input" aria-label="发送次数" value={sendCount} onChange={(event) => setSendCount(normalizeSendCount(Number(event.target.value)))} />
               </label>
               <label>
                 <span>间隔</span>
-                <input type="number" min={0} className="number-input" aria-label="发送间隔（毫秒）" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
+                <input type="number" min={0} max={MAX_SEND_INTERVAL_MS} className="number-input" aria-label="发送间隔（毫秒）" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(normalizeSendInterval(Number(event.target.value)))} />
               </label>
               <label>
                 <span>目标</span>
@@ -6757,8 +6772,4 @@ function resolveSendTargets(target: SendTarget, activeId: string, sessions: Sess
     return panes.filter((session) => session.runtime.status === "connected").map((session) => session.profile.id);
   }
   return activeId ? [activeId] : [];
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

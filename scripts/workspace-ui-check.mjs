@@ -4155,6 +4155,16 @@ Host staging
     .map((call) => call.args.text), senderLifecycleStart);
   assert(JSON.stringify(orderedSenderWrites) === JSON.stringify(["q", "uname -a"]),
     `sender changed terminal input order: ${JSON.stringify(orderedSenderWrites)}`);
+  const senderWriteModes = await page.evaluate((start) => window.__invokeCalls
+    .filter((call) => call.command === "send_text").slice(start)
+    .map((call) => ({ text: call.args.text, queued: call.args.queued, interactive: call.args.interactive, awaitWrite: call.args.awaitWrite })), senderLifecycleStart);
+  assert(senderWriteModes[0]?.queued === true
+    && senderWriteModes[0]?.interactive === true
+    && senderWriteModes[0]?.awaitWrite === undefined
+    && senderWriteModes[1]?.queued === true
+    && senderWriteModes[1]?.interactive === false
+    && senderWriteModes[1]?.awaitWrite === true,
+  `sender did not request a transport acknowledgement for atomic writes: ${JSON.stringify(senderWriteModes)}`);
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "record_command_history").length >= 3);
   await page.waitForTimeout(100);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("portmate.commandHistory") || "null")?.entries?.[0]?.command === "uname -a");

@@ -138,6 +138,7 @@ struct InteractiveWriteRequest {
     text: String,
     wire_bytes: Vec<u8>,
     coalesce: bool,
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
 type InteractiveWriteQueues =
@@ -205,6 +206,43 @@ pub(super) fn enqueue_interactive_text(
     text: String,
     coalesce: bool,
 ) -> Result<(), String> {
+    enqueue_interactive_text_with_completion(io, session_id, text, coalesce, None)
+}
+
+/// Enqueue an atomic payload and wait until the per-session writer has
+/// completed the transport write. The regular keyboard path intentionally
+/// remains fire-and-forget; this acknowledgement is used by paced senders
+/// that must measure their interval from an actual write rather than from
+/// queue admission.
+pub(super) async fn enqueue_interactive_text_and_wait(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+) -> Result<(), String> {
+    if session_id.is_empty() || text.is_empty() {
+        return Ok(());
+    }
+    let (completion, result) = tokio::sync::oneshot::channel();
+    enqueue_interactive_text_with_completion(
+        io,
+        session_id,
+        text,
+        coalesce,
+        Some(completion),
+    )?;
+    result
+        .await
+        .map_err(|_| "终端输入队列已关闭，未能确认写入".to_string())?
+}
+
+fn enqueue_interactive_text_with_completion(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
@@ -252,6 +290,7 @@ pub(super) fn enqueue_interactive_text(
                     let runtime_id = first.runtime_id;
                     let mut wire_bytes = first.wire_bytes;
                     let coalesce = first.coalesce;
+                    let completion = first.completion;
                     // Drain anything already queued, but never delay the first
                     // byte solely to enlarge a batch. The frontend coalesces
                     // bursts while an IPC call is in flight.
@@ -263,7 +302,9 @@ pub(super) fn enqueue_interactive_text(
                             break;
                         };
                         let remaining = INTERACTIVE_WRITE_BATCH_MAX_BYTES - text.len();
-                        if next.coalesce
+                        if completion.is_none()
+                            && next.completion.is_none()
+                            && next.coalesce
                             && next.runtime_id == runtime_id
                             && next.text.len() <= remaining
                         {
@@ -277,32 +318,51 @@ pub(super) fn enqueue_interactive_text(
                         }
                     }
                     if worker_cancellation.is_cancelled() {
+                        if let Some(completion) = completion {
+                            let _ = completion.send(Err("终端输入队列已关闭".to_string()));
+                        }
                         break;
                     }
                     match current_session_runtime_id(&io.runtimes, &session_id) {
                         Ok(Some(current)) if current == runtime_id => {
-                            if worker_cancellation.is_cancelled() {
-                                break;
+                            let result = if worker_cancellation.is_cancelled() {
+                                Err("终端输入队列已关闭".to_string())
+                            } else {
+                                send_text_interactive_inner_for_runtime(
+                                    io.clone(),
+                                    session_id.clone(),
+                                    text,
+                                    &runtime_id,
+                                    wire_bytes,
+                                )
+                                .await
+                                .map(|_| ())
+                            };
+                            if completion.is_none() {
+                                if let Err(error) = &result {
+                                    publish_interactive_write_error(&io, &session_id, error.clone());
+                                }
                             }
-                            if let Err(error) = send_text_interactive_inner_for_runtime(
-                                io.clone(),
-                                session_id.clone(),
-                                text,
-                                &runtime_id,
-                                wire_bytes,
-                            )
-                            .await
-                            {
-                                publish_interactive_write_error(&io, &session_id, error);
+                            if let Some(completion) = completion {
+                                let _ = completion.send(result);
                             }
                         }
                         Ok(_) => {
                             // The session was closed or replaced while the
                             // request waited in the queue. Never replay stale
                             // keystrokes into a newly connected runtime.
+                            if let Some(completion) = completion {
+                                let _ = completion.send(Err(
+                                    "会话已关闭或被新连接替换".to_string(),
+                                ));
+                            }
                         }
                         Err(error) => {
-                            publish_interactive_write_error(&io, &session_id, error);
+                            if let Some(completion) = completion {
+                                let _ = completion.send(Err(error));
+                            } else {
+                                publish_interactive_write_error(&io, &session_id, error);
+                            }
                         }
                     }
                 }
@@ -320,19 +380,30 @@ pub(super) fn enqueue_interactive_text(
     if sender.cancellation.is_cancelled() {
         return Err("终端输入队列已关闭".to_string());
     }
-    sender.sender.try_send(InteractiveWriteRequest {
+    let result = sender.sender.try_send(InteractiveWriteRequest {
         io,
         session_id,
         runtime_id,
         text,
         wire_bytes,
         coalesce,
-    })
-    .map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => "终端输入队列已满，请稍后重试".to_string(),
-        mpsc::error::TrySendError::Closed(_) => "终端输入队列已关闭".to_string(),
-    })?;
-    Ok(())
+        completion,
+    });
+    match result {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(request)) => {
+            if let Some(completion) = request.completion {
+                let _ = completion.send(Err("终端输入队列已满，请稍后重试".to_string()));
+            }
+            Err("终端输入队列已满，请稍后重试".to_string())
+        }
+        Err(mpsc::error::TrySendError::Closed(request)) => {
+            if let Some(completion) = request.completion {
+                let _ = completion.send(Err("终端输入队列已关闭".to_string()));
+            }
+            Err("终端输入队列已关闭".to_string())
+        }
+    }
 }
 
 fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: String) {
