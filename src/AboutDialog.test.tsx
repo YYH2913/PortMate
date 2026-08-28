@@ -13,6 +13,8 @@ describe("about dialog", () => {
     expect(html).toContain("PortMate Contributors");
     expect(html).toContain("项目链接");
     expect(html).toContain("问题反馈");
+    expect(html).toContain("开源许可");
+    expect(html).toContain("Copyright © 2026 PortMate Contributors");
     expect(html).toContain("使用的开源代码");
     expect(html).toContain("JetBrains Mono");
     expect(html).toContain("SIL OFL-1.1");

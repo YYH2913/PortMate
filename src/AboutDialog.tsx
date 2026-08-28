@@ -9,6 +9,7 @@ const projectLinks = [
   { label: "使用文档", detail: "README 与 MCP API 参考", url: `${PROJECT_URL}#readme`, icon: FileText },
   { label: "问题反馈", detail: "报告 Bug 或提出功能建议", url: `${PROJECT_URL}/issues`, icon: Code2 },
   { label: "版本发布", detail: "查看发行包与更新记录", url: `${PROJECT_URL}/releases`, icon: ExternalLink },
+  { label: "开源许可", detail: "Apache License 2.0 完整文本", url: `${PROJECT_URL}/blob/main/LICENSE`, icon: Scale },
 ] as const;
 
 const openSourceComponents = [
@@ -84,7 +85,7 @@ export default function AboutDialog({ onClose }: { onClose: () => void }) {
             <button type="button" className="about-license-link" data-url={`${PROJECT_URL}/tree/main/THIRD_PARTY_LICENSES`} onClick={() => openLink(`${PROJECT_URL}/tree/main/THIRD_PARTY_LICENSES`)}><Scale size={14} aria-hidden="true" />查看完整第三方许可证清单</button>
           </section>
 
-          <p className="about-notice">PortMate 处于持续开发阶段。使用前请根据目标平台和运行环境完成相应的安全、兼容性与网络访问验证。</p>
+          <p className="about-notice">PortMate 处于持续开发阶段。使用前请根据目标平台和运行环境完成相应的安全、兼容性与网络访问验证。<br />Copyright © 2026 PortMate Contributors</p>
         </div>
 
         <footer className="about-actions"><button type="button" onClick={onClose}>关闭</button></footer>
