@@ -128,6 +128,7 @@ const LazyMcpDialog = lazy(() => import("./McpDialog"));
 const LazyMcpApprovalDialog = lazy(() => import("./McpApprovalDialog"));
 const LazyCredentialDialog = lazy(() => import("./CredentialDialog"));
 const LazyNoticeDialog = lazy(() => import("./NoticeDialog"));
+const LazyAboutDialog = lazy(() => import("./AboutDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -195,7 +196,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 
 type SettingsDialog = "terminal" | "session" | null;
 type SessionSettingsMode = "create" | "edit";
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "about" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
 type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string; link?: string } | null;
@@ -1862,12 +1863,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setUtilityDialog("mcp");
       return;
     }
-    if (item === "日志管理") {
-      setUtilityDialog("logs");
+    if (item === "关于 PortMate") {
+      setUtilityDialog("about");
       return;
     }
-    if (item === "关于 PortMate") {
-      setNotice({ title: "关于 PortMate", message: "PortMate 是面向串口、SSH 和 MCP 会话控制的桌面终端工作台。" });
+    if (item === "日志管理") {
+      setUtilityDialog("logs");
       return;
     }
     if (item === "查找") {
@@ -4781,6 +4782,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             onGrantMutationFinish={finishGrantMutation}
             onAuditChange={updateAudit}
           />
+        </Suspense>
+      )}
+      {utilityDialog === "about" && (
+        <Suspense fallback={null}>
+          <LazyAboutDialog onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "one-keys" && (
