@@ -16,7 +16,8 @@ const openSourceComponents = [
   { name: "React", role: "工作区界面框架", license: "MIT", url: "https://github.com/facebook/react" },
   { name: "xterm.js", role: "终端仿真与渲染", license: "MIT", url: "https://github.com/xtermjs/xterm.js" },
   { name: "libssh", role: "SSH 传输支持", license: "LGPL-2.1", url: "https://www.libssh.org/" },
-  { name: "russh / russh-sftp", role: "Rust SSH 与 SFTP 实现", license: "Apache-2.0 / MIT", url: "https://github.com/Eugeny/russh" },
+  { name: "russh", role: "Rust SSH 协议实现", license: "Apache-2.0", url: "https://github.com/warp-tech/russh" },
+  { name: "russh-sftp", role: "Rust SFTP 子系统", license: "Apache-2.0", url: "https://github.com/AspectUnk/russh-sftp" },
   { name: "JetBrains Mono", role: "随应用分发的等宽字体", license: "SIL OFL-1.1", url: "https://github.com/JetBrains/JetBrainsMono" },
 ] as const;
 

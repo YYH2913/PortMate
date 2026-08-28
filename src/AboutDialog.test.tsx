@@ -16,6 +16,8 @@ describe("about dialog", () => {
     expect(html).toContain("使用的开源代码");
     expect(html).toContain("JetBrains Mono");
     expect(html).toContain("SIL OFL-1.1");
+    expect(html).toContain("warp-tech/russh");
+    expect(html).toContain("AspectUnk/russh-sftp");
     expect(html).toContain("https://github.com/YYH2913/PortMate/issues");
   });
 });
