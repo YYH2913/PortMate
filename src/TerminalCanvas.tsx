@@ -421,6 +421,9 @@ export default function TerminalCanvas({
   const [freeInputSource, setFreeInputSource] = useState<"manual" | "normal" | null>(null);
   const [freeInputValue, setFreeInputValue] = useState("");
   const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
+  // The native prompt validator needs the newest event id, but rendering the
+  // completion panel for every byte of a prompt creates avoidable React work.
+  // Keep detection state current in the ref and only publish visual changes.
   const [oneKeyCompletionId, setOneKeyCompletionId] = useState("");
   const [oneKeyCompletionBusy, setOneKeyCompletionBusy] = useState(false);
   const [oneKeyCompletionError, setOneKeyCompletionError] = useState("");
@@ -724,6 +727,13 @@ export default function TerminalCanvas({
       ? state.prompt
       : null;
     if (!previousPrompt && !prompt) return;
+    const previousSignature = previousPrompt
+      ? `${previousPrompt.field}\u0000${previousPrompt.line}`
+      : "";
+    const nextSignature = prompt
+      ? `${prompt.field}\u0000${prompt.line}`
+      : "";
+    if (previousSignature === nextSignature) return;
     if (previousPrompt?.eventId !== prompt?.eventId) {
       setOneKeyCompletionBusy(false);
       setOneKeyCompletionError("");
@@ -753,7 +763,9 @@ export default function TerminalCanvas({
 
   async function submitOneKeyCompletion() {
     if (!active || !oneKeyPrompt || !selectedOneKeyCompletion || !onOneKeyCompletion) return;
-    const promptEventId = oneKeyPrompt.eventId;
+    // Detection can advance through multiple transport chunks without a
+    // corresponding React render. Use the latest validated event id.
+    const promptEventId = oneKeyPromptStateRef.current.prompt?.eventId ?? oneKeyPrompt.eventId;
     setOneKeyCompletionBusy(true);
     setOneKeyCompletionError("");
     try {
@@ -925,6 +937,9 @@ export default function TerminalCanvas({
     host.dataset.terminalReady = "false";
     const cachedState = terminalStateCache.get(stateCacheKey);
     const terminalSettings = normalizeTerminalProfileSettings(active.profile.terminal);
+    // A new XTerm instance must replay the current polled snapshot even when
+    // the same session was already mounted in another view instance.
+    polledEventIdsRef.current.delete(active.profile.id);
     seenEventsRef.current = new Set(cachedState?.seenEventIds ?? []);
     lastSizeRef.current = "";
     lastCopiedSelectionRef.current = "";
@@ -1258,6 +1273,8 @@ export default function TerminalCanvas({
     let fastPathTextDecoder = new TextDecoder();
     let pendingEventWriteHead = 0;
     let eventWriteActive = false;
+    let eventWriteDrainQueued = false;
+    let scheduleEventWriteDrain = () => {};
 
     const compactPendingEventWrites = () => {
       if (pendingEventWriteHead === 0) return;
@@ -1373,12 +1390,23 @@ export default function TerminalCanvas({
       writeReturned = true;
       if (callbackCompleted) drainEventWrites();
     };
+    scheduleEventWriteDrain = () => {
+      if (terminalDisposed || eventWriteDrainQueued) return;
+      eventWriteDrainQueued = true;
+      // A Tauri event burst often arrives as several callbacks in one task.
+      // Move only queue admission to a microtask so those callbacks share one
+      // xterm write, while parser callbacks still drain synchronously.
+      queueMicrotask(() => {
+        eventWriteDrainQueued = false;
+        drainEventWrites();
+      });
+    };
     const enqueueFallback = (pending: PendingTerminalWrite, rawMatched = false) => {
       pending.waitingForRaw = false;
       pending.fallbackTimer = undefined;
       pendingTextEvents.delete(pending.event.id);
       if (!rawMatched) fastPathTextDecoder = new TextDecoder();
-      drainEventWrites();
+      scheduleEventWriteDrain();
     };
     const writeEvent = (event: SessionEvent, awaitRaw = false) => {
       if (!event.id) return false;
@@ -1395,7 +1423,7 @@ export default function TerminalCanvas({
       } else {
         queueEventWrite({ event });
       }
-      drainEventWrites();
+      scheduleEventWriteDrain();
       return true;
     };
     writeEventRef.current = writeEvent;
@@ -1439,7 +1467,7 @@ export default function TerminalCanvas({
         };
         if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, syntheticEvent.id)) return false;
         queueEventWrite({ event: syntheticEvent, rawBytes });
-        drainEventWrites();
+        scheduleEventWriteDrain();
         applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, syntheticEvent));
         return true;
       }
@@ -1460,7 +1488,7 @@ export default function TerminalCanvas({
         annotations: { "terminalBytesFastPath": "true" },
       };
       queueEventWrite(bytesEvent.truncated ? { event } : { event, rawBytes });
-      drainEventWrites();
+      scheduleEventWriteDrain();
       return true;
     };
     writeTerminalBytesRef.current = writeTerminalBytes;
@@ -1492,7 +1520,7 @@ export default function TerminalCanvas({
         ? Uint8Array.from(packet.bytes)
         : undefined;
       queueEventWrite(rawBytes ? { event, rawBytes } : { event });
-      drainEventWrites();
+      scheduleEventWriteDrain();
       if (packet.event.direction === "inbound") {
         applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, event));
       }
@@ -2361,11 +2389,19 @@ export default function TerminalCanvas({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    for (const event of events) {
-      writeEventRef.current(event);
+    const sessionId = active?.profile.id;
+    const previousIds = sessionId ? polledEventIdsRef.current.get(sessionId) ?? [] : [];
+    let firstNewIndex = 0;
+    while (firstNewIndex < previousIds.length
+      && firstNewIndex < events.length
+      && previousIds[firstNewIndex] === events[firstNewIndex]?.id) {
+      firstNewIndex += 1;
     }
-    if (active?.profile.id) {
-      polledEventIdsRef.current.set(active.profile.id, events.map((event) => event.id));
+    for (let index = firstNewIndex; index < events.length; index += 1) {
+      writeEventRef.current(events[index]);
+    }
+    if (sessionId) {
+      polledEventIdsRef.current.set(sessionId, events.map((event) => event.id));
     }
   }, [events, active?.profile.id]);
 

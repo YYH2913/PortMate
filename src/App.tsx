@@ -3795,9 +3795,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     text: string,
     origin: SyncInputOrigin = "interactive",
     options?: TerminalInputSendOptions,
-  ): Promise<void> {
+  ): void | Promise<void> {
     const currentSessions = sessionsRef.current;
-    if (!currentSessions.some((session) => session.profile.id === sessionId)) return Promise.resolve();
+    if (!currentSessions.some((session) => session.profile.id === sessionId)) return;
     const broadcastEnabled = syncInputRef.current;
     // When synchronization is disabled, keep each session on its dedicated
     // pump so an external atomic send cannot overtake queued keystrokes or
@@ -3805,9 +3805,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!broadcastEnabled) {
       if (origin === "interactive") {
         directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
-        return Promise.resolve();
+        return;
       }
-      return directInputPumpRef.current?.enqueue(sessionId, text, origin, options) ?? Promise.resolve();
+      return directInputPumpRef.current?.enqueue(sessionId, text, origin, options);
     }
     const settings = syncInputSettings;
     const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
@@ -3843,9 +3843,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       candidates,
     }, (targetId, payload) => {
       const epoch = inputEpochs.get(targetId);
-      return epoch === null || epoch === undefined
-        ? Promise.resolve()
-        : sendTerminalInput(targetId, payload, origin, epoch, options);
+      if (epoch === null || epoch === undefined) return;
+      if (origin === "interactive" && !options?.awaitWrite) {
+        if (!terminalInputIsCurrent(targetId, epoch)) return;
+        directInputPumpRef.current?.enqueueFast(targetId, payload, origin);
+        return;
+      }
+      return sendTerminalInput(targetId, payload, origin, epoch, options);
     }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (

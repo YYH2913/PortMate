@@ -259,13 +259,13 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     sessionId: string,
     text: string,
     origin: SyncInputOrigin,
-  ): Promise<void> {
-    if (captureTerminalInputEpoch() === null) return Promise.resolve();
+  ): void | Promise<void> {
+    if (captureTerminalInputEpoch() === null) return;
     if (origin === "interactive") {
       directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
-      return Promise.resolve();
+      return;
     }
-    return directInputPumpRef.current?.enqueue(sessionId, text, origin) ?? Promise.resolve();
+    return directInputPumpRef.current?.enqueue(sessionId, text, origin);
   }
 
   function rememberDetachedCommand(sessionId: string, command: string) {

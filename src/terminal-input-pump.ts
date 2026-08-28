@@ -23,9 +23,11 @@ type PendingTerminalInput = {
   }>;
 };
 
-// Keep a single cancellable IPC boundary. The native queued-input command
-// returns immediately, while any burst behind it is merged into one call.
+// Keep one in-flight request so lifecycle resets can fence every request that
+// has not reached the native queue yet. A tiny coalescing window removes the
+// per-key IPC pattern without adding visible latency to terminal input.
 const MAX_FAST_IN_FLIGHT = 1;
+const FAST_INPUT_BATCH_DELAY_MS = 4;
 
 /**
  * Starts the first input immediately, then coalesces interactive input while
@@ -35,6 +37,7 @@ export class TerminalInputPump {
   private readonly pending: PendingTerminalInput[] = [];
   private active = false;
   private fastInFlightCount = 0;
+  private fastFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly send: TerminalInputSender) {}
 
@@ -65,6 +68,7 @@ export class TerminalInputPump {
         this.pending.push({ sessionId, text, origin, options, waiters: [waiter] });
       }
     });
+    this.cancelFastDrain();
     this.drain();
     return completion;
   }
@@ -80,22 +84,13 @@ export class TerminalInputPump {
       void this.enqueue(sessionId, text, origin);
       return;
     }
-    if (
-      this.active
-      || this.fastInFlightCount >= MAX_FAST_IN_FLIGHT
-      || this.pending.some((item) => item.origin !== "interactive")
-    ) {
-      const tail = this.pending.at(-1);
-      if (tail?.origin === "interactive" && tail.sessionId === sessionId) {
-        tail.text += text;
-      } else {
-        this.pending.push({ sessionId, text, origin, waiters: [] });
-      }
-      this.drain();
-      return;
+    const tail = this.pending.at(-1);
+    if (tail?.origin === "interactive" && tail.sessionId === sessionId) {
+      tail.text += text;
+    } else {
+      this.pending.push({ sessionId, text, origin, waiters: [] });
     }
-
-    this.launchFast({ sessionId, text, origin, waiters: [] });
+    this.scheduleFastDrain();
   }
 
   private launchFast(item: PendingTerminalInput): void {
@@ -110,29 +105,62 @@ export class TerminalInputPump {
       .catch(() => {})
       .finally(() => {
         this.fastInFlightCount = Math.max(0, this.fastInFlightCount - 1);
-        if (this.fastInFlightCount === 0) this.drain();
+        if (this.fastInFlightCount === 0) {
+          const next = this.pending[0];
+          const hasAtomicBoundary = this.pending.some((item) => item.origin !== "interactive");
+          if (next?.origin === "interactive" && next.waiters.length === 0 && !hasAtomicBoundary) {
+            this.scheduleFastDrain();
+          }
+          this.drain();
+        }
       });
   }
 
   reset(): void {
+    this.cancelFastDrain();
     for (const item of this.pending) {
       for (const waiter of item.waiters) waiter.resolve();
     }
     this.pending.length = 0;
   }
 
+  private scheduleFastDrain(): void {
+    if (this.fastFlushTimer !== null) return;
+    this.fastFlushTimer = setTimeout(() => {
+      this.fastFlushTimer = null;
+      this.drain();
+    }, FAST_INPUT_BATCH_DELAY_MS);
+  }
+
+  private cancelFastDrain(): void {
+    if (this.fastFlushTimer === null) return;
+    clearTimeout(this.fastFlushTimer);
+    this.fastFlushTimer = null;
+  }
+
   private drain(): void {
     if (this.active) return;
-    if (this.fastInFlightCount > 0) return;
-    const next = this.pending.shift();
-    if (!next) return;
-
-    if (next.origin === "interactive" && next.waiters.length === 0) {
+    // Let a short printable burst accumulate before crossing the IPC boundary.
+    // Atomic enqueue() cancels this timer and calls drain() directly.
+    if (this.fastFlushTimer !== null) return;
+    // Fill the bounded fast window before waiting for any IPC response. This
+    // path is only used for fire-and-forget printable input; a pending atomic
+    // item stops the loop so it cannot be overtaken by later keystrokes.
+    while (this.fastInFlightCount < MAX_FAST_IN_FLIGHT) {
+      const next = this.pending[0];
+      if (!next) return;
+      if (next.origin !== "interactive" || next.waiters.length > 0) {
+        if (this.fastInFlightCount > 0) return;
+        this.pending.shift();
+        this.launchOrdered(next);
+        return;
+      }
+      this.pending.shift();
       this.launchFast(next);
-      this.drain();
-      return;
     }
+  }
 
+  private launchOrdered(next: PendingTerminalInput): void {
     this.active = true;
     let result: void | Promise<void>;
     try {

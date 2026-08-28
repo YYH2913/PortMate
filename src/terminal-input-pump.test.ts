@@ -8,33 +8,64 @@ function deferred() {
 }
 
 describe("terminal input pump", () => {
-  it("starts the first interactive input synchronously", () => {
+  it("flushes the first interactive input after a short burst window", async () => {
     const calls: string[] = [];
     const pump = new TerminalInputPump((_sessionId, text) => { calls.push(text); });
 
-    pump.enqueue("router", "a", "interactive");
+    pump.enqueueFast("router", "a", "interactive");
 
-    expect(calls).toEqual(["a"]);
+    expect(calls).toEqual([]);
+    await expect.poll(() => calls).toEqual(["a"]);
   });
 
-  it("bounds fast IPC calls and coalesces the remaining burst", async () => {
+  it("coalesces a printable burst into one IPC call", async () => {
+    const calls: string[] = [];
+    const pump = new TerminalInputPump((_sessionId, text) => {
+      calls.push(text);
+    });
+
+    for (const text of ["a", "b", "c", "d", "e", "f"]) {
+      pump.enqueueFast("router", text, "interactive");
+    }
+
+    expect(calls).toEqual([]);
+    await expect.poll(() => calls).toEqual(["abcdef"]);
+  });
+
+  it("coalesces input queued behind an in-flight request", async () => {
     const first = deferred();
     const calls: string[] = [];
     const pump = new TerminalInputPump((_sessionId, text) => {
       calls.push(text);
-      if (calls.length === 1) return first.promise;
-      return Promise.resolve();
+      return calls.length === 1 ? first.promise : Promise.resolve();
     });
 
     pump.enqueueFast("router", "a", "interactive");
+    await expect.poll(() => calls).toEqual(["a"]);
     pump.enqueueFast("router", "b", "interactive");
     pump.enqueueFast("router", "c", "interactive");
-    pump.enqueueFast("router", "d", "interactive");
     expect(calls).toEqual(["a"]);
 
     first.resolve();
     await first.promise;
-    await expect.poll(() => calls).toEqual(["a", "bcd"]);
+    await expect.poll(() => calls).toEqual(["a", "bc"]);
+  });
+
+  it("flushes printable input before an atomic boundary", async () => {
+    const calls: Array<{ text: string; origin: string }> = [];
+    const pump = new TerminalInputPump((_sessionId, text, origin) => {
+      calls.push({ text, origin });
+    });
+
+    pump.enqueueFast("router", "a", "interactive");
+    const atomic = pump.enqueue("router", "\r", "atomic");
+
+    expect(calls).toEqual([{ text: "a", origin: "interactive" }]);
+    await atomic;
+    expect(calls).toEqual([
+      { text: "a", origin: "interactive" },
+      { text: "\r", origin: "atomic" },
+    ]);
   });
 
   it("keeps an atomic boundary behind in-flight fast input", async () => {
@@ -216,10 +247,12 @@ describe("terminal input pump", () => {
     });
 
     registry.enqueueFast("router", "old", "interactive");
+    await expect.poll(() => calls).toEqual(["old"]);
     registry.reset("router");
     registry.enqueueFast("router", "new", "interactive");
 
-    expect(calls).toEqual(["old", "new"]);
+    expect(calls).toEqual(["old"]);
+    await expect.poll(() => calls).toEqual(["old", "new"]);
     oldRequest.resolve();
     await oldRequest.promise;
   });

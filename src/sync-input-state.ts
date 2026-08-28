@@ -119,7 +119,7 @@ export class SyncInputDispatcher {
 
   enqueue(
     batch: SyncInputBatch,
-    send: (sessionId: string, text: string) => Promise<void>,
+    send: (sessionId: string, text: string) => void | Promise<void>,
     isBroadcastEnabled: () => boolean,
   ): Promise<SyncInputDispatchResult> {
     const generation = this.broadcastGeneration;
@@ -132,7 +132,7 @@ export class SyncInputDispatcher {
 
   private async dispatch(
     batch: SyncInputBatch,
-    send: (sessionId: string, text: string) => Promise<void>,
+    send: (sessionId: string, text: string) => void | Promise<void>,
     isBroadcastEnabled: () => boolean,
     generation: number,
   ): Promise<SyncInputDispatchResult> {

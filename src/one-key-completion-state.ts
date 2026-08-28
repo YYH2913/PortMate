@@ -34,6 +34,12 @@ export function reduceOneKeyPromptDetection(
     return state;
   }
   const raw = trimPromptBuffer(state.raw + event.text);
+  // Most terminal traffic cannot be a credential prompt. Preserve the rolling
+  // buffer for prompts split across transport packets, but skip ANSI cleanup
+  // and regex matching until a prompt-like keyword appears near the tail.
+  if (!state.prompt && !promptCandidateLikely(raw)) {
+    return { raw, prompt: null };
+  }
   return {
     raw,
     prompt: detectOneKeyTerminalPrompt(raw, event.id),
@@ -130,5 +136,17 @@ export function sanitizeTerminalPromptText(raw: string): string {
 }
 
 function trimPromptBuffer(raw: string): string {
-  return [...raw].slice(-MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS).join("");
+  if (raw.length <= MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS) return raw;
+  const start = raw.length - MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS;
+  let result = raw.slice(start);
+  // Avoid retaining a lone low surrogate when the code-unit fast path cuts a
+  // supplementary character at the buffer boundary.
+  if (result.charCodeAt(0) >= 0xdc00 && result.charCodeAt(0) <= 0xdfff) {
+    result = result.slice(1);
+  }
+  return result;
+}
+
+function promptCandidateLikely(raw: string): boolean {
+  return /pass|word|user|login|name/i.test(raw.slice(-192));
 }
