@@ -9,6 +9,7 @@ export type TerminalInputSender = (
 
 export type TerminalInputSendOptions = {
   awaitWrite?: boolean;
+  sensitive?: boolean;
 };
 
 type PendingTerminalInput = {
@@ -61,6 +62,7 @@ export class TerminalInputPump {
         && tail.sessionId === sessionId
         && !options?.awaitWrite
         && !tail.options?.awaitWrite
+        && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
       ) {
         tail.text += text;
         tail.waiters.push(waiter);
@@ -78,17 +80,24 @@ export class TerminalInputPump {
    * promise for every key. The regular enqueue API remains available for
    * callers that need to await an ordering boundary.
    */
-  enqueueFast(sessionId: string, text: string, origin: SyncInputOrigin): void {
+  enqueueFast(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ): void {
     if (!sessionId || !text) return;
     if (origin !== "interactive") {
-      void this.enqueue(sessionId, text, origin);
+      void this.enqueue(sessionId, text, origin, options);
       return;
     }
     const tail = this.pending.at(-1);
-    if (tail?.origin === "interactive" && tail.sessionId === sessionId) {
+    if (tail?.origin === "interactive"
+      && tail.sessionId === sessionId
+      && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)) {
       tail.text += text;
     } else {
-      this.pending.push({ sessionId, text, origin, waiters: [] });
+      this.pending.push({ sessionId, text, origin, options, waiters: [] });
     }
     this.scheduleFastDrain();
   }
@@ -119,7 +128,13 @@ export class TerminalInputPump {
   reset(): void {
     this.cancelFastDrain();
     for (const item of this.pending) {
-      for (const waiter of item.waiters) waiter.resolve();
+      for (const waiter of item.waiters) {
+        if (waiter.propagateErrors) {
+          waiter.reject(new Error("terminal input was cancelled before the transport write"));
+        } else {
+          waiter.resolve();
+        }
+      }
     }
     this.pending.length = 0;
   }
@@ -208,14 +223,37 @@ export class TerminalInputPumpRegistry {
     return pump.enqueue(sessionId, text, origin, options);
   }
 
-  enqueueFast(sessionId: string, text: string, origin: SyncInputOrigin): void {
+  enqueueFast(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ): void {
     if (!sessionId) return;
     let pump = this.pumps.get(sessionId);
     if (!pump) {
       pump = new TerminalInputPump(this.send);
       this.pumps.set(sessionId, pump);
     }
-    pump.enqueueFast(sessionId, text, origin);
+    pump.enqueueFast(sessionId, text, origin, options);
+  }
+
+  /**
+   * Route every input kind through the same per-session ordering lane. Only
+   * ordinary printable input uses the fire-and-forget batching path; control
+   * keys, paste, commands, and acknowledged writes remain explicit barriers.
+   */
+  dispatch(
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ): void | Promise<void> {
+    if (origin === "interactive" && !options?.awaitWrite) {
+      this.enqueueFast(sessionId, text, origin, options);
+      return;
+    }
+    return this.enqueue(sessionId, text, origin, options);
   }
 
   reset(sessionId?: string): void {

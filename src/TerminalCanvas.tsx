@@ -1,6 +1,6 @@
-import { lazy, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
-import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
+import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Lock, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -17,6 +17,7 @@ import { formatBytes } from "./display-formatters";
 import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptStateFromEvents, reduceOneKeyPromptDetection } from "./one-key-completion-state";
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
+import type { TerminalInputSendOptions } from "./terminal-input-pump";
 import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
 import {
   emptyTerminalCompletionInputState,
@@ -104,7 +105,12 @@ type TerminalCanvasProps = {
   blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (mode: TerminalKeyMode) => void;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onInput: (
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ) => void | Promise<void>;
   onCommandSubmit?: (sessionId: string, command: string) => void;
   onOneKeyCompletion?: (
     sessionId: string,
@@ -124,6 +130,7 @@ const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
 // Keep only a short cross-channel grace period so a late raw packet cannot
 // stall the terminal write queue for hundreds of milliseconds.
 const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 32;
+const TERMINAL_PRIVATE_INPUT_TIMEOUT_MS = 60_000;
 const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
 const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
@@ -325,7 +332,7 @@ function loadTerminalWebglAddon(): Promise<WebglAddonModule> {
   return webglAddonModulePromise;
 }
 
-export default function TerminalCanvas({
+function TerminalCanvas({
   viewId = "",
   active,
   events,
@@ -357,6 +364,11 @@ export default function TerminalCanvas({
   const displayModeRef = useRef(displayMode);
   const [byteFollow, setByteFollow] = useState(true);
   const [byteSelection, setByteSelection] = useState<TerminalByteSelection | null>(null);
+  const [manualPrivateInput, setManualPrivateInput] = useState(false);
+  const [detectedPrivateInput, setDetectedPrivateInput] = useState(false);
+  const manualPrivateInputRef = useRef(false);
+  const detectedPrivateInputRef = useRef(false);
+  const privateInputTimerRef = useRef<number | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const terminalMountGenerationRef = useRef(0);
@@ -434,8 +446,37 @@ export default function TerminalCanvas({
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
   const [completionReadyKey, setCompletionReadyKey] = useState("");
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
+  const privateInputActive = manualPrivateInput || detectedPrivateInput;
   displayModeRef.current = displayMode;
   completionDismissedLineRef.current = completionDismissedLine;
+
+  function commitDetectedPrivateInput(value: boolean) {
+    if (detectedPrivateInputRef.current === value) return;
+    detectedPrivateInputRef.current = value;
+    setDetectedPrivateInput(value);
+  }
+
+  function clearPrivateInput() {
+    if (privateInputTimerRef.current !== null) {
+      window.clearTimeout(privateInputTimerRef.current);
+      privateInputTimerRef.current = null;
+    }
+    if (manualPrivateInputRef.current) {
+      manualPrivateInputRef.current = false;
+      setManualPrivateInput(false);
+    }
+    commitDetectedPrivateInput(false);
+  }
+
+  function toggleManualPrivateInput() {
+    const next = !manualPrivateInputRef.current;
+    manualPrivateInputRef.current = next;
+    setManualPrivateInput(next);
+    if (privateInputTimerRef.current !== null) window.clearTimeout(privateInputTimerRef.current);
+    privateInputTimerRef.current = next
+      ? window.setTimeout(clearPrivateInput, TERMINAL_PRIVATE_INPUT_TIMEOUT_MS)
+      : null;
+  }
   const gotoLineOpen = gotoLineContext !== null;
   const gotoLineResolution: TerminalGotoLineResolution = gotoLineContext
     ? resolveTerminalGotoLine(
@@ -711,7 +752,12 @@ export default function TerminalCanvas({
     setCompletionDismissedLine(suggestion.source === "history" || suggestion.source === "quick" ? next.line : "");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
-    void onInputRef.current(active.profile.id, suggestion.appendText, "interactive");
+    void onInputRef.current(
+      active.profile.id,
+      suggestion.appendText,
+      "interactive",
+      privateInputActive ? { sensitive: true } : undefined,
+    );
     scheduleTerminalSurfaceFocus();
   };
   dismissCompletionRef.current = () => {
@@ -733,11 +779,12 @@ export default function TerminalCanvas({
     const nextSignature = prompt
       ? `${prompt.field}\u0000${prompt.line}`
       : "";
-    if (previousSignature === nextSignature) return;
-    if (previousPrompt?.eventId !== prompt?.eventId) {
+    const requestChanged = previousPrompt?.eventId !== prompt?.eventId;
+    if (requestChanged) {
       setOneKeyCompletionBusy(false);
       setOneKeyCompletionError("");
     }
+    if (!requestChanged && previousSignature === nextSignature) return;
     if (prompt) resetCompletionInput(false);
     setOneKeyPrompt(prompt);
   }
@@ -892,7 +939,13 @@ export default function TerminalCanvas({
     if (!active) return;
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
-    void onInputRef.current(active.profile.id, payload, "atomic");
+    void onInputRef.current(
+      active.profile.id,
+      payload,
+      "atomic",
+      privateInputActive ? { sensitive: true } : undefined,
+    );
+    if (privateInputActive) clearPrivateInput();
     if (termRef.current?.buffer.active.type === "normal"
       && !terminalInputLooksSensitive(termRef.current, oneKeyPromptStateRef.current.prompt)) {
       const submitted = reduceTerminalCompletionInputWithSubmissions(
@@ -1799,6 +1852,10 @@ export default function TerminalCanvas({
     const semanticWriteDisposable = term.onWriteParsed(() => {
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
+      commitDetectedPrivateInput(terminalInputLooksSensitive(
+        term,
+        oneKeyPromptStateRef.current.prompt,
+      ));
     });
     const semanticScrollDisposable = term.onScroll(() => {
       recordTerminalViewport();
@@ -1833,21 +1890,34 @@ export default function TerminalCanvas({
         dismissOneKeyPrompt();
         return;
       }
+      const detectedSensitive = terminalInputLooksSensitive(
+        term,
+        oneKeyPromptStateRef.current.prompt,
+      );
+      commitDetectedPrivateInput(detectedSensitive);
+      const sensitive = manualPrivateInputRef.current || detectedSensitive;
       const inputOrigin: SyncInputOrigin = /[\u0000-\u001f\u007f]/.test(text)
         ? "atomic"
         : "interactive";
       // The App-level registry is the single ordering queue for this session.
       // Bypassing the view-local pump removes a second IPC batching window.
-      void onInputRef.current(active.profile.id, text, inputOrigin);
+      void onInputRef.current(
+        active.profile.id,
+        text,
+        inputOrigin,
+        sensitive ? { sensitive: true } : undefined,
+      );
       if (/\r|\n/.test(text)) term.scrollToBottom();
       const submittedCommands = updateCompletionInput(text);
       if (term.buffer.active.type === "normal"
         && submittedCommands.length
+        && !sensitive
         && !terminalInputLooksSensitive(term, oneKeyPromptStateRef.current.prompt)) {
         for (const command of submittedCommands) {
           onCommandSubmitRef.current?.(active.profile.id, command);
         }
       }
+      if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
       dismissOneKeyPrompt();
     });
     const selectionDisposable = term.onSelectionChange(() => {
@@ -1867,7 +1937,17 @@ export default function TerminalCanvas({
         if (text) {
           resetCompletionInput(false);
           dismissOneKeyPrompt();
-          void onInputRef.current(active.profile.id, text, "atomic");
+          const sensitive = manualPrivateInputRef.current || terminalInputLooksSensitive(
+            term,
+            oneKeyPromptStateRef.current.prompt,
+          );
+          void onInputRef.current(
+            active.profile.id,
+            text,
+            "atomic",
+            sensitive ? { sensitive: true } : undefined,
+          );
+          if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
         }
       }).catch(() => {});
     };
@@ -2235,11 +2315,18 @@ export default function TerminalCanvas({
 
   useEffect(() => {
     resetCompletionInput();
+    clearPrivateInput();
     setFreeInputSource(null);
     setFreeInputValue("");
     setGotoLineContext(null);
     setGotoLineQuery("");
   }, [active?.profile.id, viewId]);
+
+  useEffect(() => () => {
+    if (privateInputTimerRef.current !== null) {
+      window.clearTimeout(privateInputTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const previousMode = previousKeyModeRef.current;
@@ -2413,6 +2500,7 @@ export default function TerminalCanvas({
       data-terminal-view-id={viewId || undefined}
       inert={!focused}
       data-terminal-display-mode={active ? displayMode : undefined}
+      data-terminal-private-input={privateInputActive ? "true" : "false"}
       data-completion-placement={completionSurfaceVisible ? "below" : undefined}
       data-completion-cursor-bottom={completionSurfaceVisible ? completionAnchor.cursorBottom : undefined}
       data-completion-shift={completionSurfaceVisible ? completionAnchor.shift : undefined}
@@ -2429,6 +2517,24 @@ export default function TerminalCanvas({
               <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title="Hex 视图" onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
               <button type="button" className={displayMode === "split" ? "active" : ""} aria-label="对照" aria-pressed={displayMode === "split"} title="文本与 Hex 对照视图" onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>对照</span></button>
             </div>
+            <button
+              type="button"
+              className={`terminal-private-input${privateInputActive ? " active" : ""}`}
+              aria-label={detectedPrivateInput
+                ? "已自动开启私密输入"
+                : privateInputActive ? "关闭私密输入" : "开启私密输入"}
+              aria-pressed={privateInputActive}
+              disabled={detectedPrivateInput}
+              title={detectedPrivateInput
+                ? "检测到凭据提示，已自动保护：仅发送到当前会话且不写入日志"
+                : privateInputActive
+                  ? "私密输入已开启：仅发送到当前会话且不写入日志"
+                : "私密输入：仅发送到当前会话且不写入日志"}
+              onClick={toggleManualPrivateInput}
+            >
+              <Lock size={13} />
+              <span>{privateInputActive ? "私密" : "私密输入"}</span>
+            </button>
             <TerminalByteToolbar
               sessionId={active.profile.id}
               follow={byteFollow}
@@ -3014,3 +3120,5 @@ function formatTerminalCanvasError(error: unknown): string {
     return String(error);
   }
 }
+
+export default memo(TerminalCanvas);

@@ -200,8 +200,10 @@ pub(crate) async fn send_text(
     interactive: Option<bool>,
     queued: Option<bool>,
     await_write: Option<bool>,
+    sensitive: Option<bool>,
 ) -> Result<Option<SessionEvent>, String> {
     let interactive = interactive.unwrap_or(false);
+    let sensitive = sensitive.unwrap_or(false);
     // `queued` keeps the low-latency keyboard path asynchronous. Callers that
     // submit an atomic payload (paste or the sender panel) can retain the
     // queue contract while requesting an acknowledgement after the actual
@@ -212,16 +214,34 @@ pub(crate) async fn send_text(
         // printable interactive input must remain fire-and-forget even if a
         // caller sends an unexpected `awaitWrite` flag.
         if await_write.unwrap_or(false) && !interactive {
-            enqueue_interactive_text_and_wait(io, session_id, text, interactive).await?;
+            enqueue_interactive_text_and_wait_with_sensitivity(
+                io,
+                session_id,
+                text,
+                interactive,
+                sensitive,
+            )
+            .await?;
         } else {
-            enqueue_interactive_text(io, session_id, text, interactive)?;
+            enqueue_interactive_text_with_sensitivity(
+                io,
+                session_id,
+                text,
+                interactive,
+                sensitive,
+            )?;
         }
         return Ok(None);
     }
     if interactive {
-        return send_text_interactive_inner(state.inner().session_io(), session_id, text)
-            .await
-            .map(Some);
+        return send_text_interactive_inner_with_sensitivity(
+            state.inner().session_io(),
+            session_id,
+            text,
+            sensitive,
+        )
+        .await
+        .map(Some);
     }
     send_text_inner(state.inner().session_io(), session_id, text)
         .await

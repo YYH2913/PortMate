@@ -382,6 +382,128 @@ fn paced_terminal_input_ack_waits_for_the_outbound_write_lane() {
 }
 
 #[test]
+fn timed_out_terminal_input_ack_cancels_a_request_waiting_for_the_lane() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut byte = [0_u8; 1];
+            matches!(
+                tokio::time::timeout(Duration::from_millis(250), socket.read_exact(&mut byte)).await,
+                Ok(Ok(_))
+            )
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-paced-input-timeout-test-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
+        let lane_guard = lane.lock().await;
+        let error = enqueue_interactive_text_and_wait_with_timeout(
+            state.session_io(),
+            profile.id.clone(),
+            "x".to_string(),
+            false,
+            Duration::from_millis(30),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("30 ms"));
+        drop(lane_guard);
+
+        assert!(!server.await.unwrap(), "timed-out queued input reached the transport");
+        clear_interactive_write_queue(&state.store_path, &profile.id);
+        clear_deferred_interactive_queue(&state.store_path, &profile.id);
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn sensitive_terminal_input_reaches_transport_without_entering_logs() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = [0_u8; 8];
+            socket.read_exact(&mut received).await.unwrap();
+            received
+        });
+        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        profile.logging.enabled = true;
+        profile.logging.raw = true;
+        profile.logging.text = true;
+        profile.logging.jsonl = true;
+        let root = std::env::temp_dir().join(format!(
+            "portmate-private-input-test-{}",
+            Uuid::new_v4()
+        ));
+        let store_path = root.join("portmate-store.sqlite3");
+        let state = test_app_state(profile.clone(), store_path.clone());
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        enqueue_interactive_text_and_wait_with_sensitivity(
+            state.session_io(),
+            profile.id.clone(),
+            "hunter2\r".to_string(),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(&server.await.unwrap(), b"hunter2\r");
+        clear_deferred_interactive_queue(&state.store_path, &profile.id);
+
+        {
+            let store = state.store.lock().unwrap();
+            let private_event = store
+                .events
+                .iter()
+                .find(|event| {
+                    event
+                        .annotations
+                        .get("sensitive")
+                        .is_some_and(|value| value == "true")
+                })
+                .expect("private input did not produce its redacted control event");
+            assert_eq!(private_event.text.as_deref(), Some("<private-input>"));
+            assert!(private_event.bytes_ref.is_none());
+            assert_eq!(
+                private_event.annotations.get("wireBytes").map(String::as_str),
+                Some("8")
+            );
+            assert!(!serde_json::to_string(&*store).unwrap().contains("hunter2"));
+        }
+        for extension in ["raw", "txt", "jsonl"] {
+            let path = log_shard_path(&store_path, &profile, extension).unwrap();
+            if path.is_file() {
+                assert!(!fs::read(&path).unwrap().windows(7).any(|bytes| bytes == b"hunter2"));
+            }
+        }
+
+        clear_interactive_write_queue(&state.store_path, &profile.id);
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn outbound_lane_deadline_recovers_after_timeout() {
     tauri::async_runtime::block_on(async {
         let store_path = canonical_test_temp_path("portmate-outbound-lane-timeout")

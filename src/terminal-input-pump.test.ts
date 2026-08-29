@@ -238,6 +238,54 @@ describe("terminal input pump", () => {
     await slow;
   });
 
+  it("keeps synchronized printable input ahead of its atomic boundary", async () => {
+    const calls: Array<{ text: string; origin: string }> = [];
+    const registry = new TerminalInputPumpRegistry((_sessionId, text, origin) => {
+      calls.push({ text, origin });
+    });
+
+    registry.dispatch("router", "a", "interactive");
+    registry.dispatch("router", "b", "interactive");
+    const enter = registry.dispatch("router", "\r", "atomic");
+
+    expect(calls).toEqual([{ text: "ab", origin: "interactive" }]);
+    await enter;
+    expect(calls).toEqual([
+      { text: "ab", origin: "interactive" },
+      { text: "\r", origin: "atomic" },
+    ]);
+  });
+
+  it("does not coalesce private and ordinary printable input", async () => {
+    const calls: Array<{ text: string; sensitive: boolean }> = [];
+    const registry = new TerminalInputPumpRegistry((_sessionId, text, _origin, options) => {
+      calls.push({ text, sensitive: Boolean(options?.sensitive) });
+    });
+
+    registry.dispatch("router", "secret", "interactive", { sensitive: true });
+    registry.dispatch("router", "visible", "interactive");
+
+    await expect.poll(() => calls).toEqual([
+      { text: "secret", sensitive: true },
+      { text: "visible", sensitive: false },
+    ]);
+  });
+
+  it("rejects an acknowledged write cancelled by a session reset", async () => {
+    const first = deferred();
+    const registry = new TerminalInputPumpRegistry((_sessionId, text) => (
+      text === "active" ? first.promise : Promise.resolve()
+    ));
+    registry.dispatch("router", "active", "atomic");
+    const queued = registry.dispatch("router", "paced", "atomic", { awaitWrite: true });
+
+    registry.reset("router");
+
+    await expect(queued).rejects.toThrow("cancelled before the transport write");
+    first.resolve();
+    await first.promise;
+  });
+
   it("starts a fresh registry pump immediately after a session reset", async () => {
     const oldRequest = deferred();
     const calls: string[] = [];

@@ -13,8 +13,9 @@ export function normalizeSendInterval(value: unknown): number {
   return Math.min(MAX_SEND_INTERVAL_MS, Math.max(0, Math.trunc(value)));
 }
 
-export type SendPanelWait = (milliseconds: number) => Promise<void>;
+export type SendPanelWait = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 export type SendPanelNow = () => number;
+export type SendPanelDispatchOptions = { signal?: AbortSignal };
 
 /**
  * Run repeated sender batches with a minimum start-to-start interval.
@@ -30,27 +31,48 @@ export async function dispatchPacedSends(
   send: (index: number) => Promise<void>,
   wait: SendPanelWait = defaultSendPanelWait,
   now: SendPanelNow = defaultSendPanelNow,
+  options: SendPanelDispatchOptions = {},
 ): Promise<void> {
   const total = normalizeSendCount(count);
   const interval = normalizeSendInterval(intervalMs);
   let lastStartedAt: number | null = null;
   for (let index = 0; index < total; index += 1) {
+    throwIfSendPanelCancelled(options.signal);
     if (lastStartedAt !== null && interval > 0) {
       const remaining = lastStartedAt + interval - now();
-      if (remaining > 0) await wait(Math.ceil(remaining));
+      if (remaining > 0) await wait(Math.ceil(remaining), options.signal);
     }
+    throwIfSendPanelCancelled(options.signal);
     lastStartedAt = now();
     await send(index);
   }
 }
 
-function defaultSendPanelWait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    const schedule = typeof window !== "undefined" ? window.setTimeout.bind(window) : setTimeout;
-    schedule(resolve, milliseconds);
+function defaultSendPanelWait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handleAbort = () => {
+      clearTimeout(timer);
+      reject(sendPanelCancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, milliseconds);
+    if (signal?.aborted) handleAbort();
+    else signal?.addEventListener("abort", handleAbort, { once: true });
   });
 }
 
 function defaultSendPanelNow(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function throwIfSendPanelCancelled(signal?: AbortSignal) {
+  if (signal?.aborted) throw sendPanelCancelledError();
+}
+
+function sendPanelCancelledError(): Error {
+  const error = new Error("send operation cancelled");
+  error.name = "AbortError";
+  return error;
 }

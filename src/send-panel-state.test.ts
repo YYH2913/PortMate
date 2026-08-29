@@ -70,4 +70,29 @@ describe("send panel pacing", () => {
     })).rejects.toThrow("write failed");
     expect(calls).toEqual([0, 1]);
   });
+
+  it("cancels an interval before the next repeated send", async () => {
+    const controller = new AbortController();
+    const calls: number[] = [];
+    let releaseWait!: () => void;
+    const waiting = new Promise<void>((resolve) => { releaseWait = resolve; });
+    const dispatch = dispatchPacedSends(
+      3,
+      100,
+      async (index) => { calls.push(index); },
+      async (_milliseconds, signal) => {
+        await waiting;
+        signal?.throwIfAborted();
+      },
+      () => 0,
+      { signal: controller.signal },
+    );
+
+    await expect.poll(() => calls).toEqual([0]);
+    controller.abort();
+    releaseWait();
+
+    await expect(dispatch).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toEqual([0]);
+  });
 });

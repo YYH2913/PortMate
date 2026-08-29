@@ -5,6 +5,9 @@ struct DeferredInteractiveEvent {
     session_id: String,
     text: String,
     wire_bytes: Vec<u8>,
+    wire_byte_count: usize,
+    sensitive: bool,
+    input_boundary: bool,
 }
 
 struct DeferredInteractiveBatch {
@@ -21,22 +24,28 @@ impl DeferredInteractiveBatch {
     }
 
     fn can_append(&self, request: &DeferredInteractiveEvent) -> bool {
-        self.request
-            .wire_bytes
-            .len()
-            .saturating_add(request.wire_bytes.len())
-            <= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
+        self.request.sensitive == request.sensitive
+            && self
+                .request
+                .wire_byte_count
+                .saturating_add(request.wire_byte_count)
+                <= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
     }
 
     fn append(&mut self, request: DeferredInteractiveEvent) {
         self.request.text.push_str(&request.text);
         self.request.wire_bytes.extend_from_slice(&request.wire_bytes);
+        self.request.wire_byte_count = self
+            .request
+            .wire_byte_count
+            .saturating_add(request.wire_byte_count);
+        self.request.input_boundary |= request.input_boundary;
         self.request_count = self.request_count.saturating_add(1);
     }
 
     fn should_flush(&self) -> bool {
-        self.request.wire_bytes.len() >= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
-            || deferred_interactive_input_boundary(&self.request.text)
+        self.request.wire_byte_count >= DEFERRED_INTERACTIVE_BATCH_MAX_BYTES
+            || self.request.input_boundary
     }
 }
 
@@ -99,6 +108,7 @@ struct DeferredInteractiveQueue {
 
 const INTERACTIVE_WRITE_QUEUE_CAPACITY: usize = 256;
 const INTERACTIVE_WRITE_BATCH_MAX_BYTES: usize = 16 * 1024;
+const INTERACTIVE_WRITE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct InteractiveQueueCancellation {
     cancelled: AtomicBool,
@@ -138,7 +148,9 @@ struct InteractiveWriteRequest {
     text: String,
     wire_bytes: Vec<u8>,
     coalesce: bool,
+    sensitive: bool,
     completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 type InteractiveWriteQueues =
@@ -200,13 +212,32 @@ static INTERACTIVE_WRITE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 /// Enqueues desktop input without making the webview wait for the transport
 /// writer. Printable input may coalesce; control keys and paste requests are
 /// explicit ordering barriers in the same per-session queue.
+#[cfg(test)]
 pub(super) fn enqueue_interactive_text(
     io: SessionIo,
     session_id: String,
     text: String,
     coalesce: bool,
 ) -> Result<(), String> {
-    enqueue_interactive_text_with_completion(io, session_id, text, coalesce, None)
+    enqueue_interactive_text_with_sensitivity(io, session_id, text, coalesce, false)
+}
+
+pub(super) fn enqueue_interactive_text_with_sensitivity(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    sensitive: bool,
+) -> Result<(), String> {
+    enqueue_interactive_text_with_completion(
+        io,
+        session_id,
+        text,
+        coalesce,
+        sensitive,
+        None,
+        None,
+    )
 }
 
 /// Enqueue an atomic payload and wait until the per-session writer has
@@ -214,26 +245,88 @@ pub(super) fn enqueue_interactive_text(
 /// remains fire-and-forget; this acknowledgement is used by paced senders
 /// that must measure their interval from an actual write rather than from
 /// queue admission.
+#[cfg(test)]
 pub(super) async fn enqueue_interactive_text_and_wait(
     io: SessionIo,
     session_id: String,
     text: String,
     coalesce: bool,
 ) -> Result<(), String> {
+    enqueue_interactive_text_and_wait_with_sensitivity(
+        io,
+        session_id,
+        text,
+        coalesce,
+        false,
+    )
+    .await
+}
+
+pub(super) async fn enqueue_interactive_text_and_wait_with_sensitivity(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    sensitive: bool,
+) -> Result<(), String> {
+    enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
+        io,
+        session_id,
+        text,
+        coalesce,
+        sensitive,
+        INTERACTIVE_WRITE_CONFIRM_TIMEOUT,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn enqueue_interactive_text_and_wait_with_timeout(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    timeout: Duration,
+) -> Result<(), String> {
+    enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
+        io, session_id, text, coalesce, false, timeout,
+    )
+    .await
+}
+
+async fn enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    sensitive: bool,
+    timeout: Duration,
+) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
     let (completion, result) = tokio::sync::oneshot::channel();
+    let cancellation = Arc::new(AtomicBool::new(false));
     enqueue_interactive_text_with_completion(
         io,
         session_id,
         text,
         coalesce,
+        sensitive,
         Some(completion),
+        Some(Arc::clone(&cancellation)),
     )?;
-    result
-        .await
-        .map_err(|_| "终端输入队列已关闭，未能确认写入".to_string())?
+    match tokio::time::timeout(timeout, result).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("终端输入队列已关闭，未能确认写入".to_string()),
+        Err(_) => {
+            cancellation.store(true, Ordering::SeqCst);
+            Err(format!(
+                "终端写入在 {} ms 内未确认；未开始的请求已取消，请检查会话状态后再决定是否重发",
+                timeout.as_millis()
+            ))
+        }
+    }
 }
 
 fn enqueue_interactive_text_with_completion(
@@ -241,7 +334,9 @@ fn enqueue_interactive_text_with_completion(
     session_id: String,
     text: String,
     coalesce: bool,
+    sensitive: bool,
     completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
@@ -290,7 +385,20 @@ fn enqueue_interactive_text_with_completion(
                     let runtime_id = first.runtime_id;
                     let mut wire_bytes = first.wire_bytes;
                     let coalesce = first.coalesce;
+                    let sensitive = first.sensitive;
                     let completion = first.completion;
+                    let cancellation = first.cancellation;
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst))
+                    {
+                        if let Some(completion) = completion {
+                            let _ = completion.send(Err(
+                                "终端写入确认已超时，请求在执行前取消".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
                     // Drain anything already queued, but never delay the first
                     // byte solely to enlarge a batch. The frontend coalesces
                     // bursts while an IPC call is in flight.
@@ -304,7 +412,9 @@ fn enqueue_interactive_text_with_completion(
                         let remaining = INTERACTIVE_WRITE_BATCH_MAX_BYTES - text.len();
                         if completion.is_none()
                             && next.completion.is_none()
+                            && next.cancellation.is_none()
                             && next.coalesce
+                            && next.sensitive == sensitive
                             && next.runtime_id == runtime_id
                             && next.text.len() <= remaining
                         {
@@ -334,6 +444,8 @@ fn enqueue_interactive_text_with_completion(
                                     text,
                                     &runtime_id,
                                     wire_bytes,
+                                    sensitive,
+                                    cancellation.as_deref(),
                                 )
                                 .await
                                 .map(|_| ())
@@ -387,7 +499,9 @@ fn enqueue_interactive_text_with_completion(
         text,
         wire_bytes,
         coalesce,
+        sensitive,
         completion,
+        cancellation,
     });
     match result {
         Ok(()) => Ok(()),
@@ -495,9 +609,17 @@ pub(super) fn shutdown_interactive_write_queues() {
 pub(super) fn enqueue_deferred_interactive_event(
     io: SessionIo,
     session_id: String,
-    text: String,
-    wire_bytes: Vec<u8>,
+    mut text: String,
+    mut wire_bytes: Vec<u8>,
+    sensitive: bool,
 ) {
+    let wire_byte_count = wire_bytes.len();
+    let input_boundary = deferred_interactive_input_boundary(&text);
+    if sensitive {
+        text.clear();
+        wire_bytes.zeroize();
+        wire_bytes.clear();
+    }
     let key = (io.store_path.clone(), session_id.clone());
     let result = {
         let mut queues = DEFERRED_INTERACTIVE_QUEUES
@@ -557,6 +679,9 @@ pub(super) fn enqueue_deferred_interactive_event(
             session_id,
             text,
             wire_bytes,
+            wire_byte_count,
+            sensitive,
+            input_boundary,
         });
         if result.is_err() {
             queue.state.complete();
@@ -584,15 +709,23 @@ async fn persist_deferred_interactive_batch(
     let request_count = batch.request_count;
     let request = batch.request;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let _ = record_outbound_user_event_with_context(
-            &request.io,
-            &request.session_id,
-            &request.text,
-            &request.wire_bytes,
-            "desktop-user",
-            Some("send_text"),
-            BTreeMap::new(),
-        );
+        let _ = if request.sensitive {
+            record_sensitive_interactive_event(
+                &request.io,
+                &request.session_id,
+                request.wire_byte_count,
+            )
+        } else {
+            record_outbound_user_event_with_context(
+                &request.io,
+                &request.session_id,
+                &request.text,
+                &request.wire_bytes,
+                "desktop-user",
+                Some("send_text"),
+                BTreeMap::new(),
+            )
+        };
     })
     .await;
     for _ in 0..request_count {
@@ -607,6 +740,7 @@ pub(super) fn deferred_outbound_event(
     session_id: &str,
     text: &str,
     wire_bytes: &[u8],
+    sensitive: bool,
 ) -> SessionEvent {
     SessionEvent {
         id: Uuid::new_v4().to_string(),
@@ -616,21 +750,30 @@ pub(super) fn deferred_outbound_event(
         direction: EventDirection::Outbound,
         stream: EventStream::Stdout,
         bytes_ref: None,
-        text: Some(redact_secrets(text)),
+        text: Some(if sensitive {
+            "<private-input>".to_string()
+        } else {
+            redact_secrets(text)
+        }),
         annotations: BTreeMap::from([
             ("origin".to_string(), "interactive".to_string()),
             ("wireBytes".to_string(), wire_bytes.len().to_string()),
             ("persistence".to_string(), "queued".to_string()),
+            ("sensitive".to_string(), sensitive.to_string()),
         ]),
     }
 }
 
-pub(super) async fn send_text_interactive_inner(
+pub(super) async fn send_text_interactive_inner_with_sensitivity(
     io: SessionIo,
     session_id: String,
     text: String,
+    sensitive: bool,
 ) -> Result<SessionEvent, String> {
-    send_text_interactive_inner_for_optional_runtime(io, session_id, text, None, None).await
+    send_text_interactive_inner_for_optional_runtime(
+        io, session_id, text, None, None, sensitive, None,
+    )
+    .await
 }
 
 async fn send_text_interactive_inner_for_runtime(
@@ -639,6 +782,8 @@ async fn send_text_interactive_inner_for_runtime(
     text: String,
     expected_runtime_id: &str,
     wire_bytes: Vec<u8>,
+    sensitive: bool,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<SessionEvent, String> {
     send_text_interactive_inner_for_optional_runtime(
         io,
@@ -646,6 +791,8 @@ async fn send_text_interactive_inner_for_runtime(
         text,
         Some(expected_runtime_id),
         Some(wire_bytes),
+        sensitive,
+        cancellation,
     )
     .await
 }
@@ -656,8 +803,13 @@ async fn send_text_interactive_inner_for_optional_runtime(
     text: String,
     expected_runtime_id: Option<&str>,
     provided_wire_bytes: Option<Vec<u8>>,
+    sensitive: bool,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+    if cancellation.is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+        return Err("终端写入确认已超时，请求在执行前取消".to_string());
+    }
     let wire_bytes = match provided_wire_bytes {
         Some(bytes) => bytes,
         None => outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?
@@ -680,11 +832,13 @@ async fn send_text_interactive_inner_for_optional_runtime(
         session_id.clone(),
         text.clone(),
         wire_bytes.clone(),
+        sensitive,
     );
     Ok(deferred_outbound_event(
         &session_id,
         &text,
         &wire_bytes,
+        sensitive,
     ))
 }
 
@@ -1073,6 +1227,26 @@ pub(super) fn record_outbound_user_event_with_context(
         actor,
         audit_action,
         additional_annotations,
+    )
+}
+
+fn record_sensitive_interactive_event(
+    io: &SessionIo,
+    session_id: &str,
+    wire_byte_count: usize,
+) -> SessionEvent {
+    record_outbound_user_event_with_context(
+        io,
+        session_id,
+        "<private-input>",
+        &[],
+        "desktop-user",
+        Some("send_text"),
+        BTreeMap::from([
+            ("origin".to_string(), "interactive".to_string()),
+            ("sensitive".to_string(), "true".to_string()),
+            ("wireBytes".to_string(), wire_byte_count.to_string()),
+        ]),
     )
 }
 

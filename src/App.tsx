@@ -334,10 +334,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const commandHistoryPersistedSettingsRef = useRef<{ enabled: boolean; limit: number; retentionDays: number } | null>(null);
   commandHistoryPolicyRef.current = commandHistoryPolicy;
   commandHistoryEnabledRef.current = terminalPrefs.historyEnabled;
-  const commandHistoryBySession = useMemo(() => Object.fromEntries(sessions.map((session) => [
-    session.profile.id,
-    commandHistoryCommands(commandHistoryEntries, session.profile.id),
-  ])), [commandHistoryEntries, sessions]);
+  const commandHistorySessionIds = sessions.map((session) => session.profile.id);
+  const commandHistorySessionKey = commandHistorySessionIds.join("\u0000");
+  const commandHistoryBySession = useMemo(() => Object.fromEntries(commandHistorySessionIds.map((sessionId) => [
+    sessionId,
+    commandHistoryCommands(commandHistoryEntries, sessionId),
+  ])), [commandHistoryEntries, commandHistorySessionKey]);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(() => (
     normalizeQuickCommandLibrary(loadLocalValue<unknown>(QUICK_COMMAND_STORAGE_KEY, null)).items
   ));
@@ -424,6 +426,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const oneKeyMutationGateRef = useRef(new KeyedRequestGate<"one-keys">());
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
+  const sendCancellationRef = useRef<AbortController | null>(null);
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
   const detachedWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
   const serialAnalyzerWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
@@ -3799,15 +3802,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentSessions = sessionsRef.current;
     if (!currentSessions.some((session) => session.profile.id === sessionId)) return;
     const broadcastEnabled = syncInputRef.current;
+    // Credentials and other explicitly private input must stay on the source
+    // session even when synchronized input is enabled.
+    if (options?.sensitive) {
+      return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
+    }
     // When synchronization is disabled, keep each session on its dedicated
     // pump so an external atomic send cannot overtake queued keystrokes or
     // wait behind the broadcast FIFO.
     if (!broadcastEnabled) {
-      if (origin === "interactive") {
-        directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
-        return;
-      }
-      return directInputPumpRef.current?.enqueue(sessionId, text, origin, options);
+      return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
     }
     const settings = syncInputSettings;
     const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
@@ -3830,10 +3834,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         });
       }
     }
-    const inputEpochs = new Map(candidates.map((candidate) => [
-      candidate.id,
-      captureTerminalInputEpoch(candidate.id),
-    ]));
     return syncInputDispatcherRef.current.enqueue({
       sourceId: sessionId,
       text,
@@ -3842,14 +3842,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       settings,
       candidates,
     }, (targetId, payload) => {
-      const epoch = inputEpochs.get(targetId);
-      if (epoch === null || epoch === undefined) return;
-      if (origin === "interactive" && !options?.awaitWrite) {
-        if (!terminalInputIsCurrent(targetId, epoch)) return;
-        directInputPumpRef.current?.enqueueFast(targetId, payload, origin);
-        return;
-      }
-      return sendTerminalInput(targetId, payload, origin, epoch, options);
+      return directInputPumpRef.current?.dispatch(targetId, payload, origin, options);
     }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
@@ -3886,6 +3879,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             text,
             interactive: origin === "interactive",
             queued: true,
+            ...(options?.sensitive ? { sensitive: true } : {}),
             ...(options?.awaitWrite ? { awaitWrite: true } : {}),
           });
         }
@@ -3982,9 +3976,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     const inputEpochs = new Map(targets.map((target) => [target, captureTerminalInputEpoch(target)]));
-    const syncInputSnapshot = syncInputRef.current;
     const sendToken = sendOperationGateRef.current.begin("send");
     if (sendToken === null) return;
+    const cancellation = new AbortController();
+    sendCancellationRef.current = cancellation;
     setSendBusy(true);
     try {
       const countSnapshot = normalizeSendCount(sendCount);
@@ -3997,21 +3992,31 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               if (inputEpoch === null || inputEpoch === undefined) return Promise.resolve();
               return sendModeSnapshot === "hex"
                 ? sendTerminalBytes(target, bytePayload, inputEpoch)
-                : !syncInputSnapshot
-                  ? routeTerminalInput(target, textPayload, "atomic", { awaitWrite: true })
-                  : sendTerminalInput(target, textPayload, "atomic", inputEpoch, { awaitWrite: true });
+                : directInputPumpRef.current?.dispatch(
+                  target,
+                  textPayload,
+                  "atomic",
+                  { awaitWrite: true },
+                ) ?? Promise.resolve();
             }),
           );
-        });
+        }, undefined, undefined, { signal: cancellation.signal });
       });
       if (sendModeSnapshot === "text" && textPayload.trim()) {
         for (const target of targets) rememberCommand(textPayload, target);
       }
     } catch (error) {
-      setNotice({ title: "发送失败", message: formatError(error) });
+      setNotice(cancellation.signal.aborted
+        ? { title: "发送已停止", message: "未开始的重复发送已取消；正在写入的批次按传输结果结束。" }
+        : { title: "发送失败", message: formatError(error) });
     } finally {
+      if (sendCancellationRef.current === cancellation) sendCancellationRef.current = null;
       if (sendOperationGateRef.current.finish("send", sendToken)) setSendBusy(false);
     }
+  }
+
+  function cancelSendPanel() {
+    sendCancellationRef.current?.abort();
   }
 
   function runQuickCommand(command: QuickCommand) {
@@ -4282,8 +4287,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       <>
         <div className="send-toolbar" data-advanced-open={sendAdvancedOpen ? "true" : "false"}>
           <div className="send-toolbar-primary">
-            <button className="send-icon-button" title="发送" aria-label="发送" onClick={() => void runSendPanel()} disabled={sendBusy}>
-              <Play size={14} className="green" />
+            <button
+              className="send-icon-button"
+              title={sendBusy ? "停止重复发送" : "发送"}
+              aria-label={sendBusy ? "停止重复发送" : "发送"}
+              onClick={() => sendBusy ? cancelSendPanel() : void runSendPanel()}
+            >
+              {sendBusy ? <Square size={13} /> : <Play size={14} className="green" />}
             </button>
             <label className="send-mode-label">
               <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
@@ -5400,7 +5410,12 @@ function TerminalPaneGrid({
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onInput: (
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ) => void | Promise<void>;
   onCommandSubmit: (sessionId: string, command: string) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -5491,7 +5506,12 @@ type TerminalWorkspaceNodeProps = {
   blockSelection: boolean;
   connectionBusyIds: ReadonlySet<string>;
   serialControlBusyIds: ReadonlySet<string>;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onInput: (
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ) => void | Promise<void>;
   onCommandSubmit: (sessionId: string, command: string) => void;
   onOneKeyCompletion: (
     sessionId: string,
@@ -5865,7 +5885,12 @@ type TerminalCanvasProps = {
   blockSelection?: boolean;
   keyMode?: TerminalKeyMode;
   onKeyModeChange?: (keyMode: TerminalKeyMode) => void;
-  onInput: (sessionId: string, text: string, origin: SyncInputOrigin) => void | Promise<void>;
+  onInput: (
+    sessionId: string,
+    text: string,
+    origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
+  ) => void | Promise<void>;
   onCommandSubmit?: (sessionId: string, command: string) => void;
   onOneKeyCompletion?: (
     sessionId: string,
