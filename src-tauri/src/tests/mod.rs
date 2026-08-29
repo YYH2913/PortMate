@@ -567,6 +567,23 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
     }
 }
 
+fn grant_test_mcp_access(
+    state: &AppState,
+    client_id: &str,
+    scopes: Vec<McpScope>,
+    allowed_sessions: Vec<String>,
+) {
+    state.store.lock().unwrap().grants.push(McpGrant {
+        client_id: client_id.to_string(),
+        name: format!("{client_id} test grant"),
+        scopes,
+        allowed_sessions,
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+}
+
 fn test_transfer_progress_context(
     state: &AppState,
     task_id: &str,

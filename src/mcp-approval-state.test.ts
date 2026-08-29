@@ -8,6 +8,7 @@ const base: McpApprovalRequest = {
   action: "run_command",
   sessionId: "edge-router",
   scope: "write-input",
+  target: { kind: "command", id: "6 UTF-8 bytes", label: "Command: uptime" },
   createdAt: "2026-07-17T10:00:00.000Z",
   expiresAt: "2026-07-17T10:01:00.000Z",
 };
@@ -16,19 +17,22 @@ describe("MCP approval state", () => {
   it("accepts bounded action/scope pairs and canonicalizes timestamps", () => {
     expect(normalizeMcpApproval(base)).toEqual(base);
     expect(normalizeMcpApproval({ ...base, action: "create_tunnel", scope: "write-input" })).toBeNull();
-    expect(normalizeMcpApproval({ ...base, action: "serial_send_break" })).toMatchObject({
+    expect(normalizeMcpApproval({ ...base, action: "serial_send_break", target: undefined })).toMatchObject({
       action: "serial_send_break",
       scope: "write-input",
     });
-    expect(normalizeMcpApproval({ ...base, action: "cancel_transfer", scope: "transfer" })).not.toBeNull();
-    expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer" })).not.toBeNull();
-    expect(normalizeMcpApproval({ ...base, action: "start_transfer", scope: "transfer" })).not.toBeNull();
+    const transferTarget = { kind: "transfer", id: "firmware.bin -> remote:/tmp/firmware.bin", label: "Transfer firmware.bin to remote:/tmp/firmware.bin" };
+    const operationTarget = { kind: "operation", id: "transfer-id", label: "Cancel transfer transfer-id" };
+    expect(normalizeMcpApproval({ ...base, action: "cancel_transfer", scope: "transfer", target: operationTarget })).not.toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "retry_transfer", scope: "transfer", target: { ...operationTarget, label: "Retry transfer transfer-id" } })).not.toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "start_transfer", scope: "transfer", target: transferTarget })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,
       action: ["start", "content", "upload", "transfer"].join("_"),
       scope: "transfer",
+      target: undefined,
     })).toBeNull();
-    expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel" })).not.toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "stop_tunnel", scope: "tunnel", target: { kind: "operation", id: "tunnel-id", label: "Stop tunnel tunnel-id" } })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,
       action: "tunnel_request",
@@ -46,6 +50,21 @@ describe("MCP approval state", () => {
     });
     expect(normalizeMcpApproval({
       ...base,
+      action: "udp_request",
+      sessionId: "portmate-host",
+      scope: "tunnel",
+      target: {
+        kind: "portmate-host-tunnel-request",
+        id: "route-id",
+        label: "UDP through PortMate host tunnel to 192.168.33.222:69",
+      },
+    })).toMatchObject({
+      action: "udp_request",
+      sessionId: "portmate-host",
+      target: { kind: "portmate-host-tunnel-request", id: "route-id" },
+    });
+    expect(normalizeMcpApproval({
+      ...base,
       action: "tunnel_request",
       sessionId: "portmate-host",
       scope: "tunnel",
@@ -56,6 +75,7 @@ describe("MCP approval state", () => {
       action: "restart_mcp_http",
       sessionId: "portmate-host",
       scope: "manage-mcp",
+      target: undefined,
     })).not.toBeNull();
     expect(normalizeMcpApproval({
       ...base,

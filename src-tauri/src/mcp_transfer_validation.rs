@@ -30,6 +30,11 @@ pub(super) fn validate_mcp_transfer_route(request: &StartTransferRequest) -> Res
     Ok(())
 }
 
+pub(super) fn mcp_transfer_uses_host_path(request: &StartTransferRequest) -> bool {
+    !is_nonlocal_transfer_endpoint(&request.source)
+        || !is_nonlocal_transfer_endpoint(&request.destination)
+}
+
 pub(super) fn validate_mcp_content_transfer_request(
     request: &StartMcpContentTransferRequest,
 ) -> Result<(), String> {

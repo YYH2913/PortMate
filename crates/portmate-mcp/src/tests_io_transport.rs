@@ -201,9 +201,11 @@ fn mcp_refreshes_store_and_endpoint_between_json_rpc_envelopes() {
     let store_path = root.join("portmate-store.json");
     let endpoint_path = root.join("portmate-ipc.json");
     let write_store = |name: &str| {
+        let mut store = test_snapshot_store(name);
+        grant_all_read_scopes(&mut store, "refresh-client");
         fs::write(
             &store_path,
-            serde_json::to_vec(&test_snapshot_store(name)).unwrap(),
+            serde_json::to_vec(&store).unwrap(),
         )
         .unwrap();
     };
@@ -258,16 +260,14 @@ fn mcp_refreshes_store_and_endpoint_between_json_rpc_envelopes() {
     assert!(server.ipc.is_none());
 
     fs::remove_file(&store_path).unwrap();
-    let deleted = list_sessions_text(&mut server);
-    assert!(!deleted.contains("second snapshot"));
+    server.refresh_runtime_sources();
     assert!(server.store.profiles.is_empty());
 
     write_store("third snapshot");
     let third = list_sessions_text(&mut server);
     assert!(third.contains("third snapshot"));
     fs::write(&store_path, b"{not-json").unwrap();
-    let corrupt = list_sessions_text(&mut server);
-    assert!(!corrupt.contains("third snapshot"));
+    server.refresh_runtime_sources();
     assert!(server.store.profiles.is_empty());
 
     let _ = fs::remove_dir_all(root);
@@ -432,6 +432,7 @@ fn http_parser_accepts_a_maximum_inline_content_envelope() {
 fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
     let config = test_http_config();
     let active = Arc::new(AtomicUsize::new(0));
+    let active_sse = Arc::new(AtomicUsize::new(0));
     let permit = try_acquire_http_connection(&active, 1).unwrap();
     assert_eq!(active.load(Ordering::Acquire), 1);
 
@@ -440,6 +441,8 @@ fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
         rejected_server,
         config.clone(),
         Arc::clone(&active),
+        1,
+        Arc::clone(&active_sse),
         1,
     ));
     let mut rejected_response = String::new();
@@ -462,6 +465,8 @@ fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
         config,
         Arc::clone(&active),
         1,
+        active_sse,
+        1,
     ));
     let mut accepted_response = String::new();
     accepted_client
@@ -479,6 +484,55 @@ fn http_connection_limit_rejects_excess_and_releases_completed_slots() {
     }
     assert_eq!(active.load(Ordering::Acquire), 0);
     assert!(try_acquire_http_connection(&active, 1).is_some());
+}
+
+#[test]
+fn unauthenticated_http_body_budget_rejects_before_reading_the_body() {
+    let (mut client, mut server) = test_tcp_pair();
+    client
+        .write_all(
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n",
+        )
+        .unwrap();
+    let started = std::time::Instant::now();
+    let error = read_http_request_with_body_limit(&mut server, |_, _, _| Ok(0)).unwrap_err();
+
+    assert!(error.to_string().contains("body is too large"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn unauthenticated_http_post_returns_401_without_waiting_for_the_body() {
+    let config = test_http_config();
+    let active = Arc::new(AtomicUsize::new(0));
+    let active_sse = Arc::new(AtomicUsize::new(0));
+    let (mut client, server) = test_tcp_pair();
+    client
+        .write_all(
+            b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n",
+        )
+        .unwrap();
+
+    assert!(spawn_http_connection(
+        server,
+        config,
+        Arc::clone(&active),
+        1,
+        active_sse,
+        1,
+    ));
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+    assert!(response.contains("authentication is required"));
+    for _ in 0..100 {
+        if active.load(Ordering::Acquire) == 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(active.load(Ordering::Acquire), 0);
 }
 
 #[test]

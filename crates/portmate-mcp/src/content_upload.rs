@@ -253,12 +253,11 @@ impl PortMateMcp {
             &self.client_id,
             portmate_core::McpScope::Transfer,
             Some(session_id),
-        ) || (self.allow_write && self.store.grants.is_empty())
-        {
+        ) {
             Ok(())
         } else {
             Err(anyhow!(
-                "MCP transfer grant does not permit content upload for the requested session"
+                "MCP transfer grant does not permit content upload for the requested session; create or update an explicit grant with transfer scope"
             ))
         }
     }

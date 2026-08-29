@@ -58,13 +58,53 @@ fn transport_mode_rejects_unknown_repeated_and_conflicting_arguments() {
 }
 
 fn content_upload_server(root: &std::path::Path, client_id: &str) -> PortMateMcp {
+    let mut store = test_snapshot_store("content upload");
+    store.grants.push(portmate_core::McpGrant {
+        client_id: client_id.to_string(),
+        name: format!("{client_id} transfer test grant"),
+        scopes: vec![McpScope::Transfer],
+        allowed_sessions: vec!["refresh-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
     PortMateMcp {
-        store: test_snapshot_store("content upload"),
+        store,
         store_path: Some(root.join("portmate-store.sqlite3")),
         ipc: None,
         client_id: client_id.to_string(),
         allow_write: true,
     }
+}
+
+#[test]
+fn content_upload_requires_an_explicit_transfer_grant() {
+    let root =
+        std::env::temp_dir().join(format!("portmate-content-upload-denied-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let server = PortMateMcp {
+        store: test_snapshot_store("denied content upload"),
+        store_path: Some(root.join("portmate-store.sqlite3")),
+        ipc: None,
+        client_id: "legacy-trusted-client".to_string(),
+        allow_write: true,
+    };
+
+    let error = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "sizeBytes": 1,
+            "sha256": "0".repeat(64),
+            "destination": "load:loadx"
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("explicit grant"), "{error}");
+    assert!(!root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY).exists());
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -690,6 +730,25 @@ fn test_snapshot_store(name: &str) -> SessionStore {
     store
 }
 
+fn grant_all_read_scopes(store: &mut SessionStore, client_id: &str) {
+    store.grants.push(portmate_core::McpGrant {
+        client_id: client_id.to_string(),
+        name: format!("{client_id} test reader"),
+        scopes: vec![
+            McpScope::ReadSessions,
+            McpScope::ReadLogs,
+            McpScope::ReadTransfers,
+            McpScope::ReadTunnels,
+            McpScope::ReadScripts,
+            McpScope::ReadMcp,
+        ],
+        allowed_sessions: Vec::new(),
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+}
+
 #[test]
 fn standalone_store_loading_rejects_oversized_profile_collections() {
     let mut store = test_snapshot_store("profile bound");
@@ -1050,6 +1109,7 @@ fn explicit_read_grants_filter_sessions_resources_and_global_logs() {
 #[test]
 fn orphaned_snapshot_state_is_not_readable_without_desktop_ipc() {
     let mut store = test_snapshot_store("visible snapshot");
+    grant_all_read_scopes(&mut store, "fallback-reader");
     let event = store
         .record_stream_event(
             "refresh-session",
@@ -1114,7 +1174,8 @@ fn orphaned_snapshot_state_is_not_readable_without_desktop_ipc() {
 
 #[test]
 fn mcp_read_surfaces_redact_sensitive_metadata_without_mutating_the_store() {
-    let store = sensitive_snapshot_store();
+    let mut store = sensitive_snapshot_store();
+    grant_all_read_scopes(&mut store, "redaction-reader");
     let raw_store = serde_json::to_string(&store).unwrap();
     let mut server = PortMateMcp {
         store,

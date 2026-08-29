@@ -429,12 +429,154 @@ fn mcp_transfer_writes_require_at_least_one_remote_side_and_never_audit_paths() 
 }
 
 #[test]
+fn mcp_host_paths_require_a_separate_scope_while_virtual_content_stays_available() {
+    let root = std::env::temp_dir().join(format!("portmate-mcp-host-files-{}", Uuid::new_v4()));
+    let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+    let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+    let client_id = "transfer-client";
+    state.store.lock().unwrap().grants.push(McpGrant {
+        client_id: client_id.to_string(),
+        name: "Transfer client".to_string(),
+        scopes: vec![McpScope::Transfer],
+        allowed_sessions: vec![session_id.clone()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    let request = |source: serde_json::Value| IpcRequest {
+        token: "authenticated-token".to_string(),
+        client_id: client_id.to_string(),
+        trusted_write: false,
+        command: "start_transfer".to_string(),
+        args: serde_json::json!({
+            "sessionId": session_id,
+            "protocol": "sftp",
+            "source": source,
+            "destination": "remote:/tmp/firmware.bin"
+        }),
+    };
+
+    let error = validate_ipc_write_args(
+        &state,
+        &request(serde_json::Value::String(
+            "/home/operator/firmware.bin".to_string(),
+        )),
+    )
+    .unwrap_err();
+    assert!(error.contains("host-files"), "{error}");
+
+    validate_ipc_write_args(
+        &state,
+        &request(serde_json::json!({
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": BASE64_STANDARD.encode(b"virtual firmware")
+        })),
+    )
+    .unwrap();
+
+    let internal_transfer = TransferTask {
+        id: "internal-mcp-transfer".to_string(),
+        session_id: session_id.clone(),
+        protocol: TransferProtocol::Sftp,
+        source: root
+            .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+            .join(Uuid::new_v4().to_string())
+            .join("firmware.bin")
+            .display()
+            .to_string(),
+        destination: "remote:/tmp/firmware.bin".to_string(),
+        bytes_total: 16,
+        bytes_done: 0,
+        status: TransferStatus::Failed,
+        message: Some("failed".to_string()),
+        started_at: None,
+        finished_at: Some(Utc::now()),
+        average_bytes_per_second: None,
+    };
+    state
+        .store
+        .lock()
+        .unwrap()
+        .record_transfer(internal_transfer.clone());
+    let retry_error = validate_ipc_write_args(
+        &state,
+        &IpcRequest {
+            token: "authenticated-token".to_string(),
+            client_id: client_id.to_string(),
+            trusted_write: false,
+            command: "retry_transfer".to_string(),
+            args: serde_json::json!({ "transferId": internal_transfer.id }),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        retry_error.contains("contentBase64 or uploadId"),
+        "{retry_error}"
+    );
+    assert!(!retry_error.contains("host-files"), "{retry_error}");
+
+    state.store.lock().unwrap().grants[0]
+        .scopes
+        .push(McpScope::HostFiles);
+    validate_ipc_write_args(
+        &state,
+        &request(serde_json::Value::String(
+            "/home/operator/firmware.bin".to_string(),
+        )),
+    )
+    .unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn mcp_terminal_text_limits_and_approval_previews_are_bounded() {
+    let root = std::env::temp_dir().join(format!("portmate-mcp-input-bounds-{}", Uuid::new_v4()));
+    let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+    let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+    let request = IpcRequest {
+        token: "authenticated-token".to_string(),
+        client_id: "input-client".to_string(),
+        trusted_write: false,
+        command: "run_command".to_string(),
+        args: serde_json::json!({
+            "sessionId": session_id,
+            "command": "deploy --password=hunter2"
+        }),
+    };
+    let target = capture_mcp_write_execution_context(&state, &request)
+        .unwrap()
+        .approval_target()
+        .unwrap();
+    assert_eq!(target.kind, "command");
+    assert!(target.label.contains("<redacted>"));
+    assert!(!target.label.contains("hunter2"));
+
+    let oversized = IpcRequest {
+        args: serde_json::json!({
+            "sessionId": session_id,
+            "command": "x".repeat(MAX_MCP_TERMINAL_TEXT_BYTES + 1)
+        }),
+        ..request
+    };
+    let error = validate_ipc_write_args(&state, &oversized).unwrap_err();
+    assert!(error.contains(&MAX_MCP_TERMINAL_TEXT_BYTES.to_string()));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mcp_start_transfer_accepts_tftp_for_a_profile_with_tftp_enabled() {
     tauri::async_runtime::block_on(async {
         let root =
             std::env::temp_dir().join(format!("portmate-mcp-tftp-transfer-{}", Uuid::new_v4()));
         let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
         let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        grant_test_mcp_access(
+            &state,
+            "tftp-transfer-client",
+            vec![McpScope::Transfer, McpScope::HostFiles],
+            vec![session_id.clone()],
+        );
         let lane = transfer_lane(&state, &session_id).unwrap();
         let _lane_guard = lane.lock().await;
         let response = handle_ipc_request(
@@ -683,6 +825,12 @@ fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
             std::env::temp_dir().join(format!("portmate-mcp-upload-queue-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        grant_test_mcp_access(
+            &state,
+            "queue-client",
+            vec![McpScope::Transfer],
+            vec!["session:1".to_string()],
+        );
         let upload_id = Uuid::new_v4().to_string();
         let upload_dir = root
             .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
@@ -758,6 +906,12 @@ fn mcp_chunked_tftp_upload_enters_the_authorized_transfer_queue() {
             std::env::temp_dir().join(format!("portmate-mcp-tftp-upload-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
+        grant_test_mcp_access(
+            &state,
+            "tftp-queue-client",
+            vec![McpScope::Transfer],
+            vec!["session:1".to_string()],
+        );
         let upload_id = Uuid::new_v4().to_string();
         let upload_dir = root
             .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
@@ -918,14 +1072,15 @@ fn mcp_write_revalidation_rejects_changed_targets_and_revoked_grants() {
     )
     .unwrap_err()
     .contains("grant changed"));
-    revalidate_ipc_write_target(
+    assert!(revalidate_ipc_write_target(
         &state,
         &trusted_request,
         McpScope::Transfer,
         Some(&owner_session),
         true,
     )
-    .unwrap();
+    .unwrap_err()
+    .contains("grant changed"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1882,7 +2037,7 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
 }
 
 #[test]
-fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
+fn explicitly_granted_mcp_input_ignores_claimed_trust_and_uses_exact_tool_audit() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1901,6 +2056,12 @@ fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
         let root =
             std::env::temp_dir().join(format!("portmate-mcp-audit-input-{}", Uuid::new_v4()));
         let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        grant_test_mcp_access(
+            &state,
+            "mcp-e2e-client",
+            vec![McpScope::WriteInput],
+            vec![profile.id.clone()],
+        );
         let stream = TcpStream::connect(address).await.unwrap();
         let (_reader, writer) = stream.into_split();
         let (tap, _) = broadcast::channel(8);
@@ -1984,7 +2145,7 @@ fn trusted_mcp_input_uses_client_actor_and_exact_tool_audit() {
         assert!(audit.iter().all(|record| record.actor == "mcp-e2e-client"));
         assert!(audit.iter().all(|record| record.decision == "succeeded"));
         assert!(audit.iter().all(|record| {
-            record.details.get("trustedBootstrap").map(String::as_str) == Some("true")
+            record.details.get("trustedBootstrap").map(String::as_str) == Some("false")
         }));
         let persisted = load_store_sqlite(&state.store_path).unwrap();
         assert_eq!(persisted.audit, audit);
@@ -2000,6 +2161,12 @@ fn failed_mcp_write_finalizes_audit_without_secret_arguments() {
             std::env::temp_dir().join(format!("portmate-mcp-audit-failed-{}", Uuid::new_v4()));
         let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
         let session_id = state.store.lock().unwrap().profiles[0].id.clone();
+        grant_test_mcp_access(
+            &state,
+            "failed-client",
+            vec![McpScope::WriteInput],
+            vec![session_id.clone()],
+        );
         let error = handle_ipc_request(
             state.clone(),
             IpcRequest {
@@ -2377,7 +2544,7 @@ fn managed_mcp_http_command_uses_saved_settings_without_exposing_the_token() {
         Some("managed-client")
     );
     assert_eq!(env["PORTMATE_MCP_HTTP_ALLOW_REMOTE"].as_deref(), Some("1"));
-    assert_eq!(env["PORTMATE_MCP_TRUSTED"].as_deref(), Some("1"));
+    assert_eq!(env["PORTMATE_MCP_TRUSTED"].as_deref(), Some("0"));
     assert_eq!(
         env["PORTMATE_MCP_PARENT_PID"].as_deref(),
         Some(std::process::id().to_string().as_str())

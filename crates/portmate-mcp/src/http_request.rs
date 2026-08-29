@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::fmt;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
@@ -20,14 +22,45 @@ pub(super) struct HttpRequest {
     pub(super) body: Vec<u8>,
 }
 
-pub(super) fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
-    read_http_request_with_timeout(stream, HTTP_REQUEST_TIMEOUT)
+#[derive(Debug)]
+pub(super) struct HttpAuthenticationRequired;
+
+impl fmt::Display for HttpAuthenticationRequired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MCP HTTP authentication is required before reading the request body")
+    }
 }
 
+impl StdError for HttpAuthenticationRequired {}
+
+pub(super) fn read_http_request_with_body_limit<BodyLimit>(
+    stream: &mut TcpStream,
+    body_limit: BodyLimit,
+) -> Result<HttpRequest>
+where
+    BodyLimit: FnOnce(&str, &str, &HashMap<String, String>) -> Result<usize>,
+{
+    read_http_request_with_timeout_and_body_limit(stream, HTTP_REQUEST_TIMEOUT, body_limit)
+}
+
+#[cfg(test)]
 pub(super) fn read_http_request_with_timeout(
     stream: &mut TcpStream,
     timeout: Duration,
 ) -> Result<HttpRequest> {
+    read_http_request_with_timeout_and_body_limit(stream, timeout, |_, _, _| {
+        Ok(MAX_HTTP_BODY_BYTES)
+    })
+}
+
+fn read_http_request_with_timeout_and_body_limit<BodyLimit>(
+    stream: &mut TcpStream,
+    timeout: Duration,
+    body_limit: BodyLimit,
+) -> Result<HttpRequest>
+where
+    BodyLimit: FnOnce(&str, &str, &HashMap<String, String>) -> Result<usize>,
+{
     let deadline = Instant::now() + timeout;
     let mut raw = Vec::new();
     let mut buffer = [0_u8; 4096];
@@ -83,6 +116,7 @@ pub(super) fn read_http_request_with_timeout(
             .map_err(|_| anyhow!("HTTP header `{}` is not valid UTF-8", header.name))?;
         insert_http_header(&mut headers, header.name, value)?;
     }
+    let max_body_bytes = body_limit(&method, &path, &headers)?.min(MAX_HTTP_BODY_BYTES);
     let initial_body = raw.get(body_start..).unwrap_or_default();
     let body = match headers.get("transfer-encoding") {
         Some(transfer_encoding) => {
@@ -96,7 +130,7 @@ pub(super) fn read_http_request_with_timeout(
                     "unsupported Transfer-Encoding; only chunked is accepted"
                 ));
             }
-            read_http_chunked_body(stream, initial_body, &mut buffer, deadline)?
+            read_http_chunked_body(stream, initial_body, &mut buffer, deadline, max_body_bytes)?
         }
         None => {
             let content_length = headers
@@ -111,6 +145,7 @@ pub(super) fn read_http_request_with_timeout(
                 content_length,
                 &mut buffer,
                 deadline,
+                max_body_bytes,
             )?
         }
     };
@@ -128,8 +163,9 @@ fn read_http_content_length_body(
     content_length: usize,
     buffer: &mut [u8],
     deadline: Instant,
+    max_body_bytes: usize,
 ) -> Result<Vec<u8>> {
-    if content_length > MAX_HTTP_BODY_BYTES {
+    if content_length > max_body_bytes {
         return Err(anyhow!("HTTP body is too large"));
     }
     let mut body = initial_body.to_vec();
@@ -160,6 +196,7 @@ fn read_http_chunked_body(
     initial_body: &[u8],
     buffer: &mut [u8],
     deadline: Instant,
+    max_body_bytes: usize,
 ) -> Result<Vec<u8>> {
     let mut encoded = initial_body.to_vec();
     let mut position = 0;
@@ -196,7 +233,7 @@ fn read_http_chunked_body(
             .ok()
             .and_then(|value| usize::from_str_radix(value, 16).ok())
             .ok_or_else(|| anyhow!("invalid HTTP chunk size"))?;
-        if size > MAX_HTTP_BODY_BYTES.saturating_sub(body.len()) {
+        if size > max_body_bytes.saturating_sub(body.len()) {
             return Err(anyhow!("HTTP body is too large"));
         }
         if size == 0 {

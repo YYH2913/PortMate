@@ -4,7 +4,7 @@ import { CalendarClock, Check, Copy, Dices, Download, KeyRound, ListX, Play, Plu
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, DEFAULT_MCP_HTTP_CLIENT_ID, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpSessionAccessMode, parseMcpGrantExpiryInput, resolveMcpHttpClientId, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
+import { createMcpGrant, DEFAULT_MCP_HTTP_CLIENT_ID, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpGrantIsActive, mcpSessionAccessMode, parseMcpGrantExpiryInput, resolveMcpHttpClientId, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
 import {
   CC_SWITCH_DEFAULT_SERVER_ID,
   CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -21,7 +21,7 @@ import {
 } from "./mcp-http-state";
 import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpAccessResponse, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
 
-const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp", "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts", "manage-mcp"];
+const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp", "write-input", "transfer", "host-files", "tunnel", "manage-sessions", "run-scripts", "manage-mcp"];
 const mcpHttpListenOptions = [
   ["127.0.0.1", "本机 IPv4 · 127.0.0.1"],
   ["0.0.0.0", "所有 IPv4 · 0.0.0.0"],
@@ -58,6 +58,7 @@ export default function McpDialog({
   const [expiryEditor, setExpiryEditor] = useState<McpExpiryEditorState | null>(null);
   const [error, setError] = useState("");
   const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
+  const [savedHttpConfig, setSavedHttpConfig] = useState<McpHttpConfig | null>(null);
   const [httpRuntime, setHttpRuntime] = useState<McpHttpRuntimeStatus | null>(null);
   const [httpSettings, setHttpSettings] = useState<McpHttpConfigRequest>(defaultMcpHttpSettings);
   const [httpOriginsText, setHttpOriginsText] = useState(() => formatMcpHttpOrigins(defaultMcpHttpSettings().allowedOrigins));
@@ -107,7 +108,7 @@ export default function McpDialog({
   const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
   const httpControlsLocked = httpBusy || httpRuntimeLocked;
   const resolvedHttpClientId = resolveMcpHttpClientId(
-    (httpConfig?.clientId ?? httpSettings.clientId) || DEFAULT_MCP_HTTP_CLIENT_ID,
+    (savedHttpConfig?.clientId ?? httpConfig?.clientId ?? httpSettings.clientId) || DEFAULT_MCP_HTTP_CLIENT_ID,
     grants,
   );
   const savedDraftGrant = editingClientId ? grants.find((grant) => grant.clientId === editingClientId) : null;
@@ -126,10 +127,11 @@ export default function McpDialog({
   }), [ccSwitchServerId, ccSwitchToolTimeout, httpSettings, httpToken]);
   const selectedGrantCcSwitchJson = draft
     && editingClientId === draft.clientId
-    && !draft.revokedAt
-    && httpConfig
+    && mcpGrantIsActive(draft)
+    && savedHttpConfig
     && !httpDirty
-    ? formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(httpConfig), {
+    && resolveMcpHttpClientId(savedHttpConfig.clientId, grants) === draft.clientId
+    ? formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(savedHttpConfig), {
         serverId: ccSwitchServerIdForGrant(draft.clientId),
         token: httpToken,
         toolTimeoutSeconds: ccSwitchToolTimeout,
@@ -138,7 +140,7 @@ export default function McpDialog({
   const selectedGrantIsHttpClient = Boolean(
     draft && editingClientId === draft.clientId && resolvedHttpClientId === draft.clientId,
   );
-  const activeGrantCount = grants.filter((grant) => !grant.revokedAt).length;
+  const activeGrantCount = grants.filter((grant) => mcpGrantIsActive(grant)).length;
   const runtimePhase = httpRuntime?.phase ?? "stopped";
   const runtimeEndpoint = httpRuntime?.endpoint ?? httpConfig?.endpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-";
 
@@ -236,8 +238,18 @@ export default function McpDialog({
     setError("");
     setHttpBusy(true);
     try {
+      const settings = currentHttpSettings();
+      const identityChanged = Boolean(
+        savedHttpConfig
+        && resolveMcpHttpClientId(savedHttpConfig.clientId, grants) !== settings.clientId,
+      );
+      if (identityChanged && httpToken) {
+        const rotated = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
+        if (!requestGateRef.current.isCurrent("http", token)) return;
+        setHttpToken(rotated.token);
+      }
       const next = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
-        settings: currentHttpSettings(),
+        settings,
       });
       if (requestGateRef.current.isCurrent("http", token)) applyHttpConfig(next);
     } catch (nextError) {
@@ -344,6 +356,7 @@ export default function McpDialog({
 
   function applyHttpConfig(config: McpHttpConfig) {
     const settings = mcpHttpSettingsFromConfig(config);
+    setSavedHttpConfig(config);
     setHttpConfig(config);
     setHttpSettings(settings);
     setHttpOriginsText(formatMcpHttpOrigins(settings.allowedOrigins));
@@ -387,8 +400,8 @@ export default function McpDialog({
     return grantBusy
       || httpBusy
       || httpDirty
-      || !httpConfig
-      || Boolean(grant.revokedAt)
+      || !savedHttpConfig
+      || !mcpGrantIsActive(grant)
       || (httpRuntimeActive && requiresHttpMutation);
   }
 
@@ -401,16 +414,23 @@ export default function McpDialog({
   }
 
   async function copyGrantCcSwitch(grant: McpGrant) {
-    if (grantCcSwitchActionDisabled(grant) || !httpConfig) return;
+    if (grantCcSwitchActionDisabled(grant) || !savedHttpConfig) return;
     const requestToken = requestGateRef.current.begin("http");
     if (requestToken === null) return;
     setError("");
     setHttpBusy(true);
     setGrantCcSwitchCopiedClientId(null);
     try {
-      let config = httpConfig;
+      let config = savedHttpConfig;
       let tokenValue = httpToken;
-      if (resolveMcpHttpClientId(config.clientId, grants) !== grant.clientId) {
+      const identityChanged = resolveMcpHttpClientId(config.clientId, grants) !== grant.clientId;
+      if (identityChanged && tokenValue) {
+        const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
+        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
+        tokenValue = response.token;
+        setHttpToken(tokenValue);
+      }
+      if (identityChanged) {
         config = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
           settings: {
             ...mcpHttpSettingsFromConfig(config),
@@ -785,6 +805,9 @@ export default function McpDialog({
                   <legend>权限范围</legend>
                   {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" disabled={grantBusy} checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
                 </fieldset>
+                <p className={draft.scopes.includes("host-files") ? "mcp-scope-boundary elevated" : "mcp-scope-boundary"}>
+                  <code>transfer</code> 可使用 MCP 虚拟内容和 <code>uploadId</code>；<code>host-files</code> 会额外开放 PortMate 主机路径，仅应授予可信客户端。
+                </p>
                 <fieldset className="mcp-session-list">
                   <legend>允许会话</legend>
                   <div className="mcp-session-access-mode" role="radiogroup" aria-label="MCP 会话授权范围">
@@ -806,7 +829,7 @@ export default function McpDialog({
                   <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
                   <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
                 </div>
-                {editingClientId === draft.clientId && !draft.revokedAt ? (
+                {editingClientId === draft.clientId && mcpGrantIsActive(draft) ? (
                   <section className="mcp-grant-cc-switch" aria-labelledby="mcp-grant-cc-switch-title">
                     <header>
                       <div>
@@ -842,7 +865,7 @@ export default function McpDialog({
         {tab === "http" ? (
           <section className="mcp-http-view" role="tabpanel">
             <div className="mcp-http-panel">
-              <header><div><strong>服务与访问</strong><small>管理监听边界、进程和客户端接入配置</small></div><span aria-live="polite">{httpDirty ? "配置未保存" : httpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
+              <header><div><strong>服务与访问</strong><small>管理监听边界、进程和客户端接入配置</small></div><span aria-live="polite">{httpDirty ? "配置未保存" : savedHttpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
               <div className="mcp-http-settings">
                 <div className="mcp-section-heading"><div><strong>监听配置</strong><span>服务运行时锁定以下参数</span></div></div>
                 <div className="mcp-http-field-grid">
@@ -859,13 +882,12 @@ export default function McpDialog({
                     </div>
                   </McpFieldGroup>
                   <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
-                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => !grant.revokedAt).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
+                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => mcpGrantIsActive(grant)).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
                   <McpField label="客户端地址:"><input aria-label="MCP HTTP 客户端地址" value={httpSettings.clientHost} maxLength={253} spellCheck={false} disabled={httpControlsLocked} placeholder="192.168.33.222" onChange={(event) => updateHttpSettings({ clientHost: event.target.value })} /></McpField>
                 </div>
                 <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpControlsLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
                 <div className="mcp-http-options">
                   <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={httpControlsLocked || !httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
-                  <label><input type="checkbox" checked={httpSettings.trusted} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ trusted: event.target.checked })} />授权为空时允许写操作</label>
                 </div>
                 {httpRemoteListener ? (
                   <div className={`mcp-http-exposure ${httpSettings.allowRemote ? "allowed" : "blocked"}`} role="status">
@@ -875,15 +897,15 @@ export default function McpDialog({
               </div>
               <section className="mcp-cc-switch" aria-labelledby="mcp-cc-switch-title">
                 <header>
-                  <div><strong id="mcp-cc-switch-title">客户端接入</strong><small>生成可直接粘贴到 CC Switch 的完整 JSON</small></div>
-                  <button type="button" title="复制 CC Switch JSON" aria-label="复制 CC Switch JSON" disabled={!ccSwitchJson || !httpPreviewCurrent} onClick={() => void copyCcSwitchJson()}><Copy size={14} /><span>{ccSwitchCopied ? "已复制" : "复制 JSON"}</span></button>
+                  <div><strong id="mcp-cc-switch-title">客户端接入</strong><small>{httpDirty ? "保存配置后可复制完整 JSON" : "生成可直接粘贴到 CC Switch 的完整 JSON"}</small></div>
+                  <button type="button" title={httpDirty ? "请先保存配置" : "复制 CC Switch JSON"} aria-label="复制 CC Switch JSON" disabled={!ccSwitchJson || !httpPreviewCurrent || httpDirty} onClick={() => void copyCcSwitchJson()}><Copy size={14} /><span>{ccSwitchCopied ? "已复制" : "复制 JSON"}</span></button>
                 </header>
                 <div className="mcp-cc-switch-options">
                   <label><span>Server ID</span><input aria-label="CC Switch Server ID" value={ccSwitchServerId} maxLength={64} spellCheck={false} onChange={(event) => setCcSwitchServerId(event.target.value)} /></label>
                   <label><span>Bearer Token</span><input aria-label="CC Switch Bearer Token" value={httpToken} readOnly spellCheck={false} placeholder="先生成 Token" /></label>
                   <label><span>工具超时</span><input aria-label="CC Switch 工具超时秒数" type="number" min={1} max={3_600} value={ccSwitchToolTimeout || ""} onChange={(event) => setCcSwitchToolTimeout(Number(event.target.value))} /></label>
                 </div>
-                <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-cc-switch-json stale" : "mcp-cc-switch-json"} readOnly aria-label="CC Switch MCP JSON" value={ccSwitchJson} />
+                <textarea className={httpDirty ? "mcp-cc-switch-json stale" : "mcp-cc-switch-json"} readOnly aria-label="CC Switch MCP JSON" value={ccSwitchJson} />
               </section>
               <div className="mcp-http-row"><span>Listen</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
               <div className="mcp-http-row"><span>Client</span><code>{httpConfig?.clientEndpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-"}</code></div>
@@ -902,8 +924,8 @@ export default function McpDialog({
               {error ? <div className="utility-error">{error}</div> : null}
               <div className="mcp-actions">
                 <button type="button" onClick={() => void saveHttpSettings()} disabled={httpBusy || httpRuntimeLocked || !httpSettingsValid || !httpDirty}><Save size={14} />保存配置</button>
-                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpRuntimeLocked || httpDirty || !httpConfig}><KeyRound size={14} />{httpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
-                <button type="button" onClick={() => void startHttpRuntime()} disabled={httpBusy || httpRuntimeBusy || !httpRuntime || httpRuntimeActive || httpDirty || !httpConfig?.tokenAvailable}><Play size={14} />启动服务</button>
+                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpRuntimeLocked || httpDirty || !savedHttpConfig}><KeyRound size={14} />{savedHttpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
+                <button type="button" onClick={() => void startHttpRuntime()} disabled={httpBusy || httpRuntimeBusy || !httpRuntime || httpRuntimeActive || httpDirty || !savedHttpConfig?.tokenAvailable}><Play size={14} />启动服务</button>
                 <button type="button" onClick={() => void stopHttpRuntime()} disabled={httpRuntimeBusy || !httpRuntime || httpRuntime.phase === "stopped"}><Square size={13} />停止服务</button>
                 <button type="button" onClick={() => void copyHttpCommand()} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />{httpCommandCopied ? "已复制" : "复制命令"}</button>
               </div>

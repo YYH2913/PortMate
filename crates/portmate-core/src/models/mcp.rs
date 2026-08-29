@@ -22,6 +22,7 @@ pub enum McpScope {
     ReadMcp,
     WriteInput,
     Transfer,
+    HostFiles,
     Tunnel,
     ManageSessions,
     RunScripts,

@@ -451,6 +451,7 @@ try {
     window.__pendingCustomScriptRuns = [];
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
     window.__mcpHttpToken = "portmate-existing-token";
+    window.__mcpHttpTokenSequence = 0;
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
     window.__pendingMcpHttpRuntimeStatuses = [];
@@ -1641,7 +1642,8 @@ try {
           return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
         if (command === "rotate_mcp_http_token") {
-          window.__mcpHttpToken = "portmate-test-token";
+          window.__mcpHttpTokenSequence += 1;
+          window.__mcpHttpToken = `portmate-test-token-${window.__mcpHttpTokenSequence}`;
           return { config: structuredClone(window.__mcpHttpConfig), token: window.__mcpHttpToken };
         }
         if (command === "export_mcp_audit") {
@@ -2014,6 +2016,7 @@ try {
       action: "run_command",
       sessionId: "edge-router",
       scope: "write-input",
+      target: { kind: "command", id: "6 UTF-8 bytes", label: "Command: uptime" },
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + 60_000).toISOString(),
     };
@@ -3157,7 +3160,21 @@ Host staging
 
   const explorerFilter = page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true });
   await explorerFilter.fill("production");
-  await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
+  try {
+    await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      query: document.querySelector('.workspace-dock-content.panel-explorer input[aria-label="筛选资源管理器会话"]')?.value ?? null,
+      rows: [...document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session")].map((row) => row.textContent?.trim()),
+      empty: document.querySelector(".workspace-dock-content.panel-explorer .empty-pane")?.textContent?.trim() ?? null,
+      sessions: window.__sessions.map((session) => ({
+        id: session.profile.id,
+        name: session.profile.name,
+        tags: session.profile.tags,
+      })),
+    }));
+    throw new Error(`resource tag filter did not settle: ${JSON.stringify(state)}`, { cause: error });
+  }
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session").count() === 1,
     "resource tag filter did not remove unrelated sessions");
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
@@ -4130,7 +4147,7 @@ Host staging
   await activeTerminalInput.focus();
   await page.keyboard.press("q");
   await page.waitForFunction(() => window.__pendingTerminalSends.length === 1);
-  const senderSendButton = sender.getByRole("button", { name: "发送", exact: true });
+  const senderSendButton = sender.locator(".send-toolbar-primary > .send-icon-button").first();
   await senderSendButton.evaluate((button) => {
     button.click();
     button.click();
@@ -4142,8 +4159,9 @@ Host staging
   }), senderLifecycleStart);
   assert(pendingSenderLifecycle.calls === 1
     && pendingSenderLifecycle.pending === 1
-    && await senderSendButton.isDisabled(),
-  `sender bypassed pending terminal input or did not lock: ${JSON.stringify(pendingSenderLifecycle)}`);
+    && await senderSendButton.getAttribute("aria-label") === "停止重复发送"
+    && !await senderSendButton.isDisabled(),
+  `sender bypassed pending terminal input or did not expose cancellation: ${JSON.stringify(pendingSenderLifecycle)}`);
   await page.evaluate(() => {
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends.shift().resolve(null);
@@ -6048,21 +6066,23 @@ Host staging
   const visibleMcpScopes = await mcpDialog.locator(".mcp-check-grid label").allTextContents();
   assert(JSON.stringify(visibleMcpScopes.map((scope) => scope.trim())) === JSON.stringify([
     "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts",
-    "read-mcp", "write-input", "transfer", "tunnel", "manage-sessions", "run-scripts", "manage-mcp",
+    "read-mcp", "write-input", "transfer", "host-files", "tunnel", "manage-sessions", "run-scripts", "manage-mcp",
   ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
   const savedGrantCcSwitch = mcpDialog.getByRole("textbox", { name: "授权 CC Switch MCP JSON", exact: true });
-  await page.waitForFunction(() => document.querySelector('[aria-label="授权 CC Switch MCP JSON"]')?.value.includes("portmate-existing-token"));
-  const savedGrantCcSwitchJson = await savedGrantCcSwitch.inputValue();
-  const parsedSavedGrantCcSwitch = JSON.parse(savedGrantCcSwitchJson);
+  assert(await savedGrantCcSwitch.inputValue() === "",
+    "inactive MCP grant exposed the token for a different active identity");
   const savedGrantCcSwitchAction = mcpDialog.locator(".mcp-grant-cc-switch")
     .getByRole("button", { name: `应用并复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true });
   await savedGrantCcSwitchAction.click();
   await mcpDialog.locator(".mcp-grant-cc-switch")
     .getByRole("button", { name: `已复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true })
     .waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-label="授权 CC Switch MCP JSON"]')?.value.includes("portmate-test-token-1"));
+  const savedGrantCcSwitchJson = await savedGrantCcSwitch.inputValue();
+  const parsedSavedGrantCcSwitch = JSON.parse(savedGrantCcSwitchJson);
   const savedGrantHttpSelection = await page.evaluate(() => window.__invokeCalls
     .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings.clientId);
-  assert(parsedSavedGrantCcSwitch["portmate-ops-console"]?.headers?.Authorization === "Bearer portmate-existing-token"
+  assert(parsedSavedGrantCcSwitch["portmate-ops-console"]?.headers?.Authorization === "Bearer portmate-test-token-1"
     && parsedSavedGrantCcSwitch["portmate-ops-console"]?.url === "http://127.0.0.1:8787/mcp"
     && await page.evaluate(() => window.__clipboardText) === savedGrantCcSwitchJson
     && savedGrantHttpSelection === mcpGrants[0].clientId,
@@ -6205,7 +6225,7 @@ Host staging
     && await mcpDialog.locator(".mcp-audit-view").count() === 0,
   "MCP HTTP page renders inactive task content");
   await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 1);
-  assert(await mcpDialog.getByLabel("CC Switch Bearer Token", { exact: true }).inputValue() === "portmate-existing-token"
+  assert(await mcpDialog.getByLabel("CC Switch Bearer Token", { exact: true }).inputValue() === "portmate-test-token-1"
     && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isEnabled(),
   "MCP HTTP page did not reuse the existing saved Token");
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
@@ -6258,10 +6278,11 @@ Host staging
   await mcpDialog.getByRole("spinbutton", { name: "MCP HTTP 端口", exact: true }).fill("9088");
   await mcpDialog.getByLabel("MCP HTTP Client ID", { exact: true }).fill("remote-automation");
   await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).fill("https://console.example.test");
-  await mcpDialog.getByRole("checkbox", { name: "授权为空时允许写操作", exact: true }).check();
   await page.waitForFunction(() => document.querySelector(".mcp-http-command")?.value.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"));
-  assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled(),
-    "MCP HTTP valid unsaved settings did not produce a copyable command preview");
+  assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled()
+    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled()
+    && (await mcpDialog.locator(".mcp-cc-switch header small").textContent()).includes("保存配置后"),
+  "MCP HTTP draft did not distinguish the command preview from the inactive CC Switch configuration");
   await page.evaluate(() => { window.__clipboardWriteFailures = 1; });
   await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).click();
   await mcpDialog.locator(".utility-error", { hasText: "simulated clipboard denial" }).waitFor();
@@ -6304,15 +6325,16 @@ Host staging
     window.__pendingMcpHttpMutations = [];
     window.__deferMcpHttpMutations = false;
   });
+  await page.waitForFunction(() => !document.querySelector('[aria-label="MCP HTTP 监听 IP"]')?.disabled);
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
   await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
   const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
   const existingCcSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
-  assert(existingCcSwitchJson.includes("portmate-existing-token")
+  assert(existingCcSwitchJson.includes("portmate-test-token-2")
     && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isEnabled(),
-  "CC Switch JSON did not reuse the saved Token after HTTP settings changed");
+  `CC Switch JSON did not rotate the Token after the active identity changed: ${existingCcSwitchJson}`);
   await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('[aria-label="CC Switch Bearer Token"]')?.value === "portmate-test-token");
+  await page.waitForFunction(() => document.querySelector('[aria-label="CC Switch Bearer Token"]')?.value === "portmate-test-token-3");
   const ccSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
   const parsedCcSwitchJson = JSON.parse(ccSwitchJson);
   await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
@@ -6321,7 +6343,7 @@ Host staging
     .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings);
   assert(remoteCommand.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'")
     && remoteCommand.includes("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1")
-    && remoteCommand.includes("PORTMATE_MCP_TRUSTED=1")
+    && remoteCommand.includes("PORTMATE_MCP_TRUSTED=0")
     && remoteCommand.includes("PORTMATE_MCP_CLIENT_ID='remote-automation'")
     && remoteCommand.includes("PORTMATE_MCP_HTTP_ORIGINS='https://console.example.test'")
     && savedMcpHttpSettings.listenHost === "0.0.0.0"
@@ -6334,14 +6356,14 @@ Host staging
       type: "http",
       url: "http://192.168.33.222:9088/mcp",
       headers: {
-        Authorization: "Bearer portmate-test-token",
+        Authorization: "Bearer portmate-test-token-3",
       },
       tool_timeout_sec: 180,
     },
   })
     && copiedCcSwitchJson === ccSwitchJson
     && !ccSwitchJson.includes("mcpServers")
-    && ccSwitchJson.includes("portmate-test-token")
+    && ccSwitchJson.includes("portmate-test-token-3")
     && !ccSwitchJson.includes("bearer_token_env_var")
     && !ccSwitchJson.includes("bearer_token\""),
   `CC Switch MCP JSON is not directly importable or missing its inline token: ${ccSwitchJson}`);
@@ -6492,6 +6514,9 @@ Host staging
       action,
       sessionId,
       scope,
+      target: action === "run_command"
+        ? { kind: "command", id: "6 UTF-8 bytes", label: "Command: uptime" }
+        : { kind: "operation", id: "tunnel-id", label: "Stop tunnel tunnel-id" },
       createdAt: new Date(now + offset).toISOString(),
       expiresAt: new Date(now + offset + 60_000).toISOString(),
     });
@@ -6561,6 +6586,7 @@ Host staging
       action: "run_command",
       sessionId: "edge-router",
       scope: "write-input",
+      target: { kind: "command", id: "6 UTF-8 bytes", label: "Command: uptime" },
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + 2_000).toISOString(),
     });

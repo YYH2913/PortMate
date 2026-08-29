@@ -4,6 +4,7 @@ import {
   createMcpGrant,
   formatMcpGrantExpiryInput,
   generateMcpClientId,
+  mcpGrantIsActive,
   mcpSessionAccessMode,
   mcpGrantDraftHasUnsavedChanges,
   parseMcpGrantExpiryInput,
@@ -71,6 +72,15 @@ describe("MCP grant editor state", () => {
       ...grants,
       { clientId: "second-client", expiresAt: null, revokedAt: null },
     ])).toBe(DEFAULT_MCP_HTTP_CLIENT_ID);
+  });
+
+  it("treats revoked, expired, and malformed-expiry grants as inactive", () => {
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    expect(mcpGrantIsActive({ expiresAt: null, revokedAt: null }, now)).toBe(true);
+    expect(mcpGrantIsActive({ expiresAt: "2030-01-01T00:00:01.000Z", revokedAt: null }, now)).toBe(true);
+    expect(mcpGrantIsActive({ expiresAt: "2029-12-31T23:59:59.000Z", revokedAt: null }, now)).toBe(false);
+    expect(mcpGrantIsActive({ expiresAt: "invalid", revokedAt: null }, now)).toBe(false);
+    expect(mcpGrantIsActive({ expiresAt: null, revokedAt: "2029-01-01T00:00:00.000Z" }, now)).toBe(false);
   });
 
   it("keeps a pristine new grant clean until the user enters a value", () => {

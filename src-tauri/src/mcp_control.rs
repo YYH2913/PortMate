@@ -8,6 +8,7 @@ const MAX_MCP_HTTP_CLIENT_HOST_BYTES: usize = 253;
 pub(super) const MAX_MCP_GRANTS: usize = 512;
 pub(super) const MAX_MCP_GRANT_CLIENT_ID_BYTES: usize = 128;
 pub(super) const MAX_MCP_GRANT_NAME_BYTES: usize = 256;
+pub(super) const MAX_MCP_GRANT_SCOPES: usize = 13;
 pub(super) const MAX_MCP_GRANT_SESSIONS: usize = 1_024;
 pub(super) const MAX_MCP_GRANT_SESSION_ID_BYTES: usize = 128;
 pub(super) const MAX_PENDING_MCP_APPROVALS: usize = 32;
@@ -84,7 +85,7 @@ pub(super) fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, Strin
             "MCP grant name must not contain control characters or exceed {MAX_MCP_GRANT_NAME_BYTES} bytes"
         ));
     }
-    if grant.scopes.len() > 12 {
+    if grant.scopes.len() > MAX_MCP_GRANT_SCOPES {
         return Err("MCP grant contains too many scopes".to_string());
     }
     for (index, scope) in grant.scopes.iter().enumerate() {
@@ -406,6 +407,9 @@ pub(super) fn normalize_mcp_http_settings(
     request.client_host = normalize_mcp_http_client_host(&request.client_host)?;
     request.client_id = normalize_mcp_client_id(&request.client_id)?;
     request.allow_remote = !bind_ip.is_loopback();
+    // Retained in the stored schema for compatibility only. Empty-store
+    // trusted bootstrap is no longer an authorization boundary.
+    request.trusted = false;
 
     if request.allowed_origins.len() > MAX_MCP_HTTP_ORIGINS {
         return Err(format!(

@@ -125,6 +125,12 @@ fn mcp_ipc_reads_redact_profiles_and_complete_event_metadata() {
                 .unwrap();
             session_id
         };
+        grant_test_mcp_access(
+            &state,
+            "redaction-reader",
+            vec![McpScope::ReadSessions, McpScope::ReadLogs],
+            vec![session_id.clone()],
+        );
         let raw_store = serde_json::to_string(&*state.store.lock().unwrap()).unwrap();
         let request = |command: &str, args: serde_json::Value| IpcRequest {
             token: "authenticated-token".to_string(),

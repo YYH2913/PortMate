@@ -38,7 +38,7 @@ use http_protocol::{
     MCP_PROTOCOL_VERSIONS,
 };
 #[cfg(test)]
-use http_request::HttpRequest;
+use http_request::{read_http_request_with_body_limit, HttpRequest};
 #[cfg(test)]
 use http_security::{authorized_http_request, validate_origin, HttpSecurityConfig};
 use http_server::run_http_server;

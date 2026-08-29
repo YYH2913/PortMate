@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn empty_mcp_grant_store_requires_trusted_bootstrap() {
+fn empty_mcp_grant_store_rejects_caller_claimed_trusted_bootstrap() {
     let mut store = SessionStore::default();
     assert!(!mcp_scope_allowed(
         &store,
@@ -10,7 +10,7 @@ fn empty_mcp_grant_store_requires_trusted_bootstrap() {
         McpScope::WriteInput,
         Some("session-1"),
     ));
-    assert!(mcp_scope_allowed(
+    assert!(!mcp_scope_allowed(
         &store,
         "portmate-local",
         true,
@@ -174,6 +174,7 @@ fn mcp_grant_validation_accepts_the_complete_scope_set() {
             McpScope::ReadMcp,
             McpScope::WriteInput,
             McpScope::Transfer,
+            McpScope::HostFiles,
             McpScope::Tunnel,
             McpScope::ManageSessions,
             McpScope::RunScripts,
@@ -185,11 +186,12 @@ fn mcp_grant_validation_accepts_the_complete_scope_set() {
         revoked_at: None,
     };
 
-    assert_eq!(normalize_mcp_grant(grant).unwrap().scopes.len(), 12);
+    assert_eq!(normalize_mcp_grant(grant).unwrap().scopes.len(), 13);
     assert_eq!(mcp_scope_label(McpScope::ReadTransfers), "read-transfers");
     assert_eq!(mcp_scope_label(McpScope::ReadTunnels), "read-tunnels");
     assert_eq!(mcp_scope_label(McpScope::ReadScripts), "read-scripts");
     assert_eq!(mcp_scope_label(McpScope::RunScripts), "run-scripts");
+    assert_eq!(mcp_scope_label(McpScope::HostFiles), "host-files");
     assert_eq!(mcp_scope_label(McpScope::ReadMcp), "read-mcp");
     assert_eq!(mcp_scope_label(McpScope::ManageMcp), "manage-mcp");
 }

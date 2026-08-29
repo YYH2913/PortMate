@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) const MCP_CONTENT_TRANSFER_RETRY_ERROR: &str =
+    "MCP virtual and uploadId content transfers cannot be retried; call start_transfer again with contentBase64 or uploadId";
+
+pub(super) fn is_mcp_content_transfer_staging_source(state: &AppState, source: &str) -> bool {
+    state.store_path.parent().is_some_and(|parent| {
+        let staging_root = parent.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY);
+        Path::new(source)
+            .parent()
+            .is_some_and(|source_parent| source_parent.starts_with(staging_root))
+    })
+}
+
 pub(super) fn stage_mcp_content_transfer(
     state: &AppState,
     request: &StartMcpContentTransferRequest,

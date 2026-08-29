@@ -2,9 +2,12 @@ use super::http_protocol::{
     accepts_json_http_response, accepts_sse_http_response, has_json_http_content_type,
     http_protocol_version, is_sse_stream_request, validate_mcp_protocol_version,
 };
-use super::http_request::{read_http_request, HttpRequest};
+use super::http_request::{
+    read_http_request_with_body_limit, HttpAuthenticationRequired, HttpRequest,
+};
 use super::http_security::{
-    authorized_http_request, validate_origin, HttpSecurityConfig, HTTP_TOKEN_REF,
+    authorized_http_headers, authorized_http_request, validate_origin, HttpSecurityConfig,
+    HTTP_TOKEN_REF,
 };
 use super::response_encoding::{
     http_response, http_response_with_protocol, http_sse_headers, http_sse_message_response,
@@ -12,16 +15,19 @@ use super::response_encoding::{
 };
 use super::{handle_json_rpc_value, PortMateMcp};
 use anyhow::{anyhow, Result};
+use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_HTTP_CONNECTIONS: usize = 64;
+const MAX_HTTP_SSE_CONNECTIONS: usize = 8;
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const HTTP_SSE_LEASE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub(super) struct HttpConfig {
@@ -34,6 +40,7 @@ pub(super) fn run_http_server() -> Result<()> {
     PortMateMcp::new()?;
     let listener = TcpListener::bind(config.addr)?;
     let active_connections = Arc::new(AtomicUsize::new(0));
+    let active_sse_connections = Arc::new(AtomicUsize::new(0));
     eprintln!("PortMate MCP HTTP listening on http://{}/mcp", config.addr);
     eprintln!("PortMate MCP HTTP token source: {HTTP_TOKEN_REF} or PORTMATE_MCP_HTTP_TOKEN");
 
@@ -46,6 +53,8 @@ pub(super) fn run_http_server() -> Result<()> {
                     config,
                     Arc::clone(&active_connections),
                     MAX_HTTP_CONNECTIONS,
+                    Arc::clone(&active_sse_connections),
+                    MAX_HTTP_SSE_CONNECTIONS,
                 );
             }
             Err(error) => eprintln!("PortMate MCP HTTP accept failed: {error}"),
@@ -83,6 +92,8 @@ pub(super) fn spawn_http_connection(
     config: HttpConfig,
     active: Arc<AtomicUsize>,
     max_connections: usize,
+    active_sse: Arc<AtomicUsize>,
+    max_sse_connections: usize,
 ) -> bool {
     let Some(permit) = try_acquire_http_connection(&active, max_connections) else {
         let _ = stream.set_write_timeout(Some(HTTP_WRITE_TIMEOUT));
@@ -98,18 +109,45 @@ pub(super) fn spawn_http_connection(
     };
     thread::spawn(move || {
         let _permit = permit;
-        handle_http_connection(stream, config);
+        handle_http_connection(stream, config, active_sse, max_sse_connections);
     });
     true
 }
 
-fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
+fn handle_http_connection(
+    mut stream: TcpStream,
+    config: HttpConfig,
+    active_sse: Arc<AtomicUsize>,
+    max_sse_connections: usize,
+) {
     if let Err(error) = stream.set_write_timeout(Some(HTTP_WRITE_TIMEOUT)) {
         eprintln!("PortMate MCP HTTP failed to set write timeout: {error}");
         return;
     }
-    let response = match read_http_request(&mut stream) {
+    let response = match read_http_request_with_body_limit(&mut stream, |method, path, headers| {
+        if path == "/mcp" && method == "POST" {
+            if authorized_http_headers(headers, config.security.token()) {
+                Ok(MAX_MCP_BRIDGE_REQUEST_BYTES)
+            } else {
+                Err(HttpAuthenticationRequired.into())
+            }
+        } else {
+            Ok(0)
+        }
+    }) {
         Ok(request) if is_sse_stream_request(&request) => {
+            let Some(_sse_permit) = try_acquire_http_connection(&active_sse, max_sse_connections)
+            else {
+                let response = http_response(
+                    503,
+                    "Service Unavailable",
+                    &json!({ "error": "MCP HTTP SSE connection limit reached" }).to_string(),
+                    request.headers.get("origin").map(String::as_str),
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.shutdown(Shutdown::Both);
+                return;
+            };
             if let Err(error) = write_http_sse_stream(&mut stream, request, &config) {
                 eprintln!("PortMate MCP HTTP SSE stream failed: {error}");
             }
@@ -117,6 +155,8 @@ fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
         }
         Ok(request) => handle_http_request(request, &config),
         Err(error) => {
+            let authentication_required =
+                error.downcast_ref::<HttpAuthenticationRequired>().is_some();
             let timed_out = error.downcast_ref::<io::Error>().is_some_and(|error| {
                 matches!(
                     error.kind(),
@@ -124,8 +164,16 @@ fn handle_http_connection(mut stream: TcpStream, config: HttpConfig) {
                 )
             });
             http_response(
-                if timed_out { 408 } else { 400 },
-                if timed_out {
+                if authentication_required {
+                    401
+                } else if timed_out {
+                    408
+                } else {
+                    400
+                },
+                if authentication_required {
+                    "Unauthorized"
+                } else if timed_out {
                     "Request Timeout"
                 } else {
                     "Bad Request"
@@ -355,7 +403,8 @@ fn write_http_sse_stream(
         return Ok(());
     }
 
-    loop {
+    let lease_deadline = Instant::now() + HTTP_SSE_LEASE;
+    while Instant::now() < lease_deadline {
         thread::sleep(Duration::from_secs(5));
         let event = format!(
             ": keep-alive\n\n{}",
@@ -364,6 +413,8 @@ fn write_http_sse_stream(
         stream.write_all(event.as_bytes())?;
         stream.flush()?;
     }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
 }
 
 fn mcp_sse_state_payload(protocol_version: &str) -> Result<Value> {

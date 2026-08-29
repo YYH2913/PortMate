@@ -47,14 +47,15 @@ X-PortMate-MCP-Token: token。
 | PORTMATE_MCP_HTTP_ORIGINS | 逗号分隔的 Origin allowlist |
 | PORTMATE_MCP_HTTP_TOKEN | HTTP Token；未设置时从内部密钥存储读取或生成 |
 | PORTMATE_MCP_CLIENT_ID | 当前 MCP Client ID，默认 portmate-local；若未显式选择且 Store 中只有一个有效授权，Bridge 自动采用该授权的 Client ID |
-| PORTMATE_MCP_TRUSTED=1 | 仅在 Store 尚无任何 grant 时启用可信 bootstrap 写入；已有 grant 后仍严格按 scope、会话范围和审批执行 |
+| PORTMATE_MCP_TRUSTED | 兼容保留但不再授予权限；读写操作都必须有显式 grant |
 | PORTMATE_MCP_PARENT_PID | 托管 sidecar 的父进程 ID；父进程退出时 sidecar 自动退出 |
 
-HTTP 没有内置 TLS。远程使用时应放在可信网络或正确配置的 TLS 反向代理后面。
-HTTP listener 最多同时处理 64 个连接；单个 JSON-RPC envelope 最大约 6 MiB。
+HTTP 没有内置 TLS。非回环监听会以明文发送 Bearer Token，不应直接跨越不可信网络；应使用受控防火墙并放在正确配置的 TLS 反向代理或加密隧道后面。
+HTTP listener 最多同时处理 64 个连接，其中长期 SSE 最多 8 个且有 5 分钟租期。未通过 Token 校验的请求不会获得正文内存预算；单个已认证 JSON-RPC envelope 最大约 6 MiB。
 
 CC Switch 的 HTTP 单服务器配置可以直接从桌面端 MCP Bridge 的 HTTP 页面生成；该 JSON
 内含 Bearer Token，必须按密码处理，不能提交到仓库或共享日志。
+Bridge 当前一次只运行一个活动 Client ID；切换到另一授权时桌面端会先轮换 Token，使旧配置立即失效。
 
 CC Switch 扁平配置示例：
 
@@ -109,6 +110,7 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 | read-mcp | 读取 Bridge 和托管 HTTP 状态 |
 | write-input | 发送文本、字节、按键、命令、Break 或 Tmux attach |
 | transfer | 开始、追加、取消、重试文件传输 |
+| host-files | 允许 transfer 直接读取或写入 PortMate 主机路径；高风险且不包含虚拟内容/uploadId |
 | tunnel | 创建、停止隧道，以及 TCP/UDP 数据面请求 |
 | manage-sessions | 会话生命周期保留权限；当前公开工具不使用 |
 | run-scripts | 执行已保存且开放给 MCP 的脚本 |
@@ -140,7 +142,7 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 | run_custom_script | 写入 | run-scripts | 执行已保存脚本 |
 | list_transfers | 只读 | read-transfers | 列出传输任务 |
 | get_transfer | 只读 | read-transfers | 查询任务 |
-| start_transfer | 写入 | transfer | 启动 SFTP/SCP/TFTP/XModem/YModem/ZModem |
+| start_transfer | 写入 | transfer；直接主机路径另需 host-files | 启动 SFTP/SCP/TFTP/XModem/YModem/ZModem |
 | begin_content_upload | 写入 | transfer | 开始大文件分片暂存 |
 | append_content_upload | 写入 | transfer | 追加 Base64 分片 |
 | cancel_content_upload | 写入 | transfer | 删除未完成分片上传 |
@@ -157,6 +159,8 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 
 除非另有说明，sessionId、transferId、tunnelId 最多 128 字节。sessionId 来自
 list_sessions；其余 ID 使用对应创建/查询工具的返回值，不应自行猜测。
+send_text 的 text 以及 run_command/run_local_command 的 command 按 UTF-8 计最多 64 KiB；
+更大的数据应使用 send_bytes、虚拟文件或分片上传。
 
 ## 4. 会话、日志和输入
 
@@ -256,10 +260,13 @@ MCP”并允许当前会话；正文不会通过 MCP 返回。
 
 ## 6. 文件传输
 
-通用参数：protocol 只能是 sftp、scp、tftp、xmodem、ymodem、zmodem。传输是异步的，
+通用参数：protocol 只能是 sftp、scp、tftp、xmodem、ymodem、zmodem。虚拟内容和
+uploadId 需要 transfer scope；直接访问 PortMate 主机路径还需要 host-files。传输是异步的，
 使用 get_transfer 轮询 status、bytesDone、bytesTotal、message 和结束时间。list_transfers
 接受可选 sessionId、limit（默认 100，范围 1-1000）；get_transfer、cancel_transfer、
 retry_transfer 只需 transferId。返回的源/目标路径会脱敏，纯 local-to-local 复制不暴露。
+retry_transfer 只适用于持久路径任务；虚拟内容/uploadId 的私有暂存副本会在任务终态删除，
+应重新使用 contentBase64 或原 uploadId 调用 start_transfer。
 SFTP/SCP 的非本地端点只支持 SSH/Tmux Profile；TFTP 和 X/Y/ZModem 还必须在该 Profile
 的传输设置中启用，并需要可用的交互会话。
 

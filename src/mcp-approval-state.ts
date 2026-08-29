@@ -50,34 +50,27 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
 }
 
 function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
-  if (action !== "run_custom_script"
-    && action !== "create_tunnel"
-    && action !== "tunnel_request") return value === undefined ? undefined : null;
+  const expectedKind = action === "run_custom_script"
+    ? "custom-script"
+    : action === "create_tunnel"
+      ? "portmate-host-proxy"
+      : action === "tunnel_request" || action === "udp_request"
+        ? "portmate-host-tunnel-request"
+        : ["send_text", "send_bytes", "send_key", "run_command", "run_local_command"].includes(action)
+          ? "command"
+          : action === "start_transfer"
+            ? "transfer"
+            : ["cancel_transfer", "retry_transfer", "attach_tmux", "stop_tunnel"].includes(action)
+              ? "operation"
+              : null;
+  if (!expectedKind) return value === undefined ? undefined : null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
-  if (!validText(source.label, 512)) return null;
-  if (action === "create_tunnel") {
-    if (source.kind !== "portmate-host-proxy" || !validText(source.id, 512)) return null;
-    return {
-      kind: "portmate-host-proxy",
-      id: source.id,
-      label: source.label,
-    };
-  }
-  if (action === "tunnel_request") {
-    if (source.kind !== "portmate-host-tunnel-request" || !validText(source.id, 512)) return null;
-    return {
-      kind: "portmate-host-tunnel-request",
-      id: source.id,
-      label: source.label,
-    };
-  }
-  if (source.kind !== "custom-script"
-    || typeof source.id !== "string"
-    || !approvalIdPattern.test(source.id)) return null;
+  if (source.kind !== expectedKind || !validText(source.label, 512) || !validText(source.id, 512)) return null;
+  if (expectedKind === "custom-script" && !approvalIdPattern.test(source.id)) return null;
   return {
-    kind: "custom-script",
-    id: source.id.toLowerCase(),
+    kind: expectedKind,
+    id: expectedKind === "custom-script" ? source.id.toLowerCase() : source.id,
     label: source.label,
   };
 }

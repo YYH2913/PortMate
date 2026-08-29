@@ -1,6 +1,7 @@
 use crate::http_request::HttpRequest;
 use crate::keyring_store::{read_secret_from_keyring, write_secret_to_keyring};
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -63,7 +64,11 @@ pub(crate) fn validate_origin(origin: Option<&str>, config: &HttpSecurityConfig)
 }
 
 pub(crate) fn authorized_http_request(request: &HttpRequest, token: &str) -> bool {
-    if let Some(value) = request.headers.get("authorization") {
+    authorized_http_headers(&request.headers, token)
+}
+
+pub(crate) fn authorized_http_headers(headers: &HashMap<String, String>, token: &str) -> bool {
+    if let Some(value) = headers.get("authorization") {
         let mut parts = value.split_whitespace();
         if parts
             .next()
@@ -74,8 +79,7 @@ pub(crate) fn authorized_http_request(request: &HttpRequest, token: &str) -> boo
             }
         }
     }
-    request
-        .headers
+    headers
         .get("x-portmate-mcp-token")
         .is_some_and(|candidate| constant_time_str_eq(candidate.trim(), token))
 }

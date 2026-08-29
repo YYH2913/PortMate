@@ -82,7 +82,7 @@ export default function AboutDialog({ onClose }: { onClose: () => void }) {
                 </div>
               ))}
             </div>
-            <button type="button" className="about-license-link" data-url={`${PROJECT_URL}/tree/main/THIRD_PARTY_LICENSES`} onClick={() => openLink(`${PROJECT_URL}/tree/main/THIRD_PARTY_LICENSES`)}><Scale size={14} aria-hidden="true" />查看完整第三方许可证清单</button>
+            <button type="button" className="about-license-link" data-url={`${PROJECT_URL}/blob/main/THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt`} onClick={() => openLink(`${PROJECT_URL}/blob/main/THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt`)}><Scale size={14} aria-hidden="true" />查看随应用分发的字体许可证</button>
           </section>
 
           <p className="about-notice">PortMate 处于持续开发阶段。使用前请根据目标平台和运行环境完成相应的安全、兼容性与网络访问验证。<br />Copyright © 2026 PortMate Contributors</p>

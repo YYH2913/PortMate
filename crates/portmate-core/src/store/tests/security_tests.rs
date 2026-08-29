@@ -26,11 +26,11 @@ fn write_scope_requires_grant() {
 }
 
 #[test]
-fn read_scopes_default_open_then_follow_explicit_grants() {
+fn read_scopes_fail_closed_then_follow_explicit_grants() {
     let mut store = test_store();
     store.grants.clear();
-    assert!(store.mcp_can_read("reader", McpScope::ReadSessions, None));
-    assert!(store.mcp_can_read("reader", McpScope::ReadLogs, Some("test-session")));
+    assert!(!store.mcp_can_read("reader", McpScope::ReadSessions, None));
+    assert!(!store.mcp_can_read("reader", McpScope::ReadLogs, Some("test-session")));
     assert!(!store.mcp_can_read("  ", McpScope::ReadSessions, None));
     assert!(!store.mcp_can_read("bad\nreader", McpScope::ReadSessions, None));
     assert!(!store.mcp_can_read(&"x".repeat(129), McpScope::ReadSessions, None));

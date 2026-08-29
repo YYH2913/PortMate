@@ -243,7 +243,7 @@ For protocol payloads that must bypass terminal text handling, call `send_bytes`
 
 ### File Transfer Tools
 
-`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: a string `source` path, a virtual MCP file in `source: { kind: "mcp", fileName, contentBase64 }`, legacy top-level `fileName` plus `contentBase64`, or `uploadId` for a completed resumable upload. The virtual form sends bytes in the MCP request and never resolves a client path or requires a user-selected folder on the PortMate desktop host. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed string paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP.
+`list_transfers` and `get_transfer` expose task IDs, protocol, progress, status, and timing while replacing both paths with `<redacted-path>`. `start_transfer` is the single transfer-start tool for SFTP, SCP, TFTP, XModem, YModem, and ZModem. Each call selects exactly one source form: a string `source` path, a virtual MCP file in `source: { kind: "mcp", fileName, contentBase64 }`, legacy top-level `fileName` plus `contentBase64`, or `uploadId` for a completed resumable upload. Virtual content and `uploadId` require the `transfer` scope; directly reading or writing an unprefixed path on the PortMate host additionally requires the high-risk `host-files` scope. The virtual form sends bytes in the MCP request and never resolves a client path or requires a user-selected folder on the PortMate desktop host. At least one endpoint must use `remote:`, `ssh:`, or the constrained `load:` device receiver form; unprefixed string paths are local to the PortMate desktop host, and pure local-to-local copy is not exposed through MCP.
 
 Upload with SFTP:
 
@@ -256,7 +256,7 @@ Upload with SFTP:
 }
 ```
 
-Download by reversing the sides, for example `source: "remote:/var/log/messages"` and `destination: "/home/operator/messages"`. SFTP and SCP may also copy between two `remote:` paths on the same authorized session. Use the returned task ID with `get_transfer`, `cancel_transfer`, or `retry_transfer`.
+Download by reversing the sides, for example `source: "remote:/var/log/messages"` and `destination: "/home/operator/messages"`. SFTP and SCP may also copy between two `remote:` paths on the same authorized session. Use the returned task ID with `get_transfer` or `cancel_transfer`. `retry_transfer` is available for persistent path-backed tasks; virtual and `uploadId` tasks must be submitted again because their private staging copy is removed at task completion.
 
 For a U-Boot-style device receiver, upload a local file with the matching Modem protocol and set the destination to `load:loadx`, `load:loady`, or `load:loadz`. `loadx` and `loady` are standard U-Boot commands; use `loadz` only when the target firmware provides that command. Optional validated query parameters add the load address and serial transfer rate:
 

@@ -12222,11 +12222,39 @@ fieldset label {
   font-size: 13px;
 }
 
+.mcp-scope-boundary {
+  margin: -4px 0 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.mcp-scope-boundary.elevated {
+  border-left-color: var(--amber);
+  color: #d7c59c;
+}
+
+.mcp-scope-boundary code {
+  color: #cbd5e1;
+  font-family: var(--mono);
+}
+
 .mcp-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.mcp-editor > .mcp-actions {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  margin-block: -8px;
+  padding-block: 8px;
+  background: var(--panel);
 }
 
 .mcp-actions button {

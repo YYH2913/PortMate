@@ -73,7 +73,7 @@ impl SessionStore {
         !client_id.is_empty()
             && client_id.len() <= 128
             && !client_id.chars().any(char::is_control)
-            && (self.grants.is_empty() || self.mcp_can(client_id, scope, session_id))
+            && self.mcp_can(client_id, scope, session_id)
     }
 
     /// Resolve the client identity used by the HTTP bridge without widening a

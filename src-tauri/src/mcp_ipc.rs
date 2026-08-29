@@ -398,12 +398,19 @@ pub(super) async fn handle_ipc_client(state: AppState, token: String, mut stream
     let response = match read_ipc_payload(&mut stream, MAX_IPC_REQUEST_BYTES, IPC_IO_TIMEOUT).await
     {
         Ok(raw) => match serde_json::from_slice::<IpcRequest>(&raw) {
-            Ok(request) if constant_time_str_eq(&request.token, &token) => {
-                match handle_ipc_request(state.clone(), request).await {
-                    Ok(value) => IpcResponse {
-                        ok: true,
-                        value: Some(value),
-                        error: None,
+            Ok(mut request) if constant_time_str_eq(&request.token, &token) => {
+                match bind_ipc_request_identity(&state, &mut request).map(|()| request) {
+                    Ok(request) => match handle_ipc_request(state.clone(), request).await {
+                        Ok(value) => IpcResponse {
+                            ok: true,
+                            value: Some(value),
+                            error: None,
+                        },
+                        Err(error) => IpcResponse {
+                            ok: false,
+                            value: None,
+                            error: Some(error),
+                        },
                     },
                     Err(error) => IpcResponse {
                         ok: false,
@@ -431,6 +438,26 @@ pub(super) async fn handle_ipc_client(state: AppState, token: String, mut stream
     };
 
     write_ipc_response(&mut stream, &response, IPC_IO_TIMEOUT).await;
+}
+
+pub(super) fn bind_ipc_request_identity(
+    state: &AppState,
+    request: &mut IpcRequest,
+) -> Result<(), String> {
+    let expected_client_id = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_resolved_client_id(None);
+    if request.client_id.trim() != expected_client_id {
+        return Err(format!(
+            "IPC clientId does not match the desktop-selected MCP identity `{expected_client_id}`"
+        ));
+    }
+    // Privilege is derived exclusively from the selected stored grant.
+    request.client_id = expected_client_id;
+    request.trusted_write = false;
+    Ok(())
 }
 
 async fn write_ipc_response(stream: &mut TcpStream, response: &IpcResponse, timeout: Duration) {

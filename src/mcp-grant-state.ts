@@ -7,6 +7,16 @@ export const MCP_NO_SESSIONS_SENTINEL = "__portmate_no_sessions__";
 export const DEFAULT_MCP_HTTP_CLIENT_ID = "portmate-local";
 export type McpSessionAccessMode = "none" | "all" | "selected";
 
+export function mcpGrantIsActive(
+  grant: Pick<McpGrant, "expiresAt" | "revokedAt">,
+  now = Date.now(),
+): boolean {
+  if (grant.revokedAt) return false;
+  if (!grant.expiresAt) return true;
+  const expiresAt = Date.parse(grant.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
 export function createMcpGrant(): McpGrant {
   return {
     clientId: "",
@@ -40,10 +50,7 @@ export function resolveMcpHttpClientId(
   grants: readonly Pick<McpGrant, "clientId" | "expiresAt" | "revokedAt">[],
 ): string {
   const configuredId = configured.trim();
-  const active = grants.filter((grant) => (
-    !grant.revokedAt
-    && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
-  ));
+  const active = grants.filter((grant) => mcpGrantIsActive(grant));
   if (active.some((grant) => grant.clientId === configuredId)) return configuredId;
   const storedIsLegacyDefault = configuredId === "" || configuredId === DEFAULT_MCP_HTTP_CLIENT_ID;
   if (active.length === 1 && storedIsLegacyDefault) return active[0].clientId;

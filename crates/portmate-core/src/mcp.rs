@@ -3,6 +3,8 @@ use serde_json::{json, Value};
 
 /// Maximum serialized MCP request accepted by the stdio, HTTP, and desktop IPC bridge.
 pub const MAX_MCP_BRIDGE_REQUEST_BYTES: usize = 6 * 1024 * 1024;
+/// Maximum UTF-8 payload accepted by terminal text and command tools.
+pub const MAX_MCP_TERMINAL_TEXT_BYTES: usize = 64 * 1024;
 /// Maximum decoded payload accepted by the MCP inline-content transfer tool.
 /// Its standard Base64 form leaves room for the surrounding JSON-RPC and IPC envelopes.
 pub const MAX_MCP_CONTENT_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
@@ -151,11 +153,11 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "send_text",
             "Send Text",
-            "Write the exact supplied text to a currently connected authorized terminal session. Requires the write-input scope and per-write confirmation when the grant enables it; no newline is added by this tool, although Telnet protocol framing may transform wire bytes. The returned event is redacted and the tool does not create a new process.",
+            "Write the exact supplied text to a currently connected authorized terminal session. Requires the write-input scope and per-write confirmation when the grant enables it; UTF-8 input is limited to 64 KiB and no newline is added by this tool, although Telnet protocol framing may transform wire bytes. The returned event is redacted and the tool does not create a new process.",
             json!({
                 "type":"object",
                 "required":["sessionId","text"],
-                "properties":{"sessionId":{"type":"string"},"text":{"type":"string"}}
+                "properties":{"sessionId":{"type":"string","minLength":1,"maxLength":128},"text":{"type":"string","minLength":1,"maxLength":MAX_MCP_TERMINAL_TEXT_BYTES}}
             }),
             false,
         ),
@@ -196,11 +198,11 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "run_command",
             "Run Command",
-            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
+            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; UTF-8 commands are limited to 64 KiB, SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],
-                "properties":{"sessionId":{"type":"string"},"command":{"type":"string"}}
+                "properties":{"sessionId":{"type":"string","minLength":1,"maxLength":128},"command":{"type":"string","minLength":1,"maxLength":MAX_MCP_TERMINAL_TEXT_BYTES}}
             }),
             false,
         ),
@@ -214,7 +216,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
                 "additionalProperties":false,
                 "properties":{
                     "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "command":{"type":"string","minLength":1}
+                    "command":{"type":"string","minLength":1,"maxLength":MAX_MCP_TERMINAL_TEXT_BYTES}
                 }
             }),
             false,
@@ -264,7 +266,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "start_transfer",
             "Start Transfer",
-            "Start one asynchronous SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer. Requires the transfer scope and a sessionId-bound route unless using a completed uploadId. Select exactly one source: a desktop path, a virtual MCP file `{kind: \"mcp\", fileName, contentBase64}`, legacy inline fields, or uploadId. Desktop paths are resolved on the PortMate host; virtual/legacy inline content is limited to 4 MiB decoded, while resumable uploads support files up to 512 MiB with 4 MiB chunks. At least one endpoint must be `remote:`, `ssh:`, or a constrained `load:` receiver; pure local-to-local copy and arbitrary remote paths are rejected. For structured TFTP, deviceIp is required; destination options are bound before upload. Modem receivers are `load:loadx`, `load:loady`, or `load:loadz`. The call only queues the task; poll get_transfer for completion, cancellation, or failure.",
+            "Start one asynchronous SFTP, SCP, TFTP, XModem, YModem, or ZModem transfer. Requires the transfer scope and a sessionId-bound route unless using a completed uploadId. Direct PortMate-host paths additionally require the high-risk host-files scope; virtual MCP files and uploadId do not. Select exactly one source: a desktop path, a virtual MCP file `{kind: \"mcp\", fileName, contentBase64}`, legacy inline fields, or uploadId. Desktop paths are resolved on the PortMate host; virtual/legacy inline content is limited to 4 MiB decoded, while resumable uploads support files up to 512 MiB with 4 MiB chunks. At least one endpoint must be `remote:`, `ssh:`, or a constrained `load:` receiver; pure local-to-local copy and arbitrary remote paths are rejected. For structured TFTP, deviceIp is required; destination options are bound before upload. Modem receivers are `load:loadx`, `load:loady`, or `load:loadz`. The call only queues the task; poll get_transfer for completion, cancellation, or failure.",
             json!({
                 "type":"object",
                 "additionalProperties":false,

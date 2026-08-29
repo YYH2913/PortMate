@@ -47,6 +47,12 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
             receive_idle_timeout_seconds: 3,
         });
         let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        grant_test_mcp_access(
+            &state,
+            "serial-break-client",
+            vec![McpScope::WriteInput],
+            vec![profile.id.clone()],
+        );
         let opened = open_serial_session(&state, profile.clone()).unwrap();
         assert_eq!(opened.runtime.status, SessionStatus::Connected);
         let mut inbound = state

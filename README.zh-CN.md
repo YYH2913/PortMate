@@ -242,7 +242,7 @@ MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updat
 
 ### 文件传输工具
 
-`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一的启动工具。每次调用只能选择一种来源：字符串路径使用 `source`，虚拟 MCP 文件使用 `source: { kind: "mcp", fileName, contentBase64 }`，旧版内联内容使用顶层 `fileName + contentBase64`，大文件使用 `uploadId`。虚拟来源的字节直接随 MCP 请求透传，不会在 PortMate 桌面端解析客户端路径，也不要求用户选择或授权本地文件夹。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀字符串路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。
+`list_transfers` 和 `get_transfer` 会返回任务 ID、协议、进度、状态和时间，但源路径与目标路径都会替换为 `<redacted-path>`。`start_transfer` 现在是 SFTP、SCP、TFTP、XModem、YModem 和 ZModem 唯一的启动工具。每次调用只能选择一种来源：字符串路径使用 `source`，虚拟 MCP 文件使用 `source: { kind: "mcp", fileName, contentBase64 }`，旧版内联内容使用顶层 `fileName + contentBase64`，大文件使用 `uploadId`。虚拟内容和 `uploadId` 只需要 `transfer` scope；直接读取或写入 PortMate 主机上的无前缀路径还必须显式授予高风险的 `host-files` scope。虚拟来源的字节直接随 MCP 请求透传，不会在 PortMate 桌面端解析客户端路径，也不要求用户选择或授权本地文件夹。至少一端必须使用 `remote:`、`ssh:` 或受约束的 `load:` 设备接收端点；无前缀字符串路径表示 PortMate 桌面端电脑上的路径，MCP 不暴露纯本地到本地复制。
 
 SFTP 上传示例：
 
@@ -255,7 +255,7 @@ SFTP 上传示例：
 }
 ```
 
-下载时交换两端，例如使用 `source: "remote:/var/log/messages"` 和 `destination: "/home/operator/messages"`。SFTP/SCP 也允许在同一个已授权会话内的两个 `remote:` 路径之间复制。用返回的任务 ID 调用 `get_transfer`、`cancel_transfer` 或 `retry_transfer`。
+下载时交换两端，例如使用 `source: "remote:/var/log/messages"` 和 `destination: "/home/operator/messages"`。SFTP/SCP 也允许在同一个已授权会话内的两个 `remote:` 路径之间复制。用返回的任务 ID 调用 `get_transfer` 或 `cancel_transfer`。`retry_transfer` 只适用于持久路径任务；虚拟内容和 `uploadId` 任务结束后会删除私有暂存副本，必须重新提交 `start_transfer`。
 
 对于 U-Boot 风格的设备接收命令，选择匹配的 Modem 协议，将本地文件上传目标设为 `load:loadx`、`load:loady` 或 `load:loadz`。`loadx` 和 `loady` 是标准 U-Boot 命令；只有目标固件确实提供该命令时才使用 `loadz`。可选且经过校验的查询参数可以附加加载地址和串口传输速率：
 

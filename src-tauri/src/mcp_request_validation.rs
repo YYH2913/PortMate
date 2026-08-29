@@ -84,6 +84,42 @@ pub(super) fn normalize_mcp_start_transfer_args(
     }
 }
 
+fn require_mcp_host_file_scope(
+    state: &AppState,
+    request: &IpcRequest,
+    transfer: &StartTransferRequest,
+) -> Result<(), String> {
+    if !mcp_transfer_uses_host_path(transfer) {
+        return Ok(());
+    }
+    let store = state.store.lock().map_err(|error| error.to_string())?;
+    if store.mcp_can(
+        request.client_id.trim(),
+        McpScope::HostFiles,
+        Some(&transfer.session_id),
+    ) {
+        Ok(())
+    } else {
+        Err(
+            "MCP desktop-path transfer requires the separate host-files scope for this session; virtual content and uploadId transfers remain available with transfer scope only"
+                .to_string(),
+        )
+    }
+}
+
+fn bounded_mcp_terminal_text_arg<'a>(
+    args: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a str, String> {
+    let value = ipc_string_arg(args, key)?;
+    if value.is_empty() || value.len() > MAX_MCP_TERMINAL_TEXT_BYTES {
+        return Err(format!(
+            "MCP `{key}` must contain 1 to {MAX_MCP_TERMINAL_TEXT_BYTES} UTF-8 bytes"
+        ));
+    }
+    Ok(value)
+}
+
 fn normalize_mcp_start_transfer_destination(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -321,6 +357,9 @@ pub(super) enum McpWriteExecutionContext {
         runtime_id: String,
         approval_target: McpApprovalTarget,
     },
+    Described {
+        approval_target: McpApprovalTarget,
+    },
 }
 
 impl McpWriteExecutionContext {
@@ -329,7 +368,8 @@ impl McpWriteExecutionContext {
             Self::Generic => None,
             Self::CustomScript { approval_target, .. }
             | Self::Tunnel { approval_target }
-            | Self::TunnelExchange { approval_target, .. } => {
+            | Self::TunnelExchange { approval_target, .. }
+            | Self::Described { approval_target } => {
                 Some(approval_target.clone())
             }
         }
@@ -515,6 +555,9 @@ pub(super) fn capture_mcp_write_execution_context(
             });
         }
     }
+    if let Some(approval_target) = described_mcp_approval_target(state, request)? {
+        return Ok(McpWriteExecutionContext::Described { approval_target });
+    }
     if request.command != "run_custom_script" {
         return Ok(McpWriteExecutionContext::Generic);
     }
@@ -531,6 +574,130 @@ pub(super) fn capture_mcp_write_execution_context(
             label: script.name,
         },
     })
+}
+
+fn described_mcp_approval_target(
+    state: &AppState,
+    request: &IpcRequest,
+) -> Result<Option<McpApprovalTarget>, String> {
+    let target = match request.command.as_str() {
+        "send_text" => {
+            let text = bounded_mcp_terminal_text_arg(&request.args, "text")?;
+            McpApprovalTarget {
+                kind: "command".to_string(),
+                id: format!("{} UTF-8 bytes", text.len()),
+                label: format!("Send text: {}", bounded_approval_value(text, 220)),
+            }
+        }
+        "run_command" | "run_local_command" => {
+            let command = bounded_mcp_terminal_text_arg(&request.args, "command")?;
+            McpApprovalTarget {
+                kind: "command".to_string(),
+                id: format!("{} UTF-8 bytes", command.len()),
+                label: format!("Command: {}", bounded_approval_value(command, 220)),
+            }
+        }
+        "send_bytes" => {
+            let bytes = decode_mcp_direct_bytes(&request.args)?;
+            McpApprovalTarget {
+                kind: "command".to_string(),
+                id: format!("{} bytes", bytes.len()),
+                label: format!("Send {} raw bytes", bytes.len()),
+            }
+        }
+        "send_key" => {
+            let key = ipc_string_arg(&request.args, "key")?;
+            McpApprovalTarget {
+                kind: "command".to_string(),
+                id: bounded_approval_value(key, 120),
+                label: format!("Send terminal key {}", bounded_approval_value(key, 120)),
+            }
+        }
+        "start_transfer" => mcp_transfer_approval_target(state, request)?,
+        "cancel_transfer" | "retry_transfer" => {
+            let transfer_id = ipc_string_arg(&request.args, "transferId")?;
+            McpApprovalTarget {
+                kind: "operation".to_string(),
+                id: bounded_approval_value(transfer_id, 128),
+                label: format!(
+                    "{} transfer {}",
+                    if request.command == "cancel_transfer" { "Cancel" } else { "Retry" },
+                    bounded_approval_value(transfer_id, 128),
+                ),
+            }
+        }
+        "attach_tmux" => {
+            let target = ipc_string_arg(&request.args, "target")?;
+            McpApprovalTarget {
+                kind: "operation".to_string(),
+                id: bounded_approval_value(target, 128),
+                label: format!("Attach Tmux target {}", bounded_approval_value(target, 220)),
+            }
+        }
+        "stop_tunnel" => {
+            let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?;
+            McpApprovalTarget {
+                kind: "operation".to_string(),
+                id: bounded_approval_value(tunnel_id, 128),
+                label: format!("Stop tunnel {}", bounded_approval_value(tunnel_id, 220)),
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(target))
+}
+
+fn mcp_transfer_approval_target(
+    state: &AppState,
+    request: &IpcRequest,
+) -> Result<McpApprovalTarget, String> {
+    let (source, destination) = match normalize_mcp_start_transfer_args(&request.args)? {
+        NormalizedMcpStartTransferRequest::Path(transfer) => {
+            (transfer.source, transfer.destination)
+        }
+        NormalizedMcpStartTransferRequest::Inline(transfer) => {
+            (format!("MCP virtual file {}", transfer.file_name), transfer.destination)
+        }
+        NormalizedMcpStartTransferRequest::Upload(upload) => {
+            let metadata = load_mcp_content_upload_metadata(
+                state,
+                &request.client_id,
+                &upload.upload_id,
+            )?;
+            (
+                format!("MCP upload {} ({})", metadata.file_name, metadata.upload_id),
+                metadata.destination,
+            )
+        }
+    };
+    let source = bounded_approval_value(&source, 180);
+    let destination = bounded_approval_value(&destination, 180);
+    Ok(McpApprovalTarget {
+        kind: "transfer".to_string(),
+        id: format!("{source} -> {destination}"),
+        label: format!("Transfer {source} to {destination}"),
+    })
+}
+
+fn bounded_approval_value(value: &str, max_characters: usize) -> String {
+    let redacted = redact_secrets(value);
+    let mut bounded = String::new();
+    let mut count = 0_usize;
+    for character in redacted.chars() {
+        let rendered = if character.is_control() {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        };
+        let rendered_count = rendered.chars().count();
+        if count.saturating_add(rendered_count) > max_characters {
+            bounded.push_str("...");
+            break;
+        }
+        bounded.push_str(&rendered);
+        count += rendered_count;
+    }
+    bounded
 }
 
 fn bounded_approval_host(host: &str) -> String {
@@ -664,7 +831,7 @@ pub(super) fn validate_ipc_write_args(
             }
         }
         "send_text" => {
-            ipc_string_arg(&request.args, "text")?;
+            bounded_mcp_terminal_text_arg(&request.args, "text")?;
         }
         "send_key" => {
             ipc_string_arg(&request.args, "key")?;
@@ -677,12 +844,12 @@ pub(super) fn validate_ipc_write_args(
             ensure_serial_profile(&state.store, session_id)?;
         }
         "run_command" => {
-            ipc_string_arg(&request.args, "command")?;
+            bounded_mcp_terminal_text_arg(&request.args, "command")?;
         }
         "run_local_command" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?;
             ensure_shell_profile(&state.store, session_id)?;
-            ipc_string_arg(&request.args, "command")?;
+            bounded_mcp_terminal_text_arg(&request.args, "command")?;
         }
         "run_custom_script" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?;
@@ -694,6 +861,7 @@ pub(super) fn validate_ipc_write_args(
             match normalize_mcp_start_transfer_args(&request.args)? {
                 NormalizedMcpStartTransferRequest::Path(transfer) => {
                     validate_mcp_transfer_route(&transfer)?;
+                    require_mcp_host_file_scope(state, request, &transfer)?;
                 }
                 NormalizedMcpStartTransferRequest::Inline(transfer) => {
                     validate_mcp_content_transfer_request(&transfer)?;
@@ -720,12 +888,17 @@ pub(super) fn validate_ipc_write_args(
                 .map_err(|error| error.to_string())?
                 .transfer_by_id(transfer_id)
                 .ok_or_else(|| "unknown or unavailable transfer".to_string())?;
-            validate_mcp_transfer_route(&StartTransferRequest {
+            let transfer = StartTransferRequest {
                 session_id: transfer.session_id,
                 protocol: transfer.protocol,
                 source: transfer.source,
                 destination: transfer.destination,
-            })?;
+            };
+            validate_mcp_transfer_route(&transfer)?;
+            if is_mcp_content_transfer_staging_source(state, &transfer.source) {
+                return Err(MCP_CONTENT_TRANSFER_RETRY_ERROR.to_string());
+            }
+            require_mcp_host_file_scope(state, request, &transfer)?;
         }
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())

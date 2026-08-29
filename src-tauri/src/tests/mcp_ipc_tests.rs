@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn ipc_identity_is_bound_to_the_desktop_selected_client() {
+    let root = std::env::temp_dir().join(format!("portmate-ipc-identity-{}", Uuid::new_v4()));
+    let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+    {
+        let mut store = state.store.lock().unwrap();
+        store.mcp_http_settings.client_id = "selected-client".to_string();
+        store.grants.push(McpGrant {
+            client_id: "selected-client".to_string(),
+            name: "Selected client".to_string(),
+            scopes: vec![McpScope::ReadSessions],
+            allowed_sessions: Vec::new(),
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+    }
+    let mut impersonated = IpcRequest {
+        token: "token".to_string(),
+        client_id: "other-client".to_string(),
+        trusted_write: true,
+        command: "list_sessions".to_string(),
+        args: serde_json::json!({}),
+    };
+    assert!(bind_ipc_request_identity(&state, &mut impersonated)
+        .unwrap_err()
+        .contains("selected-client"));
+
+    impersonated.client_id = " selected-client ".to_string();
+    bind_ipc_request_identity(&state, &mut impersonated).unwrap();
+    assert_eq!(impersonated.client_id, "selected-client");
+    assert!(!impersonated.trusted_write);
+    let _ = fs::remove_dir_all(root);
+}
+
 async fn exchange_test_ipc(state: AppState, token: &str, raw: Vec<u8>) -> IpcResponse {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -520,7 +520,7 @@ export interface ExportMcpAuditResult {
   records: number;
 }
 
-export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "read-scripts" | "read-mcp" | "write-input" | "transfer" | "tunnel" | "manage-sessions" | "run-scripts" | "manage-mcp";
+export type McpScope = "read-sessions" | "read-logs" | "read-transfers" | "read-tunnels" | "read-scripts" | "read-mcp" | "write-input" | "transfer" | "host-files" | "tunnel" | "manage-sessions" | "run-scripts" | "manage-mcp";
 
 export interface CustomScript {
   id: string;
@@ -578,7 +578,7 @@ export interface McpApprovalRequest {
 }
 
 export interface McpApprovalTarget {
-  kind: "custom-script" | "portmate-host-proxy" | "portmate-host-tunnel-request";
+  kind: "custom-script" | "portmate-host-proxy" | "portmate-host-tunnel-request" | "command" | "transfer" | "operation";
   id: string;
   label: string;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, MouseEvent as ReactMouseEvent, SVGProps } from "react";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { filterWorkspaceSessions } from "./session-search-state";
@@ -11,6 +11,22 @@ type UtilityPanelIcons = {
   Search: UtilityIcon;
   X: UtilityIcon;
 };
+
+type UtilityPanelFilter = "explorer" | "history";
+
+const utilityPanelFilterCache: Record<UtilityPanelFilter, string> = {
+  explorer: "",
+  history: "",
+};
+
+function useUtilityPanelFilter(panel: UtilityPanelFilter) {
+  const [query, setQueryState] = useState(() => utilityPanelFilterCache[panel]);
+  const setQuery = useCallback((value: string) => {
+    utilityPanelFilterCache[panel] = value;
+    setQueryState(value);
+  }, [panel]);
+  return [query, setQuery] as const;
+}
 
 export function SessionExplorerPanel({
   sessions,
@@ -27,7 +43,7 @@ export function SessionExplorerPanel({
   onSelect: (id: string) => void;
   onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useUtilityPanelFilter("explorer");
   const visible = useMemo(() => filterWorkspaceSessions(sessions, query), [query, sessions]);
   const groups = useMemo(() => groupSessions(visible, (session) => session.profile.group || "Sessions"), [visible]);
   return (
@@ -59,7 +75,7 @@ export function CommandHistoryList({
   icons: UtilityPanelIcons;
   onPick: (entry: CommandHistoryEntry) => void;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useUtilityPanelFilter("history");
   const [scope, setScope] = useState<"session" | "all">("session");
   const sessionLabels = useMemo(() => new Map(
     sessions.map((session) => [session.profile.id, session.profile.name]),

@@ -44,14 +44,14 @@ impl McpWriteAuthorizationContext {
 pub(super) fn mcp_scope_allowed(
     store: &SessionStore,
     client_id: &str,
-    trusted_write: bool,
+    _trusted_write: bool,
     scope: McpScope,
     session_id: Option<&str>,
 ) -> bool {
     let Ok(client_id) = normalize_mcp_client_id(client_id) else {
         return false;
     };
-    store.mcp_can(&client_id, scope, session_id) || (trusted_write && store.grants.is_empty())
+    store.mcp_can(&client_id, scope, session_id)
 }
 
 pub(super) fn mcp_write_confirmation_required(
@@ -89,6 +89,7 @@ pub(super) fn mcp_scope_label(scope: McpScope) -> &'static str {
         McpScope::ReadMcp => "read-mcp",
         McpScope::WriteInput => "write-input",
         McpScope::Transfer => "transfer",
+        McpScope::HostFiles => "host-files",
         McpScope::Tunnel => "tunnel",
         McpScope::ManageSessions => "manage-sessions",
         McpScope::RunScripts => "run-scripts",
@@ -220,11 +221,8 @@ pub(super) fn revalidate_ipc_write_target(
         );
     }
     let store = state.store.lock().map_err(|error| error.to_string())?;
-    let still_allowed = if trusted_bootstrap {
-        request.trusted_write && store.grants.is_empty()
-    } else {
-        store.mcp_can(&request.client_id, scope, authorized_session_id)
-    };
+    let still_allowed = !trusted_bootstrap
+        && store.mcp_can(&request.client_id, scope, authorized_session_id);
     if !still_allowed {
         return Err("MCP grant changed after authorization; request was not executed".to_string());
     }
@@ -268,7 +266,7 @@ fn record_invalid_mcp_write(
     session_id: Option<&str>,
 ) -> Result<(), String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let trusted_bootstrap = request.trusted_write && store.grants.is_empty();
+    let trusted_bootstrap = false;
     let record = AuditRecord {
         id: Uuid::new_v4().to_string(),
         ts: Utc::now(),
@@ -288,7 +286,7 @@ fn begin_mcp_write_audit(
     session_id: Option<&str>,
 ) -> Result<McpWriteAuditStart, String> {
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    let trusted_bootstrap = request.trusted_write && store.grants.is_empty();
+    let trusted_bootstrap = false;
     let allowed = mcp_scope_allowed(
         &store,
         &request.client_id,

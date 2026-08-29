@@ -193,15 +193,17 @@ fn initialize_negotiates_supported_historical_versions_and_falls_back_to_latest(
 
 #[test]
 fn mcp_lists_concrete_resources_separately_from_templates() {
-    let resources = handle_http_json_rpc(json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "resources/list",
-        "params": {}
-    }))
-    .unwrap()
-    .unwrap();
-    let listed = resources["result"]["resources"].as_array().unwrap();
+    let mut store = test_snapshot_store("resource list");
+    grant_all_read_scopes(&mut store, "resource-reader");
+    let server = PortMateMcp {
+        store,
+        store_path: None,
+        ipc: None,
+        client_id: "resource-reader".to_string(),
+        allow_write: false,
+    };
+    let resources = server.resources_list_result();
+    let listed = resources["resources"].as_array().unwrap();
     assert_eq!(listed[0]["uri"], "portmate://sessions");
     assert!(listed
         .iter()
@@ -230,6 +232,7 @@ fn mcp_resource_uris_round_trip_opaque_session_and_transfer_ids() {
     profile.id = session_id.to_string();
     let mut store = SessionStore::default();
     store.upsert_profile(profile);
+    grant_all_read_scopes(&mut store, "opaque-reader");
     store
         .record_stream_event(
             session_id,
