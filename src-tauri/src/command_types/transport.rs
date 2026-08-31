@@ -41,6 +41,8 @@ pub struct StartMcpContentUploadTransferRequest {
 #[serde(rename_all = "camelCase")]
 pub struct StartExternalDropRequest {
     pub session_id: String,
+    #[serde(default = "default_file_transfer_protocol")]
+    pub protocol: TransferProtocol,
     pub paths: Vec<String>,
     pub destination: String,
     pub remote: bool,
@@ -62,12 +64,18 @@ pub enum TransferConflictPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct StartFileBatchRequest {
     pub session_id: String,
+    #[serde(default = "default_file_transfer_protocol")]
+    pub protocol: TransferProtocol,
     pub paths: Vec<String>,
     pub source_remote: bool,
     pub destination: String,
     pub destination_remote: bool,
     #[serde(default)]
     pub conflict_policy: TransferConflictPolicy,
+}
+
+fn default_file_transfer_protocol() -> TransferProtocol {
+    TransferProtocol::Sftp
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

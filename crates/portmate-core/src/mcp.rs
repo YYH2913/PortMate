@@ -833,9 +833,11 @@ mod tests {
                 ["contentBase64"]["maxLength"],
             MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH
         );
-        assert!(transfer.input_schema["properties"]["protocol"]["enum"]
+        let transfer_protocols = transfer.input_schema["properties"]["protocol"]["enum"]
             .as_array()
-            .is_some_and(|protocols| protocols.contains(&json!("tftp"))));
+            .expect("start_transfer protocol enum");
+        assert!(transfer_protocols.contains(&json!("scp")));
+        assert!(transfer_protocols.contains(&json!("tftp")));
         assert_eq!(
             transfer.input_schema["oneOf"].as_array().map(Vec::len),
             Some(3)
@@ -877,11 +879,12 @@ mod tests {
         assert!(definition("begin_content_upload")
             .description
             .contains("validated before content is uploaded"));
-        assert!(
-            definition("begin_content_upload").input_schema["properties"]["protocol"]["enum"]
-                .as_array()
-                .is_some_and(|protocols| protocols.contains(&json!("tftp")))
-        );
+        let begin_upload = definition("begin_content_upload");
+        let upload_protocols = begin_upload.input_schema["properties"]["protocol"]["enum"]
+            .as_array()
+            .expect("begin_content_upload protocol enum");
+        assert!(upload_protocols.contains(&json!("scp")));
+        assert!(upload_protocols.contains(&json!("tftp")));
         assert_eq!(
             definition("begin_content_upload").input_schema["properties"]["sizeBytes"]["maximum"],
             MAX_MCP_CONTENT_UPLOAD_BYTES

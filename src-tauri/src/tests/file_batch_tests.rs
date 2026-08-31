@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn file_tools_accept_only_sftp_and_scp_data_protocols() {
+    for protocol in [TransferProtocol::Sftp, TransferProtocol::Scp] {
+        validate_file_tool_transfer_protocol(&protocol).unwrap();
+    }
+    for protocol in [
+        TransferProtocol::Tftp,
+        TransferProtocol::Xmodem,
+        TransferProtocol::Ymodem,
+        TransferProtocol::Zmodem,
+    ] {
+        let error = validate_file_tool_transfer_protocol(&protocol).unwrap_err();
+        assert!(error.contains("仅支持 SFTP 或 SCP"), "{error}");
+    }
+}
+
+#[test]
 fn local_file_properties_reports_file_metadata() {
     let root = std::env::temp_dir().join(format!("portmate-file-props-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
@@ -218,6 +234,7 @@ fn external_drop_local_batch_copies_nested_files_through_transfer_queue() {
             &state,
             StartExternalDropRequest {
                 session_id: profile.id.clone(),
+                protocol: TransferProtocol::Scp,
                 paths: vec![source.display().to_string()],
                 destination: destination.display().to_string(),
                 remote: false,
@@ -231,6 +248,7 @@ fn external_drop_local_batch_copies_nested_files_through_transfer_queue() {
         assert_eq!(result.total_bytes, 9);
         assert!(result.skipped.is_empty());
         for task in result.tasks {
+            assert_eq!(task.protocol, TransferProtocol::Scp);
             let task = wait_for_transfer_terminal_state(&state, &task.id).await;
             assert_eq!(
                 task.status,

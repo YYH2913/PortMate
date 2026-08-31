@@ -257,6 +257,17 @@ SFTP 上传示例：
 }
 ```
 
+SCP 使用同一个工具，只需选择 `protocol: "scp"`。MCP 客户端持有的文件可以直接作为虚拟文件透传，无需先保存到 PortMate 主机路径：
+
+```json
+{
+  "sessionId": "edge-router",
+  "protocol": "scp",
+  "source": { "kind": "mcp", "fileName": "firmware.bin", "contentBase64": "AAECAwQF" },
+  "destination": "remote:/tmp/firmware.bin"
+}
+```
+
 下载时交换两端，例如使用 `source: "remote:/var/log/messages"` 和 `destination: "/home/operator/messages"`。SFTP/SCP 也允许在同一个已授权会话内的两个 `remote:` 路径之间复制。用返回的任务 ID 调用 `get_transfer` 或 `cancel_transfer`。`retry_transfer` 只适用于持久路径任务；虚拟内容和 `uploadId` 任务结束后会删除私有暂存副本，必须重新提交 `start_transfer`。
 
 对于 U-Boot 风格的设备接收命令，选择匹配的 Modem 协议，将本地文件上传目标设为 `load:loadx`、`load:loady` 或 `load:loadz`。`loadx` 和 `loady` 是标准 U-Boot 命令；只有目标固件确实提供该命令时才使用 `loadz`。可选且经过校验的查询参数可以附加加载地址和串口传输速率：

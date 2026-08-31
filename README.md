@@ -258,6 +258,17 @@ Upload with SFTP:
 }
 ```
 
+SCP uses the same unified tool with `protocol: "scp"`. Client-held bytes can be sent as a virtual MCP file without first creating a path on the PortMate host:
+
+```json
+{
+  "sessionId": "edge-router",
+  "protocol": "scp",
+  "source": { "kind": "mcp", "fileName": "firmware.bin", "contentBase64": "AAECAwQF" },
+  "destination": "remote:/tmp/firmware.bin"
+}
+```
+
 Download by reversing the sides, for example `source: "remote:/var/log/messages"` and `destination: "/home/operator/messages"`. SFTP and SCP may also copy between two `remote:` paths on the same authorized session. Use the returned task ID with `get_transfer` or `cancel_transfer`. `retry_transfer` is available for persistent path-backed tasks; virtual and `uploadId` tasks must be submitted again because their private staging copy is removed at task completion.
 
 For a U-Boot-style device receiver, upload a local file with the matching Modem protocol and set the destination to `load:loadx`, `load:loady`, or `load:loadz`. `loadx` and `loady` are standard U-Boot commands; use `loadz` only when the target firmware provides that command. Optional validated query parameters add the load address and serial transfer rate:

@@ -37,7 +37,7 @@ fn tools_list_advertises_bridge_management_surface() {
 }
 
 #[test]
-fn tools_list_advertises_tftp_and_session_independent_routes() {
+fn tools_list_advertises_scp_tftp_and_session_independent_routes() {
     let response = handle_http_json_rpc(json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -51,9 +51,11 @@ fn tools_list_advertises_tftp_and_session_independent_routes() {
         .iter()
         .find(|tool| tool["name"] == "start_transfer")
         .unwrap();
-    assert!(transfer["inputSchema"]["properties"]["protocol"]["enum"]
+    let protocols = transfer["inputSchema"]["properties"]["protocol"]["enum"]
         .as_array()
-        .is_some_and(|protocols| protocols.iter().any(|protocol| protocol == "tftp")));
+        .expect("start_transfer protocol enum");
+    assert!(protocols.iter().any(|protocol| protocol == "scp"));
+    assert!(protocols.iter().any(|protocol| protocol == "tftp"));
     let raw_bytes = tools
         .iter()
         .find(|tool| tool["name"] == "send_bytes")

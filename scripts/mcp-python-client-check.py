@@ -90,6 +90,7 @@ async def exercise_session(session: ClientSession, transport: str) -> int:
     require(start_transfer is not None, f"{transport} tools/list omitted start_transfer definition")
     start_transfer_schema = sdk_field(start_transfer, "inputSchema", "input_schema")
     protocol_schema = start_transfer_schema.get("properties", {}).get("protocol", {})
+    require("scp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted SCP")
     require("tftp" in protocol_schema.get("enum", []), f"{transport} start_transfer schema omitted TFTP")
     require(len(start_transfer_schema.get("oneOf", [])) == 3,
             f"{transport} start_transfer schema did not unify all source modes")

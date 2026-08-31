@@ -91,12 +91,14 @@ pub(super) async fn start_external_drop_inner(
     state: &AppState,
     request: StartExternalDropRequest,
 ) -> Result<ExternalDropResult, String> {
-    {
+    let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
-        if store.profile(&request.session_id).is_none() {
-            return Err(format!("unknown session: {}", request.session_id));
-        }
-    }
+        store
+            .profile(&request.session_id)
+            .ok_or_else(|| format!("unknown session: {}", request.session_id))?
+    };
+    validate_file_tool_transfer_protocol(&request.protocol)?;
+    validate_transfer_protocol(&profile, &request.protocol, request.remote)?;
 
     let local_destination = if request.remote {
         None
@@ -188,7 +190,7 @@ pub(super) async fn start_external_drop_inner(
         };
         let transfer = StartTransferRequest {
             session_id: request.session_id.clone(),
-            protocol: TransferProtocol::Sftp,
+            protocol: request.protocol.clone(),
             source,
             destination,
         };

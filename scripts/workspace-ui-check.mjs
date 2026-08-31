@@ -1052,7 +1052,7 @@ try {
             tasks: request.paths.map((path, index) => ({
               id: `file-batch-${window.__invokeCalls.filter((call) => call.command === "start_file_batch").length}-${index}`,
               sessionId: request.sessionId,
-              protocol: "sftp",
+              protocol: request.protocol ?? "sftp",
               source: request.sourceRemote ? `remote:${path}` : path,
               destination: request.destinationRemote ? `remote:${request.destination}` : request.destination,
               bytesTotal: 32,
@@ -3952,6 +3952,13 @@ Host staging
     window.__pendingFileBatches = [];
   });
   const remoteFilePane = page.locator('.file-browser-pane[data-file-pane="remote"]');
+  const fileTransferProtocol = localFilePane.getByRole("combobox", { name: "文件传输协议", exact: true });
+  const fileTransferProtocolOptions = await fileTransferProtocol.locator("option").evaluateAll(
+    (options) => options.map((option) => option.value),
+  );
+  assert(JSON.stringify(fileTransferProtocolOptions) === JSON.stringify(["sftp", "scp"]),
+    `file manager omitted an SSH file-transfer protocol: ${JSON.stringify(fileTransferProtocolOptions)}`);
+  await fileTransferProtocol.selectOption("scp");
   const uploadButton = localFilePane.getByRole("button", { name: "上传", exact: true });
   await uploadButton.click();
   await page.waitForFunction(() => window.__pendingFileBatches.length === 1);
@@ -3961,6 +3968,7 @@ Host staging
     && pendingFileTransfer?.sourceRemote === false
     && pendingFileTransfer?.destinationRemote === true
     && pendingFileTransfer?.destination === "."
+    && pendingFileTransfer?.protocol === "scp"
     && await uploadButton.isDisabled()
     && await localFilePath.isDisabled()
     && await remoteFilePane.getByRole("textbox", { name: "远端路径", exact: true }).isDisabled(),

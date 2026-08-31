@@ -37,6 +37,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         StartExternalDropRequest {
             session_id: profile.id.clone(),
+            protocol: TransferProtocol::Scp,
             paths: vec![default_drop_source.display().to_string()],
             destination: ".".to_string(),
             remote: true,
@@ -51,7 +52,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
     assert_eq!(
         default_drop_task.status,
         TransferStatus::Completed,
-        "default-directory SFTP drop failed: {:?}",
+        "default-directory SCP drop failed: {:?}",
         default_drop_task.message
     );
     let default_remote_path = remote_join_path(&default_remote_directory, &default_drop_name);
@@ -364,6 +365,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         StartExternalDropRequest {
             session_id: profile.id.clone(),
+            protocol: TransferProtocol::Scp,
             paths: vec![drop_source.display().to_string()],
             destination: drop_remote_target.display().to_string(),
             remote: true,
@@ -381,7 +383,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         assert_eq!(
             task.status,
             TransferStatus::Completed,
-            "recursive external SFTP drop failed: {:?}",
+            "recursive external SCP drop failed: {:?}",
             task.message
         );
     }
@@ -581,6 +583,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         StartFileBatchRequest {
             session_id: profile.id.clone(),
+            protocol: TransferProtocol::Scp,
             paths: vec![sftp_root.display().to_string()],
             source_remote: true,
             destination: recursive_download_root.display().to_string(),
@@ -602,7 +605,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         assert_eq!(
             task.status,
             TransferStatus::Completed,
-            "recursive SFTP download failed: {:?}",
+            "recursive SCP download failed: {:?}",
             task.message
         );
     }
@@ -622,6 +625,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         StartFileBatchRequest {
             session_id: profile.id.clone(),
+            protocol: TransferProtocol::Scp,
             paths: vec![copied_sftp_file.display().to_string()],
             source_remote: true,
             destination: recursive_download_root.display().to_string(),

@@ -35,6 +35,8 @@ import type { FileNavigationHistory } from "./file-navigation-state";
 import { updateFileSelection } from "./file-selection";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import TransferList from "./TransferList";
+import { fileTransferProtocolsForProfile, transferProtocolLabel } from "./transfer-capabilities";
+import type { FileTransferProtocol } from "./transfer-capabilities";
 import type {
   ConnectionConfig,
   ExternalDropResult,
@@ -110,6 +112,7 @@ export default function FileManagerPanel({
   const [dropTarget, setDropTarget] = useState<boolean | null>(null);
   const [externalDrop, setExternalDrop] = useState<ExternalDropState>(null);
   const [conflictPolicy, setConflictPolicy] = useState<TransferConflictPolicy>("fail");
+  const [selectedTransferProtocol, setSelectedTransferProtocol] = useState<FileTransferProtocol>("sftp");
   const selectionAnchors = useRef<{ local: string; remote: string }>({ local: "", remote: "" });
   const fileLoadEpochs = useRef({ local: 0, remote: 0 });
   const activeFileLoadEpochs = useRef({ local: 0, remote: 0 });
@@ -122,7 +125,12 @@ export default function FileManagerPanel({
   const transferOperationGate = useRef(new KeyedRequestGate<string>());
   const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
+  const fileTransferProtocols = active ? fileTransferProtocolsForProfile(active.profile) : [];
+  const fileTransferProtocol = fileTransferProtocols.includes(selectedTransferProtocol)
+    ? selectedTransferProtocol
+    : fileTransferProtocols[0] ?? "";
   const canTransferFiles = canRemote
+    && Boolean(fileTransferProtocol)
     && !localPanel.busy
     && !remotePanel.busy
     && busyFileOperationKeys.size === 0;
@@ -176,7 +184,7 @@ export default function FileManagerPanel({
         return;
       }
       const remote = filePaneAtPhysicalPosition(payload.position.x, payload.position.y);
-      if (!active || remote === null || (remote && !canRemote)) {
+      if (!active || remote === null || (remote && (!canRemote || !fileTransferProtocol))) {
         setDropTarget(null);
         return;
       }
@@ -196,7 +204,7 @@ export default function FileManagerPanel({
       disposed = true;
       unlisten?.();
     };
-  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path, conflictPolicy]);
+  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path, conflictPolicy, fileTransferProtocol]);
 
   useEffect(() => {
     if (!externalDrop || externalDrop.status !== "queued" || !externalDrop.taskIds.length) return;
@@ -515,7 +523,7 @@ export default function FileManagerPanel({
     destination: string,
     title: string,
   ) {
-    if (!active || !canRemote || !entries.length) return;
+    if (!active || !canRemote || !fileTransferProtocol || !entries.length) return;
     const operation = beginFileOperation([sourceRemote, destinationRemote]);
     if (!operation) return;
     if (!operation.requestSessionId) {
@@ -533,6 +541,7 @@ export default function FileManagerPanel({
       const result = await invokeBackend<ExternalDropResult>("start_file_batch", {
         request: {
           sessionId: operation.requestSessionId,
+          protocol: fileTransferProtocol,
           paths: entries.map((entry) => entry.path),
           sourceRemote,
           destination,
@@ -572,7 +581,7 @@ export default function FileManagerPanel({
   }
 
   function startFileDrag(remote: boolean, entry: FileEntry, event: ReactDragEvent<HTMLElement>) {
-    if (!canRemote) return;
+    if (!canTransferFiles) return;
     const panel = remote ? remotePanel : localPanel;
     const entries = panel.selected.some((item) => item.path === entry.path) ? panel.selected : [entry];
     setDraggedFile({ remote, entries });
@@ -581,7 +590,7 @@ export default function FileManagerPanel({
   }
 
   function handleDragOver(remote: boolean, event: ReactDragEvent<HTMLElement>) {
-    if (!canRemote || !draggedFile || draggedFile.remote === remote) return;
+    if (!canTransferFiles || !draggedFile || draggedFile.remote === remote) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setDropTarget(remote);
@@ -592,13 +601,13 @@ export default function FileManagerPanel({
     const dropped = draggedFile;
     setDropTarget(null);
     setDraggedFile(null);
-    if (!active || !canRemote || !dropped || dropped.remote === remote) return;
+    if (!active || !canTransferFiles || !dropped || dropped.remote === remote) return;
     const targetPanel = remote ? remotePanel : localPanel;
     await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.path, "拖拽传输");
   }
 
   async function startExternalDrop(remote: boolean, paths: string[]) {
-    if (!active || (remote && !canRemote) || !paths.length) return;
+    if (!active || (remote && (!canRemote || !fileTransferProtocol)) || !paths.length) return;
     const panel = remote ? remotePanel : localPanel;
     const operation = beginFileOperation([remote]);
     if (!operation) return;
@@ -617,6 +626,7 @@ export default function FileManagerPanel({
       const result = await invokeBackend<ExternalDropResult>("start_external_drop", {
         request: {
           sessionId: operation.requestSessionId,
+          protocol: remote ? fileTransferProtocol : "sftp",
           paths,
           destination: panel.path,
           remote,
@@ -721,7 +731,10 @@ export default function FileManagerPanel({
           onNavigate={(path) => void loadFiles(false, path)}
           onRefresh={() => void loadFiles(false, currentFileNavigationPath(localNavigation) ?? localPanel.path, "preserve")}
           conflictPolicy={conflictPolicy}
+          transferProtocol={fileTransferProtocol}
+          transferProtocols={fileTransferProtocols}
           onConflictPolicyChange={setConflictPolicy}
+          onTransferProtocolChange={setSelectedTransferProtocol}
           onSelect={(entry, event) => selectFileEntry(false, entry, event)}
           onSelectAll={() => selectAllFileEntries(false)}
           dropActive={dropTarget === false}
@@ -760,7 +773,10 @@ export default function FileManagerPanel({
             onNavigate={(path) => void loadFiles(true, path)}
             onRefresh={() => void loadFiles(true, currentFileNavigationPath(remoteNavigation) ?? remotePanel.path, "preserve")}
             conflictPolicy={conflictPolicy}
+            transferProtocol={fileTransferProtocol}
+            transferProtocols={fileTransferProtocols}
             onConflictPolicyChange={setConflictPolicy}
+            onTransferProtocolChange={setSelectedTransferProtocol}
             onSelect={(entry, event) => selectFileEntry(true, entry, event)}
             onSelectAll={() => selectAllFileEntries(true)}
             dropActive={dropTarget === true}
@@ -810,6 +826,8 @@ function FileBrowserPane({
   dropActive,
   dropStatus,
   conflictPolicy,
+  transferProtocol,
+  transferProtocols,
   onPathChange,
   onGoBack,
   onGoForward,
@@ -818,6 +836,7 @@ function FileBrowserPane({
   onSelect,
   onSelectAll,
   onConflictPolicyChange,
+  onTransferProtocolChange,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -844,6 +863,8 @@ function FileBrowserPane({
   dropActive: boolean;
   dropStatus: ExternalDropState;
   conflictPolicy: TransferConflictPolicy;
+  transferProtocol: FileTransferProtocol | "";
+  transferProtocols: FileTransferProtocol[];
   onPathChange: (path: string) => void;
   onGoBack: () => void;
   onGoForward: () => void;
@@ -852,6 +873,7 @@ function FileBrowserPane({
   onSelect: (entry: FileEntry, event: FileSelectionModifiers) => void;
   onSelectAll: () => void;
   onConflictPolicyChange: (policy: TransferConflictPolicy) => void;
+  onTransferProtocolChange: (protocol: FileTransferProtocol) => void;
   onDragStart: (entry: FileEntry, event: ReactDragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
@@ -915,6 +937,19 @@ function FileBrowserPane({
           <option value="skip">跳过</option>
           <option value="rename">重命名</option>
         </select>
+        {transferProtocols.length ? (
+          <select
+            value={transferProtocol}
+            disabled={locked}
+            onChange={(event) => onTransferProtocolChange(event.target.value as FileTransferProtocol)}
+            aria-label="文件传输协议"
+            title="文件传输协议"
+          >
+            {transferProtocols.map((protocol) => (
+              <option key={protocol} value={protocol}>{transferProtocolLabel(protocol)}</option>
+            ))}
+          </select>
+        ) : null}
         <button type="button" title={transferLabel} aria-label={`${transferLabel}${panel.selected.length > 1 ? ` ${panel.selected.length} 项` : ""}`} onClick={onTransfer} disabled={locked || !panel.selected.length || !canTransfer}>
           {remote ? <Download size={13} /> : <Upload size={13} />}
         </button>

@@ -88,6 +88,8 @@ try {
     assert(toolNames.has(toolName), `tools/list omitted ${toolName}`);
   }
   const startTransfer = tools.tools.find((tool) => tool.name === "start_transfer");
+  assert(startTransfer?.inputSchema?.properties?.protocol?.enum?.includes("scp"),
+    "start_transfer schema omitted SCP");
   assert(startTransfer?.inputSchema?.properties?.protocol?.enum?.includes("tftp"),
     "start_transfer schema omitted TFTP");
   assert(startTransfer?.inputSchema?.oneOf?.length === 3,

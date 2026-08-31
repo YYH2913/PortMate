@@ -104,6 +104,19 @@ pub(super) fn transfer_protocol_label(protocol: &TransferProtocol) -> &'static s
     }
 }
 
+pub(super) fn validate_file_tool_transfer_protocol(
+    protocol: &TransferProtocol,
+) -> Result<(), String> {
+    if matches!(protocol, TransferProtocol::Sftp | TransferProtocol::Scp) {
+        Ok(())
+    } else {
+        Err(format!(
+            "文件管理传输仅支持 SFTP 或 SCP，不能使用 {}",
+            transfer_protocol_label(protocol)
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalTransferPathPlatform {
     Unix,

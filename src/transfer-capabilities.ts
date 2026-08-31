@@ -1,6 +1,7 @@
 import type { SessionProfile, TransferTask } from "./types";
 
 export type TransferProtocol = TransferTask["protocol"];
+export type FileTransferProtocol = Extract<TransferProtocol, "sftp" | "scp">;
 export type ModemTransferProtocol = Extract<TransferProtocol, "xmodem" | "ymodem" | "zmodem">;
 
 const transferProtocolLabels: Record<TransferProtocol, string> = {
@@ -22,6 +23,14 @@ export function transferProtocolsForProfile(profile: SessionProfile): TransferPr
   if (profile.transfer.ymodem) protocols.push("ymodem");
   if (profile.transfer.zmodem) protocols.push("zmodem");
   if (profile.transfer.tftp !== false) protocols.push("tftp");
+  return protocols;
+}
+
+export function fileTransferProtocolsForProfile(profile: SessionProfile): FileTransferProtocol[] {
+  const protocols: FileTransferProtocol[] = [];
+  const sshLike = profile.kind === "ssh" || profile.kind === "tmux";
+  if (sshLike && profile.transfer.sftp) protocols.push("sftp");
+  if (sshLike && profile.transfer.scp) protocols.push("scp");
   return protocols;
 }
 

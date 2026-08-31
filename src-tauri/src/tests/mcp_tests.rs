@@ -180,6 +180,24 @@ fn unified_mcp_start_transfer_arguments_enforce_exact_source_modes() {
         }
         _ => panic!("virtual MCP source was treated as a path"),
     }
+    let virtual_scp = normalize_mcp_start_transfer_args(&serde_json::json!({
+        "sessionId": "edge-router",
+        "protocol": "scp",
+        "source": {
+            "kind": "mcp",
+            "fileName": "firmware.bin",
+            "contentBase64": "AAE="
+        },
+        "destination": "remote:/tmp/firmware.bin"
+    }))
+    .unwrap();
+    match virtual_scp {
+        NormalizedMcpStartTransferRequest::Inline(request) => {
+            assert_eq!(request.protocol, TransferProtocol::Scp);
+            assert_eq!(request.destination, "remote:/tmp/firmware.bin");
+        }
+        _ => panic!("virtual SCP source was not accepted as inline MCP content"),
+    }
     let structured_tftp = normalize_mcp_start_transfer_args(&serde_json::json!({
         "sessionId": "board-uart",
         "protocol": "tftp",

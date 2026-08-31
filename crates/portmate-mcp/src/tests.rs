@@ -402,13 +402,13 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
     server
         .start_transfer_tool(&json!({
             "sessionId": "refresh-session",
-            "protocol": "xmodem",
+            "protocol": "scp",
             "source": {
                 "kind": "mcp",
                 "fileName": "firmware.bin",
                 "contentBase64": BASE64_STANDARD.encode(b"abc")
             },
-            "destination": "load:loadx"
+            "destination": "remote:/tmp/firmware.bin"
         }))
         .unwrap();
     let upload = server
@@ -451,6 +451,11 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
             "fileName": "firmware.bin",
             "contentBase64": BASE64_STANDARD.encode(b"abc")
         }))
+    );
+    assert_eq!(requests[2].args.get("protocol"), Some(&json!("scp")));
+    assert_eq!(
+        requests[2].args.get("destination"),
+        Some(&json!("remote:/tmp/firmware.bin"))
     );
     assert_eq!(requests[3].args, json!({ "uploadId": upload_id }));
     drop(requests);

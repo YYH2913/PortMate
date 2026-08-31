@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deviceLoadEndpoint, deviceTftpEndpoint, isModemTransferProtocol, isTftpTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
+import { deviceLoadEndpoint, deviceTftpEndpoint, fileTransferProtocolsForProfile, isModemTransferProtocol, isTftpTransferProtocol, modemLoadCommand, transferProtocolLabel, transferProtocolsForProfile } from "./transfer-capabilities";
 import type { TransferProtocol } from "./transfer-capabilities";
 import type { SessionKind, SessionProfile } from "./types";
 
@@ -13,6 +13,13 @@ describe("transfer capabilities", () => {
     for (const kind of ["serial", "shell", "telnet", "tcp"] as const) {
       expect(transferProtocolsForProfile(profile(kind))).toEqual(["xmodem", "ymodem", "zmodem", "tftp"]);
     }
+  });
+
+  it("exposes only enabled SFTP and SCP protocols to file tools", () => {
+    expect(fileTransferProtocolsForProfile(profile("ssh"))).toEqual(["sftp", "scp"]);
+    expect(fileTransferProtocolsForProfile(profile("tmux", { sftp: false }))).toEqual(["scp"]);
+    expect(fileTransferProtocolsForProfile(profile("ssh", { scp: false }))).toEqual(["sftp"]);
+    expect(fileTransferProtocolsForProfile(profile("serial"))).toEqual([]);
   });
 
   it("honors every protocol enable flag", () => {

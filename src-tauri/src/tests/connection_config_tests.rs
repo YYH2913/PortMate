@@ -13,9 +13,11 @@ fn transport_command_types_keep_stable_json_contracts() {
         external_drop.conflict_policy,
         TransferConflictPolicy::Fail
     ));
+    assert_eq!(external_drop.protocol, TransferProtocol::Sftp);
 
     let batch = serde_json::to_value(StartFileBatchRequest {
         session_id: "ssh-2".to_string(),
+        protocol: TransferProtocol::Scp,
         paths: vec!["C:\\local\\source.bin".to_string()],
         source_remote: false,
         destination: "/srv/archive".to_string(),
@@ -27,6 +29,7 @@ fn transport_command_types_keep_stable_json_contracts() {
     assert_eq!(batch["sourceRemote"], false);
     assert_eq!(batch["destinationRemote"], true);
     assert_eq!(batch["conflictPolicy"], "rename");
+    assert_eq!(batch["protocol"], "scp");
 
     let serial_line: SerialLineRequest = serde_json::from_value(serde_json::json!({
         "sessionId": "serial-1",

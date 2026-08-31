@@ -287,6 +287,15 @@ SFTP/SCP 的非本地端点只支持 SSH/Tmux Profile；TFTP 和 X/Y/ZModem 还�
       "destination": "remote:/tmp/firmware.bin"
     }
 
+SCP 虚拟文件透传示例：
+
+    {
+      "sessionId": "edge-router",
+      "protocol": "scp",
+      "source": { "kind": "mcp", "fileName": "firmware.bin", "contentBase64": "AAECAwQF" },
+      "destination": "remote:/tmp/firmware.bin"
+    }
+
 虚拟 MCP 文件示例：
 
     {
@@ -307,7 +316,9 @@ SFTP/SCP 的非本地端点只支持 SSH/Tmux Profile；TFTP 和 X/Y/ZModem 还�
 | uploadId | UUID | begin_content_upload 完成后使用 |
 
 SFTP/SCP 下载可以交换两端，例如 source=remote:/var/log/messages、destination 为本地
-路径。Modem 接收端使用 load:loadx、load:loady 或 load:loadz，并支持受限地址/速率参数。
+路径。桌面文件管理器的批量上传、下载和拖放也可选择 SFTP 或 SCP；目录枚举、冲突检查和
+建目录仍通过 SFTP 子系统完成，实际文件数据按所选协议传输。Modem 接收端使用
+load:loadx、load:loady 或 load:loadz，并支持受限地址/速率参数。
 
 ### 结构化 TFTP destination
 
