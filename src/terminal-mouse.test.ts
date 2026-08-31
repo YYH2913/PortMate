@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
+import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalBinaryStringToBytes, terminalMouseEncodingSequence } from "./terminal-mouse";
 
 describe("terminal mouse reporting", () => {
   it("recognizes complete SGR, pixel, URXVT, X10 and locator reports", () => {
@@ -16,6 +16,13 @@ describe("terminal mouse reporting", () => {
     expect(isTerminalMouseReport("\x1b[<0;12;8")).toBe(false);
     expect(isTerminalMouseReport("x\x1b[<0;12;8M")).toBe(false);
     expect(isTerminalMouseReport("\x1b[<0;12;8Mx")).toBe(false);
+  });
+
+  it("converts XTerm binary reports without changing byte values", () => {
+    const report = "\x1b[M" + String.fromCharCode(0xff, 0x80, 0x00);
+    expect(isTerminalMouseReport(report)).toBe(true);
+    expect(terminalBinaryStringToBytes(report)).toEqual([0x1b, 0x5b, 0x4d, 0xff, 0x80, 0x00]);
+    expect(terminalBinaryStringToBytes("\u0100")).toBeNull();
   });
 
   it("tracks DEC mouse encodings for terminal cache restoration", () => {

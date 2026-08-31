@@ -211,6 +211,22 @@ describe("terminal input pump", () => {
     ]);
   });
 
+  it("keeps binary mouse frames atomic and separate from printable input", async () => {
+    const calls: Array<{ text: string; options?: { binary?: boolean } }> = [];
+    const pump = new TerminalInputPump((_sessionId, text, _origin, options) => {
+      calls.push({ text, options });
+    });
+
+    pump.enqueueFast("router", "a", "interactive");
+    const mouse = pump.enqueue("router", "\x1b[M\xff\x80\x00", "atomic", { binary: true });
+    await mouse;
+
+    expect(calls).toEqual([
+      { text: "a", options: undefined },
+      { text: "\x1b[M\xff\x80\x00", options: { binary: true } },
+    ]);
+  });
+
   it("propagates requested write failures while keeping ordinary input fail-soft", async () => {
     const pump = new TerminalInputPump(async (_sessionId, _text, _origin, options) => {
       if (options?.awaitWrite) throw new Error("write failed");

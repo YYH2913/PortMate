@@ -1,5 +1,20 @@
 export type TerminalMouseEncoding = "default" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
 
+/**
+ * XTerm's onBinary event uses a JavaScript string as a byte container. Keep
+ * the conversion explicit so C1/high-coordinate bytes never get UTF-8
+ * re-encoded while crossing the Tauri JSON boundary.
+ */
+export function terminalBinaryStringToBytes(value: string): number[] | null {
+  const bytes = new Array<number>(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code > 0xff) return null;
+    bytes[index] = code;
+  }
+  return bytes;
+}
+
 export function isTerminalMouseReport(text: string): boolean {
   return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(text)
     || /^\x1b\[\d+;\d+;\d+M$/.test(text)

@@ -1244,12 +1244,72 @@ try {
   await clearCalls();
   await activeScreen.click({ position: { x: 120, y: 80 } });
   await page.waitForFunction(() => window.__invokeCalls.some((call) => (
-    call.command === "send_text" && /^\x1b\[<0;\d+;\d+[Mm]$/.test(call.args.text)
+    call.command === "send_bytes"
+      && Array.isArray(call.args.bytes)
+      && call.args.bytes.slice(0, 3).join(",") === "27,91,60"
   )));
-  const mouseTexts = await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "send_text" && typeof call.args.text === "string")
-    .map((call) => call.args.text)
-    .filter((text) => text.startsWith("\x1b[<")));
+  const sgrMouseBytes = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_bytes" && Array.isArray(call.args.bytes))
+    .map((call) => call.args.bytes)
+    .find((bytes) => bytes.slice(0, 3).join(",") === "27,91,60") ?? null);
+  assert(sgrMouseBytes?.length >= 8
+    && sgrMouseBytes[0] === 27
+    && sgrMouseBytes[1] === 91
+    && sgrMouseBytes[2] === 60
+    && sgrMouseBytes.at(-1) === 77
+    && sgrMouseBytes.slice(3, -1).every((byte) => byte === 59 || (byte >= 48 && byte <= 57)),
+    `SGR mouse click was not forwarded as an atomic byte frame: ${JSON.stringify(sgrMouseBytes)}`);
+
+  // Many full-screen TUIs enable DEC mouse tracking without the SGR
+  // extension. XTerm emits those reports through onBinary, including bytes
+  // above 0x7f when the terminal is wide; verify the path stays lossless.
+  await emitSessionEvent(createEvent(
+    "a-default-mouse-encoding",
+    "session-a",
+    "\x1b[?1006l",
+    "2026-07-15T00:00:04.555555Z",
+  ));
+  await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalMouseEncoding === "default");
+  await clearCalls();
+  await activeScreen.click({ position: { x: 120, y: 80 } });
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "send_bytes"
+      && Array.isArray(call.args.bytes)
+      && call.args.bytes.slice(0, 3).join(",") === "27,91,77"
+  )));
+  const defaultMouseBytes = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_bytes" && Array.isArray(call.args.bytes))
+    .map((call) => call.args.bytes)
+    .find((bytes) => bytes.slice(0, 3).join(",") === "27,91,77") ?? null);
+  assert(defaultMouseBytes?.length === 6
+    && defaultMouseBytes.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255),
+  `default X10 mouse click was not forwarded losslessly: ${JSON.stringify(defaultMouseBytes)}`);
+  await emitSessionEvent(createEvent(
+    "a-restore-sgr-mouse-encoding",
+    "session-a",
+    "\x1b[?1006h",
+    "2026-07-15T00:00:04.666666Z",
+  ));
+  await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalMouseEncoding === "sgr");
+
+  // Synchronized keyboard input must not turn a pointer event in one pane
+  // into clicks in every other connected session.
+  await page.locator(".menu-trigger", { hasText: "终端" }).click();
+  await page.locator(".menu-popover button", { hasText: "同步输入" }).click();
+  await page.locator(".sync-status.active").waitFor();
+  await clearCalls();
+  await activeScreen.click({ position: { x: 120, y: 80 } });
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "send_bytes" && Array.isArray(call.args.bytes)
+  )));
+  const synchronizedMouseCalls = await page.evaluate(() => window.__invokeCalls
+    .filter((call) => call.command === "send_bytes" && Array.isArray(call.args.bytes))
+    .map((call) => call.args.sessionId));
+  assert(synchronizedMouseCalls.length > 0 && synchronizedMouseCalls.every((sessionId) => sessionId === "session-a"),
+    `mouse input was broadcast by synchronized input: ${JSON.stringify(synchronizedMouseCalls)}`);
+  await page.locator(".menu-trigger", { hasText: "终端" }).click();
+  await page.locator(".menu-popover button", { hasText: "同步输入" }).click();
+  await page.waitForFunction(() => !document.querySelector(".sync-status")?.classList.contains("active"));
 
   const terminalWebLinkUrl = "https://terminal.example.test/path?q=portmate";
   await clearCalls();
@@ -1390,10 +1450,17 @@ try {
   const disabledScreen = page.locator('[data-pane-id="pane-a"] .xterm-screen');
   await disabledScreen.click({ position: { x: 120, y: 80 } });
   await page.waitForTimeout(150);
-  const leakedMouseTexts = await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "send_text" && typeof call.args.text === "string")
-    .map((call) => call.args.text)
-    .filter((text) => text.startsWith("\x1b[<")));
+  const leakedMouseTexts = await page.evaluate(() => window.__invokeCalls.filter((call) => {
+    if (call.command === "send_text" && typeof call.args.text === "string") {
+      return /^\x1b\[(?:<\d+;\d+;\d+|\d+;\d+;\d+)M$/.test(call.args.text)
+        || /^\x1b\[(?:<\d+;\d+;\d+|\d+;\d+;\d+)m$/.test(call.args.text)
+        || /^\x1b\[M[\s\S]{3,6}$/.test(call.args.text);
+    }
+    if (call.command === "send_bytes" && Array.isArray(call.args.bytes)) {
+      return call.args.bytes[0] === 27 && call.args.bytes[1] === 91;
+    }
+    return false;
+  }));
   assert(leakedMouseTexts.length === 0, `disabled mouse reporting leaked input: ${JSON.stringify(leakedMouseTexts)}`);
   await page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea').focus();
   await page.keyboard.type("k");
@@ -1862,7 +1929,7 @@ try {
     onlineSearches: { selection: onlineSelectionSearch, fallback: onlineFallbackSearch },
     terminalWebLink,
     triggerWebLink,
-    mouseTexts,
+    mouseTexts: { sgr: sgrMouseBytes, default: defaultMouseBytes, synchronized: synchronizedMouseCalls },
     leakedMouseTexts,
     completionPasteBoundary: {
       beforePaste: completionBeforePaste?.includes("status") ?? false,

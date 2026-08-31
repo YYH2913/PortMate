@@ -323,6 +323,67 @@ fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() 
 }
 
 #[test]
+fn queued_binary_input_preserves_mouse_report_bytes_and_order() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = [
+            b'a', 0x1b, b'[', b'M', 0xff, 0x80, 0x00, b'\r',
+        ];
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = [0_u8; 8];
+            socket.read_exact(&mut received).await.unwrap();
+            received
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-queued-binary-input-test-{}",
+            Uuid::new_v4()
+        ));
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        enqueue_interactive_text(
+            state.session_io(),
+            profile.id.clone(),
+            "a".to_string(),
+            true,
+        )
+        .unwrap();
+        enqueue_interactive_bytes(
+            state.session_io(),
+            profile.id.clone(),
+            expected[1..7].to_vec(),
+        )
+        .unwrap();
+        enqueue_interactive_text(
+            state.session_io(),
+            profile.id.clone(),
+            "\r".to_string(),
+            false,
+        )
+        .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("queued binary input server timed out")
+            .expect("queued binary input server failed");
+        assert_eq!(received, expected);
+
+        clear_interactive_write_queue(&state.store_path, &profile.id);
+        clear_deferred_interactive_queue(&state.store_path, &profile.id);
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn paced_terminal_input_ack_waits_for_the_outbound_write_lane() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

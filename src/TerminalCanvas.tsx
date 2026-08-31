@@ -83,7 +83,7 @@ import {
   writeTerminalDisplayMode,
 } from "./terminal-byte-state";
 import type { TerminalByteSelection, TerminalDisplayMode } from "./terminal-byte-state";
-import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalMouseEncodingSequence } from "./terminal-mouse";
+import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalBinaryStringToBytes, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
 import { openTerminalWebLink } from "./terminal-web-link";
@@ -1120,12 +1120,15 @@ function TerminalCanvas({
     host.dataset.terminalMouseReporting = mouseReportingRef.current ? "enabled" : "disabled";
     host.dataset.terminalRestored = cachedState ? "true" : "false";
     let mouseEncoding: TerminalMouseEncoding = cachedState?.mouseEncoding ?? "default";
+    host.dataset.terminalMouseEncoding = mouseEncoding;
     const mouseEncodingSetDisposable = term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
       mouseEncoding = reduceTerminalMouseEncoding(mouseEncoding, params, true);
+      host.dataset.terminalMouseEncoding = mouseEncoding;
       return false;
     });
     const mouseEncodingResetDisposable = term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
       mouseEncoding = reduceTerminalMouseEncoding(mouseEncoding, params, false);
+      host.dataset.terminalMouseEncoding = mouseEncoding;
       return false;
     });
     let terminalDisposed = false;
@@ -1876,20 +1879,31 @@ function TerminalCanvas({
     });
     scheduleSemanticHighlighting();
     scheduleTimestampGutter();
-    const inputDisposable = term.onData((text) => {
-      if (!focusedRef.current || keyModeRef.current !== "remote") return;
+    const dispatchBinaryInput = (text: string) => {
+      if (!focusedRef.current || keyModeRef.current !== "remote" || !text) return;
       const mouseReport = isTerminalMouseReport(text);
       if (mouseReport
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
+      // XTerm's onBinary callback is a Latin-1 byte container. Keep the
+      // payload atomic and source-local so default (non-SGR) mouse reports
+      // cannot be lost or broadcast to another synchronized pane.
+      if (!terminalBinaryStringToBytes(text)) return;
       lastInteractiveInputAt = performance.now();
-      if (mouseReport) {
-        // Mouse press/release reports are protocol frames, not printable
-        // keystrokes. Keep each frame as an atomic ordering boundary so the
-        // fast keyboard path cannot merge or reorder them.
-        void onInputRef.current(active.profile.id, text, "atomic");
+      void onInputRef.current(active.profile.id, text, "atomic", { binary: true });
+      if (mouseReport) dismissOneKeyPrompt();
+      else {
+        resetCompletionInput(false);
         dismissOneKeyPrompt();
+      }
+    };
+    const inputDisposable = term.onData((text) => {
+      if (!focusedRef.current || keyModeRef.current !== "remote") return;
+      const mouseReport = isTerminalMouseReport(text);
+      if (mouseReport) {
+        dispatchBinaryInput(text);
         return;
       }
+      lastInteractiveInputAt = performance.now();
       const detectedSensitive = terminalInputLooksSensitive(
         term,
         oneKeyPromptStateRef.current.prompt,
@@ -1920,6 +1934,7 @@ function TerminalCanvas({
       if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
       dismissOneKeyPrompt();
     });
+    const binaryInputDisposable = term.onBinary(dispatchBinaryInput);
     const selectionDisposable = term.onSelectionChange(() => {
       host.dataset.terminalHasSelection = term.hasSelection() ? "true" : "false";
       if (!focusedRef.current) return;
@@ -1993,6 +2008,7 @@ function TerminalCanvas({
       if (host.dataset.terminalInstanceId === terminalInstanceId) host.dataset.terminalReady = "false";
       searchResultDisposable.dispose();
       inputDisposable.dispose();
+      binaryInputDisposable.dispose();
       selectionDisposable.dispose();
       bufferChangeDisposable.dispose();
       host.removeEventListener("paste", pauseCompletionOnPaste, true);

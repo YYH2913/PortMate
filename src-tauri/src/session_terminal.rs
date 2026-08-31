@@ -253,8 +253,23 @@ pub(crate) async fn send_bytes(
     state: State<'_, AppState>,
     session_id: String,
     bytes: Vec<u8>,
+    queued: Option<bool>,
 ) -> Result<SessionEvent, String> {
-    send_bytes_inner(state.inner().session_io(), session_id, bytes).await
+    let io = state.inner().session_io();
+    if queued.unwrap_or(false) {
+        // The terminal mouse path only needs queue admission here; the actual
+        // write and persisted event are completed by the per-session worker.
+        let summary = format_outbound_byte_summary(&bytes);
+        let returned_bytes = bytes.clone();
+        enqueue_interactive_bytes(io, session_id.clone(), bytes)?;
+        return Ok(deferred_outbound_event(
+            &session_id,
+            &summary,
+            &returned_bytes,
+            false,
+        ));
+    }
+    send_bytes_inner(io, session_id, bytes).await
 }
 
 #[tauri::command]

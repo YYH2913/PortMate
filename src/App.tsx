@@ -95,6 +95,7 @@ import {
 } from "./terminal-export-path";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
+import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
 import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
@@ -3802,6 +3803,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentSessions = sessionsRef.current;
     if (!currentSessions.some((session) => session.profile.id === sessionId)) return;
     const broadcastEnabled = syncInputRef.current;
+    // Mouse reports are addressed to the pane that received the pointer
+    // event. Keep them source-local even when synchronized input is enabled.
+    if (options?.binary) {
+      return directInputPumpRef.current?.dispatch(sessionId, text, "atomic", options);
+    }
     // Credentials and other explicitly private input must stay on the source
     // session even when synchronized input is enabled.
     if (options?.sensitive) {
@@ -3871,7 +3877,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
     try {
       if (isBackendAvailable()) {
-        if (origin === "command") {
+        if (options?.binary) {
+          const bytes = terminalBinaryStringToBytes(text);
+          if (!bytes) throw new Error("终端二进制输入包含无效字节");
+          await sendTerminalBytes(sessionId, bytes, inputEpoch, true);
+        } else if (origin === "command") {
           await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
         } else {
           await invokeBackend<SessionEvent | null>("send_text", {
@@ -3932,14 +3942,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     });
   }
 
-  async function sendTerminalBytes(sessionId: string, bytes: number[], inputEpoch: number) {
+  async function sendTerminalBytes(
+    sessionId: string,
+    bytes: number[],
+    inputEpoch: number,
+    queued = false,
+  ) {
     if (!sessionId || !bytes.length || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
     const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
 
     try {
       if (isBackendAvailable()) {
-        await invokeBackend<SessionEvent>("send_bytes", { sessionId, bytes });
+        await invokeBackend<SessionEvent>("send_bytes", {
+          sessionId,
+          bytes,
+          ...(queued ? { queued: true } : {}),
+        });
         if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
       } else {
         const event = createLocalSystemEvent(session.profile, formatHexBytes(bytes));

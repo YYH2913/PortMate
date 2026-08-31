@@ -101,6 +101,8 @@ Open <http://127.0.0.1:1420/>. Browser mode is useful for layout and frontend in
 
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
+Full-screen terminal applications can request X10/VT200/SGR mouse tracking. PortMate forwards click, release, wheel, and drag reports as lossless bytes to the active session; the `终端设置 (Terminal Settings) -> 鼠标` switch controls whether applications may receive them. Disable the switch when you want normal browser text selection instead.
+
 SSH, Tmux, TCP, Telnet, and Serial reconnect workers reload the latest Profile before the next attempt. Changes to connection settings, authentication policy, reconnect delay, or the reconnect switch do not need to wait for an obsolete retry cycle to finish.
 
 ## Desktop File Transfers

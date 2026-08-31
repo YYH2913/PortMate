@@ -32,6 +32,8 @@ import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./se
 import type { SyncInputOrigin } from "./sync-input-state";
 import TerminalCanvas from "./TerminalCanvas";
 import { TerminalInputPumpRegistry } from "./terminal-input-pump";
+import type { TerminalInputSendOptions } from "./terminal-input-pump";
+import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { CommandHistorySnapshot, DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
@@ -70,11 +72,11 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const profileDeletedRef = useRef(false);
   errorRef.current = error;
   if (!directInputPumpRef.current) {
-    directInputPumpRef.current = new TerminalInputPumpRegistry((sessionId, text, origin) => {
+    directInputPumpRef.current = new TerminalInputPumpRegistry((sessionId, text, origin, options) => {
       const inputEpoch = captureTerminalInputEpoch();
       return inputEpoch === null
         ? Promise.resolve()
-        : sendInput(sessionId, text, origin, inputEpoch);
+        : sendInput(sessionId, text, origin, inputEpoch, options);
     });
   }
   const session = sessions.find((item) => item.profile.id === request.sessionId);
@@ -310,15 +312,22 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     text: string,
     origin: SyncInputOrigin,
     inputEpoch: number,
+    options?: TerminalInputSendOptions,
   ) {
     if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
     try {
-      await invokeBackend("send_text", {
-        sessionId,
-        text,
-        interactive: origin === "interactive",
-        queued: true,
-      });
+      if (options?.binary) {
+        const bytes = terminalBinaryStringToBytes(text);
+        if (!bytes) throw new Error("终端二进制输入包含无效字节");
+        await invokeBackend("send_bytes", { sessionId, bytes, queued: true });
+      } else {
+        await invokeBackend("send_text", {
+          sessionId,
+          text,
+          interactive: origin === "interactive",
+          queued: true,
+        });
+      }
       if (terminalInputIsCurrent(inputEpoch) && errorRef.current) setError("");
     } catch (inputError) {
       if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));

@@ -153,6 +153,11 @@ struct InteractiveWriteRequest {
     cancellation: Option<Arc<AtomicBool>>,
 }
 
+struct InteractiveWriteCompletion {
+    sender: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
 type InteractiveWriteQueues =
     Mutex<HashMap<(PathBuf, String), InteractiveWriteQueue>>;
 
@@ -237,6 +242,33 @@ pub(super) fn enqueue_interactive_text_with_sensitivity(
         sensitive,
         None,
         None,
+    )
+}
+
+/// Enqueue a raw byte frame on the same per-session lane as interactive text.
+/// This is used for XTerm's binary mouse reports so pointer motion does not
+/// wait for a full store/log round trip before the next frame can be sent.
+pub(super) fn enqueue_interactive_bytes(
+    io: SessionIo,
+    session_id: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    if session_id.is_empty() || bytes.is_empty() {
+        return Ok(());
+    }
+    let text = format_outbound_byte_summary(&bytes);
+    let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
+    enqueue_interactive_payload_with_completion(
+        io,
+        session_id,
+        text,
+        wire_bytes,
+        false,
+        false,
+        InteractiveWriteCompletion {
+            sender: None,
+            cancellation: None,
+        },
     )
 }
 
@@ -341,9 +373,35 @@ fn enqueue_interactive_text_with_completion(
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
+    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
+    enqueue_interactive_payload_with_completion(
+        io,
+        session_id,
+        text,
+        wire_bytes,
+        coalesce,
+        sensitive,
+        InteractiveWriteCompletion {
+            sender: completion,
+            cancellation,
+        },
+    )
+}
+
+fn enqueue_interactive_payload_with_completion(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    wire_bytes: Vec<u8>,
+    coalesce: bool,
+    sensitive: bool,
+    completion: InteractiveWriteCompletion,
+) -> Result<(), String> {
+    if session_id.is_empty() || wire_bytes.is_empty() {
+        return Ok(());
+    }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
         .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
-    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
     let key = (io.store_path.clone(), session_id.clone());
     let sender = {
         let mut queues = INTERACTIVE_WRITE_QUEUES
@@ -500,8 +558,8 @@ fn enqueue_interactive_text_with_completion(
         wire_bytes,
         coalesce,
         sensitive,
-        completion,
-        cancellation,
+        completion: completion.sender,
+        cancellation: completion.cancellation,
     });
     match result {
         Ok(()) => Ok(()),

@@ -9,6 +9,8 @@ export type TerminalInputSender = (
 
 export type TerminalInputSendOptions = {
   awaitWrite?: boolean;
+  /** The text field contains a lossless 0..255 byte string from XTerm. */
+  binary?: boolean;
   sensitive?: boolean;
 };
 
@@ -62,6 +64,7 @@ export class TerminalInputPump {
         && tail.sessionId === sessionId
         && !options?.awaitWrite
         && !tail.options?.awaitWrite
+        && Boolean(options?.binary) === Boolean(tail.options?.binary)
         && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
       ) {
         tail.text += text;
@@ -94,6 +97,7 @@ export class TerminalInputPump {
     const tail = this.pending.at(-1);
     if (tail?.origin === "interactive"
       && tail.sessionId === sessionId
+      && Boolean(options?.binary) === Boolean(tail.options?.binary)
       && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)) {
       tail.text += text;
     } else {
