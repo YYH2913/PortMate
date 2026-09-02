@@ -165,7 +165,7 @@ describe("CI command logging", () => {
     expect(vcpkgManifest).toEqual({
       $schema: "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
       name: "portmate-native-ci",
-      version: "0.1.6",
+      version: "0.1.7",
       "builtin-baseline": "86dc619bd8d9697405ae5c944b474117ea9457ce",
       dependencies: ["libsodium"],
     });

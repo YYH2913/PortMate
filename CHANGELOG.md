@@ -6,7 +6,17 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-09-02
+
+### Added
+
+- Added an always-visible Stronghold status control and an explicit creation flow with password
+  confirmation, so a new credential vault is easy to find and initialize.
+
 ### Changed
+
+- Unlocking Stronghold now only opens an existing vault; initialization is a separate explicit
+  operation and cannot happen accidentally while attempting to unlock.
 
 - Reorganized the top-level Tools menu into connection, automation, and management sections with
   keyboard navigation and focus restoration, while preserving the existing command entry points.
@@ -15,6 +25,26 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Sender-panel atomic writes now acknowledge completion from the native per-session transport queue;
   configured repeat intervals are measured against actual writes while printable keyboard input keeps
   its asynchronous coalescing path.
+
+### Fixed
+
+- Locked or still-loading Stronghold state no longer offers unusable credential persistence in the
+  SSH prompt. One-time connections remain available, with a direct route to Stronghold setup.
+
+### Security
+
+- Stronghold initialization remains local and master passwords are neither stored in SQLite nor
+  exposed to MCP clients, logs, or release metadata.
+
+### Migration
+
+- No Store schema migration is required from 0.1.6. Existing sessions, credential references,
+  grants, terminal history, transfers, scripts, host keys, and workspace state load in place.
+
+### Known Limitations
+
+- The Windows GNU portable archive is unsigned cross-build evidence and does not replace native
+  Windows MSVC, WebView2, Credential Manager, MSI/NSIS, Authenticode, or clean-machine tests.
 
 ## [0.1.6] - 2026-08-27
 
