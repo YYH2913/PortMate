@@ -830,6 +830,29 @@ button {
   color: var(--cyan);
 }
 
+.menu-tools .menu-vault-status {
+  max-width: 210px;
+  border-color: rgba(244, 184, 96, 0.22);
+  color: var(--amber);
+}
+
+.menu-tools .menu-vault-status.unlocked {
+  border-color: rgba(94, 234, 212, 0.24);
+  color: var(--cyan);
+}
+
+.menu-vault-status span,
+.menu-vault-status small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-vault-status small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .menu-item {
   position: relative;
   height: 100%;
@@ -6229,7 +6252,49 @@ fieldset label {
   white-space: nowrap;
 }
 
+.credential-vault-hint {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(244, 184, 96, 0.32);
+  background: rgba(244, 184, 96, 0.08);
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.credential-vault-hint span {
+  min-width: 0;
+}
+
+.credential-vault-hint button {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(244, 184, 96, 0.45);
+  background: transparent;
+  color: var(--amber);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.credential-vault-hint button:hover,
+.credential-vault-hint button:focus-visible {
+  outline: 0;
+  background: rgba(244, 184, 96, 0.14);
+}
+
 @media (max-width: 480px) {
+  .credential-vault-hint {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .credential-vault-hint button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
   .credential-meta {
     display: grid;
     grid-template-columns: 64px minmax(0, 1fr);
@@ -8762,6 +8827,18 @@ fieldset label {
     padding-inline: 4px;
   }
 
+  .menu-tools .menu-vault-status {
+    width: 26px;
+    max-width: 26px;
+    justify-content: center;
+    padding-inline: 3px;
+  }
+
+  .menu-vault-status span,
+  .menu-vault-status small {
+    display: none;
+  }
+
   .menu-tools button:last-child {
     display: none;
   }
@@ -10600,9 +10677,15 @@ fieldset label {
   font-size: 12px;
 }
 
+.portable-vault-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .portable-vault-bar {
   display: grid;
-  grid-template-columns: minmax(145px, 0.65fr) minmax(150px, 1fr) 30px;
+  grid-template-columns: minmax(145px, 0.65fr) minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -10645,6 +10728,99 @@ fieldset label {
   background: var(--control);
   color: var(--text);
   font-size: 12px;
+}
+
+.portable-vault-bar > .key-icon-button {
+  justify-self: end;
+}
+
+.portable-vault-unlock-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.portable-vault-unlock-actions input {
+  flex: 1 1 auto;
+}
+
+.portable-vault-loading,
+.portable-vault-create-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.portable-vault-create {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(94, 234, 212, 0.26);
+  background: rgba(15, 23, 32, 0.42);
+}
+
+.portable-vault-create-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.portable-vault-create-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.portable-vault-create-copy span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.portable-vault-create label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.portable-vault-create label input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.portable-vault-create-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--cyan);
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--cyan);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.portable-vault-create-button:hover:not(:disabled),
+.portable-vault-create-button:focus-visible {
+  outline: 0;
+  background: rgba(94, 234, 212, 0.2);
+}
+
+.portable-vault-create-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .portable-vault-feedback {
@@ -11755,10 +11931,14 @@ fieldset label {
   }
 
   .portable-vault-bar {
-    grid-template-columns: minmax(0, 1fr) 30px;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .portable-vault-bar > span {
+    grid-column: 1 / -1;
+  }
+
+  .portable-vault-unlock-actions {
     grid-column: 1 / -1;
   }
 

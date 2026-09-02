@@ -1,4 +1,35 @@
 #[test]
+fn portable_vault_explicit_creation_requires_a_new_password_and_rejects_existing_snapshots() {
+    let root = std::env::temp_dir().join(format!("portmate-stronghold-create-{}", Uuid::new_v4()));
+    let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);
+    let salt_path = root.join(PORTABLE_VAULT_SALT_FILE_NAME);
+    let context = PortableVaultContext {
+        snapshot_path: snapshot_path.clone(),
+        salt_path: salt_path.clone(),
+        stronghold: Mutex::new(None),
+    };
+
+    assert!(unlock_portable_vault_in(&context, "correct horse battery staple")
+        .unwrap_err()
+        .contains("尚未创建"));
+    assert!(create_portable_vault_in(&context, "short")
+        .unwrap_err()
+        .contains("至少需要 8 个字符"));
+    create_portable_vault_in(&context, "correct horse battery staple").unwrap();
+    assert!(snapshot_path.exists());
+    assert!(salt_path.exists());
+    assert!(create_portable_vault_in(&context, "another password")
+        .unwrap_err()
+        .contains("已解锁"));
+
+    context.stronghold.lock().unwrap().take();
+    assert!(create_portable_vault_in(&context, "another password")
+        .unwrap_err()
+        .contains("已存在"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn portable_vault_batch_write_and_delete_commit_once_and_reopen() {
     let root = std::env::temp_dir().join(format!("portmate-stronghold-batch-{}", Uuid::new_v4()));
     let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);

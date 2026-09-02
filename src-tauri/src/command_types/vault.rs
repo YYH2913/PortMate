@@ -23,6 +23,12 @@ pub struct PortableVaultUnlockRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PortableVaultCreateRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PortableVaultRotatePasswordRequest {
     pub current_password: String,
     pub new_password: String,

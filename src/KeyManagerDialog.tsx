@@ -122,6 +122,7 @@ export default function KeyManagerDialog({
   credentialSyncRevision,
   onCredentialOperationStart,
   onCredentialOperationFinish,
+  onPortableVaultStatusChange,
   onClose,
 }: {
   hostKeys: HostKeyStore;
@@ -138,6 +139,7 @@ export default function KeyManagerDialog({
   credentialSyncRevision: number;
   onCredentialOperationStart: () => number | null;
   onCredentialOperationFinish: (token: number, changed?: boolean) => void;
+  onPortableVaultStatusChange?: (status: PortableVaultStatus) => void;
   onClose: () => void;
 }) {
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
@@ -172,6 +174,7 @@ export default function KeyManagerDialog({
   const [privateKeyFileReadBusy, setPrivateKeyFileReadBusy] = useState(false);
   const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
   const [portableVaultPassword, setPortableVaultPassword] = useState("");
+  const [portableVaultCreateConfirmPassword, setPortableVaultCreateConfirmPassword] = useState("");
   const [portableVaultCurrentPassword, setPortableVaultCurrentPassword] = useState("");
   const [portableVaultNewPassword, setPortableVaultNewPassword] = useState("");
   const [portableVaultConfirmPassword, setPortableVaultConfirmPassword] = useState("");
@@ -417,7 +420,7 @@ export default function KeyManagerDialog({
     if (token === null) return;
     try {
       const next = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
-      if (refreshGate.current.isCurrent("vault", token)) setPortableVault(next);
+      if (refreshGate.current.isCurrent("vault", token)) applyPortableVaultStatus(next);
     } catch {
       // Preserve the last confirmed vault state on a transient status failure.
     } finally {
@@ -451,8 +454,62 @@ export default function KeyManagerDialog({
     }
   }
 
+  function applyPortableVaultStatus(next: PortableVaultStatus) {
+    setPortableVault(next);
+    onPortableVaultStatusChange?.(next);
+  }
+
+  async function createPortableVault() {
+    setPortableVaultFeedback(null);
+    setError("");
+    setStatus("");
+    if (portableVault?.exists) {
+      setPortableVaultFeedback({ kind: "error", message: "Stronghold 已存在，请使用解锁操作" });
+      return;
+    }
+    if (!portableVaultPassword) {
+      setPortableVaultFeedback({ kind: "error", message: "请输入新 Stronghold 主密码" });
+      return;
+    }
+    if (Array.from(portableVaultPassword).length < 8) {
+      setPortableVaultFeedback({ kind: "error", message: "新 Stronghold 主密码至少需要 8 个字符" });
+      return;
+    }
+    if (portableVaultPassword !== portableVaultCreateConfirmPassword) {
+      setPortableVaultFeedback({ kind: "error", message: "两次输入的 Stronghold 主密码不一致" });
+      return;
+    }
+    const operationToken = onCredentialOperationStart();
+    if (operationToken === null) return;
+    refreshGate.current.invalidate("vault");
+    setPortableVaultBusy(true);
+    try {
+      const next = await invokeBackend<PortableVaultStatus>("create_portable_vault", {
+        request: { password: portableVaultPassword },
+      });
+      if (!mountedRef.current) return;
+      applyPortableVaultStatus(next);
+      setPortableVaultPassword("");
+      setPortableVaultCreateConfirmPassword("");
+      setPortableVaultFeedback({ kind: "status", message: "Stronghold 已创建并解锁，可以保存凭据了" });
+    } catch (error) {
+      if (mountedRef.current) {
+        setPortableVaultPassword("");
+        setPortableVaultCreateConfirmPassword("");
+        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      }
+    } finally {
+      onCredentialOperationFinish(operationToken);
+      if (mountedRef.current) setPortableVaultBusy(false);
+    }
+  }
+
   async function unlockPortableVault() {
     if (!portableVaultPassword) return;
+    if (!portableVault?.exists) {
+      setPortableVaultFeedback({ kind: "error", message: "Stronghold 尚未创建，请使用下方的创建向导" });
+      return;
+    }
     const operationToken = onCredentialOperationStart();
     if (operationToken === null) return;
     refreshGate.current.invalidate("vault");
@@ -466,7 +523,7 @@ export default function KeyManagerDialog({
         request: { password: portableVaultPassword },
       });
       if (!mountedRef.current) return;
-      setPortableVault(next);
+      applyPortableVaultStatus(next);
       setPortableVaultPassword("");
       setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
     } catch (error) {
@@ -492,7 +549,7 @@ export default function KeyManagerDialog({
     try {
       const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
       if (!mountedRef.current) return;
-      setPortableVault(next);
+      applyPortableVaultStatus(next);
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
     } catch (error) {
@@ -535,7 +592,7 @@ export default function KeyManagerDialog({
         },
       });
       if (!mountedRef.current) return;
-      setPortableVault(next);
+      applyPortableVaultStatus(next);
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: "Portable vault 主密码已更换" });
     } catch (error) {
@@ -627,7 +684,7 @@ export default function KeyManagerDialog({
         try {
           const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
           if (mountedRef.current) {
-            setPortableVault(next);
+            applyPortableVaultStatus(next);
             setPortableVaultFeedback({ kind: "status", message: `已迁移 ${result.migratedSecretCount} 个 Secret；请重新解锁 Stronghold` });
           }
         } catch (lockError) {
@@ -675,7 +732,7 @@ export default function KeyManagerDialog({
         try {
           const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
           if (mountedRef.current) {
-            setPortableVault(next);
+            applyPortableVaultStatus(next);
             setPortableVaultFeedback({ kind: "status", message: "恢复 checkpoint 待核对；Stronghold 已锁定，请重新解锁" });
           }
         } catch (lockError) {
@@ -1704,13 +1761,49 @@ export default function KeyManagerDialog({
               <span><KeyRound size={15} /><strong>Client Keys</strong></span>
               <small>{clientIdentityItems.length} identities</small>
             </div>
-            <div className="portable-vault-bar" title={portableVault?.path ?? "Portable Stronghold vault"}>
-              <span className={portableVault?.unlocked ? "unlocked" : ""}>{portableVault?.unlocked ? <Unlock size={14} /> : <Lock size={14} />}<strong>Stronghold</strong><small>{portableVault?.unlocked ? "Unlocked" : portableVault?.exists ? "Locked" : "Not created"}</small></span>
-              <input type="password" aria-label={portableVault?.exists ? "Stronghold 主密码" : "新建 Stronghold 主密码"} value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder={portableVault?.exists ? "Master password" : "New master password"} disabled={vaultOperationBusy || portableVault?.unlocked} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
-              {portableVault?.unlocked
-                ? <button className="key-icon-button" type="button" title="锁定 portable vault" aria-label="锁定 portable vault" onClick={() => void lockPortableVault()} disabled={vaultOperationBusy}><Lock size={14} /></button>
-                : <button className="key-icon-button" type="button" title="解锁 portable vault" aria-label="解锁 portable vault" onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword}><Unlock size={14} /></button>}
-            </div>
+            <section
+              className={`portable-vault-panel${portableVault?.unlocked ? " unlocked" : ""}`}
+              title={portableVault?.path ?? "Portable Stronghold vault"}
+              aria-labelledby="portable-vault-title"
+            >
+              <div className="portable-vault-bar" data-vault-state={portableVault?.unlocked ? "unlocked" : portableVault?.exists ? "locked" : "not-created"}>
+                <span className={portableVault?.unlocked ? "unlocked" : ""}>
+                  {portableVault?.unlocked ? <Unlock size={14} /> : <Lock size={14} />}
+                  <strong id="portable-vault-title">Stronghold</strong>
+                  <small>{portableVault?.unlocked ? "Unlocked" : portableVault?.exists ? "Locked" : portableVault ? "Not created" : "Checking"}</small>
+                </span>
+                {portableVault?.unlocked ? (
+                  <button className="key-icon-button" type="button" title="锁定 portable vault" aria-label="锁定 portable vault" onClick={() => void lockPortableVault()} disabled={vaultOperationBusy}><Lock size={14} /></button>
+                ) : portableVault?.exists ? (
+                  <div className="portable-vault-unlock-actions">
+                    <input type="password" aria-label="Stronghold 主密码" autoComplete="current-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder="输入主密码以解锁" disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
+                    <button className="key-icon-button" type="button" title="解锁 portable vault" aria-label="解锁 portable vault" onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword}><Unlock size={14} /></button>
+                  </div>
+                ) : null}
+              </div>
+              {!portableVault ? (
+                <div className="portable-vault-loading" role="status">正在读取 Stronghold 状态...</div>
+              ) : !portableVault.exists ? (
+                <div className="portable-vault-create" aria-live="polite">
+                  <div className="portable-vault-create-copy">
+                    <strong>创建 Stronghold 密钥库</strong>
+                    <span>用于安全保存 SSH 密码、私钥口令和 OneKey。主密码只在本机使用，PortMate 不会保存明文。</span>
+                  </div>
+                  <label>
+                    <span>新主密码</span>
+                    <input type="password" aria-label="新建 Stronghold 主密码" autoComplete="new-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder="至少 8 个字符" disabled={vaultOperationBusy} />
+                  </label>
+                  <label>
+                    <span>确认主密码</span>
+                    <input type="password" aria-label="确认 Stronghold 主密码" autoComplete="new-password" value={portableVaultCreateConfirmPassword} onChange={(event) => setPortableVaultCreateConfirmPassword(event.target.value)} placeholder="再次输入主密码" disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void createPortableVault(); }} />
+                  </label>
+                  <button type="button" className="portable-vault-create-button" onClick={() => void createPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword || !portableVaultCreateConfirmPassword}>
+                    <KeyRound size={14} />{portableVaultBusy ? "创建中" : "创建 Stronghold"}
+                  </button>
+                  <small className="portable-vault-create-note">创建后状态会变为 Unlocked，可立即保存凭据。</small>
+                </div>
+              ) : null}
+            </section>
             {portableVaultFeedback ? <div className={`portable-vault-feedback ${portableVaultFeedback.kind}`} role={portableVaultFeedback.kind === "error" ? "alert" : "status"} aria-live="polite">{portableVaultFeedback.message}</div> : null}
             {portableVault?.unlocked ? (
               <details className="portable-vault-rotation" onToggle={(event) => { if (!event.currentTarget.open) { clearPortableVaultRotation(); setPortableVaultFeedback(null); } }}>

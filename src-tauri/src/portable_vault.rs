@@ -124,10 +124,42 @@ pub(super) fn unlock_portable_vault_in(
         .stronghold
         .lock()
         .map_err(|error| error.to_string())?;
-    if !context.snapshot_path.exists() && password.chars().count() < 8 {
-        return Err("新建 portable vault 的主密码至少需要 8 个字符".to_string());
+    if !context.snapshot_path.exists() {
+        return Err("portable vault 尚未创建，请先使用创建操作".to_string());
     }
     let stronghold = open_portable_vault(&context.snapshot_path, &context.salt_path, password)?;
+    *unlocked = Some(stronghold);
+    Ok(())
+}
+
+/// Create a new vault explicitly.  Creation is kept separate from unlock so
+/// an operator cannot accidentally initialize a vault by mistyping a password
+/// intended for an existing snapshot.
+pub(super) fn create_portable_vault_in(
+    context: &PortableVaultContext,
+    password: &str,
+) -> Result<(), String> {
+    let mut unlocked = context
+        .stronghold
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if unlocked.is_some() {
+        return Err("portable vault 已解锁".to_string());
+    }
+    if context.snapshot_path.exists() {
+        return Err("portable vault 已存在，请使用解锁操作".to_string());
+    }
+    if password.chars().count() < 8 {
+        return Err("新建 portable vault 的主密码至少需要 8 个字符".to_string());
+    }
+
+    // A salt may remain after an interrupted first save. Reusing that salt is
+    // safe and lets the explicit create action finish initialization without
+    // replacing any existing snapshot or secret data.
+    let stronghold = open_portable_vault(&context.snapshot_path, &context.salt_path, password)?;
+    if stronghold.opened_existing_snapshot {
+        return Err("portable vault 已存在，请使用解锁操作".to_string());
+    }
     *unlocked = Some(stronghold);
     Ok(())
 }

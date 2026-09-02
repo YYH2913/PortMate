@@ -33,6 +33,18 @@ pub(crate) fn unlock_portable_vault(
 }
 
 #[tauri::command]
+pub(crate) fn create_portable_vault(
+    state: State<'_, AppState>,
+    request: PortableVaultCreateRequest,
+) -> Result<PortableVaultStatus, String> {
+    let _credential_guard = lock_credential_operations(state.inner())?;
+    let password = Zeroizing::new(request.password);
+    let context = portable_vault_context()?;
+    create_portable_vault_in(context, password.as_str())?;
+    portable_vault_status_inner()
+}
+
+#[tauri::command]
 pub(crate) fn rotate_portable_vault_password(
     state: State<'_, AppState>,
     request: PortableVaultRotatePasswordRequest,

@@ -330,6 +330,7 @@ try {
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
     const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
     const recoverSilentSshStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverSilentSshStartup") === "true";
+    const startWithUnlockedVault = new URL(location.href).searchParams.get("portmateTestVault") === "unlocked";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
     sessionStorage.removeItem("portmate.workspaceUiCheck.recoverInactiveStartup");
@@ -435,7 +436,7 @@ try {
     window.__deferTerminalTextExports = false;
     window.__pendingTerminalTextExports = [];
     window.__failNextTerminalTextExport = false;
-    window.__portableVault = { exists: false, unlocked: false, path: "/tmp/portmate-test-vault.stronghold" };
+    window.__portableVault = { exists: startWithUnlockedVault, unlocked: startWithUnlockedVault, path: "/tmp/portmate-test-vault.stronghold" };
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
     window.__migrationRecovery = null;
@@ -1474,7 +1475,22 @@ try {
         }
         if (command === "list_ssh_agent_identities") return [];
         if (command === "portable_vault_status") return structuredClone(window.__portableVault);
+        if (command === "create_portable_vault") {
+          if (window.__portableVault.exists) throw new Error("portable vault already exists");
+          const result = { ...window.__portableVault, exists: true, unlocked: true };
+          if (!window.__deferVaultMutations) {
+            window.__portableVault = result;
+            return structuredClone(result);
+          }
+          return new Promise((resolve) => window.__pendingVaultMutations.push({
+            resolve: () => {
+              window.__portableVault = result;
+              resolve(structuredClone(result));
+            },
+          }));
+        }
         if (command === "unlock_portable_vault") {
+          if (!window.__portableVault.exists) throw new Error("portable vault has not been created");
           const result = { ...window.__portableVault, exists: true, unlocked: true };
           if (!window.__deferVaultMutations) {
             window.__portableVault = result;
@@ -1850,6 +1866,7 @@ try {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(appUrl);
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
+  await page.getByRole("button", { name: /打开 Stronghold 密钥库/ }).waitFor();
   await page.waitForFunction(() => {
     const host = document.querySelector(".terminal-pane.active .terminal-host");
     return host?.getAttribute("data-terminal-semantic-highlighting") === "active"
@@ -8376,7 +8393,8 @@ Host staging
   await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const importingKeyManager = privateKeyImportLifecyclePage.locator(".key-dialog");
   await importingKeyManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("private key import vault");
-  await importingKeyManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await importingKeyManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("private key import vault");
+  await importingKeyManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
   await importingKeyManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
   const importPanel = importingKeyManager.locator(".key-import-panel");
   await importPanel.locator("summary").click();
@@ -8514,7 +8532,8 @@ Host staging
   await migrationOperationPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const migrationManager = migrationOperationPage.locator(".key-dialog");
   await migrationManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("migration test vault");
-  await migrationManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await migrationManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("migration test vault");
+  await migrationManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
   await migrationManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
   await migrationManager.locator("details.portable-vault-migration").evaluate((details) => { details.open = true; });
   const migrationPreviewButton = migrationManager.locator(".portable-vault-migration-preview-button");
@@ -8606,7 +8625,7 @@ Host staging
   const partialCredentialPage = await context.newPage();
   const partialCredentialErrors = [];
   partialCredentialPage.on("pageerror", (error) => partialCredentialErrors.push(error.message));
-  await partialCredentialPage.goto(appUrl);
+  await partialCredentialPage.goto(`${appUrl}?portmateTestVault=unlocked`);
   await partialCredentialPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
   const partialCredentialConnect = partialCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true });
   await partialCredentialConnect.waitFor();
@@ -8614,9 +8633,9 @@ Host staging
   const partialCredentialDialog = partialCredentialPage.locator(".credential-dialog");
   await partialCredentialDialog.waitFor();
   await partialCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
-  await partialCredentialDialog.getByLabel("保存登录密码到 Stronghold（需先解锁）", { exact: true }).check();
+  await partialCredentialDialog.getByLabel("保存登录密码到 Stronghold", { exact: true }).check();
   await partialCredentialDialog.getByLabel("私钥口令", { exact: true }).fill("saved passphrase");
-  await partialCredentialDialog.getByLabel("保存私钥口令到 Stronghold（需先解锁）", { exact: true }).check();
+  await partialCredentialDialog.getByLabel("保存私钥口令到 Stronghold", { exact: true }).check();
   await partialCredentialPage.evaluate(() => { window.__failSecretWriteAt = 2; });
   await partialCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
   const partialCredentialNotice = partialCredentialPage.locator(".notice-dialog", { hasText: "保存凭据失败" });
@@ -8639,7 +8658,7 @@ Host staging
   const failedProfileCredentialPage = await context.newPage();
   const failedProfileCredentialErrors = [];
   failedProfileCredentialPage.on("pageerror", (error) => failedProfileCredentialErrors.push(error.message));
-  await failedProfileCredentialPage.goto(appUrl);
+  await failedProfileCredentialPage.goto(`${appUrl}?portmateTestVault=unlocked`);
   await failedProfileCredentialPage.getByRole("button", { name: "断开 Edge Router", exact: true }).click();
   const failedProfileConnect = failedProfileCredentialPage.getByRole("button", { name: "连接 Edge Router", exact: true });
   await failedProfileConnect.waitFor();
@@ -8647,7 +8666,7 @@ Host staging
   const failedProfileCredentialDialog = failedProfileCredentialPage.locator(".credential-dialog");
   await failedProfileCredentialDialog.waitFor();
   await failedProfileCredentialDialog.getByLabel("登录密码", { exact: true }).fill("saved password");
-  await failedProfileCredentialDialog.getByLabel("保存登录密码到 Stronghold（需先解锁）", { exact: true }).check();
+  await failedProfileCredentialDialog.getByLabel("保存登录密码到 Stronghold", { exact: true }).check();
   await failedProfileCredentialPage.evaluate(() => { window.__failNextProfileSave = true; });
   await failedProfileCredentialDialog.getByRole("button", { name: "连接", exact: true }).click();
   const failedProfileCredentialNotice = failedProfileCredentialPage.locator(".notice-dialog", { hasText: "连接失败" });
@@ -9610,12 +9629,17 @@ Host staging
   vaultLifecyclePage.on("pageerror", (error) => vaultLifecycleErrors.push(error.message));
   await vaultLifecyclePage.goto(appUrl);
   await vaultLifecyclePage.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
-  await vaultLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
-  await vaultLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
+  await vaultLifecyclePage.getByRole("button", { name: /打开 Stronghold 密钥库/ }).click();
   const firstVaultManager = vaultLifecyclePage.locator(".key-dialog");
   await firstVaultManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("correct horse battery staple");
+  await firstVaultManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("mismatch");
+  await firstVaultManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
+  await firstVaultManager.getByRole("alert").waitFor();
+  assert((await firstVaultManager.getByRole("alert").textContent()).includes("不一致"),
+    "Stronghold creation did not reject mismatched confirmation passwords");
+  await firstVaultManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("correct horse battery staple");
   await vaultLifecyclePage.evaluate(() => { window.__deferVaultMutations = true; });
-  await firstVaultManager.getByRole("button", { name: "解锁 portable vault", exact: true }).click();
+  await firstVaultManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
   await vaultLifecyclePage.waitForFunction(() => window.__pendingVaultMutations.length === 1);
   await firstVaultManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
   await firstVaultManager.waitFor({ state: "detached" });
@@ -9623,15 +9647,17 @@ Host staging
   await vaultLifecyclePage.getByRole("button", { name: "工具", exact: true }).click();
   await vaultLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const secondVaultManager = vaultLifecyclePage.locator(".key-dialog");
-  const blockedUnlock = secondVaultManager.getByRole("button", { name: "解锁 portable vault", exact: true });
-  await blockedUnlock.waitFor();
-  assert(await blockedUnlock.isDisabled(), "a reopened key manager bypassed the in-flight vault operation");
+  const blockedCreate = secondVaultManager.getByRole("button", { name: "创建 Stronghold", exact: true });
+  await blockedCreate.waitFor();
+  assert(await blockedCreate.isDisabled(), "a reopened key manager bypassed the in-flight vault operation");
   const vaultStateBeforeRelease = await vaultLifecyclePage.evaluate(() => ({
     backend: structuredClone(window.__portableVault),
+    createCalls: window.__invokeCalls.filter((call) => call.command === "create_portable_vault").length,
     unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length,
   }));
   assert(!vaultStateBeforeRelease.backend.exists && !vaultStateBeforeRelease.backend.unlocked
-    && vaultStateBeforeRelease.unlockCalls === 1,
+    && vaultStateBeforeRelease.createCalls === 1
+    && vaultStateBeforeRelease.unlockCalls === 0,
   `the reopened manager started another vault mutation: ${JSON.stringify(vaultStateBeforeRelease)}`);
 
   await vaultLifecyclePage.evaluate(() => {
@@ -9645,12 +9671,14 @@ Host staging
   const vaultLifecycleState = await vaultLifecyclePage.evaluate(() => ({
     backend: structuredClone(window.__portableVault),
     pending: window.__pendingVaultMutations.length,
+    createCalls: window.__invokeCalls.filter((call) => call.command === "create_portable_vault").length,
     unlockCalls: window.__invokeCalls.filter((call) => call.command === "unlock_portable_vault").length,
     lockCalls: window.__invokeCalls.filter((call) => call.command === "lock_portable_vault").length,
   }));
   assert(vaultLifecycleState.backend.exists && !vaultLifecycleState.backend.unlocked
     && vaultLifecycleState.pending === 0
-    && vaultLifecycleState.unlockCalls === 1
+    && vaultLifecycleState.createCalls === 1
+    && vaultLifecycleState.unlockCalls === 0
     && vaultLifecycleState.lockCalls === 1,
   `the reopened manager did not converge after the vault mutation: ${JSON.stringify(vaultLifecycleState)}`);
   assert(vaultLifecycleErrors.length === 0,

@@ -289,6 +289,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [mcpApprovals, setMcpApprovals] = useState<McpApprovalRequest[]>([]);
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
+  const [portableVaultStatus, setPortableVaultStatus] = useState<PortableVaultStatus | null>(null);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
@@ -911,6 +912,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
       try {
         const vault = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
+        setPortableVaultStatus(vault);
         if (!isCurrent()) return;
         if (!vault.exists) {
           clearScreenLockVaultRestoreState();
@@ -924,7 +926,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (restoreVaultLocked === null) restoreVaultLocked = !vault.unlocked;
         saveScreenLockVaultRestoreState(restoreVaultLocked);
         if (vault.unlocked) {
-          await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          const locked = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          setPortableVaultStatus(locked);
         }
         if (!isCurrent()) return;
         commitScreenLock({
@@ -991,6 +994,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         unlocked = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
           request: { password },
         });
+        setPortableVaultStatus(unlocked);
       } catch {
         throw new Error("主密码验证失败");
       }
@@ -998,7 +1002,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!gate.isCurrent("unlock", token) || screenLockRef.current?.lockedAt !== current.lockedAt) {
         if (screenLockRef.current) {
           try {
-            await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+            const locked = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+            setPortableVaultStatus(locked);
           } catch {
             // A newer lock generation owns the visible recovery state; remain fail-closed when possible.
           }
@@ -1007,7 +1012,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
       if (current.restoreVaultLocked) {
         try {
-          await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          const locked = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
+          setPortableVaultStatus(locked);
         } catch {
           throw new Error("凭据锁定状态恢复失败，请重试");
         }
@@ -1027,6 +1033,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   useEffect(() => {
     void refresh();
+    void refreshPortableVaultStatus();
   }, []);
 
   useEffect(() => {
@@ -1720,6 +1727,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     } finally {
       gate.finish("summaries", token);
+    }
+  }
+
+  async function refreshPortableVaultStatus() {
+    if (!isBackendAvailable()) return;
+    try {
+      const next = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
+      setPortableVaultStatus(next);
+    } catch {
+      // The key manager remains the authoritative retryable surface.
     }
   }
 
@@ -4177,6 +4194,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       hasSavedPassphrase: Boolean(ssh.passphraseSecretRef),
       needsPassword: ssh.identityPolicy.authOrder.includes("password") || ssh.identityPolicy.authOrder.includes("keyboard-interactive") || !hasPrivateKey,
       authOrder: ssh.identityPolicy.authOrder,
+      strongholdStatus: portableVaultStatus
+        ? portableVaultStatus.unlocked ? "unlocked" : portableVaultStatus.exists ? "locked" : "not-created"
+        : "unknown",
     };
 
     return new Promise((resolve) => {
@@ -4482,6 +4502,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           </div>
         </div>
         <div className="menu-tools">
+          <button
+            type="button"
+            className={`menu-vault-status${portableVaultStatus?.unlocked ? " unlocked" : ""}`}
+            title={`Stronghold 密钥库：${portableVaultStatusLabel(portableVaultStatus)}。点击打开管理器`}
+            aria-label={`打开 Stronghold 密钥库（${portableVaultStatusLabel(portableVaultStatus)}）`}
+            onClick={() => {
+              setOpenMenu(null);
+              setDialog(null);
+              setUtilityDialog("keys");
+            }}
+          >
+            {portableVaultStatus?.unlocked ? <Unlock size={12} /> : <Lock size={12} />}
+            <span>Stronghold</span>
+            <small>{portableVaultStatusLabel(portableVaultStatus)}</small>
+          </button>
           <button type="button" title="搜索会话" aria-label="搜索会话" onClick={() => handleMenuAction("会话搜索")}><Search size={13} /></button>
           <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? "退出专注模式" : "进入专注模式"} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
@@ -4814,6 +4849,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             credentialSyncRevision={keyManagerCredentialSyncRevision}
             onCredentialOperationStart={beginKeyManagerCredentialOperation}
             onCredentialOperationFinish={finishKeyManagerCredentialOperation}
+            onPortableVaultStatusChange={setPortableVaultStatus}
             onClose={() => setUtilityDialog(null)}
           />
         </Suspense>
@@ -4880,6 +4916,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             request={credentialPrompt}
             onCancel={() => completeCredentialPrompt(credentialPrompt.requestId, null)}
             onSubmit={(credentials) => completeCredentialPrompt(credentialPrompt.requestId, credentials)}
+            onOpenStronghold={() => {
+              completeCredentialPrompt(credentialPrompt.requestId, null);
+              setUtilityDialog("keys");
+            }}
           />
         </Suspense>
       )}
@@ -6432,6 +6472,13 @@ function emptyConnectionCredentials(): ConnectionCredentials {
     savePassword: false,
     savePassphrase: false,
   };
+}
+
+function portableVaultStatusLabel(status: PortableVaultStatus | null): string {
+  if (!status) return "读取中";
+  if (status.unlocked) return "已解锁";
+  if (status.exists) return "已锁定";
+  return "未创建";
 }
 
 async function persistConnectionSecrets(

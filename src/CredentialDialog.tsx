@@ -23,16 +23,19 @@ export type CredentialPromptState = {
   hasSavedPassphrase: boolean;
   needsPassword: boolean;
   authOrder: AuthMethod[];
+  strongholdStatus?: "unlocked" | "locked" | "not-created" | "unknown";
 };
 
 export default function CredentialDialog({
   request,
   onCancel,
   onSubmit,
+  onOpenStronghold,
 }: {
   request: CredentialPromptState;
   onCancel: () => void;
   onSubmit: (credentials: ConnectionCredentials) => void;
+  onOpenStronghold?: () => void;
 }) {
   const [username, setUsername] = useState(request.initialUsername);
   const [password, setPassword] = useState("");
@@ -42,6 +45,7 @@ export default function CredentialDialog({
   const [savePassphrase, setSavePassphrase] = useState(false);
   const usernameRef = useRef<HTMLInputElement | null>(null);
   const selectedOneKey = selectedSshOneKey(request.oneKeys, oneKeyId);
+  const canSaveToStronghold = request.strongholdStatus === "unlocked";
 
   useEffect(() => {
     usernameRef.current?.focus();
@@ -71,8 +75,8 @@ export default function CredentialDialog({
       password: !selectedOneKey && request.needsPassword ? password : null,
       passphrase: !selectedOneKey && request.hasIdentityFiles ? passphrase : null,
       oneKeyId: selectedOneKey?.id ?? null,
-      savePassword: !selectedOneKey && request.needsPassword && (forceSave || savePassword),
-      savePassphrase: !selectedOneKey && request.hasIdentityFiles && (forceSave || savePassphrase),
+      savePassword: !selectedOneKey && canSaveToStronghold && request.needsPassword && (forceSave || savePassword),
+      savePassphrase: !selectedOneKey && canSaveToStronghold && request.hasIdentityFiles && (forceSave || savePassphrase),
     });
   }
 
@@ -129,8 +133,8 @@ export default function CredentialDialog({
           ) : null}
           {request.needsPassword && !selectedOneKey ? (
             <label className="credential-check">
-              <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password} />
-              <span>保存登录密码到 Stronghold（需先解锁）</span>
+              <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password || !canSaveToStronghold} />
+              <span>保存登录密码到 Stronghold{request.strongholdStatus === "unlocked" ? "" : "（需先解锁）"}</span>
             </label>
           ) : null}
           {request.hasIdentityFiles ? (
@@ -141,9 +145,20 @@ export default function CredentialDialog({
           ) : null}
           {request.hasIdentityFiles && !selectedOneKey ? (
             <label className="credential-check">
-              <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase} />
-              <span>保存私钥口令到 Stronghold（需先解锁）</span>
+              <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase || !canSaveToStronghold} />
+              <span>保存私钥口令到 Stronghold{request.strongholdStatus === "unlocked" ? "" : "（需先解锁）"}</span>
             </label>
+          ) : null}
+          {!selectedOneKey && request.strongholdStatus && request.strongholdStatus !== "unlocked" ? (
+            <div className="credential-vault-hint" role="note">
+              <KeyRound size={14} />
+              <span>{request.strongholdStatus === "not-created"
+                ? "尚未创建 Stronghold，保存密码前请先创建密钥库。"
+                : request.strongholdStatus === "locked"
+                  ? "Stronghold 已锁定，保存密码前请先解锁密钥库。"
+                  : "正在读取 Stronghold 状态，保存凭据前请稍候。"}</span>
+              {onOpenStronghold ? <button type="button" onClick={onOpenStronghold}>打开 Stronghold</button> : null}
+            </div>
           ) : null}
           <div className="credential-meta">
             <span>本次连接</span>
@@ -153,7 +168,7 @@ export default function CredentialDialog({
         <footer className="credential-actions">
           <button type="button" onClick={onCancel}>取消</button>
           <button type="submit">连接</button>
-          {!selectedOneKey && (Boolean(password) || Boolean(passphrase)) ? (
+          {!selectedOneKey && canSaveToStronghold && (Boolean(password) || Boolean(passphrase)) ? (
             <button type="button" className="primary" onClick={(event) => {
               event.preventDefault();
               submitCredentials(true);

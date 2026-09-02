@@ -100,6 +100,7 @@ pub fn run() {
             secret_commands::has_secret,
             session_credentials::stage_session_credentials,
             vault_commands::portable_vault_status,
+            vault_commands::create_portable_vault,
             vault_commands::unlock_portable_vault,
             vault_commands::rotate_portable_vault_password,
             vault_commands::lock_portable_vault,
