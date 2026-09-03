@@ -6,6 +6,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Changed
+
+- New Serial session setup now refreshes the host's available serial devices automatically when
+  entering Serial and provides an explicit refresh control in both quick and advanced settings.
+
 ## [0.1.7] - 2026-09-02
 
 ### Added

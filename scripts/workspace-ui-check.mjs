@@ -437,6 +437,7 @@ try {
     window.__pendingTerminalTextExports = [];
     window.__failNextTerminalTextExport = false;
     window.__portableVault = { exists: startWithUnlockedVault, unlocked: startWithUnlockedVault, path: "/tmp/portmate-test-vault.stronghold" };
+    window.__serialPorts = ["/dev/ttyUSB0"];
     window.__deferVaultMutations = false;
     window.__pendingVaultMutations = [];
     window.__migrationRecovery = null;
@@ -1816,7 +1817,7 @@ try {
             resolve: () => resolve(complete()),
           }));
         }
-        if (command === "list_serial_ports") return ["/dev/ttyUSB0"];
+        if (command === "list_serial_ports") return structuredClone(window.__serialPorts);
         if (command === "plugin:event|emit_to" && args.event === "portmate-detached-pane-command"
           && window.__deferDetachedOwnerCommands) {
           return new Promise((resolve, reject) => window.__pendingDetachedOwnerCommands.push({
@@ -4804,6 +4805,19 @@ Host staging
   assert(await quickConnectButton.isDisabled() && !await quickSaveButton.isDisabled(),
     "incomplete quick session draft blocks saving or allows connecting");
   const quickSerialPort = createSessionDialog.getByRole("combobox", { name: "串口", exact: true });
+  const newSessionSerialRefreshButton = createSessionDialog.getByRole("button", { name: "刷新串口列表", exact: true });
+  const serialRefreshBaseline = await page.evaluate(() => {
+    window.__serialPorts = ["/dev/ttyUSB0", "/dev/ttyACM0"];
+    return window.__invokeCalls.filter((call) => call.command === "list_serial_ports").length;
+  });
+  await newSessionSerialRefreshButton.click();
+  await page.waitForFunction(() => document.querySelector('select[aria-label="串口"] option[value="/dev/ttyACM0"]') !== null);
+  const serialRefreshCalls = await page.evaluate((baseline) => (
+    window.__invokeCalls.filter((call) => call.command === "list_serial_ports").length - baseline
+  ), serialRefreshBaseline);
+  const serialOptionsAfterRefresh = await quickSerialPort.locator("option").evaluateAll((options) => options.map((option) => option.value));
+  assert(serialRefreshCalls === 1 && serialOptionsAfterRefresh.includes("/dev/ttyACM0"),
+    `newly attached serial devices did not appear after refresh: ${JSON.stringify({ serialRefreshCalls, serialOptionsAfterRefresh })}`);
   await quickSerialPort.selectOption("/dev/ttyUSB0");
   assert(!await quickConnectButton.isDisabled(), "a valid serial target did not enable quick connect");
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, ReactNode } from "react";
 import {
   Activity,
@@ -10,6 +10,7 @@ import {
   Network,
   PlugZap,
   Plus,
+  RefreshCw,
   Save,
   Server,
   SlidersHorizontal,
@@ -96,6 +97,7 @@ export default function SessionSettingsDialog({
   mode,
   prepareProfile,
   serialPorts,
+  onRefreshSerialPorts,
   initialSection,
   onDraftChange,
   onSave,
@@ -108,6 +110,7 @@ export default function SessionSettingsDialog({
   mode: "create" | "edit";
   prepareProfile: (profile: SessionProfile) => SessionProfile;
   serialPorts: string[];
+  onRefreshSerialPorts?: () => Promise<string[]>;
   initialSection: string;
   onDraftChange: (draft: SessionProfile) => void;
   onSave: (proxyPasswordUpdate: ProxyPasswordUpdate) => Promise<SessionSummary | null>;
@@ -125,7 +128,10 @@ export default function SessionSettingsDialog({
   const [writeBusy, setWriteBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
   const [selectedIdentityId, setSelectedIdentityId] = useState("");
+  const [serialPortsRefreshing, setSerialPortsRefreshing] = useState(false);
+  const [serialPortsRefreshError, setSerialPortsRefreshError] = useState("");
   const writeGate = useRef(new KeyedRequestGate<"write">());
+  const serialPortsRefreshGate = useRef(new KeyedRequestGate<"ports">());
   const stagedSecretRefs = useRef(new Set<string>());
   const connectionDrafts = useRef(new Map<ProtocolTab, SessionProfile["connection"]>([
     [protocolFromKind(draft.kind), draft.connection],
@@ -136,6 +142,28 @@ export default function SessionSettingsDialog({
   const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft]);
   const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
+
+  const refreshSerialPorts = useCallback(async () => {
+    if (!onRefreshSerialPorts) {
+      setSerialPortsRefreshError("当前环境不支持读取设备串口列表");
+      return;
+    }
+    const token = serialPortsRefreshGate.current.begin("ports");
+    if (token === null) return;
+    setSerialPortsRefreshing(true);
+    setSerialPortsRefreshError("");
+    try {
+      await onRefreshSerialPorts();
+    } catch (error) {
+      if (serialPortsRefreshGate.current.isCurrent("ports", token)) {
+        setSerialPortsRefreshError(formatError(error));
+      }
+    } finally {
+      if (serialPortsRefreshGate.current.finish("ports", token)) {
+        setSerialPortsRefreshing(false);
+      }
+    }
+  }, [onRefreshSerialPorts]);
 
   useEffect(() => {
     if (!allowedSections.includes(activeSection)) {
@@ -164,7 +192,15 @@ export default function SessionSettingsDialog({
     return () => cancelAnimationFrame(frame);
   }, [activeProtocol, quickSurface]);
 
-  useEffect(() => () => writeGate.current.invalidateAll(), []);
+  useEffect(() => () => {
+    writeGate.current.invalidateAll();
+    serialPortsRefreshGate.current.invalidateAll();
+  }, []);
+
+  useEffect(() => {
+    if (activeProtocol !== "Serial" || !onRefreshSerialPorts) return;
+    void refreshSerialPorts();
+  }, [activeProtocol, onRefreshSerialPorts, refreshSerialPorts]);
 
   function beginWriteOperation() {
     const token = writeGate.current.begin("write");
@@ -263,6 +299,9 @@ export default function SessionSettingsDialog({
               draft={draft}
               issues={quickValidation.issues}
               serialPorts={serialPorts}
+              serialPortsRefreshing={serialPortsRefreshing}
+              serialPortsRefreshError={serialPortsRefreshError}
+              onRefreshSerialPorts={() => void refreshSerialPorts()}
               targetRef={quickTargetRef}
               onDraftChange={onDraftChange}
             />
@@ -298,6 +337,9 @@ export default function SessionSettingsDialog({
               draft={draft}
               prepareProfile={prepareProfile}
               serialPorts={serialPorts}
+              serialPortsRefreshing={serialPortsRefreshing}
+              serialPortsRefreshError={serialPortsRefreshError}
+              onRefreshSerialPorts={() => void refreshSerialPorts()}
               onDraftChange={onDraftChange}
               proxyPasswordUpdate={proxyPasswordUpdate}
               onProxyPasswordUpdateChange={setProxyPasswordUpdate}
@@ -404,20 +446,23 @@ function QuickField({
   required = false,
   error,
   className = "",
+  group = false,
   children,
 }: {
   label: string;
   required?: boolean;
   error?: string;
   className?: string;
+  group?: boolean;
   children: ReactNode;
 }) {
+  const Field = group ? "div" : "label";
   return (
-    <label className={`session-quick-field ${error ? "invalid" : ""} ${className}`}>
+    <Field className={`session-quick-field ${error ? "invalid" : ""} ${className}`} role={group ? "group" : undefined} aria-label={group ? label : undefined}>
       <span className="session-quick-field-label">{label}{required ? <sup aria-hidden="true">*</sup> : null}</span>
       {children}
       <span className="session-quick-field-error" aria-hidden={!error}>{error ?? ""}</span>
-    </label>
+    </Field>
   );
 }
 
@@ -437,6 +482,9 @@ function QuickSessionFields({
   draft,
   issues,
   serialPorts,
+  serialPortsRefreshing,
+  serialPortsRefreshError,
+  onRefreshSerialPorts,
   targetRef,
   onDraftChange,
 }: {
@@ -444,6 +492,9 @@ function QuickSessionFields({
   draft: SessionProfile;
   issues: QuickConnectIssue[];
   serialPorts: string[];
+  serialPortsRefreshing: boolean;
+  serialPortsRefreshError: string;
+  onRefreshSerialPorts: () => void;
   targetRef: MutableRefObject<HTMLInputElement | HTMLSelectElement | null>;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
@@ -482,6 +533,9 @@ function QuickSessionFields({
         <QuickSerialFields
           draft={draft}
           serialPorts={serialPorts}
+          serialPortsRefreshing={serialPortsRefreshing}
+          serialPortsRefreshError={serialPortsRefreshError}
+          onRefreshSerialPorts={onRefreshSerialPorts}
           targetError={errorFor("target")}
           baudRateError={errorFor("baudRate")}
           setTargetRef={setTargetRef}
@@ -627,6 +681,9 @@ function QuickTcpFields({
 function QuickSerialFields({
   draft,
   serialPorts,
+  serialPortsRefreshing,
+  serialPortsRefreshError,
+  onRefreshSerialPorts,
   targetError,
   baudRateError,
   setTargetRef,
@@ -634,6 +691,9 @@ function QuickSerialFields({
 }: {
   draft: SessionProfile;
   serialPorts: string[];
+  serialPortsRefreshing: boolean;
+  serialPortsRefreshError: string;
+  onRefreshSerialPorts: () => void;
   targetError?: string;
   baudRateError?: string;
   setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
@@ -648,21 +708,34 @@ function QuickSerialFields({
 
   return (
     <div className="session-quick-grid serial-quick-grid">
-      <QuickField label="串口" required error={targetError} className="serial-port-field">
-        <select
-          ref={setTargetRef}
-          aria-label="串口"
-          aria-invalid={Boolean(targetError)}
-          value={serial.port}
-          onChange={(event) => update({ port: event.target.value })}
-        >
-          <option value="">选择串口</option>
-          {serialPortOptions(serial.port, serialPorts).map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
+      <QuickField label="串口" required error={targetError} className="serial-port-field" group>
+        <div className="serial-port-picker">
+          <select
+            ref={setTargetRef}
+            aria-label="串口"
+            aria-invalid={Boolean(targetError)}
+            value={serial.port}
+            onChange={(event) => update({ port: event.target.value })}
+          >
+            <option value="">{serialPorts.length ? "选择串口" : "未发现串口"}</option>
+            {serialPortOptions(serial.port, serialPorts).map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="serial-port-refresh-button"
+            title="刷新设备串口列表"
+            aria-label="刷新串口列表"
+            onClick={onRefreshSerialPorts}
+            disabled={serialPortsRefreshing}
+          >
+            <RefreshCw size={14} className={serialPortsRefreshing ? "spin" : ""} />
+          </button>
+        </div>
       </QuickField>
-      <QuickField label="波特率" required error={baudRateError}>
+      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{serialPortsRefreshError}</div> : null}
+      <QuickField label="波特率" required error={baudRateError} className="serial-baud-rate-field">
         <input
           type="number"
           inputMode="numeric"
@@ -787,6 +860,9 @@ function SessionSettingsContent({
   draft,
   prepareProfile,
   serialPorts,
+  serialPortsRefreshing,
+  serialPortsRefreshError,
+  onRefreshSerialPorts,
   onDraftChange,
   proxyPasswordUpdate,
   onProxyPasswordUpdateChange,
@@ -803,6 +879,9 @@ function SessionSettingsContent({
   draft: SessionProfile;
   prepareProfile: (profile: SessionProfile) => SessionProfile;
   serialPorts: string[];
+  serialPortsRefreshing: boolean;
+  serialPortsRefreshError: string;
+  onRefreshSerialPorts: () => void;
   onDraftChange: (draft: SessionProfile) => void;
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
@@ -937,7 +1016,7 @@ function SessionSettingsContent({
   }
 
   if (activeProtocol === "Serial" && activeSection === "串口") {
-    return <SerialAdvancedFields draft={draft} serialPorts={serialPorts} onDraftChange={onDraftChange} />;
+    return <SerialAdvancedFields draft={draft} serialPorts={serialPorts} serialPortsRefreshing={serialPortsRefreshing} serialPortsRefreshError={serialPortsRefreshError} onRefreshSerialPorts={onRefreshSerialPorts} onDraftChange={onDraftChange} />;
   }
 
   return null;
@@ -1973,10 +2052,16 @@ function TcpLikeAdvancedFields({
 function SerialAdvancedFields({
   draft,
   serialPorts,
+  serialPortsRefreshing,
+  serialPortsRefreshError,
+  onRefreshSerialPorts,
   onDraftChange,
 }: {
   draft: SessionProfile;
   serialPorts: string[];
+  serialPortsRefreshing: boolean;
+  serialPortsRefreshError: string;
+  onRefreshSerialPorts: () => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
   const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
@@ -1985,13 +2070,26 @@ function SerialAdvancedFields({
   return (
     <>
       <DialogField label="串口:(S)">
-        <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
-          <option value="">选择串口</option>
-          {serialPortOptions(serial.port, serialPorts).map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
+        <div className="serial-port-picker">
+          <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
+            <option value="">{serialPorts.length ? "选择串口" : "未发现串口"}</option>
+            {serialPortOptions(serial.port, serialPorts).map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="serial-port-refresh-button"
+            title="刷新设备串口列表"
+            aria-label="刷新串口列表"
+            onClick={onRefreshSerialPorts}
+            disabled={serialPortsRefreshing}
+          >
+            <RefreshCw size={14} className={serialPortsRefreshing ? "spin" : ""} />
+          </button>
+        </div>
       </DialogField>
+      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{serialPortsRefreshError}</div> : null}
       <DialogField label="波特率:(B)">
         <input
           type="number"

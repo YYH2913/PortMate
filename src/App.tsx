@@ -291,6 +291,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [portableVaultStatus, setPortableVaultStatus] = useState<PortableVaultStatus | null>(null);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
+  const serialPortsRef = useRef(serialPorts);
+  serialPortsRef.current = serialPorts;
   const [serialControlBusyIds, setSerialControlBusyIds] = useState<Set<string>>(() => new Set());
   const [profileShortcutBusyIds, setProfileShortcutBusyIds] = useState<Set<string>>(() => new Set());
   const [terminalExportBusyViewIds, setTerminalExportBusyViewIds] = useState<Set<string>>(() => new Set());
@@ -441,6 +443,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const profileDeleteHandlerRef = useRef<(payload: DeleteSessionProfileResponse | string) => void>(() => {});
   const screenLockRef = useRef<ScreenLockState>(screenLock);
   const restoredScreenLockPreparedRef = useRef(false);
+
+  const refreshSerialPorts = useCallback(async (): Promise<string[]> => {
+    if (!isBackendAvailable()) return serialPortsRef.current;
+    const gate = startupHydrationGateRef.current;
+    const token = gate.replace("serial-ports");
+    try {
+      const next = await invokeBackend<string[]>("list_serial_ports", {});
+      if (gate.isCurrent("serial-ports", token)) {
+        setSerialPorts(next);
+      }
+      return next;
+    } finally {
+      gate.finish("serial-ports", token);
+    }
+  }, []);
 
   const active = sessions.find((session) => session.profile.id === activeId);
   const activeMcpApproval = mcpApprovals[0];
@@ -4739,6 +4756,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             mode={sessionSettingsMode}
             prepareProfile={prepareSessionProfile}
             serialPorts={serialPorts}
+            onRefreshSerialPorts={refreshSerialPorts}
             initialSection={sessionSettingsSection}
             onDraftChange={setDraft}
             onSave={saveDraft}

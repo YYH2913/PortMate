@@ -5451,8 +5451,56 @@ fieldset label {
 }
 
 .serial-quick-grid .serial-port-field,
-.serial-quick-grid > :nth-child(2) {
+.serial-quick-grid .serial-baud-rate-field {
   grid-column: span 2;
+}
+
+.serial-port-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.serial-port-picker > select {
+  min-width: 0;
+}
+
+.serial-port-refresh-button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.serial-port-refresh-button:hover:not(:disabled),
+.serial-port-refresh-button:focus-visible {
+  outline: 0;
+  border-color: var(--cyan);
+  background: var(--control-hover);
+  color: var(--cyan);
+}
+
+.serial-port-refresh-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.serial-port-refresh-status {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--red);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shell-quick-grid {
@@ -5683,6 +5731,10 @@ fieldset label {
 
 .dialog-field input,
 .dialog-field select {
+  height: 35px;
+}
+
+.dialog-field .serial-port-refresh-button {
   height: 35px;
 }
 
@@ -9032,7 +9084,7 @@ fieldset label {
   }
 
   .serial-quick-grid .serial-port-field,
-  .serial-quick-grid > :nth-child(2) {
+  .serial-quick-grid .serial-baud-rate-field {
     grid-column: 1 / -1;
   }
 
