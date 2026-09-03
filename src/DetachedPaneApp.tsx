@@ -261,13 +261,14 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     sessionId: string,
     text: string,
     origin: SyncInputOrigin,
+    options?: TerminalInputSendOptions,
   ): void | Promise<void> {
     if (captureTerminalInputEpoch() === null) return;
-    if (origin === "interactive") {
-      directInputPumpRef.current?.enqueueFast(sessionId, text, origin);
+    if (origin === "interactive" && !options?.awaitWrite) {
+      directInputPumpRef.current?.enqueueFast(sessionId, text, origin, options);
       return;
     }
-    return directInputPumpRef.current?.enqueue(sessionId, text, origin);
+    return directInputPumpRef.current?.enqueue(sessionId, text, origin, options);
   }
 
   function rememberDetachedCommand(sessionId: string, command: string) {
@@ -326,6 +327,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           text,
           interactive: origin === "interactive",
           queued: true,
+          ...(options?.sensitive ? { sensitive: true } : {}),
+          ...(options?.awaitWrite ? { awaitWrite: true } : {}),
         });
       }
       if (terminalInputIsCurrent(inputEpoch) && errorRef.current) setError("");

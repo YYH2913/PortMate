@@ -131,8 +131,13 @@ const TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS = 256;
 // stall the terminal write queue for hundreds of milliseconds.
 const TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS = 32;
 const TERMINAL_PRIVATE_INPUT_TIMEOUT_MS = 60_000;
+// Keep an Enter-triggered output-follow transaction alive long enough for a
+// slow serial/SSH prompt and the corresponding event reconciliation to land.
+// A wheel event releases it immediately so manual scrolling always wins.
+const TERMINAL_OUTPUT_FOLLOW_WINDOW_MS = 1_500;
 const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
 const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
+const TERMINAL_SENSITIVE_INPUT_PATTERN = /\b(?:password|passphrase|secret|token|pin|otp|verification\s+code)\b[^\r\n]{0,80}[:?]\s*\S*$/i;
 const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
@@ -1134,6 +1139,8 @@ function TerminalCanvas({
     let terminalDisposed = false;
     let timestampFrame: number | null = null;
     let resizeReportTimer: number | null = null;
+    let enterScrollFrame: number | null = null;
+    let outputFollowDeadline = 0;
     const timestampMarkerLimit = Math.min(
       MAX_TERMINAL_TIMESTAMPS,
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
@@ -1155,6 +1162,55 @@ function TerminalCanvas({
     let pendingRestoredTimestamps = normalizeTerminalTimestamps(cachedState?.timestamps);
     let drainEventWrites = () => {};
     let scheduleSemanticHighlighting = () => {};
+    let sensitiveProbeRow = -1;
+    let sensitiveProbeLine = "";
+    let sensitiveProbeResult = false;
+
+    const detectSensitiveInput = () => {
+      if (oneKeyPromptStateRef.current.prompt) return true;
+      const buffer = term.buffer.active;
+      const row = buffer.type === "normal" ? buffer.baseY + buffer.cursorY : buffer.cursorY;
+      const line = buffer.getLine(row)?.translateToString(true) ?? "";
+      if (row === sensitiveProbeRow && line === sensitiveProbeLine) return sensitiveProbeResult;
+      sensitiveProbeRow = row;
+      sensitiveProbeLine = line;
+      sensitiveProbeResult = terminalInputLineLooksSensitive(line);
+      return sensitiveProbeResult;
+    };
+
+    const followTerminalOutput = () => {
+      if (terminalDisposed || termRef.current !== term) return;
+      const buffer = term.buffer.active;
+      if (buffer.viewportY !== buffer.baseY) {
+        term.scrollToBottom();
+        scheduleTimestampGutter();
+      }
+      recordTerminalViewport();
+    };
+
+    const releaseOutputFollow = () => {
+      outputFollowDeadline = 0;
+      if (enterScrollFrame !== null) {
+        window.cancelAnimationFrame(enterScrollFrame);
+        enterScrollFrame = null;
+      }
+    };
+
+    const keepTerminalAtOutput = () => {
+      outputFollowDeadline = performance.now() + TERMINAL_OUTPUT_FOLLOW_WINDOW_MS;
+      followTerminalOutput();
+      // React completion state and xterm parser/layout work can both run after
+      // the key event. Re-apply the explicit Enter boundary after those jobs,
+      // without taking control away from a later user scroll.
+      queueMicrotask(() => {
+        if (outputFollowDeadline > performance.now()) followTerminalOutput();
+      });
+      if (enterScrollFrame !== null) return;
+      enterScrollFrame = window.requestAnimationFrame(() => {
+        enterScrollFrame = null;
+        if (outputFollowDeadline > performance.now()) followTerminalOutput();
+      });
+    };
 
     const compactTimestampMarkers = () => {
       const retained: TerminalTimestampMarker[] = [];
@@ -1855,10 +1911,11 @@ function TerminalCanvas({
     const semanticWriteDisposable = term.onWriteParsed(() => {
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
-      commitDetectedPrivateInput(terminalInputLooksSensitive(
-        term,
-        oneKeyPromptStateRef.current.prompt,
-      ));
+      commitDetectedPrivateInput(detectSensitiveInput());
+      // A prompt can arrive after the Enter key's frame (especially over a
+      // serial line). Keep the active output visible while that response is
+      // parsed instead of allowing xterm to restore the old viewport.
+      if (outputFollowDeadline > performance.now()) followTerminalOutput();
     });
     const semanticScrollDisposable = term.onScroll(() => {
       recordTerminalViewport();
@@ -1879,6 +1936,19 @@ function TerminalCanvas({
     });
     scheduleSemanticHighlighting();
     scheduleTimestampGutter();
+    const guardTerminalEnter = (event: KeyboardEvent) => {
+      if (!focusedRef.current
+        || keyModeRef.current !== "remote"
+        || event.key !== "Enter"
+        || event.isComposing) return;
+      // XTerm still receives the event and emits CR; this only removes the
+      // browser's fallback textarea/page scroll behavior.
+      event.preventDefault();
+      keepTerminalAtOutput();
+    };
+    const releaseFollowOnWheel = () => releaseOutputFollow();
+    host.addEventListener("keydown", guardTerminalEnter, true);
+    host.addEventListener("wheel", releaseFollowOnWheel, true);
     const dispatchBinaryInput = (text: string) => {
       if (!focusedRef.current || keyModeRef.current !== "remote" || !text) return;
       const mouseReport = isTerminalMouseReport(text);
@@ -1904,12 +1974,10 @@ function TerminalCanvas({
         return;
       }
       lastInteractiveInputAt = performance.now();
-      const detectedSensitive = terminalInputLooksSensitive(
-        term,
-        oneKeyPromptStateRef.current.prompt,
-      );
+      const detectedSensitive = detectSensitiveInput();
       commitDetectedPrivateInput(detectedSensitive);
       const sensitive = manualPrivateInputRef.current || detectedSensitive;
+      const isEnter = /\r|\n/.test(text);
       const inputOrigin: SyncInputOrigin = /[\u0000-\u001f\u007f]/.test(text)
         ? "atomic"
         : "interactive";
@@ -1921,18 +1989,17 @@ function TerminalCanvas({
         inputOrigin,
         sensitive ? { sensitive: true } : undefined,
       );
-      if (/\r|\n/.test(text)) term.scrollToBottom();
       const submittedCommands = updateCompletionInput(text);
       if (term.buffer.active.type === "normal"
         && submittedCommands.length
-        && !sensitive
-        && !terminalInputLooksSensitive(term, oneKeyPromptStateRef.current.prompt)) {
+        && !sensitive) {
         for (const command of submittedCommands) {
           onCommandSubmitRef.current?.(active.profile.id, command);
         }
       }
       if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
       dismissOneKeyPrompt();
+      if (isEnter) keepTerminalAtOutput();
     });
     const binaryInputDisposable = term.onBinary(dispatchBinaryInput);
     const selectionDisposable = term.onSelectionChange(() => {
@@ -2014,6 +2081,8 @@ function TerminalCanvas({
       host.removeEventListener("paste", pauseCompletionOnPaste, true);
       host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
+      host.removeEventListener("keydown", guardTerminalEnter, true);
+      host.removeEventListener("wheel", releaseFollowOnWheel, true);
       cancelScheduledCompletionInput();
       if (resizeReportTimer !== null) {
         window.clearTimeout(resizeReportTimer);
@@ -2028,6 +2097,8 @@ function TerminalCanvas({
       if (semanticTimer !== null) window.clearTimeout(semanticTimer);
       if (completionAnchorFrame !== null) window.cancelAnimationFrame(completionAnchorFrame);
       if (timestampFrame !== null) window.cancelAnimationFrame(timestampFrame);
+      if (enterScrollFrame !== null) window.cancelAnimationFrame(enterScrollFrame);
+      outputFollowDeadline = 0;
       clearSemanticHighlighting();
       if (refreshSemanticHighlightingRef.current === scheduleSemanticHighlighting) {
         refreshSemanticHighlightingRef.current = () => {};
@@ -3078,7 +3149,11 @@ function terminalInputLooksSensitive(
   const buffer = term.buffer.active;
   const row = buffer.type === "normal" ? buffer.baseY + buffer.cursorY : buffer.cursorY;
   const line = buffer.getLine(row)?.translateToString(true) ?? "";
-  return /\b(?:password|passphrase|secret|token|pin|otp|verification\s+code)\b[^\r\n]{0,80}[:?]\s*\S*$/i.test(line);
+  return terminalInputLineLooksSensitive(line);
+}
+
+function terminalInputLineLooksSensitive(line: string): boolean {
+  return TERMINAL_SENSITIVE_INPUT_PATTERN.test(line);
 }
 
 function concatTerminalWriteBytes(frames: readonly Uint8Array[]): Uint8Array {

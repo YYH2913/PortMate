@@ -82,7 +82,7 @@ import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
 import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
-import type { SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
+import type { SyncInputCandidate, SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { TerminalInputPumpRegistry } from "./terminal-input-pump";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
 import { requestTerminalFreeInput } from "./terminal-free-input";
@@ -282,6 +282,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [sessions, setSessionsState] = useState<SessionSummary[]>(emptySessions);
   const sessionsRef = useRef<SessionSummary[]>(sessions);
   const [logs, setLogs] = useState<Record<string, SessionEvent[]>>(emptyLogs);
+  const pendingSessionEventUpdatesRef = useRef(new Map<string, SessionEvent>());
+  const sessionEventUpdateFrameRef = useRef<number | null>(null);
   const [transfers, setTransfers] = useState<TransferTask[]>(emptyTransfers);
   const [dismissedTransferIds, setDismissedTransferIds] = useState<ReadonlySet<string>>(() => new Set());
   const [audit, setAudit] = useState<AuditRecord[]>(emptyAudit);
@@ -403,6 +405,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const syncInputRef = useRef(false);
+  const syncInputSettingsRef = useRef(syncInputSettings);
+  const syncInputCandidatesRef = useRef<SyncInputCandidate[]>([]);
   if (!directInputPumpRef.current) {
     directInputPumpRef.current = new TerminalInputPumpRegistry((targetSessionId, text, origin, options) => {
       const inputEpoch = captureTerminalInputEpoch(targetSessionId);
@@ -654,6 +658,48 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function updateTransfers(update: SetStateAction<TransferTask[]>) {
     startupHydrationGateRef.current.invalidate("transfers");
     setTransfers(update);
+  }
+
+  function flushSessionEventUpdates() {
+    sessionEventUpdateFrameRef.current = null;
+    const pending = [...pendingSessionEventUpdatesRef.current.values()];
+    pendingSessionEventUpdatesRef.current.clear();
+    if (!pending.length) return;
+    // Metadata hydration is secondary to the live xterm path. Keep the
+    // replacement work interruptible so keyboard input remains responsive
+    // while a busy transport finishes its log shards.
+    startTransition(() => setLogs((current) => {
+      let next = current;
+      const changedSessions = new Set<string>();
+      for (const updated of pending) {
+        const existing = current[updated.sessionId];
+        if (!existing) continue;
+        const index = existing.findIndex((candidate) => candidate.id === updated.id);
+        if (index < 0 || existing[index] === updated) continue;
+        if (next === current) next = { ...current };
+        const sessionEvents = next[updated.sessionId] === existing
+          ? existing.slice()
+          : [...(next[updated.sessionId] ?? existing)];
+        sessionEvents[index] = updated;
+        next[updated.sessionId] = sessionEvents;
+        changedSessions.add(updated.sessionId);
+      }
+      for (const sessionId of changedSessions) {
+        logSignatureRef.current[sessionId] = logSignature(next[sessionId] ?? []);
+      }
+      return next;
+    }));
+  }
+
+  function queueSessionEventUpdate(updated: SessionEvent) {
+    const key = `${updated.sessionId}\u0000${updated.id}`;
+    pendingSessionEventUpdatesRef.current.set(key, updated);
+    if (sessionEventUpdateFrameRef.current !== null) return;
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      sessionEventUpdateFrameRef.current = window.requestAnimationFrame(flushSessionEventUpdates);
+    } else {
+      sessionEventUpdateFrameRef.current = window.setTimeout(flushSessionEventUpdates, 0);
+    }
   }
 
   function applyCommandHistorySnapshot(
@@ -1362,17 +1408,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const unlisten = new Set<() => void>();
     void listen<SessionEvent>("portmate-session-event-updated", (event) => {
       if (disposed) return;
-      const updated = event.payload;
-      setLogs((current) => {
-        const existing = current[updated.sessionId];
-        if (!existing) return current;
-        const index = existing.findIndex((candidate) => candidate.id === updated.id);
-        if (index < 0) return current;
-        const next = existing.slice();
-        next[index] = updated;
-        logSignatureRef.current[updated.sessionId] = logSignature(next);
-        return { ...current, [updated.sessionId]: next };
-      });
+      queueSessionEventUpdate(event.payload);
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
       else unlisten.add(nextUnlisten);
@@ -1391,6 +1427,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }).catch(() => {});
     return () => {
       disposed = true;
+      const frame = sessionEventUpdateFrameRef.current;
+      if (frame !== null) {
+        if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(frame);
+        } else {
+          window.clearTimeout(frame);
+        }
+        sessionEventUpdateFrameRef.current = null;
+      }
+      pendingSessionEventUpdatesRef.current.clear();
       for (const stopListening of unlisten) stopListening();
       unlisten.clear();
     };
@@ -1841,15 +1887,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       .filter((session): session is SessionSummary => Boolean(session));
   }, [activeId, sessions, workspaceRoot]);
 
-  const syncInputTargetCount = useMemo(() => resolveSyncInputTargets(
-    activeId,
+  const syncInputCandidates = useMemo<SyncInputCandidate[]>(() => (
     paneSessions.map((session) => ({
       id: session.profile.id,
       kind: session.profile.kind,
       connected: session.runtime.status === "connected",
-    })),
+    }))
+  ), [paneSessions]);
+  syncInputSettingsRef.current = syncInputSettings;
+  syncInputCandidatesRef.current = syncInputCandidates;
+
+  const syncInputTargetCount = useMemo(() => resolveSyncInputTargets(
+    activeId,
+    syncInputCandidates,
     syncInputSettings,
-  ).length, [activeId, paneSessions, syncInputSettings]);
+  ).length, [activeId, syncInputCandidates, syncInputSettings]);
 
   function handleMenuAction(item: MenuItem | "会话搜索") {
     const renderedActiveId = active?.profile.id ?? "";
@@ -3853,25 +3905,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!broadcastEnabled) {
       return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
     }
-    const settings = syncInputSettings;
-    const paneSessionIds = workspacePaneLeaves(workspaceRootRef.current)
-      .map((pane) => workspacePaneActiveView(pane).sessionId);
-    const currentPaneSessions = (paneSessionIds.length ? paneSessionIds : [activeIdRef.current])
-      .map((id) => currentSessions.find((session) => session.profile.id === id))
-      .filter((session): session is SessionSummary => Boolean(session));
-    const candidates = currentPaneSessions.map((session) => ({
-      id: session.profile.id,
-      kind: session.profile.kind,
-      connected: session.runtime.status === "connected",
-    }));
+    const settings = syncInputSettingsRef.current;
+    let candidates = syncInputCandidatesRef.current;
     if (!candidates.some((candidate) => candidate.id === sessionId)) {
       const source = currentSessions.find((session) => session.profile.id === sessionId);
       if (source) {
-        candidates.unshift({
+        candidates = [{
           id: source.profile.id,
           kind: source.profile.kind,
           connected: source.runtime.status === "connected",
-        });
+        }, ...candidates];
       }
     }
     return syncInputDispatcherRef.current.enqueue({
@@ -4097,7 +4140,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       normalizedSessionId,
     );
     commandHistoryEntriesRef.current = normalized;
-    setCommandHistoryEntries(normalized);
+    // History is a presentation aid; committing it at transition priority
+    // keeps Enter and the terminal's next prompt ahead of list reconciliation.
+    startTransition(() => setCommandHistoryEntries(normalized));
     setCommandHistoryReady(true);
     if (!isBackendAvailable()) return;
     pendingCommandHistoryRef.current = queuePendingCommandHistory(

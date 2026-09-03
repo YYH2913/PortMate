@@ -27,10 +27,11 @@ type PendingTerminalInput = {
 };
 
 // Keep one in-flight request so lifecycle resets can fence every request that
-// has not reached the native queue yet. A tiny coalescing window removes the
-// per-key IPC pattern without adding visible latency to terminal input.
+// has not reached the native queue yet. A 1ms adaptive window removes the
+// per-key IPC pattern without adding a visible delay to terminal input.
 const MAX_FAST_IN_FLIGHT = 1;
-const FAST_INPUT_BATCH_DELAY_MS = 4;
+const FAST_INITIAL_BATCH_DELAY_MS = 1;
+const FAST_FOLLOW_UP_DELAY_MS = 1;
 
 /**
  * Starts the first input immediately, then coalesces interactive input while
@@ -40,6 +41,8 @@ export class TerminalInputPump {
   private readonly pending: PendingTerminalInput[] = [];
   private active = false;
   private fastInFlightCount = 0;
+  private fastFlushQueued = false;
+  private fastFlushGeneration = 0;
   private fastFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly send: TerminalInputSender) {}
@@ -103,7 +106,7 @@ export class TerminalInputPump {
     } else {
       this.pending.push({ sessionId, text, origin, options, waiters: [] });
     }
-    this.scheduleFastDrain();
+    this.scheduleFastDrain(FAST_INITIAL_BATCH_DELAY_MS);
   }
 
   private launchFast(item: PendingTerminalInput): void {
@@ -122,7 +125,10 @@ export class TerminalInputPump {
           const next = this.pending[0];
           const hasAtomicBoundary = this.pending.some((item) => item.origin !== "interactive");
           if (next?.origin === "interactive" && next.waiters.length === 0 && !hasAtomicBoundary) {
-            this.scheduleFastDrain();
+            // A slow IPC response is not a reason to issue one request per
+            // key. Give the next event-loop slice a chance to append to the
+            // queued payload before crossing another native boundary.
+            this.scheduleFastDrain(FAST_FOLLOW_UP_DELAY_MS);
           }
           this.drain();
         }
@@ -143,25 +149,37 @@ export class TerminalInputPump {
     this.pending.length = 0;
   }
 
-  private scheduleFastDrain(): void {
-    if (this.fastFlushTimer !== null) return;
-    this.fastFlushTimer = setTimeout(() => {
+  private scheduleFastDrain(delayMs = 0): void {
+    if (this.fastFlushQueued) return;
+    this.fastFlushQueued = true;
+    const generation = ++this.fastFlushGeneration;
+    // Run after the current XTerm callback so a burst emitted in one browser
+    // turn crosses the IPC boundary as one request. The short timer also
+    // catches adjacent keyboard tasks while keeping isolated keypresses fast.
+    const flush = () => {
+      if (generation !== this.fastFlushGeneration) return;
       this.fastFlushTimer = null;
+      this.fastFlushQueued = false;
       this.drain();
-    }, FAST_INPUT_BATCH_DELAY_MS);
+    };
+    if (delayMs > 0) this.fastFlushTimer = setTimeout(flush, delayMs);
+    else queueMicrotask(flush);
   }
 
   private cancelFastDrain(): void {
-    if (this.fastFlushTimer === null) return;
-    clearTimeout(this.fastFlushTimer);
-    this.fastFlushTimer = null;
+    this.fastFlushGeneration += 1;
+    if (this.fastFlushTimer !== null) {
+      clearTimeout(this.fastFlushTimer);
+      this.fastFlushTimer = null;
+    }
+    this.fastFlushQueued = false;
   }
 
   private drain(): void {
     if (this.active) return;
-    // Let a short printable burst accumulate before crossing the IPC boundary.
-    // Atomic enqueue() cancels this timer and calls drain() directly.
-    if (this.fastFlushTimer !== null) return;
+    // Let the current follow-up burst accumulate before crossing another IPC
+    // boundary. Atomic enqueue() cancels the microtask and calls drain() directly.
+    if (this.fastFlushQueued) return;
     // Fill the bounded fast window before waiting for any IPC response. This
     // path is only used for fire-and-forget printable input; a pending atomic
     // item stops the loop so it cannot be overtaken by later keystrokes.
