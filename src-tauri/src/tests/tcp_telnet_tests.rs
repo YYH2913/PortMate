@@ -1,4 +1,5 @@
 use super::*;
+use crate::session_terminal::terminate_command_for_protocol;
 
 #[test]
 fn telnet_negotiator_filters_iac_and_replies() {

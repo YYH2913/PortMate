@@ -59,8 +59,7 @@ use session_profile_delete::delete_session_profile_inner;
 #[cfg(test)]
 use session_terminal::{resize_session_inner, resize_session_profile_in_store};
 use session_terminal::{
-    terminal_key_sequence_for_protocol, terminate_command_for_protocol,
-    terminate_command_for_session,
+    terminal_key_sequence_for_protocol, terminate_command_for_session,
 };
 use state::*;
 use terminal_byte_events::publish_terminal_live_event;
