@@ -264,10 +264,7 @@ async fn execute_ipc_request_inner(
                 ensure_shell_profile(&state.store, &session_id)?;
             }
             let command = ipc_string_arg(&request.args, "command")?.to_string();
-            let text = terminate_command_for_protocol(
-                command,
-                is_telnet_session(&state.store, &session_id)?,
-            );
+            let text = terminate_command_for_session(command, &state.store, &session_id)?;
             let actor = mcp_audit_actor(&request.client_id);
             let validation = mcp_commit_validation(
                 &state,

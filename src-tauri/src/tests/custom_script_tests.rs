@@ -3,6 +3,7 @@ use crate::custom_script_commands::{
     delete_custom_script_from_store, normalize_custom_script_request, run_custom_script_inner,
     upsert_custom_script_in_store,
 };
+use crate::session_terminal::terminate_command_for_session;
 
 fn save_request(session_id: &str) -> SaveCustomScriptRequest {
     SaveCustomScriptRequest {
@@ -78,6 +79,52 @@ fn custom_script_mutations_normalize_and_enforce_optimistic_concurrency() {
     )
     .unwrap();
     assert!(store.custom_scripts.is_empty());
+}
+
+#[test]
+fn custom_script_commands_use_serial_carriage_returns_as_line_boundaries() {
+    let profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "COM7".to_string(),
+        baud_rate: 115_200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1_000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    let session_id = profile.id.clone();
+    let mut store = SessionStore::default();
+    store.upsert_profile(profile);
+    let store = Arc::new(Mutex::new(store));
+
+    assert_eq!(
+        terminate_command_for_session("first\nsecond".to_string(), &store, &session_id).unwrap(),
+        "first\rsecond\r"
+    );
+    assert_eq!(
+        terminate_command_for_session("first\r\nsecond\rthird\n".to_string(), &store, &session_id)
+            .unwrap(),
+        "first\rsecond\rthird\r"
+    );
+}
+
+#[test]
+fn custom_script_commands_preserve_non_serial_line_ending_rules() {
+    let profile = test_shell_profile();
+    let session_id = profile.id.clone();
+    let mut store = SessionStore::default();
+    store.upsert_profile(profile);
+    let store = Arc::new(Mutex::new(store));
+
+    assert_eq!(
+        terminate_command_for_session("first\nsecond".to_string(), &store, &session_id).unwrap(),
+        "first\nsecond\n"
+    );
 }
 
 #[test]

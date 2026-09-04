@@ -178,10 +178,7 @@ pub(super) async fn run_custom_script_inner(
             "custom script changed in another window; refresh and try again".to_string()
         });
     }
-    let text = terminate_command_for_protocol(
-        script.content,
-        is_telnet_session(&state.store, &request.session_id)?,
-    );
+    let text = terminate_command_for_session(script.content, &state.store, &request.session_id)?;
     run_command_under_outbound_lane_with_annotations_and_display_text_for_runtime(
         &io,
         &request.session_id,

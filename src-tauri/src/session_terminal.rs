@@ -82,6 +82,43 @@ pub(super) fn terminate_command_for_protocol(mut command: String, is_telnet: boo
     command
 }
 
+/// Add the line ending that the active session actually consumes.
+///
+/// Serial consoles commonly use carriage return as their execute key while
+/// the editor stores scripts with normalized LF line endings.  Keeping the
+/// conversion here means every command-like entry point (desktop, MCP and
+/// saved scripts) sends the same bytes for a given session type.
+pub(super) fn terminate_command_for_session(
+    command: String,
+    store: &Arc<Mutex<SessionStore>>,
+    session_id: &str,
+) -> Result<String, String> {
+    let (is_serial, is_telnet) = {
+        let store = store.lock().map_err(|error| error.to_string())?;
+        let profile = store
+            .profile(session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        (
+            matches!(&profile.connection, ConnectionConfig::Serial(_)),
+            matches!(&profile.connection, ConnectionConfig::Telnet(_)),
+        )
+    };
+
+    if is_serial {
+        // Scripts are normalized to LF when saved. Normalize all possible
+        // input forms once more at the transport boundary, then emit CR for
+        // every line so multi-line scripts execute one command per line.
+        let normalized = command.replace("\r\n", "\n").replace('\r', "\n");
+        let mut wire = normalized.replace('\n', "\r");
+        if !wire.ends_with('\r') {
+            wire.push('\r');
+        }
+        Ok(wire)
+    } else {
+        Ok(terminate_command_for_protocol(command, is_telnet))
+    }
+}
+
 pub(super) async fn resize_session_inner(
     state: &AppState,
     session_id: String,
@@ -291,7 +328,7 @@ pub(crate) async fn run_command(
     command: String,
 ) -> Result<SessionEvent, String> {
     let io = state.inner().session_io();
-    let text = terminate_command_for_protocol(command, is_telnet_session(&io.store, &session_id)?);
+    let text = terminate_command_for_session(command, &io.store, &session_id)?;
     run_command_inner_with_context(io, session_id, text, "desktop-user", Some("run_command")).await
 }
 

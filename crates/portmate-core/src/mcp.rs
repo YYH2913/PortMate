@@ -198,7 +198,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "run_command",
             "Run Command",
-            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; UTF-8 commands are limited to 64 KiB, SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
+            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; UTF-8 commands are limited to 64 KiB, SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, Serial uses CR for every command line, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],

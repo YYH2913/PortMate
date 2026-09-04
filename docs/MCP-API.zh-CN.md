@@ -136,7 +136,7 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 | send_bytes | 写入 | write-input | 发送 Base64/Hex 原始字节 |
 | send_key | 写入 | write-input | 发送受限按键序列 |
 | serial_send_break | 写入 | write-input | 发送串口硬件 Break |
-| run_command | 写入 | write-input | 发送带协议换行的命令 |
+| run_command | 写入 | write-input | 发送带协议终止符的命令（Serial 使用 CR） |
 | run_local_command | 写入 | write-input | 在已有 Shell PTY 执行命令 |
 | list_custom_scripts | 只读 | read-scripts | 列出脚本摘要 |
 | run_custom_script | 写入 | run-scripts | 执行已保存脚本 |
@@ -225,7 +225,8 @@ home、end、page-up、page-down、insert、f1-f12、space 和受限 ctrl+字母
 
     { "sessionId": "edge-router", "command": "show version" }
 
-run_command 根据会话类型发送到 SSH/Tmux/Shell/Telnet/TCP，并追加协议终止符。
+run_command 根据会话类型发送到 SSH/Tmux/Shell/Serial/Telnet/TCP，并追加协议终止符；
+Serial 会把每一行作为独立命令，以 `CR` 结束，因此保存的多行自定义脚本会逐行执行。
 run_local_command 只允许已有的 PortMate Shell Profile 和 live PTY；MCP 不能选择 shell
 程序、argv 或 cwd。
 
