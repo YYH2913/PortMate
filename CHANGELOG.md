@@ -6,10 +6,48 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-09-05
+
+### Added
+
+- Added regression coverage for shifted history windows, cached terminal restoration, partial
+  control sequences, screen redraws, and timestamp alignment.
+
 ### Changed
 
 - New Serial session setup now refreshes the host's available serial devices automatically when
   entering Serial and provides an explicit refresh control in both quick and advanced settings.
+- Batched interactive input through microtasks and limited timestamp lookups to the visible range,
+  reducing scheduling and scrollback work during rapid typing.
+- Moved periodic stream checkpoints, idle flushes, and final persistence off transport readers.
+  Live output can continue while the Store is busy.
+
+### Fixed
+
+- Prevented old polled logs and their cursor-control sequences from being replayed behind the live
+  prompt after the event-ID cache rolls over or a terminal view is restored.
+- Kept timestamps attached to redrawn content, preserved unchanged prompt times during typing,
+  and stopped displaying misleading time labels on empty rows.
+- Deferred terminal resizing until cached screen restoration finishes and kept Enter at the live
+  output position without taking over subsequent manual scrolling.
+- Converted saved serial script lines into actual device command submissions, including the final
+  line, instead of sending newline-free text that remains at the prompt.
+
+### Security
+
+- Retained session-generation checks, bounded queues, secret redaction, and ordered audit
+  persistence while optimizing the terminal data path. No MCP grant scope was broadened.
+
+### Migration
+
+- No Store schema migration is required from 0.1.7. Existing profiles, grants, scripts, logs,
+  encrypted credential references, and workspace settings load in place.
+
+### Known Limitations
+
+- Browser fixtures and loopback tests do not replace physical serial-device or native Windows and
+  macOS verification. Driver, network, and device echo latency can still affect interaction.
+- This source version does not imply that a new signed or native-tested binary has been published.
 
 ## [0.1.7] - 2026-09-02
 
