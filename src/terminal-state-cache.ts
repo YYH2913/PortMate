@@ -1,5 +1,5 @@
 import type { TerminalMouseEncoding } from "./terminal-mouse";
-import { normalizeTerminalTimestamps, resizeAlternateTerminalTimestamps } from "./terminal-timestamp-state";
+import { normalizeTerminalTimestamps, normalizeTerminalTimestampValue, resizeAlternateTerminalTimestamps } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry } from "./terminal-timestamp-state";
 
 export type SerializedTerminalState = {
@@ -7,6 +7,7 @@ export type SerializedTerminalState = {
   cols: number;
   rows: number;
   seenEventIds: string[];
+  replayTimestamp?: string;
   mouseEncoding?: TerminalMouseEncoding;
   timestamps?: TerminalTimestampEntry[];
   alternateTimestamps?: TerminalTimestampEntry[];
@@ -104,6 +105,7 @@ export class TerminalStateCache {
       cols: normalizeDimension(state.cols),
       rows,
       seenEventIds: state.seenEventIds.slice(-MAX_SERIALIZED_TERMINAL_EVENTS),
+      replayTimestamp: normalizeTerminalTimestampValue(state.replayTimestamp) ?? undefined,
       mouseEncoding: normalizeMouseEncoding(state.mouseEncoding),
       timestamps: normalizeTerminalTimestamps(state.timestamps),
       alternateTimestamps: alternateTimestamps.length ? alternateTimestamps : undefined,

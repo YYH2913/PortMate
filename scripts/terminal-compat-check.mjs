@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
+import { checkTerminalStreamRegressions } from "./terminal-stream-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -351,6 +352,7 @@ try {
       }));
     }
     window.__invokeCalls = [];
+    window.__terminalCompatLogs = initialEvents;
     window.__clipboardWrites = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
@@ -401,7 +403,11 @@ try {
             },
           }));
         }
-        if (command === "tail_log") return initialEvents[args.sessionId] ?? [];
+        if (command === "tail_log") {
+          const events = window.__terminalCompatLogs[args.sessionId] ?? [];
+          window.__terminalCompatTailId = events.at(-1)?.id;
+          return events;
+        }
         if (command === "list_host_keys") return { keys: [] };
         if ([
           "list_files",
@@ -1867,6 +1873,9 @@ try {
   )), `mobile pane bounds are invalid: ${JSON.stringify(mobileLayout)}`);
   assert(pageErrors.length === 0, `browser exceptions: ${JSON.stringify(pageErrors)}`);
 
+  const streamRegressions = await checkTerminalStreamRegressions(page, screenshotPrefix);
+  assert(pageErrors.length === 0, `browser exceptions after stream regressions: ${JSON.stringify(pageErrors)}`);
+
   console.log(JSON.stringify({
     initial,
     viewportResizeCalls: resized.calls,
@@ -1898,6 +1907,7 @@ try {
       splitUtf8Search,
     },
     terminalBytesListenerCount,
+    streamRegressions,
     semanticHighlighting: {
       initial: initialSemanticState,
       dark: semanticDark,
@@ -1952,6 +1962,7 @@ try {
     desktopLayout,
     mobileLayout,
     screenshots: [
+      `${screenshotPrefix}-stream-regressions.png`,
       `${screenshotPrefix}-completion-below.png`,
       `${screenshotPrefix}-normal-cursor.png`,
       `${screenshotPrefix}-trigger-link.png`,

@@ -36,6 +36,7 @@ afterEach(() => {
 describe("terminal byte event bridge", () => {
   it("delivers one canonical packet with metadata and bytes and replays it once", () => {
     const received: string[] = [];
+    const replayed: boolean[] = [];
     const packet = {
       event: {
         id: "event-canonical",
@@ -54,10 +55,14 @@ describe("terminal byte event bridge", () => {
     };
     expect(dispatchTerminalLiveEventForTests(packet)).toBe(true);
     expect(dispatchTerminalLiveEventForTests(packet)).toBe(false);
-    const unsubscribe = subscribeTerminalLiveEvents("session-a", (value) => {
+    const unsubscribe = subscribeTerminalLiveEvents("session-a", (value, replay) => {
       received.push(value.event.id + ":" + value.bytes.length);
+      replayed.push(Boolean(replay));
     });
     expect(received).toEqual(["event-canonical:8"]);
+    expect(replayed).toEqual([true]);
+    dispatchTerminalLiveEventForTests({ ...packet, event: { ...packet.event, id: "event-fresh" } });
+    expect(replayed).toEqual([true, false]);
     unsubscribe();
   });
 

@@ -15,8 +15,8 @@ export const TERMINAL_LIVE_EVENT = "portmate-terminal-live";
 const TERMINAL_BYTE_FRAME_BATCH_LIMIT = 256;
 const TERMINAL_BYTE_FRAME_FLUSH_MS = 16;
 const TERMINAL_BYTE_FRAME_MAX_BYTES = 64 * 1024;
-type TerminalByteEventSubscriber = (event: TerminalBytesEvent) => void;
-type TerminalLiveEventSubscriber = (event: TerminalLiveEvent) => void;
+type TerminalByteEventSubscriber = (event: TerminalBytesEvent, replay?: boolean) => void;
+type TerminalLiveEventSubscriber = (event: TerminalLiveEvent, replay?: boolean) => void;
 
 const pendingTerminalByteFrames: TerminalBytesEvent[] = [];
 const pendingTerminalByteFrameKeys = new Set<string>();
@@ -250,7 +250,7 @@ export function subscribeTerminalByteEvents(
     terminalByteEventSubscribers.set(sessionId, subscribers);
   }
   subscribers.add(subscriber);
-  for (const frame of terminalByteCacheSnapshot(sessionId).frames) subscriber(frame);
+  for (const frame of terminalByteCacheSnapshot(sessionId).frames) subscriber(frame, true);
 
   let disposed = false;
   return () => {
@@ -272,7 +272,7 @@ export function subscribeTerminalLiveEvents(
     terminalLiveEventSubscribers.set(sessionId, subscribers);
   }
   subscribers.add(subscriber);
-  for (const packet of terminalLiveEventCache.get(sessionId) ?? []) subscriber(packet);
+  for (const packet of terminalLiveEventCache.get(sessionId) ?? []) subscriber(packet, true);
   let disposed = false;
   return () => {
     if (disposed) return;

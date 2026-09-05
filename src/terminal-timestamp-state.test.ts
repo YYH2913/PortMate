@@ -3,6 +3,7 @@ import {
   changedAlternateTerminalRows,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
+  placeTerminalTimestampLabels,
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
   updateAlternateTerminalTimestamps,
@@ -11,6 +12,18 @@ import {
 } from "./terminal-timestamp-state";
 
 describe("terminal timestamp state", () => {
+  it("keeps labels beside the first content row of each visible interval", () => {
+    const entries = [
+      { line: 100, row: 0, ts: "first" },
+      { line: 104, row: 4, ts: "second" },
+      { line: 108, row: 8, ts: "empty-tail" },
+    ];
+    expect(placeTerminalTimestampLabels(entries, 100, 12, (line) => [102, 103, 106].includes(line))).toEqual([
+      { line: 102, row: 2, ts: "first" },
+      { line: 106, row: 6, ts: "second" },
+    ]);
+  });
+
   it("queries only visible rows and a binary search prefix in a large live marker history", () => {
     const entries = Array.from({ length: 200_000 }, (_, line) => ({
       marker: { line },

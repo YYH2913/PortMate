@@ -61,6 +61,7 @@ import type { TerminalSemanticTokenKind } from "./terminal-semantic-highlighting
 import { mapTerminalSemanticRow, terminalSemanticCellSegments } from "./terminal-semantic-cells";
 import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./terminal-semantic-cells";
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
+import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
@@ -68,6 +69,7 @@ import {
   changedAlternateTerminalRows,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
+  placeTerminalTimestampLabels,
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
   updateAlternateTerminalTimestamps,
@@ -383,11 +385,11 @@ function TerminalCanvas({
   const refreshTimestampGutterRef = useRef<() => void>(() => {});
   const exportTimestampSnapshotRef = useRef<() => TerminalTimestampEntry[]>(() => []);
   const refreshCompletionAnchorRef = useRef<() => void>(() => {});
-  const writeEventRef = useRef<(event: SessionEvent, awaitRaw?: boolean) => boolean>(() => false);
-  const writeTerminalBytesRef = useRef<((event: TerminalBytesEvent) => boolean) | null>(null);
-  const writeTerminalLiveRef = useRef<((event: TerminalLiveEvent) => boolean) | null>(null);
-  const deferredTerminalBytesRef = useRef<TerminalBytesEvent[]>([]);
-  const deferredTerminalLiveRef = useRef<TerminalLiveEvent[]>([]);
+  const writeEventRef = useRef<(event: SessionEvent, awaitRaw?: boolean, replay?: boolean) => boolean>(() => false);
+  const writeTerminalBytesRef = useRef<((event: TerminalBytesEvent, replay?: boolean) => boolean) | null>(null);
+  const writeTerminalLiveRef = useRef<((event: TerminalLiveEvent, replay?: boolean) => boolean) | null>(null);
+  const deferredTerminalBytesRef = useRef<Array<{ event: TerminalBytesEvent; replay?: boolean }>>([]);
+  const deferredTerminalLiveRef = useRef<Array<{ packet: TerminalLiveEvent; replay?: boolean }>>([]);
   const polledEventIdsRef = useRef(new Map<string, string[]>());
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -995,6 +997,7 @@ function TerminalCanvas({
     host.dataset.terminalInstanceId = terminalInstanceId;
     host.dataset.terminalReady = "false";
     const cachedState = terminalStateCache.get(stateCacheKey);
+    const replayBoundary = new TerminalReplayBoundary(cachedState?.replayTimestamp);
     const terminalSettings = normalizeTerminalProfileSettings(active.profile.terminal);
     // A new XTerm instance must replay the current polled snapshot even when
     // the same session was already mounted in another view instance.
@@ -1148,6 +1151,8 @@ function TerminalCanvas({
     );
     let timestampMarkers: TerminalTimestampMarker[] = [];
     let normalTimestampAnchor: string | null = null;
+    let normalRedrawSnapshot: { marker: IMarker; lines: string[] } | null = null;
+    let restorePending = Boolean(cachedState);
     const cachedAlternateTimestamp = normalizeTerminalTimestamps([
       { line: 0, ts: cachedState?.alternateTimestamp },
     ], 1)[0]?.ts ?? null;
@@ -1225,8 +1230,9 @@ function TerminalCanvas({
           if (line < previousLine) needsSort = true;
           previousLine = line;
           retained.push(entry);
-        } else if (!latestDisposed || entry.lastLine > latestDisposed.lastLine
-          || (entry.lastLine === latestDisposed.lastLine && entry.marker.id > latestDisposed.marker.id)) {
+        } else if (entry.lastLine < term.buffer.normal.baseY
+          && (!latestDisposed || entry.lastLine > latestDisposed.lastLine
+            || (entry.lastLine === latestDisposed.lastLine && entry.marker.id > latestDisposed.marker.id))) {
           latestDisposed = entry;
         }
       }
@@ -1270,7 +1276,10 @@ function TerminalCanvas({
       const marker = term.registerMarker(normalized.line - cursorLine);
       return marker ? { marker, ts: normalized.ts, lastLine: marker.line } : null;
     };
-    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number): boolean => {
+    const normalTimestampAt = (line: number): string | undefined => visibleSortedTerminalTimestamps(
+      timestampMarkers, line, 1, (entry) => entry.marker.line, (entry) => entry.ts, normalTimestampAnchor,
+    )[0]?.ts;
+    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number, hadContent: boolean): boolean => {
       const trackedLine = tracked.marker.line;
       if (tracked.marker.isDisposed || trackedLine < 0) {
         compactTimestampMarkers();
@@ -1281,7 +1290,9 @@ function TerminalCanvas({
       tracked.lastLine = trackedLine;
       const existing = timestampMarkers.find((entry) => entry.marker.line === trackedLine);
       let changed = false;
-      if (existing) {
+      if (existing || (hadContent && normalTimestampAt(trackedLine))) {
+        tracked.marker.dispose();
+      } else if (cursorLine === trackedLine && !term.buffer.normal.getLine(trackedLine)?.translateToString(true)) {
         tracked.marker.dispose();
       } else {
         timestampMarkers.push(tracked);
@@ -1289,7 +1300,9 @@ function TerminalCanvas({
       }
       if (cursorLine !== trackedLine) {
         const nextLine = cursorLine > trackedLine ? trackedLine + 1 : cursorLine;
-        changed = registerTimestampLine(nextLine, tracked.ts) || changed;
+        if (term.buffer.normal.getLine(nextLine)?.translateToString(true)) {
+          changed = registerTimestampLine(nextLine, tracked.ts) || changed;
+        }
       }
       compactTimestampMarkers();
       return changed;
@@ -1298,6 +1311,54 @@ function TerminalCanvas({
       const lastLine = Math.max(0, Math.max(startLine, endLine));
       const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - timestampMarkerLimit + 1);
       return registerTimestampLine(firstLine, ts);
+    };
+    const replaceTimestampRange = (firstLine: number, lastLine: number, ts: string) => {
+      compactTimestampMarkers();
+      const following = normalTimestampAt(lastLine + 1);
+      timestampMarkers = timestampMarkers.filter((entry) => {
+        if (entry.marker.line < firstLine || entry.marker.line > lastLine) return true;
+        entry.marker.dispose();
+        return false;
+      });
+      registerTimestampLine(firstLine, ts);
+      if (following && lastLine + 1 < term.buffer.normal.length) registerTimestampLine(lastLine + 1, following);
+    };
+    const captureNormalRedraw = () => {
+      if (restorePending || normalRedrawSnapshot || term.buffer.active.type !== "normal") return false;
+      const normal = term.buffer.normal;
+      const marker = term.registerMarker(-normal.cursorY);
+      if (marker) normalRedrawSnapshot = {
+        marker,
+        lines: Array.from({ length: term.rows }, (_, row) => normal.getLine(normal.baseY + row)?.translateToString(true) ?? ""),
+      };
+      return false;
+    };
+    // Observe parsed controls, including sequences split across transport frames.
+    // Ordinary typing and line feeds never scan the screen.
+    const timestampRedrawDisposables = ["H", "f", "A", "B", "E", "F", "d", "e", "J", "K", "u"].map((final) => (
+      term.parser.registerCsiHandler({ final }, captureNormalRedraw)
+    ));
+    timestampRedrawDisposables.push(term.parser.registerEscHandler({ final: "8" }, captureNormalRedraw));
+    const commitNormalRedraw = (ts: string) => {
+      const snapshot = normalRedrawSnapshot;
+      normalRedrawSnapshot = null;
+      if (!snapshot) return false;
+      const firstLine = snapshot.marker.isDisposed ? term.buffer.normal.baseY : snapshot.marker.line;
+      snapshot.marker.dispose();
+      if (firstLine < 0 || term.buffer.active.type !== "normal") return false;
+      const changed: number[] = [];
+      for (let row = 0; row < snapshot.lines.length; row += 1) {
+        const line = firstLine + row;
+        const after = term.buffer.normal.getLine(line)?.translateToString(true);
+        if (after !== undefined && after !== snapshot.lines[row]) changed.push(line);
+      }
+      for (let index = 0; index < changed.length; index += 1) {
+        const first = changed[index];
+        let last = first;
+        while (changed[index + 1] === last + 1) last = changed[++index];
+        replaceTimestampRange(first, last, ts);
+      }
+      return changed.length > 0;
     };
     const restoreTimestampMarkers = () => {
       if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
@@ -1331,7 +1392,7 @@ function TerminalCanvas({
       const screenRect = screen?.getBoundingClientRect();
       const screenTop = screenRect ? host.offsetTop + screenRect.top - hostRect.top : 0;
       const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
-      const entries = bufferType === "normal"
+      const intervals = bufferType === "normal"
         ? visibleSortedTerminalTimestamps(
           timestampMarkers,
           buffer.viewportY,
@@ -1341,6 +1402,11 @@ function TerminalCanvas({
           normalTimestampAnchor,
         )
         : visibleTerminalTimestamps(alternateTimestamps, 0, term.rows);
+      const entries = bufferType === "normal"
+        ? placeTerminalTimestampLabels(intervals, buffer.viewportY, term.rows, (line) => (
+          Boolean(buffer.getLine(line)?.translateToString(true))
+        ))
+        : intervals;
       host.dataset.terminalTimestampBuffer = bufferType;
       host.dataset.terminalTimestampCount = String(entries.length);
       host.dataset.terminalTimestampMarkerCount = String(timestampMarkers.length);
@@ -1355,11 +1421,11 @@ function TerminalCanvas({
     };
     refreshTimestampGutterRef.current = scheduleTimestampGutter;
 
-    let restorePending = Boolean(cachedState);
     if (cachedState) {
       term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => {
         restorePending = false;
         restoreTimestampMarkers();
+        fitAndReportRef.current();
         scheduleTimestampGutter();
         drainEventWrites();
       });
@@ -1439,6 +1505,7 @@ function TerminalCanvas({
       const beforeLine = beforeBufferType === "normal"
         ? term.buffer.normal.baseY + term.buffer.normal.cursorY
         : beforeBuffer.cursorY;
+      const beforeColumn = beforeBuffer.cursorX;
       const inspectAlternateRows = beforeBufferType === "alternate"
         && eventText.length >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
       const beforeAlternateSnapshot = inspectAlternateRows
@@ -1450,6 +1517,9 @@ function TerminalCanvas({
         && terminalTextMayMoveRows(eventText)
         ? trackTimestampLine(beforeLine, first.event.ts)
         : null;
+      const beforeNormalCursorText = trackedNormalStart
+        ? term.buffer.normal.getLine(beforeLine)?.translateToString(true)
+        : undefined;
       let callbackCompleted = false;
       let writeReturned = false;
       writeTerminalEvent(term, event, rawBytes, () => {
@@ -1458,13 +1528,22 @@ function TerminalCanvas({
           const afterBuffer = term.buffer.active;
           if (afterBuffer.type === "normal") {
             const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
-            if (trackedNormalStart) {
-              timestampChanged = commitTrackedTimestamp(trackedNormalStart, afterLine);
-            } else {
+            const unchangedCursorRow = trackedNormalStart && !trackedNormalStart.marker.isDisposed
+              && trackedNormalStart.marker.line === afterLine
+              && beforeNormalCursorText === term.buffer.normal.getLine(afterLine)?.translateToString(true);
+            if (unchangedCursorRow) {
+              trackedNormalStart.marker.dispose();
+            } else if (trackedNormalStart) {
+              timestampChanged = commitTrackedTimestamp(
+                trackedNormalStart, normalRedrawSnapshot ? trackedNormalStart.marker.line : afterLine, Boolean(beforeNormalCursorText),
+              );
+            } else if (!normalRedrawSnapshot) {
               const firstChangedLine = beforeBufferType !== "normal"
                 ? afterLine
                 : afterLine > beforeLine ? beforeLine + 1 : afterLine;
-              timestampChanged = registerTimestampRange(firstChangedLine, afterLine, first.event.ts);
+              if (beforeBufferType !== "normal" || beforeColumn === 0 || afterLine !== beforeLine || !normalTimestampAt(afterLine)) {
+                timestampChanged = registerTimestampRange(firstChangedLine, afterLine, first.event.ts);
+              }
             }
           } else {
             trackedNormalStart?.marker.dispose();
@@ -1496,6 +1575,7 @@ function TerminalCanvas({
             }
           }
         }
+        timestampChanged = commitNormalRedraw(first.event.ts) || timestampChanged;
         for (const pending of batch) {
           settleTerminalEventId(seenEventsRef.current, pendingEventIds, pending.event.id);
         }
@@ -1525,9 +1605,10 @@ function TerminalCanvas({
       if (!rawMatched) fastPathTextDecoder = new TextDecoder();
       scheduleEventWriteDrain();
     };
-    const writeEvent = (event: SessionEvent, awaitRaw = false) => {
+    const writeEvent = (event: SessionEvent, awaitRaw = false, replay = false) => {
       if (!event.id) return false;
       if (seenEventsRef.current.has(event.id)) return false;
+      if (!replayBoundary.accept(event, replay)) return false;
       const isLiveInboundText = event.direction === "inbound"
         && Boolean(event.text)
         && (event.stream === "stdout" || event.stream === "stderr");
@@ -1544,7 +1625,7 @@ function TerminalCanvas({
       return true;
     };
     writeEventRef.current = writeEvent;
-    const writeTerminalBytes = (bytesEvent: TerminalBytesEvent) => {
+    const writeTerminalBytes = (bytesEvent: TerminalBytesEvent, replay = false) => {
       if (bytesEvent.canonical) return false;
       if (bytesEvent.sessionId !== active.profile.id || bytesEvent.direction !== "inbound") return false;
       if (!bytesEvent.id || !Array.isArray(bytesEvent.bytes) || !bytesEvent.bytes.length
@@ -1582,6 +1663,7 @@ function TerminalCanvas({
           text: fastPathTextDecoder.decode(rawBytes, { stream: true }),
           annotations: { "terminalBytesFastPath": "true" },
         };
+        if (!replayBoundary.accept(syntheticEvent, replay && !cachedState)) return false;
         if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, syntheticEvent.id)) return false;
         queueEventWrite({ event: syntheticEvent, rawBytes });
         scheduleEventWriteDrain();
@@ -1589,7 +1671,7 @@ function TerminalCanvas({
         return true;
       }
       const eventId = "terminal-bytes:" + bytesEvent.id;
-      if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, eventId)) return false;
+      if (seenEventsRef.current.has(eventId)) return false;
       if (bytesEvent.truncated) fastPathTextDecoder = new TextDecoder();
       const event: SessionEvent = {
         id: eventId,
@@ -1604,14 +1686,16 @@ function TerminalCanvas({
           : fastPathTextDecoder.decode(rawBytes, { stream: true }),
         annotations: { "terminalBytesFastPath": "true" },
       };
+      if (!replayBoundary.accept(event, replay && !cachedState)) return false;
+      if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, eventId)) return false;
       queueEventWrite(bytesEvent.truncated ? { event } : { event, rawBytes });
       scheduleEventWriteDrain();
       return true;
     };
     writeTerminalBytesRef.current = writeTerminalBytes;
     const deferredBytes = deferredTerminalBytesRef.current.splice(0);
-    for (const bytesEvent of deferredBytes) writeTerminalBytes(bytesEvent);
-    const writeTerminalLive = (packet: TerminalLiveEvent) => {
+    for (const { event, replay } of deferredBytes) writeTerminalBytes(event, replay);
+    const writeTerminalLive = (packet: TerminalLiveEvent, replay = false) => {
       if (packet.event.sessionId !== active.profile.id) return false;
       const pendingText = pendingTextEvents.get(packet.event.id);
       if (pendingText) {
@@ -1625,6 +1709,9 @@ function TerminalCanvas({
         return true;
       }
       if (seenEventsRef.current.has(packet.event.id)) return false;
+      // A restored screen retains more live ids than the bridge replay window.
+      // Unseen cached packets are newer arrivals even if the wall clock moved back.
+      if (!replayBoundary.accept(packet.event, replay && !cachedState)) return false;
       if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, packet.event.id)) return false;
       const event = packet.truncated
         ? {
@@ -1645,7 +1732,7 @@ function TerminalCanvas({
     };
     writeTerminalLiveRef.current = writeTerminalLive;
     const deferredLive = deferredTerminalLiveRef.current.splice(0);
-    for (const packet of deferredLive) writeTerminalLive(packet);
+    for (const { packet, replay } of deferredLive) writeTerminalLive(packet, replay);
     let webglAddon: WebglAddonInstance | null = null;
     let webglContextLossDisposable: { dispose: () => void } | null = null;
     let webglGeneration = 0;
@@ -1694,6 +1781,7 @@ function TerminalCanvas({
     configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
     if (focused && displayModeRef.current !== "hex") term.focus();
     const fitAndReport = () => {
+      if (restorePending) return;
       fit.fit();
       scheduleTimestampGutter();
       const size = `${term.cols}x${term.rows}`;
@@ -1914,6 +2002,9 @@ function TerminalCanvas({
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
+      if (normalRedrawSnapshot && replayBoundary.timestamp) {
+        if (commitNormalRedraw(replayBoundary.timestamp)) scheduleTimestampGutter();
+      }
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
       commitDetectedPrivateInput(detectSensitiveInput());
@@ -2127,6 +2218,8 @@ function TerminalCanvas({
       fastPathTextDecoder.decode();
       mouseEncodingSetDisposable.dispose();
       mouseEncodingResetDisposable.dispose();
+      for (const disposable of timestampRedrawDisposables) disposable.dispose();
+      normalRedrawSnapshot?.marker.dispose();
       webglContextLossDisposable?.dispose();
       if (restorePending || pendingEventIds.size) {
         for (const eventId of pendingEventIds) seenEventsRef.current.delete(eventId);
@@ -2152,6 +2245,7 @@ function TerminalCanvas({
               seenEventsRef.current,
               polledEventIdsRef.current.get(active.profile.id) ?? [],
             ),
+            replayTimestamp: replayBoundary.timestamp ?? undefined,
             mouseEncoding,
             timestamps: timestampSnapshot(firstSerializedLine),
             alternateTimestamps: term.buffer.active.type === "alternate"
@@ -2509,6 +2603,18 @@ function TerminalCanvas({
     if (!focused && gotoLineOpen) closeTerminalGotoLine(true, false);
   }, [focused, gotoLineOpen]);
 
+  // Seed history before subscribing to the recent live cache. A delayed poll
+  // may hydrate metadata, but must not replay older ANSI behind the live cursor.
+  useEffect(() => {
+    if (!termRef.current) return;
+    const sessionId = active?.profile.id;
+    const previousIds = sessionId ? polledEventIdsRef.current.get(sessionId) ?? [] : [];
+    for (const event of terminalHistorySuffix(events, previousIds, seenEventsRef.current)) {
+      writeEventRef.current(event, false, true);
+    }
+    if (sessionId) polledEventIdsRef.current.set(sessionId, events.map((event) => event.id));
+  }, [events, active?.profile.id, stateCacheKey]);
+
   useEffect(() => {
     if (!active || !isBackendAvailable()) return;
     let disposed = false;
@@ -2538,11 +2644,11 @@ function TerminalCanvas({
 
   useEffect(() => {
     if (!active || !isBackendAvailable()) return;
-    return subscribeTerminalLiveEvents(active.profile.id, (packet) => {
+    return subscribeTerminalLiveEvents(active.profile.id, (packet, replay) => {
       const writeTerminalLive = writeTerminalLiveRef.current;
-      if (writeTerminalLive) writeTerminalLive(packet);
+      if (writeTerminalLive) writeTerminalLive(packet, replay);
       else {
-        deferredTerminalLiveRef.current.push(packet);
+        deferredTerminalLiveRef.current.push({ packet, replay });
         if (deferredTerminalLiveRef.current.length > 256) {
           deferredTerminalLiveRef.current.splice(0, deferredTerminalLiveRef.current.length - 256);
         }
@@ -2552,37 +2658,18 @@ function TerminalCanvas({
 
   useEffect(() => {
     if (!active || !isBackendAvailable()) return;
-    return subscribeTerminalByteEvents(active.profile.id, (event) => {
+    return subscribeTerminalByteEvents(active.profile.id, (event, replay) => {
       const writeTerminalBytes = writeTerminalBytesRef.current;
       if (writeTerminalBytes) {
-        writeTerminalBytes(event);
+        writeTerminalBytes(event, replay);
       } else {
-        deferredTerminalBytesRef.current.push(event);
+        deferredTerminalBytesRef.current.push({ event, replay });
         if (deferredTerminalBytesRef.current.length > 256) {
           deferredTerminalBytesRef.current.splice(0, deferredTerminalBytesRef.current.length - 256);
         }
       }
     });
   }, [active?.profile.id]);
-
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    const sessionId = active?.profile.id;
-    const previousIds = sessionId ? polledEventIdsRef.current.get(sessionId) ?? [] : [];
-    let firstNewIndex = 0;
-    while (firstNewIndex < previousIds.length
-      && firstNewIndex < events.length
-      && previousIds[firstNewIndex] === events[firstNewIndex]?.id) {
-      firstNewIndex += 1;
-    }
-    for (let index = firstNewIndex; index < events.length; index += 1) {
-      writeEventRef.current(events[index]);
-    }
-    if (sessionId) {
-      polledEventIdsRef.current.set(sessionId, events.map((event) => event.id));
-    }
-  }, [events, active?.profile.id]);
 
   return (
     <div

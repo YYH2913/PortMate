@@ -156,6 +156,26 @@ export function rebaseTerminalTimestamps(
   return normalizeTerminalTimestamps(rebased, limit);
 }
 
+/** Keep sparse interval labels beside content, not below a cursor on empty rows. */
+export function placeTerminalTimestampLabels(
+  entries: readonly VisibleTerminalTimestamp[],
+  viewportY: number,
+  rows: number,
+  hasText: (line: number) => boolean,
+): VisibleTerminalTimestamp[] {
+  const labels: VisibleTerminalTimestamp[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const end = entries[index + 1]?.row ?? rows;
+    for (let row = entry.row; row < end; row += 1) {
+      if (!hasText(viewportY + row)) continue;
+      labels.push({ ts: entry.ts, line: viewportY + row, row });
+      break;
+    }
+  }
+  return labels;
+}
+
 export function formatTerminalTimestampClock(value: string): string {
   const normalized = normalizeTerminalTimestampValue(value);
   if (!normalized) return "--:--:--.------";
@@ -169,7 +189,7 @@ function normalizeTerminalTimestampLine(value: unknown): number | null {
   return value;
 }
 
-function normalizeTerminalTimestampValue(value: unknown): string | null {
+export function normalizeTerminalTimestampValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return null;
