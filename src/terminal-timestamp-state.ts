@@ -98,26 +98,39 @@ export function visibleTerminalTimestamps(
   const rowCount = Math.max(0, Math.trunc(rows) || 0);
   if (!rowCount) return [];
   const normalized = normalizeTerminalTimestamps(entries, Math.max(1, entries.length));
-  if (!normalized.length) return [];
+  return visibleSortedTerminalTimestamps(normalized, firstLine, rowCount, (entry) => entry.line, (entry) => entry.ts);
+}
 
-  const transitions = normalized.filter((entry, index) => (
-    index === 0 || entry.ts !== normalized[index - 1].ts
-  ));
-
-  let timestampIndex = -1;
-  while (timestampIndex + 1 < transitions.length
-    && transitions[timestampIndex + 1].line <= firstLine) timestampIndex += 1;
-
-  const visible: VisibleTerminalTimestamp[] = [];
-  if (timestampIndex >= 0) {
-    visible.push({ line: firstLine, row: 0, ts: transitions[timestampIndex].ts });
+/** Query validated, ordered markers without normalizing the entire scrollback on every frame. */
+export function visibleSortedTerminalTimestamps<T>(
+  entries: readonly T[],
+  viewportY: number,
+  rows: number,
+  lineOf: (entry: T) => number,
+  timestampOf: (entry: T) => string,
+  anchor: string | null = null,
+): VisibleTerminalTimestamp[] {
+  const firstLine = Math.max(0, Math.trunc(viewportY) || 0);
+  const rowCount = Math.max(0, Math.trunc(rows) || 0);
+  if (!rowCount) return [];
+  let low = 0;
+  let high = entries.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (lineOf(entries[middle]) <= firstLine) low = middle + 1;
+    else high = middle;
   }
+  let timestamp = low > 0 ? timestampOf(entries[low - 1]) : anchor;
+  const visible: VisibleTerminalTimestamp[] = [];
+  if (timestamp) visible.push({ line: firstLine, row: 0, ts: timestamp });
   const lastLineExclusive = firstLine + rowCount;
-  for (let index = timestampIndex + 1; index < transitions.length; index += 1) {
-    const entry = transitions[index];
-    if (entry.line >= lastLineExclusive) break;
-    if (entry.line < firstLine) continue;
-    visible.push({ ...entry, row: entry.line - firstLine });
+  for (let index = low; index < entries.length; index += 1) {
+    const line = lineOf(entries[index]);
+    if (line >= lastLineExclusive) break;
+    const ts = timestampOf(entries[index]);
+    if (ts === timestamp) continue;
+    visible.push({ line, row: line - firstLine, ts });
+    timestamp = ts;
   }
   return visible;
 }

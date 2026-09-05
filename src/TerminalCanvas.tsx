@@ -71,6 +71,7 @@ import {
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
   updateAlternateTerminalTimestamps,
+  visibleSortedTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
@@ -1214,19 +1215,23 @@ function TerminalCanvas({
 
     const compactTimestampMarkers = () => {
       const retained: TerminalTimestampMarker[] = [];
-      const disposed: TerminalTimestampMarker[] = [];
+      let latestDisposed: TerminalTimestampMarker | undefined;
+      let needsSort = false;
+      let previousLine = -1;
       for (const entry of timestampMarkers) {
         const line = entry.marker.line;
         if (!entry.marker.isDisposed && line >= 0) {
           entry.lastLine = line;
+          if (line < previousLine) needsSort = true;
+          previousLine = line;
           retained.push(entry);
-        } else {
-          disposed.push(entry);
+        } else if (!latestDisposed || entry.lastLine > latestDisposed.lastLine
+          || (entry.lastLine === latestDisposed.lastLine && entry.marker.id > latestDisposed.marker.id)) {
+          latestDisposed = entry;
         }
       }
-      disposed.sort((left, right) => left.lastLine - right.lastLine || left.marker.id - right.marker.id);
-      normalTimestampAnchor = disposed.at(-1)?.ts ?? normalTimestampAnchor;
-      timestampMarkers = retained.sort((left, right) => left.marker.line - right.marker.line);
+      normalTimestampAnchor = latestDisposed?.ts ?? normalTimestampAnchor;
+      timestampMarkers = needsSort ? retained.sort((left, right) => left.marker.line - right.marker.line) : retained;
       while (timestampMarkers.length > timestampMarkerLimit) {
         const removed = timestampMarkers.shift();
         if (!removed) break;
@@ -1327,13 +1332,13 @@ function TerminalCanvas({
       const screenTop = screenRect ? host.offsetTop + screenRect.top - hostRect.top : 0;
       const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
       const entries = bufferType === "normal"
-        ? visibleTerminalTimestamps(
-          [
-            ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
-            ...(normalTimestampAnchor ? [{ line: 0, ts: normalTimestampAnchor }] : []),
-          ],
+        ? visibleSortedTerminalTimestamps(
+          timestampMarkers,
           buffer.viewportY,
           term.rows,
+          (entry) => entry.marker.line,
+          (entry) => entry.ts,
+          normalTimestampAnchor,
         )
         : visibleTerminalTimestamps(alternateTimestamps, 0, term.rows);
       host.dataset.terminalTimestampBuffer = bufferType;

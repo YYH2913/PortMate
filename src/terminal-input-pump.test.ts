@@ -8,14 +8,15 @@ function deferred() {
 }
 
 describe("terminal input pump", () => {
-  it("flushes the first interactive input after a short burst window", async () => {
+  it("flushes isolated input in the same browser turn without waiting for a timer", async () => {
     const calls: string[] = [];
     const pump = new TerminalInputPump((_sessionId, text) => { calls.push(text); });
 
     pump.enqueueFast("router", "a", "interactive");
 
     expect(calls).toEqual([]);
-    await expect.poll(() => calls).toEqual(["a"]);
+    await Promise.resolve();
+    expect(calls).toEqual(["a"]);
   });
 
   it("coalesces a printable burst into one IPC call", async () => {
@@ -29,7 +30,8 @@ describe("terminal input pump", () => {
     }
 
     expect(calls).toEqual([]);
-    await expect.poll(() => calls).toEqual(["abcdef"]);
+    await Promise.resolve();
+    expect(calls).toEqual(["abcdef"]);
   });
 
   it("coalesces input queued behind an in-flight request", async () => {

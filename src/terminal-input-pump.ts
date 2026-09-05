@@ -27,15 +27,13 @@ type PendingTerminalInput = {
 };
 
 // Keep one in-flight request so lifecycle resets can fence every request that
-// has not reached the native queue yet. A 1ms adaptive window removes the
-// per-key IPC pattern without adding a visible delay to terminal input.
+// has not reached the native queue yet. A microtask coalesces a synchronous
+// burst without relying on WebView timers, which can be clamped or throttled.
 const MAX_FAST_IN_FLIGHT = 1;
-const FAST_INITIAL_BATCH_DELAY_MS = 1;
-const FAST_FOLLOW_UP_DELAY_MS = 1;
 
 /**
- * Starts the first input immediately, then coalesces interactive input while
- * the transport is busy. Atomic input remains an explicit ordering boundary.
+ * Coalesces interactive input within one browser turn and while IPC is busy.
+ * Atomic input remains an explicit ordering boundary.
  */
 export class TerminalInputPump {
   private readonly pending: PendingTerminalInput[] = [];
@@ -43,7 +41,6 @@ export class TerminalInputPump {
   private fastInFlightCount = 0;
   private fastFlushQueued = false;
   private fastFlushGeneration = 0;
-  private fastFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly send: TerminalInputSender) {}
 
@@ -106,7 +103,7 @@ export class TerminalInputPump {
     } else {
       this.pending.push({ sessionId, text, origin, options, waiters: [] });
     }
-    this.scheduleFastDrain(FAST_INITIAL_BATCH_DELAY_MS);
+    this.scheduleFastDrain();
   }
 
   private launchFast(item: PendingTerminalInput): void {
@@ -128,7 +125,7 @@ export class TerminalInputPump {
             // A slow IPC response is not a reason to issue one request per
             // key. Give the next event-loop slice a chance to append to the
             // queued payload before crossing another native boundary.
-            this.scheduleFastDrain(FAST_FOLLOW_UP_DELAY_MS);
+            this.scheduleFastDrain();
           }
           this.drain();
         }
@@ -149,29 +146,21 @@ export class TerminalInputPump {
     this.pending.length = 0;
   }
 
-  private scheduleFastDrain(delayMs = 0): void {
+  private scheduleFastDrain(): void {
     if (this.fastFlushQueued) return;
     this.fastFlushQueued = true;
     const generation = ++this.fastFlushGeneration;
     // Run after the current XTerm callback so a burst emitted in one browser
-    // turn crosses the IPC boundary as one request. The short timer also
-    // catches adjacent keyboard tasks while keeping isolated keypresses fast.
-    const flush = () => {
+    // turn crosses the IPC boundary as one request.
+    queueMicrotask(() => {
       if (generation !== this.fastFlushGeneration) return;
-      this.fastFlushTimer = null;
       this.fastFlushQueued = false;
       this.drain();
-    };
-    if (delayMs > 0) this.fastFlushTimer = setTimeout(flush, delayMs);
-    else queueMicrotask(flush);
+    });
   }
 
   private cancelFastDrain(): void {
     this.fastFlushGeneration += 1;
-    if (this.fastFlushTimer !== null) {
-      clearTimeout(this.fastFlushTimer);
-      this.fastFlushTimer = null;
-    }
     this.fastFlushQueued = false;
   }
 

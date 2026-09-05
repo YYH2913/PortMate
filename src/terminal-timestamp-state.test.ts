@@ -6,10 +6,49 @@ import {
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
   updateAlternateTerminalTimestamps,
+  visibleSortedTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 
 describe("terminal timestamp state", () => {
+  it("queries only visible rows and a binary search prefix in a large live marker history", () => {
+    const entries = Array.from({ length: 200_000 }, (_, line) => ({
+      marker: { line },
+      ts: line % 2 ? "2026-08-09T01:02:03.000000Z" : "2026-08-09T01:02:04.000000Z",
+    }));
+    let positionsRead = 0;
+    let timestampsRead = 0;
+    const visible = visibleSortedTerminalTimestamps(entries, 199_950, 40, (entry) => {
+      positionsRead += 1;
+      return entry.marker.line;
+    }, (entry) => {
+      timestampsRead += 1;
+      return entry.ts;
+    });
+    expect(visible).toEqual(entries.slice(199_950, 199_990).map((entry, row) => ({
+      line: entry.marker.line, ts: entry.ts, row,
+    })));
+    expect(positionsRead).toBeLessThan(64);
+    expect(timestampsRead).toBe(40);
+  });
+
+  it("keeps inherited timestamps and suppresses repeated intervals in a sorted live range", () => {
+    const entries = normalizeTerminalTimestamps([
+      { line: 3, ts: "2026-08-09T01:02:03Z" },
+      { line: 5, ts: "2026-08-09T01:02:03Z" },
+      { line: 8, ts: "2026-08-09T01:02:04Z" },
+      { line: 13, ts: "2026-08-09T01:02:05Z" },
+    ]);
+    for (let start = 0; start < 16; start += 1) {
+      expect(visibleSortedTerminalTimestamps(entries, start, 4, (entry) => entry.line, (entry) => entry.ts))
+        .toEqual(visibleTerminalTimestamps(entries, start, 4));
+    }
+    expect(visibleSortedTerminalTimestamps(entries, 0, 6, (entry) => entry.line, (entry) => entry.ts, entries[0].ts))
+      .toEqual([{ line: 0, row: 0, ts: entries[0].ts }]);
+    expect(visibleSortedTerminalTimestamps([], 9, 2, () => 0, () => "", entries[0].ts))
+      .toEqual([{ line: 9, row: 0, ts: entries[0].ts }]);
+  });
+
   it("normalizes timestamps, keeps the first event per line, and bounds old rows", () => {
     expect(normalizeTerminalTimestamps([
       { line: 3, ts: "2026-08-09T01:02:03Z" },
