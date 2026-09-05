@@ -221,6 +221,8 @@ fn initialize_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error
         }
     });
     let state = AppState {
+        #[cfg(test)]
+        synchronous_inbound_logs: false,
         app_handle: Some(app.handle().clone()),
         store: Arc::new(Mutex::new(store)),
         credential_ops: Arc::new(Mutex::new(())),

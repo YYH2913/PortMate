@@ -1,4 +1,3 @@
-use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty};
 
@@ -323,8 +322,6 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             return;
         }
         let mut buffer = vec![0_u8; 8192];
-        let mut last_persist = Instant::now();
-        let mut has_unpersisted_stream = false;
         let mut disconnect_reason = None;
 
         while !closed.load(Ordering::SeqCst) {
@@ -338,7 +335,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                 }
                 Ok(size) => {
                     let bytes = buffer[..size].to_vec();
-                    let accepted = record_channel_bytes_with_accepted_side_effect(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
@@ -349,7 +346,6 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                             let _ = tap.send(bytes.clone());
                         },
                     );
-                    has_unpersisted_stream |= accepted;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => {
@@ -359,20 +355,6 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                     );
                     break;
                 }
-            }
-
-            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                    eprintln!("PortMate: failed to persist shell stream data: {error}");
-                }
-                has_unpersisted_stream = false;
-                last_persist = Instant::now();
-            }
-        }
-
-        if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                eprintln!("PortMate: failed to persist final shell stream data: {error}");
             }
         }
 

@@ -526,6 +526,7 @@ fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
     let mut store = SessionStore::default();
     store.upsert_profile(profile);
     AppState {
+        synchronous_inbound_logs: true,
         app_handle: None,
         store: Arc::new(Mutex::new(store)),
         credential_ops: Arc::new(Mutex::new(())),

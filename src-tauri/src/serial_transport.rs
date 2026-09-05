@@ -1,4 +1,4 @@
-use super::transport_timing::{SERIAL_RUNTIME_SHUTDOWN_TIMEOUT, STREAM_PERSIST_INTERVAL};
+use super::transport_timing::SERIAL_RUNTIME_SHUTDOWN_TIMEOUT;
 use super::*;
 
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;
@@ -317,8 +317,6 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
             return;
         }
         let mut buffer = vec![0_u8; 8192];
-        let mut last_persist = Instant::now();
-        let mut has_unpersisted_stream = false;
         let mut last_received_at = Instant::now();
         let mut disconnect_reason = None;
 
@@ -328,7 +326,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                 Ok(size) => {
                     last_received_at = Instant::now();
                     let bytes = buffer[..size].to_vec();
-                    let accepted = record_channel_bytes_with_accepted_side_effect(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
@@ -340,7 +338,6 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                             record_serial_capture(&capture, EventDirection::Inbound, &bytes);
                         },
                     );
-                    has_unpersisted_stream |= accepted;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
                     if receive_idle_timeout
@@ -360,26 +357,12 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                     break;
                 }
             }
-
-            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                    eprintln!("PortMate: failed to persist serial stream data: {error}");
-                }
-                has_unpersisted_stream = false;
-                last_persist = Instant::now();
-            }
         }
 
         // Abort a driver-level write before releasing the reader clone. This
         // is especially important on Windows, where a pending COM write keeps
         // the exclusive device handle alive and makes an immediate reopen fail.
         let _ = reader.clear(serialport::ClearBuffer::All);
-
-        if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                eprintln!("PortMate: failed to persist final serial stream data: {error}");
-            }
-        }
 
         let disconnect_reason =
             disconnect_reason.unwrap_or_else(|| format!("serial port closed ({port_name})"));

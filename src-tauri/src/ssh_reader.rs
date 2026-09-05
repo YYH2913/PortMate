@@ -1,4 +1,3 @@
-use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 
 pub(super) struct SshReadTask {
@@ -46,8 +45,6 @@ pub(super) fn read_ssh_channel(
         };
         let io = state.session_io();
         let session_id = profile.id.clone();
-        let mut last_persist = Instant::now();
-        let mut has_unpersisted_stream = false;
         let mut disconnect_reason = None;
 
         loop {
@@ -62,7 +59,7 @@ pub(super) fn read_ssh_channel(
             }
             match message {
                 SshBackendMessage::Data(bytes) => {
-                    let accepted = record_channel_bytes_with_accepted_side_effect(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
@@ -73,7 +70,6 @@ pub(super) fn read_ssh_channel(
                             let _ = tap.send(bytes.clone());
                         },
                     );
-                    has_unpersisted_stream |= accepted;
                 }
                 SshBackendMessage::ExtendedData { data: bytes, ext } => {
                     let stream = if ext == 1 {
@@ -81,7 +77,7 @@ pub(super) fn read_ssh_channel(
                     } else {
                         EventStream::Stdout
                     };
-                    let accepted = record_channel_bytes_with_accepted_side_effect(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
@@ -92,7 +88,6 @@ pub(super) fn read_ssh_channel(
                             let _ = tap.send(bytes.clone());
                         },
                     );
-                    has_unpersisted_stream |= accepted;
                 }
                 SshBackendMessage::ExitStatus(exit_status) => {
                     record_runtime_system_event(
@@ -122,20 +117,6 @@ pub(super) fn read_ssh_channel(
                     break
                 }
                 _ => {}
-            }
-
-            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                    eprintln!("PortMate: failed to persist SSH stream data: {error}");
-                }
-                has_unpersisted_stream = false;
-                last_persist = Instant::now();
-            }
-        }
-
-        if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                eprintln!("PortMate: failed to persist final SSH stream data: {error}");
             }
         }
 

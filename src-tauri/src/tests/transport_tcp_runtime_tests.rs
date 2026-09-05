@@ -217,6 +217,104 @@ fn tcp_write_deadline_includes_the_writer_lock_and_recovers_after_timeout() {
 }
 
 #[test]
+fn queued_terminal_echo_continues_while_inbound_persistence_is_blocked() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_server_tx, release_server_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            for expected in b"abc" {
+                let received = socket.read_u8().await.unwrap();
+                assert_eq!(received, *expected);
+                socket.write_all(&[received]).await.unwrap();
+            }
+            let _ = release_server_rx.await;
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+            host: address.ip().to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let mut state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        state.synchronous_inbound_logs = false;
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+        let mut echoes = state.tcp.lock().unwrap().get(&profile.id).unwrap().tap.subscribe();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_store_tx, release_store_rx) = std::sync::mpsc::channel();
+        let store = Arc::clone(&state.store);
+        let store_holder = std::thread::spawn(move || {
+            let _guard = store.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_store_rx.recv_timeout(Duration::from_secs(10));
+        });
+        locked_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let started = Instant::now();
+        let probe = tokio::time::timeout(Duration::from_secs(6), async {
+            for (index, text) in ["a", "b", "c"].into_iter().enumerate() {
+                enqueue_interactive_text(state.session_io(), profile.id.clone(), text.to_string(), true)
+                    .unwrap();
+                assert_eq!(echoes.recv().await.unwrap(), text.as_bytes());
+                if index == 0 {
+                    tokio::time::sleep(
+                        crate::transport_timing::STREAM_PERSIST_INTERVAL + Duration::from_millis(100),
+                    ).await;
+                }
+            }
+        }).await;
+        let _ = release_store_tx.send(());
+        store_holder.join().unwrap();
+        let elapsed = started.elapsed();
+        close_session_inner(&state, profile.id.clone()).await.unwrap();
+        let _ = release_server_tx.send(());
+        server.await.unwrap();
+        let finished = finish_inbound_log_queue(&state.store_path, &profile.id, Duration::from_secs(5));
+        assert!(probe.is_ok(), "terminal echo waited for blocked storage: {elapsed:?}");
+        assert!(finished, "inbound worker did not checkpoint its final batch");
+        let saved = load_store_sqlite(&state.store_path).unwrap();
+        let text = saved.events.iter()
+            .filter(|event| event.direction == EventDirection::Inbound)
+            .filter_map(|event| event.text.as_deref()).collect::<String>();
+        assert_eq!(text, "abc");
+    });
+}
+
+#[test]
+fn inbound_log_checkpoints_persist_idle_and_final_batches() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let profile = test_shell_profile();
+        let mut state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        state.synchronous_inbound_logs = false;
+        record_channel_bytes(&state.session_io(), &profile.id, None, EventStream::Stdout,
+            b"idle", "idle".to_string());
+        let path = state.store_path.clone();
+        let idle = tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let path = path.clone();
+                if tauri::async_runtime::spawn_blocking(move || load_store_sqlite(&path))
+                    .await.unwrap().is_ok_and(|saved| saved.events.iter()
+                        .any(|event| event.text.as_deref() == Some("idle"))) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await;
+        record_channel_bytes(&state.session_io(), &profile.id, None, EventStream::Stdout,
+            b"final", "final".to_string());
+        let finished = finish_inbound_log_queue(&state.store_path, &profile.id, Duration::from_secs(5));
+        assert!(idle.is_ok(), "the final idle packet was never saved without more input");
+        assert!(finished, "queue shutdown did not wait for its final checkpoint");
+        let saved = load_store_sqlite(&state.store_path).unwrap();
+        let text = saved.events.iter().filter_map(|event| event.text.as_deref()).collect::<String>();
+        assert_eq!(text, "idlefinal");
+    });
+}
+
+#[test]
 fn queued_terminal_input_bypasses_store_lock_and_preserves_control_boundaries() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

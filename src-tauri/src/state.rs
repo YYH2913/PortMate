@@ -278,6 +278,8 @@ impl SessionOpenCancellation {
 
 #[derive(Clone)]
 pub struct AppState {
+    #[cfg(test)]
+    pub(super) synchronous_inbound_logs: bool,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) store: Arc<Mutex<SessionStore>>,
     pub(super) credential_ops: Arc<Mutex<()>>,
@@ -356,6 +358,8 @@ pub(super) struct RuntimeRegistry {
 
 #[derive(Clone)]
 pub(super) struct SessionIo {
+    #[cfg(test)]
+    pub(super) synchronous_inbound_logs: bool,
     pub(super) app_handle: Option<AppHandle>,
     pub(super) store: Arc<Mutex<SessionStore>>,
     pub(super) runtimes: RuntimeRegistry,
@@ -379,6 +383,8 @@ impl AppState {
 
     pub(super) fn session_io(&self) -> SessionIo {
         SessionIo {
+            #[cfg(test)]
+            synchronous_inbound_logs: self.synchronous_inbound_logs,
             app_handle: self.app_handle.clone(),
             store: Arc::clone(&self.store),
             runtimes: self.runtimes(),

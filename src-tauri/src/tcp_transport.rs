@@ -1,5 +1,5 @@
 use super::transport_timing::{
-    STREAM_PERSIST_INTERVAL, TCP_RUNTIME_SHUTDOWN_TIMEOUT, TCP_RUNTIME_WRITE_TIMEOUT,
+    TCP_RUNTIME_SHUTDOWN_TIMEOUT, TCP_RUNTIME_WRITE_TIMEOUT,
 };
 use super::*;
 
@@ -169,8 +169,6 @@ pub(super) fn read_tcp_stream(
         let io = state.session_io();
         let session_id = profile.id.clone();
         let mut buffer = vec![0_u8; 8192];
-        let mut last_persist = Instant::now();
-        let mut has_unpersisted_stream = false;
         let mut telnet = telnet.map(TelnetNegotiator::new);
         let mut disconnect_reason = None;
         let mut disconnect_reason_recorded = false;
@@ -201,7 +199,7 @@ pub(super) fn read_tcp_stream(
                         (buffer[..size].to_vec(), Vec::new())
                     };
                     let has_protocol_bytes = !bytes.is_empty();
-                    let accepted = record_channel_bytes_with_accepted_side_effect(
+                    record_channel_bytes_with_accepted_side_effect(
                         &io,
                         &session_id,
                         Some(&runtime_id),
@@ -217,9 +215,6 @@ pub(super) fn read_tcp_stream(
                             }
                         },
                     );
-                    if accepted && has_protocol_bytes {
-                        has_unpersisted_stream = true;
-                    }
                     for reply in replies {
                         let write_result =
                             write_tcp_bytes(&writer, &reply, "Telnet 协商回复写入").await;
@@ -261,20 +256,12 @@ pub(super) fn read_tcp_stream(
                     break;
                 }
             }
-
-            if has_unpersisted_stream && last_persist.elapsed() >= STREAM_PERSIST_INTERVAL {
-                if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                    eprintln!("PortMate: failed to persist {label} stream data: {error}");
-                }
-                has_unpersisted_stream = false;
-                last_persist = Instant::now();
-            }
         }
 
         if let Some(negotiator) = telnet.as_mut() {
             let bytes = negotiator.finish();
             if !bytes.is_empty() {
-                let accepted = record_channel_bytes_with_accepted_side_effect(
+                record_channel_bytes_with_accepted_side_effect(
                     &io,
                     &session_id,
                     Some(&runtime_id),
@@ -288,13 +275,6 @@ pub(super) fn read_tcp_stream(
                         let _ = tap.send(bytes.clone());
                     },
                 );
-                has_unpersisted_stream |= accepted;
-            }
-        }
-
-        if has_unpersisted_stream {
-            if let Err(error) = persist_store_arc(&io.store_path, &io.store) {
-                eprintln!("PortMate: failed to persist final {label} stream data: {error}");
             }
         }
 
