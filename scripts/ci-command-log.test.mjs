@@ -162,10 +162,14 @@ describe("CI command logging", () => {
       resolve(import.meta.dirname, "..", "vcpkg.json"),
       "utf8",
     ));
+    const packageManifest = JSON.parse(readFileSync(
+      resolve(import.meta.dirname, "..", "package.json"),
+      "utf8",
+    ));
     expect(vcpkgManifest).toEqual({
       $schema: "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
       name: "portmate-native-ci",
-      version: "0.1.7",
+      version: packageManifest.version,
       "builtin-baseline": "86dc619bd8d9697405ae5c944b474117ea9457ce",
       dependencies: ["libsodium"],
     });
