@@ -8,7 +8,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Changed
 
-- Future changes will be recorded here.
+- Desktop terminal input now uses a bounded, sequence-ordered IPC pipeline instead of waiting
+  for a complete IPC round trip per keystroke. Stream bindings reject input from replaced
+  connections, while acknowledged sends and binary mouse frames retain ordering barriers.
+- Repeated backspace and line-editing operations defer completion UI refreshes while updating
+  the tracked input immediately; submissions and navigation still refresh without a delay.
 
 ## [0.1.8] - 2026-09-05
 

@@ -4,6 +4,7 @@ import {
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
   reduceTerminalCompletionInputWithSubmissions,
+  terminalCompletionNeedsImmediateRefresh,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
   terminalCompletionSupported,
@@ -16,6 +17,14 @@ import {
 } from "./terminal-completion-prefs";
 
 describe("terminal completion state", () => {
+  it("defers repeated editing but refreshes submission and navigation immediately", () => {
+    for (const text of ["text", "\b", "\x7f", "\x7f\x7f", "\u0015", "\u0017"]) {
+      expect(terminalCompletionNeedsImmediateRefresh(text), JSON.stringify(text)).toBe(false);
+    }
+    for (const text of ["\r", "\n", "\t", "\x03", "\x1b[A", "\x1b[3~", "paste\r"]) {
+      expect(terminalCompletionNeedsImmediateRefresh(text), JSON.stringify(text)).toBe(true);
+    }
+  });
   it("normalizes damaged preferences to bounded defaults", () => {
     expect(normalizeTerminalCompletionPreferences({
       enabled: false,

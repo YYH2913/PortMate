@@ -25,6 +25,7 @@ import {
   reduceTerminalCompletionInput,
   reduceTerminalCompletionInputWithSubmissions,
   terminalCompletionSourceLabel,
+  terminalCompletionNeedsImmediateRefresh,
   terminalCompletionSuggestions,
   terminalCompletionSupported,
   terminalCompletionUsageHint,
@@ -743,7 +744,7 @@ function TerminalCanvas({
       completionInputRef.current = next;
       return reduction.submittedCommands;
     }
-    if (/[\u0000-\u001f\u007f]/.test(text)) storeCompletionInput(next);
+    if (terminalCompletionNeedsImmediateRefresh(text)) storeCompletionInput(next);
     else storeCompletionInputDeferred(next);
     if (completionDismissedLineRef.current) setCompletionDismissedLine("");
     if (completionSelectionRef.current !== 0) {

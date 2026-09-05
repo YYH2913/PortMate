@@ -95,6 +95,15 @@ export function reduceTerminalCompletionInput(
   return reduceTerminalCompletionInputWithSubmissions(current, text).state;
 }
 
+/** Editing changes the tracked line immediately, but its UI can settle later.
+ * Submission, navigation, paste controls and interrupts remain immediate. */
+export function terminalCompletionNeedsImmediateRefresh(text: string): boolean {
+  for (const character of text) {
+    if (character < " " && !["\b", "\u0015", "\u0017"].includes(character)) return true;
+  }
+  return false;
+}
+
 export function reduceTerminalCompletionInputWithSubmissions(
   current: TerminalCompletionInputState,
   text: string,
