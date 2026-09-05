@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
 import { checkTerminalStreamRegressions } from "./terminal-stream-regressions.mjs";
+import { checkTerminalCompletionRegressions } from "./terminal-completion-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -1874,6 +1875,8 @@ try {
   )), `mobile pane bounds are invalid: ${JSON.stringify(mobileLayout)}`);
   assert(pageErrors.length === 0, `browser exceptions: ${JSON.stringify(pageErrors)}`);
 
+  const completionRegressions = await checkTerminalCompletionRegressions(page);
+  assert(pageErrors.length === 0, `browser exceptions after completion regressions: ${JSON.stringify(pageErrors)}`);
   const streamRegressions = await checkTerminalStreamRegressions(page, screenshotPrefix);
   assert(pageErrors.length === 0, `browser exceptions after stream regressions: ${JSON.stringify(pageErrors)}`);
 
@@ -1948,6 +1951,7 @@ try {
       resumed: completionAfterPasteBoundary?.includes("status") ?? false,
     },
     completionPlacement,
+    completionRegressions,
     completionAfterRemoteCursorMove,
     completionUsageOnly,
     mobileCompletionPlacement,

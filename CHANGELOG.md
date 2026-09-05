@@ -13,6 +13,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   connections, while acknowledged sends and binary mouse frames retain ordering barriers.
 - Repeated backspace and line-editing operations defer completion UI refreshes while updating
   the tracked input immediately; submissions and navigation still refresh without a delay.
+- Command completion keeps its panel mounted across text and candidate updates. Only panel-size,
+  cursor-row, and terminal-size changes recalculate its placement, avoiding repeated entrance
+  animations and terminal/timestamp shifts while preserving below-cursor suggestions.
 
 ## [0.1.8] - 2026-09-05
 

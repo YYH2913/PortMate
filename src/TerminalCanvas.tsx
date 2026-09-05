@@ -427,6 +427,7 @@ function TerminalCanvas({
   const pendingCompletionInputRef = useRef<TerminalCompletionInputState | null>(null);
   const completionSuggestionsRef = useRef<readonly TerminalCompletionSuggestion[]>([]);
   const completionSurfaceOpenRef = useRef(false);
+  const completionAnchorRowRef = useRef("");
   const completionSelectionRef = useRef(0);
   const acceptCompletionRef = useRef<(suggestion: TerminalCompletionSuggestion) => void>(() => {});
   const dismissCompletionRef = useRef<() => void>(() => {});
@@ -453,7 +454,6 @@ function TerminalCanvas({
   const completionDismissedLineRef = useRef("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
-  const [completionReadyKey, setCompletionReadyKey] = useState("");
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
   const privateInputActive = manualPrivateInput || detectedPrivateInput;
   displayModeRef.current = displayMode;
@@ -567,11 +567,7 @@ function TerminalCanvas({
       + (completionPreferences.previewMode === "input" && selectedCompletion ? 28 : 0)
       + 16
     : 0;
-  const completionGeometryKey = completionSurfaceOpen
-    ? [active?.profile.id ?? "", completionInput.line, completionCandidates.length, completionUsageHint?.label ?? "", completionPanelHeight, completionPreferences.previewMode].join("\u0000")
-    : "";
-  const completionSurfaceVisible = completionSurfaceOpen && completionReadyKey === completionGeometryKey;
-  const completionShiftTransform = completionSurfaceVisible && completionAnchor.shift > 0
+  const completionShiftTransform = completionSurfaceOpen && completionAnchor.shift > 0
     ? `translateY(-${completionAnchor.shift}px)`
     : undefined;
   refreshCompletionAnchorRef.current = () => {
@@ -595,6 +591,7 @@ function TerminalCanvas({
     const shift = Math.min(requiredShift, Math.max(0, naturalCursorBottom - 8));
     const cursorBottom = naturalCursorBottom - shift;
     const top = Math.max(8, Math.min(cursorBottom + 2, canvasRect.height - reservedHeight - 8));
+    completionAnchorRowRef.current = `${term.buffer.active.type}:${term.buffer.active.cursorY}:${term.rows}`;
     setCompletionAnchor((current) => (
       Math.abs(current.top - top) < 0.5
         && Math.abs(current.cursorBottom - cursorBottom) < 0.5
@@ -1785,6 +1782,9 @@ function TerminalCanvas({
       if (restorePending) return;
       fit.fit();
       scheduleTimestampGutter();
+      // Pixel/font changes also affect the anchor when the terminal's cell
+      // count stays the same and xterm does not emit onResize.
+      scheduleCompletionAnchorRefresh(true);
       const size = `${term.cols}x${term.rows}`;
       host.dataset.terminalSize = size;
       if (resizeReportTimer !== null) {
@@ -1850,7 +1850,6 @@ function TerminalCanvas({
     let semanticFrame: number | null = null;
     let semanticTimer: number | null = null;
     let completionAnchorFrame: number | null = null;
-    let completionAnchorRow = "";
     let lastInteractiveInputAt = 0;
     let semanticLines: TerminalSemanticDecorationLine[] = [];
     let semanticPresentationFingerprint = "";
@@ -1993,8 +1992,7 @@ function TerminalCanvas({
       if (terminalDisposed || !completionSurfaceOpenRef.current) return;
       const buffer = term.buffer.active;
       const row = `${buffer.type}:${buffer.cursorY}:${term.rows}`;
-      if (!force && completionAnchorRow === row) return;
-      completionAnchorRow = row;
+      if (!force && completionAnchorRowRef.current === row) return;
       if (completionAnchorFrame !== null) return;
       completionAnchorFrame = window.requestAnimationFrame(() => {
         completionAnchorFrame = null;
@@ -2560,13 +2558,14 @@ function TerminalCanvas({
 
   useLayoutEffect(() => {
     if (!completionSurfaceOpen) {
-      if (completionReadyKey !== "") setCompletionReadyKey("");
+      completionAnchorRowRef.current = "";
       return;
     }
-    setCompletionReadyKey("");
+    // Position the existing panel before paint. Text/candidate identity is not
+    // geometry: keeping it out of these dependencies avoids unmounting the
+    // panel, restarting its animation and unshifting the terminal on each edit.
     refreshCompletionAnchorRef.current();
-    setCompletionReadyKey(completionGeometryKey);
-  }, [completionGeometryKey, completionSurfaceOpen]);
+  }, [active?.profile.id, viewId, completionPanelHeight, completionSurfaceOpen]);
 
   useEffect(() => {
     if (!searchOpen) {
@@ -2674,16 +2673,16 @@ function TerminalCanvas({
 
   return (
     <div
-      className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceVisible ? " completion-open" : ""}`}
+      className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceOpen ? " completion-open" : ""}`}
       data-terminal-focused={focused ? "true" : "false"}
       data-terminal-session-id={sessionId || undefined}
       data-terminal-view-id={viewId || undefined}
       inert={!focused}
       data-terminal-display-mode={active ? displayMode : undefined}
       data-terminal-private-input={privateInputActive ? "true" : "false"}
-      data-completion-placement={completionSurfaceVisible ? "below" : undefined}
-      data-completion-cursor-bottom={completionSurfaceVisible ? completionAnchor.cursorBottom : undefined}
-      data-completion-shift={completionSurfaceVisible ? completionAnchor.shift : undefined}
+      data-completion-placement={completionSurfaceOpen ? "below" : undefined}
+      data-completion-cursor-bottom={completionSurfaceOpen ? completionAnchor.cursorBottom : undefined}
+      data-completion-shift={completionSurfaceOpen ? completionAnchor.shift : undefined}
       style={{
         "--terminal-background": canvasBackground ?? "#0d1117",
         "--terminal-completion-height": `${completionPanelHeight}px`,
@@ -2857,7 +2856,7 @@ function TerminalCanvas({
                 </button>
               </form>
             ) : null}
-          {completionSurfaceVisible ? (
+          {completionSurfaceOpen ? (
             <div className="terminal-completion-layer">
               <section
                 className="terminal-completion"
