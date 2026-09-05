@@ -23,6 +23,7 @@
     "test:tmux-version-compat": "node scripts/tmux-version-compat-check.mjs",
     "pretest:workspace-ui": "node scripts/ensure-node-version.mjs",
     "test:workspace-ui": "node scripts/workspace-ui-check.mjs",
+    "docs:screenshots": "node scripts/readme-screenshots.mjs",
     "pretest:mcp-http-client": "node scripts/ensure-node-version.mjs",
     "test:mcp-http-client": "cargo build --locked -p portmate-mcp && node scripts/mcp-http-client-check.mjs",
     "pretest:mcp-stdio-client": "node scripts/ensure-node-version.mjs",

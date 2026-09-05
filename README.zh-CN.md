@@ -6,6 +6,8 @@
 
 <p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
+<p align="center"><code>v0.1.8</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+
 <p align="center">
   <a href="./README.md">English</a> |
   <strong>简体中文</strong>
@@ -23,11 +25,42 @@
 
 ## PortMate 是什么
 
-PortMate 是一个以终端为核心的 Tauri v2 桌面应用。它把 SSH、Shell PTY、串口、Telnet、Raw TCP、Tmux、文件传输、隧道、日志和系统监控放在同一个可分屏工作区中。
+PortMate 是一个围绕终端会话构建的人机协作工作台。桌面用户可以连接设备、查看实时状态、输入命令并处理交互提示；外部 MCP 客户端则可以在用户授权后使用同一组会话、传输、脚本和路由能力。
 
-项目的一个重点是会话级身份与信任隔离：SSH Host Key、客户端身份、认证顺序和 Jump Host 策略都属于具体 Profile，不依赖系统全局 `~/.ssh/known_hosts`。同一 IP 和端口对应不同设备、重装系统或实验室板卡时，可以分别保存和审查信任关系。
+两条工作路径有意保持独立。需要协作时，双方可以同步查看同一会话的状态、输入和输出；不需要协作时，也可以各自建立连接、执行任务并处理结果。
+人可以继续在键盘上操作，自动化程序也不会抢占桌面终端的界面或输入焦点。MCP 是可选的控制面，桌面端工具不以 MCP 为前置条件。
 
-PortMate 本身不内置 AI 助手。随包提供的 `portmate-mcp` bridge 允许外部 MCP Host 在用户授权范围内读取会话状态、查询日志或执行控制动作。
+PortMate 将这套协作边界设计成可审计的规则：授权决定客户端能够使用哪些能力、访问哪些会话；写操作可以要求明确确认。
+受控的 MCP 操作会记录来源客户端、目标、动作和结果。SSH Host Key、客户端身份、认证顺序和 Jump Host 策略同样按 Profile 隔离，不会混入系统全局 `~/.ssh/known_hosts`，便于对不同设备和信任关系分别审查。
+
+PortMate 基于 Tauri v2 构建，把 SSH、Shell PTY、串口、Telnet、Raw TCP、Tmux、文件传输、隧道、日志和系统监控放在同一个可分屏工作区中。
+PortMate 本身不内置 AI 助手；随包提供的 `portmate-mcp` bridge 是一个可选且受权限控制的外部接入面。
+
+## 界面预览
+
+以下截图来自隔离的本地 fixture。主机名、地址、文件和数据均为合成内容，不包含凭据或真实设备数据。
+
+<p align="center">
+  <img src="./docs/images/workspace.png" alt="PortMate 分屏终端工作区" width="100%">
+</p>
+<p align="center"><em>包含 SSH、串口、时间戳、语义配色和连接状态指示的分屏终端工作区。</em></p>
+
+<p align="center">
+  <img src="./docs/images/terminal-hex.png" alt="PortMate 文本与 Hex 对照视图" width="100%">
+</p>
+<p align="center"><em>并排查看实时字节流的文本和 Hex 视图。</em></p>
+
+<p align="center">
+  <img src="./docs/images/file-manager.png" alt="PortMate SFTP 文件管理器" width="100%">
+</p>
+<p align="center"><em>带本地和远端窗格及 SFTP 操作的桌面文件管理器。</em></p>
+
+<p align="center">
+  <img src="./docs/images/mcp-grants.png" alt="PortMate MCP 授权界面" width="100%">
+</p>
+<p align="center"><em>可明确选择权限范围和会话范围的 MCP 授权界面。</em></p>
+
+如需重新生成这些文档截图，可运行 `npm run docs:screenshots`。命令使用 Playwright，只写入 `docs/images/`，不会连接设备或读取主机文件。
 
 ## 主要功能
 
@@ -195,7 +228,9 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 }
 ```
 
-未显式生成或轮换 Token 前，JSON 会保持为空。请把复制出的 JSON 当作密码处理，不要提交到代码仓库、日志、截图或共享文档；轮换 Token 会使旧值失效。
+如果已保存的 HTTP 配置中存在 Token，PortMate 会直接显示并复用它生成 JSON。只有在没有
+可用 Token 或需要使旧 Token 失效时，才应生成或轮换 Token。请把复制出的 JSON 当作密码
+处理，不要提交到代码仓库、日志、截图或共享文档；轮换 Token 会使旧值失效。
 
 ### 权限范围
 

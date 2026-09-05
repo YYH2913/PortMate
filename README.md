@@ -6,6 +6,8 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
+<p align="center"><code>v0.1.8</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+
 <p align="center">
   <strong>English</strong> |
   <a href="./README.zh-CN.md">简体中文</a>
@@ -23,11 +25,44 @@
 
 ## What is PortMate?
 
-PortMate is a terminal-first Tauri v2 desktop application. It brings SSH, local Shell PTY, serial, Telnet, raw TCP, Tmux, file transfer, tunnels, logging, and system monitoring into one split-pane workspace.
+PortMate is a terminal workspace for people and automation working around the same operational context. A desktop operator can connect to a device, inspect live state, type commands, and handle interactive prompts.
+An external MCP client can use the same session, transfer, script, and routing capabilities when the user grants access.
 
-One of its primary design goals is session-level identity and trust isolation. SSH host keys, client identities, authentication order, and Jump Host policies belong to a PortMate Profile instead of the global `~/.ssh/known_hosts`. Devices that share an IP and port, rebuilt systems, and lab boards can therefore keep separate, reviewable trust records.
+The two workflows are intentionally independent. When a task needs coordination, they can synchronize on a session's state, input, and output.
+When it does not, each side can connect, act, and finish on its own: a person can keep working at the keyboard, while automation can run an authorized task without taking over the desktop's screen or input focus.
+MCP is an optional control surface, not a prerequisite for the desktop tools.
 
-PortMate does not embed an AI assistant. The packaged `portmate-mcp` bridge lets external MCP hosts inspect sessions, query logs, or perform control actions within grants approved by the user.
+PortMate makes this collaboration reviewable. Grants define which client may use which capability and session, and write operations can require explicit confirmation.
+Controlled MCP actions record the client, target, action, and outcome. SSH host keys, client identities, authentication order, and Jump Host policies are isolated per Profile instead of being merged into the global `~/.ssh/known_hosts`.
+
+Built with Tauri v2, PortMate brings SSH, local Shell PTY, serial, Telnet, raw TCP, Tmux, file transfer, tunnels, logging, and system monitoring into one split-pane workspace.
+It does not embed an AI assistant; the packaged `portmate-mcp` bridge is an optional, permissioned way for external MCP hosts to use these capabilities.
+
+## Screenshots
+
+The screenshots below use an isolated, local-only fixture. Hostnames, addresses, files, and values are synthetic; no credentials or real device data are included.
+
+<p align="center">
+  <img src="./docs/images/workspace.png" alt="PortMate split terminal workspace" width="100%">
+</p>
+<p align="center"><em>Split-pane terminal workspace with SSH, serial, timestamps, semantic colors, and connection indicators.</em></p>
+
+<p align="center">
+  <img src="./docs/images/terminal-hex.png" alt="PortMate text and Hex terminal view" width="100%">
+</p>
+<p align="center"><em>Text and Hex views side by side for inspecting a live byte stream.</em></p>
+
+<p align="center">
+  <img src="./docs/images/file-manager.png" alt="PortMate SFTP file manager" width="100%">
+</p>
+<p align="center"><em>Desktop file manager with local and remote panes and SFTP actions.</em></p>
+
+<p align="center">
+  <img src="./docs/images/mcp-grants.png" alt="PortMate MCP authorization" width="100%">
+</p>
+<p align="center"><em>MCP authorization with explicit scopes and per-session access.</em></p>
+
+To regenerate these documentation fixtures locally, run `npm run docs:screenshots`. The command uses Playwright and writes only to `docs/images/`; it never connects to a device or reads host files.
 
 ## Features
 
@@ -196,7 +231,10 @@ The HTTP page generates the flat single-server JSON accepted by the CC Switch ed
 }
 ```
 
-The JSON is empty until a Token is explicitly generated or rotated. Treat copied JSON as a password: keep it out of source control, logs, screenshots, and shared documents. Rotating the Token invalidates the previous value.
+If the saved HTTP configuration already has a Token, PortMate displays it and reuses it in the
+generated JSON. Generate or rotate a Token only when the configuration has no usable Token or you
+want to invalidate the previous one. Treat copied JSON as a password: keep it out of source control,
+logs, screenshots, and shared documents. Rotating the Token invalidates the previous value.
 
 ### Grant Scopes
 

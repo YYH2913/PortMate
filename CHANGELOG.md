@@ -6,6 +6,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Changed
+
+- Future changes will be recorded here.
+
 ## [0.1.8] - 2026-09-05
 
 ### Added
