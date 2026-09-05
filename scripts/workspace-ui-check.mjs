@@ -505,6 +505,8 @@ try {
     window.__pendingChildWindowCreates = [];
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends = [];
+    window.__terminalInputStreams = new Map();
+    window.__terminalStreamWrites = [];
     window.__sessionOpenErrors = {};
     window.__deferFileLoads = false;
     window.__pendingFileLoads = [];
@@ -1672,13 +1674,36 @@ try {
             records: args.request.recordIds.length,
           };
         }
+        if (command === "begin_terminal_input_stream") {
+          const streamId = crypto.randomUUID();
+          window.__terminalInputStreams.set(args.sessionId, { streamId, next: 0, pending: new Map() });
+          return { streamId };
+        }
+        if (command === "close_terminal_input_stream") {
+          if (window.__terminalInputStreams.get(args.sessionId)?.streamId === args.streamId) {
+            window.__terminalInputStreams.delete(args.sessionId);
+          }
+          return null;
+        }
         if (command === "send_text" || command === "send_bytes") {
-          if (!window.__deferTerminalSends) return null;
+          const admit = () => {
+            if (!args.inputOrder) return;
+            if (!window.__sessions.some(session => session.profile.id === args.sessionId)) throw new Error("deleted input session");
+            const stream = window.__terminalInputStreams.get(args.sessionId);
+            if (stream?.streamId !== args.inputOrder.streamId) throw new Error("stale input stream");
+            if (args.inputOrder.sequence < stream.next) return;
+            stream.pending.set(args.inputOrder.sequence, args.text);
+            while (stream.pending.has(stream.next)) {
+              window.__terminalStreamWrites.push(stream.pending.get(stream.next));
+              stream.pending.delete(stream.next++);
+            }
+          };
+          if (!window.__deferTerminalSends) { admit(); return null; }
           return new Promise((resolve, reject) => window.__pendingTerminalSends.push({
             command,
             args,
             reject,
-            resolve,
+            resolve: (value) => { try { admit(); resolve(value); } catch (error) { reject(error); } },
           }));
         }
         if (command === "serial_set_lines") {
@@ -5343,8 +5368,11 @@ Host staging
   await detachedPage.waitForTimeout(50);
   const detachedFirstInput = await detachedPage.evaluate((start) => window.__invokeCalls
     .filter((call) => call.command === "send_text").slice(start), detachedInputStart);
-  assert(detachedFirstInput.length === 1 && detachedFirstInput[0].args.text === "a",
-    `detached terminal dispatched overlapping input: ${JSON.stringify(detachedFirstInput)}`);
+  assert(detachedFirstInput.length === 2 && detachedFirstInput[0].args.text === "a"
+    && detachedFirstInput[1].args.text === "b"
+    && detachedFirstInput[0].args.inputOrder.streamId === detachedFirstInput[1].args.inputOrder.streamId
+    && detachedFirstInput[1].args.inputOrder.sequence === detachedFirstInput[0].args.inputOrder.sequence + 1,
+    `detached terminal did not pipeline ordered input: ${JSON.stringify(detachedFirstInput)}`);
   await detachedPage.evaluate(() => window.__pendingTerminalSends.shift().resolve(null));
   await detachedPage.waitForFunction(() => window.__pendingTerminalSends.length === 1);
   const detachedOrderedInput = await detachedPage.evaluate((start) => window.__invokeCalls
@@ -7760,14 +7788,16 @@ Host staging
   await deletedTerminalInputPage.waitForTimeout(50);
   const queuedDeletedInput = await deletedTerminalInputPage.evaluate((start) => window.__invokeCalls
     .filter((call) => call.command === "send_text").slice(start), deletedTerminalInputStart);
-  assert(queuedDeletedInput.length === 1 && queuedDeletedInput[0].args.text === "x",
-    `terminal input was not queued before Profile deletion: ${JSON.stringify(queuedDeletedInput)}`);
+  assert(queuedDeletedInput.length === 2 && queuedDeletedInput[0].args.text === "x"
+    && queuedDeletedInput[1].args.text === "y"
+    && queuedDeletedInput[1].args.inputOrder.sequence === queuedDeletedInput[0].args.inputOrder.sequence + 1,
+    `terminal input was not sequenced before Profile deletion: ${JSON.stringify(queuedDeletedInput)}`);
   const deletedTerminalInputMarker = "STALE-DELETED-TERMINAL-INPUT";
   await deletedTerminalInputPage.evaluate((marker) => {
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
     window.__deferTerminalSends = false;
-    window.__pendingTerminalSends.shift().reject(new Error(marker));
+    for (const pending of window.__pendingTerminalSends.splice(0)) pending.reject(new Error(marker));
   }, deletedTerminalInputMarker);
   await deletedTerminalInputPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
   await deletedTerminalInputPage.waitForTimeout(100);
@@ -7775,11 +7805,14 @@ Host staging
     calls: window.__invokeCalls.filter((call) => call.command === "send_text").slice(start),
     notices: [...document.querySelectorAll(".notice-dialog")].map((item) => item.textContent),
     pending: window.__pendingTerminalSends.length,
+    streamOpen: window.__terminalInputStreams.has("edge-router"),
+    nativeWrites: window.__terminalStreamWrites,
   }), deletedTerminalInputStart);
-  assert(deletedTerminalInputState.calls.length === 1
+  assert(deletedTerminalInputState.calls.length === 2
     && deletedTerminalInputState.calls[0].args.text === "x"
     && deletedTerminalInputState.notices.every((notice) => !notice?.includes(deletedTerminalInputMarker))
-    && deletedTerminalInputState.pending === 0,
+    && deletedTerminalInputState.pending === 0
+    && !deletedTerminalInputState.streamOpen && deletedTerminalInputState.nativeWrites.length === 0,
   `queued terminal input survived Profile deletion: ${JSON.stringify(deletedTerminalInputState)}`);
   assert(deletedTerminalInputErrors.length === 0,
     `deleted terminal input browser exceptions: ${JSON.stringify(deletedTerminalInputErrors)}`);
@@ -7811,7 +7844,7 @@ Host staging
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
     window.__deferTerminalSends = false;
-    window.__pendingTerminalSends.shift().reject(new Error("STALE-DELETED-DETACHED-INPUT"));
+    for (const pending of window.__pendingTerminalSends.splice(0)) pending.resolve(null);
   });
   await deletedDetachedTerminalPage.locator(".detached-pane-status", { hasText: "会话 Profile 已删除" }).waitFor();
   await deletedDetachedTerminalPage.waitForTimeout(100);
@@ -7819,11 +7852,14 @@ Host staging
     calls: window.__invokeCalls.filter((call) => call.command === "send_text").slice(start),
     pending: window.__pendingTerminalSends.length,
     status: document.querySelector(".detached-pane-status")?.textContent ?? "",
+    streamOpen: window.__terminalInputStreams.has("edge-router"),
+    nativeWrites: window.__terminalStreamWrites,
   }), deletedDetachedTerminalStart);
-  assert(deletedDetachedTerminalState.calls.length === 1
+  assert(deletedDetachedTerminalState.calls.length === 2
     && deletedDetachedTerminalState.calls[0].args.text === "m"
     && deletedDetachedTerminalState.pending === 0
-    && deletedDetachedTerminalState.status.includes("会话 Profile 已删除"),
+    && deletedDetachedTerminalState.status.includes("会话 Profile 已删除")
+    && !deletedDetachedTerminalState.streamOpen && deletedDetachedTerminalState.nativeWrites.length === 0,
   `detached terminal input survived Profile deletion: ${JSON.stringify(deletedDetachedTerminalState)}`);
   assert(deletedDetachedTerminalErrors.length === 0,
     `deleted detached terminal input browser exceptions: ${JSON.stringify(deletedDetachedTerminalErrors)}`);

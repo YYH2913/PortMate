@@ -20,6 +20,7 @@ mod session_profile_delete;
 mod session_terminal;
 mod state;
 mod terminal_byte_events;
+mod terminal_input_stream;
 mod webkit_runtime;
 
 use app_data_migration::*;

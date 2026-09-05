@@ -154,6 +154,7 @@ struct InteractiveWriteRequest {
 }
 
 struct InteractiveWriteCompletion {
+    runtime_id: Option<String>,
     sender: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     cancellation: Option<Arc<AtomicBool>>,
 }
@@ -266,6 +267,7 @@ pub(super) fn enqueue_interactive_bytes(
         false,
         false,
         InteractiveWriteCompletion {
+            runtime_id: None,
             sender: None,
             cancellation: None,
         },
@@ -382,8 +384,33 @@ fn enqueue_interactive_text_with_completion(
         coalesce,
         sensitive,
         InteractiveWriteCompletion {
+            runtime_id: None,
             sender: completion,
             cancellation,
+        },
+    )
+}
+
+pub(super) fn enqueue_terminal_stream_text(
+    io: SessionIo,
+    session_id: String,
+    runtime_id: &str,
+    text: String,
+    coalesce: bool,
+    sensitive: bool,
+) -> Result<(), String> {
+    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
+    enqueue_interactive_payload_with_completion(
+        io,
+        session_id,
+        text,
+        wire_bytes,
+        coalesce,
+        sensitive,
+        InteractiveWriteCompletion {
+            runtime_id: Some(runtime_id.to_string()),
+            sender: None,
+            cancellation: None,
         },
     )
 }
@@ -402,6 +429,9 @@ fn enqueue_interactive_payload_with_completion(
     }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
         .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
+    if completion.runtime_id.as_ref().is_some_and(|expected| expected != &runtime_id) {
+        return Err("连接已变化，已拒绝旧连接的终端输入".into());
+    }
     let key = (io.store_path.clone(), session_id.clone());
     let sender = {
         let mut queues = INTERACTIVE_WRITE_QUEUES
@@ -600,6 +630,7 @@ fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: Stri
 }
 
 pub(super) fn clear_interactive_write_queue(store_path: &Path, session_id: &str) {
+    terminal_input_stream::clear_session_streams(store_path, session_id);
     if let Some(queues) = INTERACTIVE_WRITE_QUEUES.get() {
         let queue = queues
             .lock()

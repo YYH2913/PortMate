@@ -136,6 +136,7 @@ try {
       invoke: async (command, args = {}) => {
         if (command === "plugin:event|listen") { listeners.set(args.event, [...(listeners.get(args.event) ?? []), args.handler]); return args.handler; }
         if (command === "plugin:event|unlisten") { unregister(args.event, args.eventId); return null; }
+        if (command === "begin_terminal_input_stream") return { streamId: crypto.randomUUID() };
         if (command === "list_sessions") return sessions;
         if (command === "tail_log") return events[args.sessionId] ?? [];
         if (command.includes("command_history")) return { revision: 1, entries: [], migrated: true };

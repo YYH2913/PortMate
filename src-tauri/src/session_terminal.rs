@@ -230,17 +230,29 @@ pub(crate) fn read_screen(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Preserve the existing desktop command arguments.
 pub(crate) async fn send_text(
     state: State<'_, AppState>,
+    window: WebviewWindow,
     session_id: String,
     text: String,
     interactive: Option<bool>,
     queued: Option<bool>,
     await_write: Option<bool>,
     sensitive: Option<bool>,
+    input_order: Option<terminal_input_stream::TerminalInputOrder>,
 ) -> Result<Option<SessionEvent>, String> {
     let interactive = interactive.unwrap_or(false);
     let sensitive = sensitive.unwrap_or(false);
+    if let Some(order) = input_order {
+        if !queued.unwrap_or(false) || await_write.unwrap_or(false) {
+            return Err("有序终端输入仅用于非等待式队列写入".into());
+        }
+        terminal_input_stream::accept_text(
+            state.session_io(), session_id, window.label(), order, text, interactive, sensitive,
+        )?;
+        return Ok(None);
+    }
     // `queued` keeps the low-latency keyboard path asynchronous. Callers that
     // submit an atomic payload (paste or the sender panel) can retain the
     // queue contract while requesting an acknowledgement after the actual

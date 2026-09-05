@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TerminalInputPump, TerminalInputPumpRegistry } from "./terminal-input-pump";
 
 function deferred() {
@@ -8,6 +8,90 @@ function deferred() {
 }
 
 describe("terminal input pump", () => {
+  it("pipelines 60 repeated deletes without accumulating 40ms IPC round trips", async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      const sent: number[] = [];
+      const pump = new TerminalInputPump(() => {
+        sent.push(now);
+        return new Promise(resolve => setTimeout(resolve, 40));
+      }, { orderedPipeline: true });
+      for (let index = 0; index < 60; index++) {
+        now = index * 10;
+        void pump.enqueue("router", "\x7f", "atomic");
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(sent).toEqual(Array.from({ length: 60 }, (_, index) => index * 10));
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds parallel admission and keeps acknowledged writes and binary frames as barriers", async () => {
+    const calls: string[] = [];
+    const completions: ReturnType<typeof deferred>[] = [];
+    const pump = new TerminalInputPump((_id, text) => {
+      calls.push(text);
+      const completion = deferred();
+      completions.push(completion);
+      return completion.promise;
+    }, { orderedPipeline: true });
+    for (let i = 0; i < 10; i++) void pump.enqueue("router", String(i), "atomic");
+    const paced = pump.enqueue("router", "paced", "atomic", { awaitWrite: true });
+    const mouse = pump.enqueue("router", "mouse", "atomic", { binary: true });
+    expect(calls).toHaveLength(8);
+    completions[4].resolve();
+    await completions[4].promise;
+    expect(calls).toHaveLength(8);
+    completions[0].resolve();
+    await vi.waitFor(() => expect(calls).toHaveLength(9));
+    completions[1].resolve();
+    await vi.waitFor(() => expect(calls).toHaveLength(10));
+    expect(calls).not.toContain("paced");
+    for (const completion of completions) completion.resolve();
+    await vi.waitFor(() => expect(calls.at(-1)).toBe("paced"));
+    expect(calls).not.toContain("mouse");
+    completions.at(-1)!.resolve();
+    await paced;
+    await vi.waitFor(() => expect(calls.at(-1)).toBe("mouse"));
+    completions.at(-1)!.resolve();
+    await mouse;
+  });
+
+  it("does not resolve an awaited control boundary before its pipelined prefix", async () => {
+    const first = deferred();
+    const second = deferred();
+    const pump = new TerminalInputPump((_id, text) => text === "a" ? first.promise : second.promise, { orderedPipeline: true });
+    pump.enqueueFast("router", "a", "interactive");
+    let finished = false;
+    const enter = pump.enqueue("router", "\r", "atomic").then(() => { finished = true; });
+    second.resolve();
+    await second.promise;
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    first.resolve();
+    await enter;
+    expect(finished).toBe(true);
+  });
+
+  it("drops the unsent pipeline tail on reset without blocking a new connection", async () => {
+    const old = deferred();
+    const calls: string[] = [];
+    const onReset = vi.fn();
+    const registry = new TerminalInputPumpRegistry((_id, text) => {
+      calls.push(text);
+      return text === "new" ? Promise.resolve() : old.promise;
+    }, { orderedPipeline: true, onReset });
+    for (let i = 0; i < 12; i++) void registry.enqueue("router", String(i), "atomic");
+    registry.reset("router");
+    await registry.enqueue("router", "new", "atomic");
+    old.resolve();
+    await old.promise;
+    expect(calls).toEqual(["0", "1", "2", "3", "4", "5", "6", "7", "new"]);
+    expect(onReset).toHaveBeenCalledWith("router");
+  });
   it("flushes isolated input in the same browser turn without waiting for a timer", async () => {
     const calls: string[] = [];
     const pump = new TerminalInputPump((_sessionId, text) => { calls.push(text); });

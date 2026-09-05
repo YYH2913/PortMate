@@ -31,7 +31,9 @@ import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./sess
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
 import type { SyncInputOrigin } from "./sync-input-state";
 import TerminalCanvas from "./TerminalCanvas";
-import { TerminalInputPumpRegistry } from "./terminal-input-pump";
+import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
+import { TerminalInputStreams } from "./terminal-input-stream";
+import type { TerminalInputOrder } from "./terminal-input-stream";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
 import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
@@ -68,6 +70,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef(new AsyncOperationQueue());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
+  const terminalInputStreamsRef = useRef(new TerminalInputStreams(invokeBackend));
   const inputEpochRef = useRef(0);
   const profileDeletedRef = useRef(false);
   errorRef.current = error;
@@ -77,7 +80,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       return inputEpoch === null
         ? Promise.resolve()
         : sendInput(sessionId, text, origin, inputEpoch, options);
-    });
+    }, { orderedPipeline: true, onReset: (sessionId) => terminalInputStreamsRef.current.reset(sessionId) });
   }
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
@@ -316,23 +319,30 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     options?: TerminalInputSendOptions,
   ) {
     if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
+    let inputOrder: TerminalInputOrder | undefined;
     try {
       if (options?.binary) {
         const bytes = terminalBinaryStringToBytes(text);
         if (!bytes) throw new Error("终端二进制输入包含无效字节");
         await invokeBackend("send_bytes", { sessionId, bytes, queued: true });
       } else {
+        inputOrder = canPipelineTerminalInput(text, origin, options)
+          ? await terminalInputStreamsRef.current.prepare(sessionId, inputEpoch)
+          : undefined;
+        if (!terminalInputIsCurrent(inputEpoch)) return;
         await invokeBackend("send_text", {
           sessionId,
           text,
           interactive: origin === "interactive",
           queued: true,
+          ...(inputOrder ? { inputOrder } : {}),
           ...(options?.sensitive ? { sensitive: true } : {}),
           ...(options?.awaitWrite ? { awaitWrite: true } : {}),
         });
       }
       if (terminalInputIsCurrent(inputEpoch) && errorRef.current) setError("");
     } catch (inputError) {
+      if (inputOrder) terminalInputStreamsRef.current.invalidate(sessionId, inputOrder);
       if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));
     }
   }

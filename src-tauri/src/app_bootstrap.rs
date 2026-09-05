@@ -39,6 +39,8 @@ pub fn run() {
             log_commands::archive_log_shards,
             log_commands::export_session_bundle_archive,
             session_terminal::send_text,
+            terminal_input_stream::begin_terminal_input_stream,
+            terminal_input_stream::close_terminal_input_stream,
             session_terminal::send_bytes,
             session_terminal::send_key,
             session_terminal::run_command,

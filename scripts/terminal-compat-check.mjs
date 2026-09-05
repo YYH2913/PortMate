@@ -378,6 +378,7 @@ try {
     window.__TAURI_INTERNALS__ = {
       invoke: async (command, args = {}) => {
         window.__invokeCalls.push({ command, args });
+        if (command === "begin_terminal_input_stream") return { streamId: crypto.randomUUID() };
         if (command === "plugin:event|listen") {
           const listeners = window.__tauriEventListeners.get(args.event) || [];
           window.__tauriEventListeners.set(args.event, [...listeners, args.handler]);

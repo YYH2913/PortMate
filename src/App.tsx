@@ -83,7 +83,9 @@ import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
 import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputCandidate, SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
-import { TerminalInputPumpRegistry } from "./terminal-input-pump";
+import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
+import { TerminalInputStreams } from "./terminal-input-stream";
+import type { TerminalInputOrder } from "./terminal-input-stream";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
@@ -404,6 +406,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
+  const terminalInputStreamsRef = useRef(new TerminalInputStreams(invokeBackend));
   const syncInputRef = useRef(false);
   const syncInputSettingsRef = useRef(syncInputSettings);
   const syncInputCandidatesRef = useRef<SyncInputCandidate[]>([]);
@@ -413,7 +416,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return inputEpoch === null
         ? Promise.resolve()
         : sendTerminalInput(targetSessionId, text, origin, inputEpoch, options);
-    });
+    }, { orderedPipeline: true, onReset: (sessionId) => terminalInputStreamsRef.current.reset(sessionId) });
   }
   const terminalInputEpochsRef = useRef(new Map<string, number>());
   const deletedTerminalInputSessionsRef = useRef(new Set<string>());
@@ -3951,6 +3954,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ) {
     if (!sessionId || !text || !terminalInputIsCurrent(sessionId, inputEpoch)) return;
     let session: SessionSummary | undefined;
+    let inputOrder: TerminalInputOrder | undefined;
 
     try {
       if (isBackendAvailable()) {
@@ -3961,11 +3965,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         } else if (origin === "command") {
           await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
         } else {
+          inputOrder = canPipelineTerminalInput(text, origin, options)
+            ? await terminalInputStreamsRef.current.prepare(sessionId, inputEpoch)
+            : undefined;
+          if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
           await invokeBackend<SessionEvent | null>("send_text", {
             sessionId,
             text,
             interactive: origin === "interactive",
             queued: true,
+            ...(inputOrder ? { inputOrder } : {}),
             ...(options?.sensitive ? { sensitive: true } : {}),
             ...(options?.awaitWrite ? { awaitWrite: true } : {}),
           });
@@ -3981,6 +3990,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     } catch (error) {
       if (!terminalInputIsCurrent(sessionId, inputEpoch)) return;
+      if (inputOrder) terminalInputStreamsRef.current.invalidate(sessionId, inputOrder);
       session ??= sessionsRef.current.find((item) => item.profile.id === sessionId);
       if (session) {
         const failedSession = session;

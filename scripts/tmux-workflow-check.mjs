@@ -199,6 +199,7 @@ try {
             resolve,
           }));
         }
+        if (command === "begin_terminal_input_stream") return { streamId: crypto.randomUUID() };
         if (command === "list_sessions") return [initialSession];
         if (command === "tail_log") return [];
         if (command === "list_tmux_state") {

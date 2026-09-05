@@ -26,14 +26,30 @@ type PendingTerminalInput = {
   }>;
 };
 
-// Keep one in-flight request so lifecycle resets can fence every request that
-// has not reached the native queue yet. A microtask coalesces a synchronous
-// burst without relying on WebView timers, which can be clamped or throttled.
+type OrderedFlight = { settled: boolean; item: PendingTerminalInput; failed: boolean; error?: unknown };
+
+// Legacy senders remain single-flight. Desktop senders opt into the bounded
+// window only with native sequence ordering and a connection-bound stream.
+// Microtasks combine same-turn bursts without adding a timer delay.
 const MAX_FAST_IN_FLIGHT = 1;
+const MAX_ORDERED_IN_FLIGHT = 8;
+const MAX_PIPELINED_TEXT_CHARACTERS = 4096;
+
+export function canPipelineTerminalInput(text: string, origin: SyncInputOrigin, options?: TerminalInputSendOptions) {
+  return origin !== "command" && !options?.awaitWrite && !options?.binary
+    && text.length <= MAX_PIPELINED_TEXT_CHARACTERS;
+}
+
+type TerminalInputPumpOptions = {
+  /** Requires a sender with native sequence ordering and runtime fencing. */
+  orderedPipeline?: boolean;
+  onReset?: (sessionId?: string) => void;
+};
 
 /**
  * Coalesces interactive input within one browser turn and while IPC is busy.
- * Atomic input remains an explicit ordering boundary.
+ * Control frames remain intact. Ordered desktop streams can pipeline them;
+ * commands, binary frames and acknowledged writes remain IPC barriers.
  */
 export class TerminalInputPump {
   private readonly pending: PendingTerminalInput[] = [];
@@ -41,8 +57,9 @@ export class TerminalInputPump {
   private fastInFlightCount = 0;
   private fastFlushQueued = false;
   private fastFlushGeneration = 0;
+  private readonly orderedFlights: OrderedFlight[] = [];
 
-  constructor(private readonly send: TerminalInputSender) {}
+  constructor(private readonly send: TerminalInputSender, private readonly config: TerminalInputPumpOptions = {}) {}
 
   enqueue(
     sessionId: string,
@@ -66,6 +83,7 @@ export class TerminalInputPump {
         && !tail.options?.awaitWrite
         && Boolean(options?.binary) === Boolean(tail.options?.binary)
         && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
+        && (!this.config.orderedPipeline || tail.text.length + text.length <= MAX_PIPELINED_TEXT_CHARACTERS)
       ) {
         tail.text += text;
         tail.waiters.push(waiter);
@@ -97,8 +115,10 @@ export class TerminalInputPump {
     const tail = this.pending.at(-1);
     if (tail?.origin === "interactive"
       && tail.sessionId === sessionId
+      && !tail.options?.awaitWrite && !options?.awaitWrite
       && Boolean(options?.binary) === Boolean(tail.options?.binary)
-      && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)) {
+      && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
+      && (!this.config.orderedPipeline || tail.text.length + text.length <= MAX_PIPELINED_TEXT_CHARACTERS)) {
       tail.text += text;
     } else {
       this.pending.push({ sessionId, text, origin, options, waiters: [] });
@@ -108,15 +128,37 @@ export class TerminalInputPump {
 
   private launchFast(item: PendingTerminalInput): void {
     this.fastInFlightCount += 1;
+    const flight: OrderedFlight = { settled: false, item, failed: false };
+    if (this.config.orderedPipeline) this.orderedFlights.push(flight);
     let result: void | Promise<void>;
     try {
       result = this.send(item.sessionId, item.text, item.origin, item.options);
-    } catch {
-      result = undefined;
+    } catch (error) {
+      result = Promise.reject(error);
     }
     void Promise.resolve(result)
-      .catch(() => {})
+      .then(
+        () => { if (!this.config.orderedPipeline) this.resolveWaiters(item); },
+        (error) => {
+          flight.failed = true;
+          flight.error = error;
+          if (!this.config.orderedPipeline) this.resolveWaiters(item, error, true);
+        },
+      )
       .finally(() => {
+        if (this.config.orderedPipeline) {
+          // Slide credit only over a contiguous acknowledged prefix. A late
+          // first request cannot let later replies grow native reordering
+          // buffers indefinitely, even when the remaining calls finish fast.
+          flight.settled = true;
+          while (this.orderedFlights[0]?.settled) {
+            const completed = this.orderedFlights.shift()!;
+            this.resolveWaiters(completed.item, completed.error, completed.failed);
+            this.fastInFlightCount -= 1;
+          }
+          this.drain();
+          return;
+        }
         this.fastInFlightCount = Math.max(0, this.fastInFlightCount - 1);
         if (this.fastInFlightCount === 0) {
           const next = this.pending[0];
@@ -169,13 +211,15 @@ export class TerminalInputPump {
     // Let the current follow-up burst accumulate before crossing another IPC
     // boundary. Atomic enqueue() cancels the microtask and calls drain() directly.
     if (this.fastFlushQueued) return;
-    // Fill the bounded fast window before waiting for any IPC response. This
-    // path is only used for fire-and-forget printable input; a pending atomic
-    // item stops the loop so it cannot be overtaken by later keystrokes.
-    while (this.fastInFlightCount < MAX_FAST_IN_FLIGHT) {
+    // Fill the admission window without waiting for each IPC round trip.
+    // Explicit barriers cannot be overtaken by later keyboard packets.
+    while (this.fastInFlightCount < (this.config.orderedPipeline ? MAX_ORDERED_IN_FLIGHT : MAX_FAST_IN_FLIGHT)) {
       const next = this.pending[0];
       if (!next) return;
-      if (next.origin !== "interactive" || next.waiters.length > 0) {
+      const pipeline = this.config.orderedPipeline
+        ? canPipelineTerminalInput(next.text, next.origin, next.options)
+        : next.origin === "interactive" && next.waiters.length === 0;
+      if (!pipeline) {
         if (this.fastInFlightCount > 0) return;
         this.pending.shift();
         this.launchOrdered(next);
@@ -217,7 +261,7 @@ export class TerminalInputPump {
 export class TerminalInputPumpRegistry {
   private readonly pumps = new Map<string, TerminalInputPump>();
 
-  constructor(private readonly send: TerminalInputSender) {}
+  constructor(private readonly send: TerminalInputSender, private readonly config: TerminalInputPumpOptions = {}) {}
 
   enqueue(
     sessionId: string,
@@ -228,7 +272,7 @@ export class TerminalInputPumpRegistry {
     if (!sessionId) return Promise.resolve();
     let pump = this.pumps.get(sessionId);
     if (!pump) {
-      pump = new TerminalInputPump(this.send);
+      pump = new TerminalInputPump(this.send, this.config);
       this.pumps.set(sessionId, pump);
     }
     return pump.enqueue(sessionId, text, origin, options);
@@ -243,7 +287,7 @@ export class TerminalInputPumpRegistry {
     if (!sessionId) return;
     let pump = this.pumps.get(sessionId);
     if (!pump) {
-      pump = new TerminalInputPump(this.send);
+      pump = new TerminalInputPump(this.send, this.config);
       this.pumps.set(sessionId, pump);
     }
     pump.enqueueFast(sessionId, text, origin, options);
@@ -268,6 +312,7 @@ export class TerminalInputPumpRegistry {
   }
 
   reset(sessionId?: string): void {
+    this.config.onReset?.(sessionId);
     if (sessionId) {
       // Do not make a newly reconnected session wait for an IPC request that
       // belonged to the old runtime. The old pump still finishes its request
