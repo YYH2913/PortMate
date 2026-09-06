@@ -204,6 +204,22 @@ pub(super) fn clear_session_credentials(state: &AppState, session_id: &str) {
         .retain(|_, credentials| credentials.binding.session_id != session_id);
 }
 
+/// Drop credentials staged by a Tauri window that no longer exists. This is
+/// scoped by owner rather than session because another window may be logging
+/// into the same profile independently.
+pub(super) fn clear_session_credentials_for_owner(state: &AppState, owner_window: &str) {
+    let owner_window = owner_window.trim();
+    if owner_window.is_empty() {
+        return;
+    }
+    state
+        .session_credentials
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .retain(|_, credentials| credentials.owner_window != owner_window);
+}
+
 pub(super) fn clear_all_session_credentials(state: &AppState) {
     state
         .session_credentials

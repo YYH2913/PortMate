@@ -150,6 +150,20 @@ pub(super) fn clear_session_streams(path: &Path, session_id: &str) {
     }
 }
 
+/// Remove only streams owned by a destroyed Tauri window. A session may be
+/// rendered by both the main and detached windows, so another owner must stay
+/// usable when one window disappears.
+pub(super) fn clear_owner_streams(path: &Path, owner: &str) {
+    if let Some(streams) = STREAMS.get() {
+        streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(store_path, _, stream_owner), _| {
+                store_path != path || stream_owner != owner
+            });
+    }
+}
+
 pub(super) fn accept_text(
     io: SessionIo,
     session_id: String,
@@ -211,6 +225,34 @@ pub(crate) fn close_terminal_input_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destroying_one_window_clears_only_its_input_streams() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store.sqlite3");
+        let other_path = root.path().join("other.sqlite3");
+        let stream = |id: &str| InputStream {
+            id: id.to_string(),
+            runtime_id: format!("runtime-{id}"),
+            ordered: OrderedInput::default(),
+        };
+        let streams = STREAMS.get_or_init(|| Mutex::new(HashMap::new()));
+        {
+            let mut entries = streams.lock().unwrap();
+            entries.insert((path.clone(), "session".into(), "main".into()), stream("main"));
+            entries.insert((path.clone(), "session".into(), "detached".into()), stream("detached"));
+            entries.insert((other_path.clone(), "session".into(), "main".into()), stream("other"));
+        }
+        clear_owner_streams(&path, "main");
+        {
+            let entries = streams.lock().unwrap();
+            assert!(!entries.contains_key(&(path.clone(), "session".into(), "main".into())));
+            assert!(entries.contains_key(&(path.clone(), "session".into(), "detached".into())));
+            assert!(entries.contains_key(&(other_path.clone(), "session".into(), "main".into())));
+        }
+        clear_session_streams(&path, "session");
+        clear_session_streams(&other_path, "session");
+    }
 
     fn packet(text: &str, sensitive: bool) -> InputPacket {
         InputPacket {

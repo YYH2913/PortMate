@@ -173,6 +173,50 @@ fn staged_session_credentials_reject_invalid_values_and_profile_changes() {
 }
 
 #[test]
+fn destroying_one_window_clears_only_its_staged_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let state = test_app_state(test_ssh_profile(), root.path().join("store.sqlite3"));
+    let now = Instant::now();
+    let main = stage_session_credentials_for_owner(
+        &state.session_credentials,
+        &state.store.lock().unwrap(),
+        "main",
+        credential_request(Some("main-secret"), None),
+        now,
+    )
+    .unwrap();
+    let detached = stage_session_credentials_for_owner(
+        &state.session_credentials,
+        &state.store.lock().unwrap(),
+        "detached-pane-1",
+        credential_request(Some("detached-secret"), None),
+        now,
+    )
+    .unwrap();
+
+    clear_session_credentials_for_owner(&state, "main");
+    clear_session_credentials_for_owner(&state, "main");
+    clear_session_credentials_for_owner(&state, "unknown-window");
+    assert!(consume_session_credentials_for_owner(
+        &state.session_credentials,
+        "main",
+        "ssh-session-1",
+        &main.credential_handle,
+        now,
+    )
+    .is_err());
+    let retained = consume_session_credentials_for_owner(
+        &state.session_credentials,
+        "detached-pane-1",
+        "ssh-session-1",
+        &detached.credential_handle,
+        now,
+    )
+    .unwrap();
+    assert_eq!(retained.password.as_deref(), Some("detached-secret"));
+}
+
+#[test]
 fn rejected_validated_session_close_keeps_staged_credentials() {
     tauri::async_runtime::block_on(async {
         let root = tempfile::tempdir().unwrap();

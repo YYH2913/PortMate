@@ -151,6 +151,22 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building PortMate")
         .run(|app_handle, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &event
+            {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    // Retire state after destruction, not CloseRequested (which
+                    // can be cancelled), without invalidating another session view.
+                    terminal_input_stream::clear_owner_streams(&state.store_path, label);
+                    session_credentials::clear_session_credentials_for_owner(
+                        state.inner(),
+                        label,
+                    );
+                }
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     shutdown_mcp_http_runtime(state.inner());

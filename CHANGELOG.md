@@ -19,6 +19,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Destroyed windows release their pending input-stream buffers and staged SSH credentials without
+  closing shared sessions or invalidating another window's input stream. Cancelled close requests
+  do not discard this state.
 - Official MCP SDK compatibility checks now use isolated temporary Stores with explicit read-only
   grants instead of assuming unconfigured clients may read session resources. TypeScript stdio/HTTP
   checks additionally verify denied access before granting and after revocation.
