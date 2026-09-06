@@ -190,11 +190,43 @@ export async function smokePackagedApplicationRestartAndLegacyMigration(options)
 export async function smokePackagedApplicationLifecycle(options) {
   const migration = await smokePackagedApplicationRestartAndLegacyMigration(options);
   const conflict = await smokePackagedApplicationLegacyConflict(options, migration.migration.store);
+  const storeFailure = await smokePackagedApplicationStoreFailure({
+    ...options,
+    dataDirectory: join(dirname(options.dataDirectory), "setup-failure", currentAppDataDirectoryName),
+    label: `${options.label} unreadable Store startup`,
+  });
   return {
     ...migration,
     conflict,
+    storeFailure,
     conflictingAppDataRejected: true,
+    unreadableStoreRejected: true,
   };
+}
+
+export async function smokePackagedApplicationStoreFailure(options) {
+  const { dataDirectory, label } = options;
+  if (!isAbsolute(dataDirectory ?? "") || basename(dataDirectory) !== currentAppDataDirectoryName) {
+    throw new Error(`${label} Store failure smoke data directory must end with ${currentAppDataDirectoryName}`);
+  }
+  if (existsSync(dataDirectory)) {
+    throw new Error(`${label} Store failure smoke requires a new isolated data directory`);
+  }
+  // This passes the legacy-directory preflight, then fails in the real Tauri
+  // setup callback when opening SQLite. A preflight-only test misses that path.
+  const storePath = join(dataDirectory, "portmate-store.sqlite3");
+  mkdirSync(storePath, { recursive: true });
+  const rejection = await expectPackagedApplicationStartupRejection({
+    ...options,
+    expectedDiagnostic: "PortMate: startup failed: failed to open PortMate SQLite store",
+  });
+  if (rejection.exitCode !== 1) {
+    throw new Error(`${label} returned ${rejection.exitCode} instead of startup failure status 1`);
+  }
+  if (!statSync(storePath).isDirectory()) {
+    throw new Error(`${label} replaced the unreadable Store`);
+  }
+  return { ...rejection, unreadableStorePreserved: true };
 }
 
 export async function smokePackagedApplicationLegacyConflict(options, expectedCurrentStore) {
@@ -285,6 +317,7 @@ async function expectPackagedApplicationStartupRejection({
   environment = process.env,
   exitAfterMs = 5_000,
   timeoutMs = 45_000,
+  expectedDiagnostic = appDataConflictDiagnostic,
 }) {
   if (!executable || !isAbsolute(executable)) throw new Error(`${label} executable must be absolute`);
   const endpointPath = join(dataDirectory, "portmate-ipc.json");
@@ -325,18 +358,18 @@ async function expectPackagedApplicationStartupRejection({
       await delay(25);
     }
     endpointObserved ||= existsSync(endpointPath);
-    if (processResult === null) throw new Error(`${label} did not reject conflicting app data before timeout`);
+    if (processResult === null) throw new Error(`${label} did not reject invalid startup state before timeout`);
     if (processResult.error) throw processResult.error;
     if (!Number.isInteger(processResult.code) || processResult.code === 0 || processResult.signal) {
-      throw new Error(`${label} did not fail cleanly for conflicting app data`);
+      throw new Error(`${label} did not fail cleanly for invalid startup state`);
     }
     if (processResult.code < 0 || processResult.code > 255) {
       throw new Error(`${label} exited with a platform-invalid status ${processResult.code}`);
     }
-    if (endpointObserved) throw new Error(`${label} published IPC before rejecting conflicting app data`);
+    if (endpointObserved) throw new Error(`${label} published IPC before rejecting invalid startup state`);
     const diagnostic = stripAnsi(output);
-    if (!diagnostic.includes(appDataConflictDiagnostic)) {
-      throw new Error(`${label} omitted the conflicting app-data diagnostic`);
+    if (!diagnostic.includes(expectedDiagnostic)) {
+      throw new Error(`${label} omitted the expected startup diagnostic: ${expectedDiagnostic}`);
     }
     return {
       exitCode: processResult.code,

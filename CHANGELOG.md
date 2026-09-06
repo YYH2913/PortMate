@@ -26,8 +26,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Destroyed windows release their pending input-stream buffers and staged SSH credentials without
   closing shared sessions or invalidating another window's input stream. Cancelled close requests
   do not discard this state.
-- Native startup configuration failures now propagate through the Tauri build result before the
-  process exits, producing a clean non-zero status on macOS instead of a platform callback abort.
+- Application initialization failures now report their diagnostic and exit with status 1 inside
+  Tauri's setup callback, avoiding Tauri's panic-on-setup-error path. Package smoke checks cover
+  unreadable Stores after preflight as well as legacy-directory conflicts.
 - Resuming a private free-input draft from goto-line preserves its protection, including privacy
   enabled while the draft was hidden. Mode switches retain drafts; explicit cancellation clears
   them, allowing the next editor to begin a fresh input boundary.

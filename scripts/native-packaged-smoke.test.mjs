@@ -12,6 +12,7 @@ import {
   smokePackagedApplicationLifecycle,
   smokePackagedApplicationRestart,
   smokePackagedApplicationRestartAndLegacyMigration,
+  smokePackagedApplicationStoreFailure,
   validatePackagedSmokeEndpoint,
 } from "./native-packaged-smoke.mjs";
 
@@ -116,7 +117,7 @@ describe("native packaged runtime smoke", () => {
     const fixture = join(root, "migration-fixture.mjs");
     writeFileSync(fixture, `
       import { randomBytes } from "node:crypto";
-      import { existsSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+      import { existsSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
       import { dirname, join } from "node:path";
       const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
       const legacy = join(dirname(data), "dev.portmate.app");
@@ -135,6 +136,10 @@ describe("native packaged runtime smoke", () => {
       }
       const store = join(data, "portmate-store.sqlite3");
       const endpoint = join(data, "portmate-ipc.json");
+      if (existsSync(store) && statSync(store).isDirectory()) {
+        writeFileSync(process.stderr.fd, "PortMate: startup failed: failed to open PortMate SQLite store\\n");
+        process.exit(1);
+      }
       if (!existsSync(store)) writeFileSync(store, randomBytes(48));
       writeFileSync(endpoint, JSON.stringify({
         addr: "127.0.0.1:43123",
@@ -165,6 +170,34 @@ describe("native packaged runtime smoke", () => {
     expect(result.conflict.storesPreserved).toBe(true);
     expect(result.conflict.currentStore).toEqual(result.migration.store);
     expect(result.conflict.legacyStore.sha256).not.toBe(result.conflict.currentStore.sha256);
+    expect(result.unreadableStoreRejected).toBe(true);
+    expect(result.storeFailure).toEqual({
+      exitCode: 1,
+      endpointPublished: false,
+      diagnosticMatched: true,
+      unreadableStorePreserved: true,
+    });
+  });
+
+  it.each(["panic-exit", "wrong-diagnostic"])("rejects incorrect setup failure handling: %s", async (mode) => {
+    const root = temporaryRoot();
+    const fixture = join(root, "setup-failure.mjs");
+    writeFileSync(fixture, `
+      import { writeFileSync } from "node:fs";
+      const panicExit = process.argv[2] === "panic-exit";
+      writeFileSync(process.stderr.fd, panicExit
+        ? "PortMate: startup failed: failed to open PortMate SQLite store\\n"
+        : "unrelated startup failure\\n");
+      process.exit(panicExit ? 101 : 1);
+    `);
+    await expect(smokePackagedApplicationStoreFailure({
+      executable: process.execPath,
+      args: [fixture, mode],
+      dataDirectory: join(root, "dev.portmate.desktop"),
+      label: "setup failure fixture",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    })).rejects.toThrow(mode === "panic-exit" ? /startup failure status 1/ : /expected startup diagnostic/);
   });
 
   it("rejects an application that ignores the staged legacy data directory", async () => {

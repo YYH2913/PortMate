@@ -21,7 +21,13 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            initialize_application(app).map_err(std::io::Error::other)?;
+            // Tauri calls setup on RunEvent::Ready, after build() has returned,
+            // and panics if this callback returns Err. Report and exit here so
+            // initialization errors cannot unwind through a native callback.
+            if let Err(error) = initialize_application(app) {
+                eprintln!("PortMate: startup failed: {error}");
+                std::process::exit(1);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -149,9 +155,6 @@ pub fn run() {
     let app = match app {
         Ok(app) => app,
         Err(error) => {
-            // Setup errors must leave Tauri through its normal Result path.
-            // Calling process::exit from a platform callback can appear as an
-            // aborted/non-unwinding thread on macOS instead of a clean failure.
             eprintln!("PortMate: startup failed: {error}");
             std::process::exit(1);
         }
