@@ -86,6 +86,50 @@ export async function checkTerminalPrivateInputRegressions(page) {
   await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "send_text"
     && call.args.text === "echo public-editor-after-cancel\r" && !call.args.sensitive));
 
+  const restoredEditors = [];
+  for (const { reopen, protectWhileHidden } of [
+    { reopen: true, protectWhileHidden: false },
+    { reopen: false, protectWhileHidden: false },
+    { reopen: true, protectWhileHidden: true },
+    { reopen: false, protectWhileHidden: true },
+  ]) {
+    const value = `echo private-resumed-editor-${restoredEditors.length}`;
+    if (!protectWhileHidden) await privateButton.click();
+    await page.evaluate(async (value) => {
+      const { requestTerminalFreeInput } = await import("/src/terminal-free-input.ts");
+      requestTerminalFreeInput(window, value);
+    }, value);
+    await pane.getByRole("textbox", { name: "自由输入内容" }).waitFor();
+    if (!protectWhileHidden) await privateButton.click();
+    await page.evaluate(async () => {
+      const { requestTerminalGotoLine } = await import("/src/terminal-goto-line-event.ts");
+      requestTerminalGotoLine(window);
+    });
+    await pane.locator(".terminal-goto-line").waitFor();
+    if (protectWhileHidden) {
+      await privateButton.click();
+      await privateButton.click();
+    }
+    if (reopen) {
+      await page.evaluate(async () => {
+        const { requestTerminalFreeInput } = await import("/src/terminal-free-input.ts");
+        requestTerminalFreeInput(window);
+      });
+    } else {
+      await pane.locator(".terminal-goto-line input").press("Escape");
+    }
+    await pane.getByRole("textbox", { name: "自由输入内容" }).waitFor();
+    assert.equal(await pane.getByRole("textbox", { name: "自由输入内容" }).inputValue(), value);
+    assert.equal(await privateButton.getAttribute("aria-label"), "本行仍为私密输入",
+      `resuming an existing editor lost its privacy marker (${JSON.stringify({ reopen, protectWhileHidden })})`);
+    await page.evaluate(() => { window.__invokeCalls = []; });
+    await pane.getByRole("button", { name: "发送自由输入", exact: true }).click();
+    await pane.locator(".terminal-free-input").waitFor({ state: "detached" });
+    await page.waitForFunction((text) => window.__invokeCalls.some((call) => call.command === "send_text"
+      && call.args.text === text && call.args.sensitive === true), `${value}\r`);
+    restoredEditors.push({ reopen, protectWhileHidden });
+  }
+
   await prompt("Password: ");
   await page.waitForFunction((selector) => document.querySelector(`${selector} .terminal-canvas`)?.dataset.terminalPrivateInput === "true", paneSelector);
   await textarea.focus();
@@ -107,11 +151,13 @@ export async function checkTerminalPrivateInputRegressions(page) {
     privateEditorHistory: recorded.includes("private-editor-probe"),
     privateAutoHistory: recorded.includes("private-auto-probe"),
     cancelledEditorHistory: recorded.includes("cancelled-private-editor"),
+    restoredEditorHistory: recorded.includes("private-resumed-editor"),
+    restoredEditors,
     normalHistoryResumed: recorded.includes("echo public-after-private-probe"),
   };
   assert.ok(hiddenOnEnable && hiddenDuringInput && hiddenAtPassword
     && !results.privateKeyboardHistory && !results.privateEditorHistory && !results.privateAutoHistory
-    && !results.cancelledEditorHistory,
+    && !results.cancelledEditorHistory && !results.restoredEditorHistory,
     `private input reached completion or history: ${JSON.stringify(results)}`);
   return results;
 }

@@ -28,8 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   do not discard this state.
 - Native startup configuration failures now propagate through the Tauri build result before the
   process exits, producing a clean non-zero status on macOS instead of a platform callback abort.
-- Cancelling a private free-input editor now clears its sensitivity boundary; the next editor starts
-  as a new public input boundary unless the user explicitly enables private input again.
+- Resuming a private free-input draft from goto-line preserves its protection, including privacy
+  enabled while the draft was hidden. Mode switches retain drafts; explicit cancellation clears
+  them, allowing the next editor to begin a fresh input boundary.
 - Official MCP SDK compatibility checks now use isolated temporary Stores with explicit read-only
   grants instead of assuming unconfigured clients may read session resources. TypeScript stdio/HTTP
   checks additionally verify denied access before granting and after revocation.

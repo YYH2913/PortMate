@@ -686,10 +686,10 @@ function TerminalCanvas({
     setSearchOpen(false);
     setSearchResult(null);
     setSearchInvalid(false);
-    // A new editor invocation starts a fresh sensitivity boundary. Existing
-    // terminal-line protection is never inherited into an unrelated editor.
-    if (value || !freeInputOpen) freeInputSensitiveRef.current = false;
     if (value || (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource)) {
+      // Only replacing the draft starts a new boundary. Refocusing an editor
+      // or resuming it from goto-line must keep its existing protection.
+      freeInputSensitiveRef.current = false;
       setFreeInputValue(normalizeTerminalFreeInput(value));
     }
     setFreeInputSource("manual");
@@ -966,7 +966,8 @@ function TerminalCanvas({
     setGotoLineContext(null);
     setGotoLineQuery("");
     if (resumeFreeInputSource) {
-      freeInputSensitiveRef.current = resumeFreeInputSensitive;
+      // Protection may have been enabled while goto-line hid the draft.
+      freeInputSensitiveRef.current ||= resumeFreeInputSensitive;
       setFreeInputSource(resumeFreeInputSource);
       setFreeInputValue(resumeFreeInputValue);
       if (focusTerminal) {
@@ -2860,7 +2861,6 @@ function TerminalCanvas({
                     event.stopPropagation();
                     if (freeInputSource === "normal") {
                       setFreeInputSource(null);
-                      setFreeInputValue("");
                       keyModeRef.current = "command";
                       onKeyModeChangeRef.current("command");
                     } else {
@@ -2872,7 +2872,6 @@ function TerminalCanvas({
                     event.preventDefault();
                     event.stopPropagation();
                     setFreeInputSource(null);
-                    setFreeInputValue("");
                     keyModeRef.current = "command";
                     onKeyModeChangeRef.current("command");
                     return;
