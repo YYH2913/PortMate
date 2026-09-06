@@ -1,7 +1,35 @@
 use super::*;
 
 fn terminal_key_sequence(key: &str) -> Result<String, String> {
-    let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
+    let key = key.trim();
+    // Literal keys are data, not case-insensitive names. In particular, vi's
+    // G/g and '_'/'-' must remain distinguishable through desktop and MCP.
+    if key.chars().count() == 1 {
+        return Ok(key.to_string());
+    }
+    let normalized = key.to_ascii_lowercase();
+    // Normalize only the Ctrl separator, not the symbol it modifies: Ctrl+_
+    // must map to US (0x1f), while Ctrl_C remains a supported alias for Ctrl+C.
+    if let Some(control) = normalized
+        .strip_prefix("ctrl+")
+        .or_else(|| normalized.strip_prefix("ctrl-"))
+        .or_else(|| normalized.strip_prefix("ctrl_"))
+    {
+        let byte = match control {
+            "space" | "@" => 0,
+            "[" | "escape" | "esc" => 27,
+            "\\" => 28,
+            "]" => 29,
+            "^" => 30,
+            "_" => 31,
+            value if value.len() == 1 && value.as_bytes()[0].is_ascii_alphabetic() => {
+                value.as_bytes()[0].to_ascii_uppercase() - b'@'
+            }
+            _ => return Err(format!("unsupported control key: {control}")),
+        };
+        return Ok(char::from(byte).to_string());
+    }
+    let normalized = normalized.replace('_', "-");
     let sequence = match normalized.as_str() {
         "" => return Err("key must not be empty".to_string()),
         "enter" | "return" => "\r".to_string(),
@@ -32,30 +60,6 @@ fn terminal_key_sequence(key: &str) -> Result<String, String> {
         "f11" => "\x1b[23~".to_string(),
         "f12" => "\x1b[24~".to_string(),
         "space" => " ".to_string(),
-        value if value.starts_with("ctrl+") || value.starts_with("ctrl-") => {
-            let key = value
-                .trim_start_matches("ctrl+")
-                .trim_start_matches("ctrl-");
-            let byte = match key {
-                "space" | "@" => 0,
-                "[" | "escape" | "esc" => 27,
-                "\\" => 28,
-                "]" => 29,
-                "^" => 30,
-                "_" => 31,
-                value if value.len() == 1 => {
-                    let ch = value.as_bytes()[0];
-                    if ch.is_ascii_alphabetic() {
-                        ch.to_ascii_uppercase() - b'@'
-                    } else {
-                        return Err(format!("unsupported control key: {key}"));
-                    }
-                }
-                _ => return Err(format!("unsupported control key: {key}")),
-            };
-            String::from_utf8(vec![byte]).map_err(|error| error.to_string())?
-        }
-        value if value.chars().count() == 1 => value.to_string(),
         _ => return Err(format!("unsupported key sequence: {key}")),
     };
     Ok(sequence)
@@ -249,7 +253,13 @@ pub(crate) async fn send_text(
             return Err("有序终端输入仅用于非等待式队列写入".into());
         }
         terminal_input_stream::accept_text(
-            state.session_io(), session_id, window.label(), order, text, interactive, sensitive,
+            state.session_io(),
+            session_id,
+            window.label(),
+            order,
+            text,
+            interactive,
+            sensitive,
         )?;
         return Ok(None);
     }
@@ -352,4 +362,73 @@ pub(crate) async fn resize_session(
     rows: u16,
 ) -> Result<SessionSummary, String> {
     resize_session_inner(state.inner(), session_id, cols, rows).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminal_key_sequence_for_protocol;
+
+    #[test]
+    fn terminal_key_sequences_preserve_literal_case_and_symbols() {
+        for key in ["A", "G", "a", "_", "-", "É", "λ", "中", "🦀"] {
+            for is_telnet in [false, true] {
+                assert_eq!(
+                    terminal_key_sequence_for_protocol(key, is_telnet).unwrap(),
+                    key
+                );
+            }
+        }
+        assert_eq!(
+            terminal_key_sequence_for_protocol("  A  ", false).unwrap(),
+            "A"
+        );
+    }
+
+    #[test]
+    fn terminal_key_sequences_normalize_names_but_preserve_control_symbols() {
+        for (key, expected) in [
+            ("EnTeR", "\r"),
+            ("Arrow_Up", "\x1b[A"),
+            ("PAGE_DOWN", "\x1b[6~"),
+            ("CTRL_C", "\x03"),
+            ("Ctrl+A", "\x01"),
+            ("Ctrl+_", "\x1f"),
+            ("CTRL-_", "\x1f"),
+            ("ctrl__", "\x1f"),
+            ("Ctrl+Space", "\0"),
+            ("Ctrl+[", "\x1b"),
+            ("Ctrl+\\", "\x1c"),
+            ("Ctrl+]", "\x1d"),
+            ("Ctrl+^", "\x1e"),
+        ] {
+            assert_eq!(
+                terminal_key_sequence_for_protocol(key, false).unwrap(),
+                expected,
+                "{key}"
+            );
+        }
+        assert_eq!(
+            terminal_key_sequence_for_protocol("ENTER", true).unwrap(),
+            "\r\n"
+        );
+    }
+
+    #[test]
+    fn terminal_key_sequences_reject_multiple_keys_and_escape_payloads() {
+        for key in [
+            "",
+            "  ",
+            "AB",
+            "echo hello",
+            "\x1b[31m",
+            "Ctrl+Ctrl+A",
+            "Ctrl+1",
+            "F13",
+        ] {
+            assert!(
+                terminal_key_sequence_for_protocol(key, false).is_err(),
+                "{key:?}"
+            );
+        }
+    }
 }

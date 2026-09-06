@@ -180,7 +180,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "send_key",
             "Send Key",
-            "Send one supported terminal key sequence to a currently connected authorized session. Requires write-input; the key name is converted to PortMate's bounded terminal sequence table and is not an arbitrary shell command or arbitrary escape payload. The resulting event is redacted.",
+            "Send one supported terminal key sequence to a currently connected authorized session. Requires write-input; named keys are case-insensitive (Enter, Arrow_Up, Ctrl+C, Ctrl+_), while a single non-whitespace literal character preserves its case and symbols (A, G, _). Names use PortMate's bounded sequence table; arbitrary shell commands and multi-character escape payloads are rejected. The resulting event is redacted.",
             json!({
                 "type":"object",
                 "required":["sessionId","key"],

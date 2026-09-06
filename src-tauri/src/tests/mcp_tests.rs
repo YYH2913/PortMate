@@ -2057,11 +2057,12 @@ fn mcp_and_remote_server_tunnel_staging_failures_are_rolled_back() {
 #[test]
 fn explicitly_granted_mcp_input_ignores_claimed_trust_and_uses_exact_tool_audit() {
     tauri::async_runtime::block_on(async {
+        const EXPECTED: &[u8] = b"\rA_\x1fstatus\n";
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut received = [0_u8; 8];
+            let mut received = vec![0_u8; EXPECTED.len()];
             socket.read_exact(&mut received).await.unwrap();
             received
         });
@@ -2094,24 +2095,29 @@ fn explicitly_granted_mcp_input_ignores_claimed_trust_and_uses_exact_tool_audit(
             },
         );
 
-        let key_event: SessionEvent = serde_json::from_value(
-            handle_ipc_request(
-                state.clone(),
-                IpcRequest {
-                    token: "authenticated-token".to_string(),
-                    client_id: "mcp-e2e-client".to_string(),
-                    trusted_write: true,
-                    command: "send_key".to_string(),
-                    args: serde_json::json!({
-                        "sessionId": profile.id,
-                        "key": "Enter"
-                    }),
-                },
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
+        let mut key_events: Vec<SessionEvent> = Vec::new();
+        for key in ["Enter", "A", "_", "Ctrl+_"] {
+            key_events.push(
+                serde_json::from_value(
+                    handle_ipc_request(
+                        state.clone(),
+                        IpcRequest {
+                            token: "authenticated-token".to_string(),
+                            client_id: "mcp-e2e-client".to_string(),
+                            trusted_write: true,
+                            command: "send_key".to_string(),
+                            args: serde_json::json!({
+                                "sessionId": profile.id,
+                                "key": key
+                            }),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                )
+                .unwrap(),
+            );
+        }
         let command_event: SessionEvent = serde_json::from_value(
             handle_ipc_request(
                 state.clone(),
@@ -2135,14 +2141,16 @@ fn explicitly_granted_mcp_input_ignores_claimed_trust_and_uses_exact_tool_audit(
             .await
             .expect("TCP server timed out")
             .expect("TCP server failed");
-        assert_eq!(&received, b"\rstatus\n");
-        for event in [&key_event, &command_event] {
+        assert_eq!(&received, EXPECTED);
+        for event in key_events.iter().chain(std::iter::once(&command_event)) {
             assert_eq!(
                 event.annotations.get("actor").map(String::as_str),
                 Some("mcp-e2e-client")
             );
         }
-        assert!(!key_event.annotations.contains_key("commandId"));
+        assert!(key_events
+            .iter()
+            .all(|event| !event.annotations.contains_key("commandId")));
         assert!(command_event.annotations.contains_key("commandId"));
         assert_eq!(
             command_event
@@ -2155,11 +2163,13 @@ fn explicitly_granted_mcp_input_ignores_claimed_trust_and_uses_exact_tool_audit(
         let audit = state.store.lock().unwrap().audit.clone();
         assert_eq!(
             audit.len(),
-            2,
+            key_events.len() + 1,
             "MCP input must not add implicit send_text audits"
         );
-        assert_eq!(audit[0].action, "send_key");
-        assert_eq!(audit[1].action, "run_command");
+        assert!(audit[..key_events.len()]
+            .iter()
+            .all(|record| record.action == "send_key"));
+        assert_eq!(audit[key_events.len()].action, "run_command");
         assert!(audit.iter().all(|record| record.actor == "mcp-e2e-client"));
         assert!(audit.iter().all(|record| record.decision == "succeeded"));
         assert!(audit.iter().all(|record| {

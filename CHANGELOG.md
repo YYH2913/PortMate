@@ -19,6 +19,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- `send_key` preserves literal character case and symbols and correctly sends Ctrl+_ (0x1F).
+  Named key aliases remain case-insensitive; repeated Ctrl prefixes and arbitrary escape payloads
+  are rejected consistently by the desktop and MCP input path.
 - MCP Bridge now reapplies the requested recent-log limit after filtering desktop IPC responses,
   preventing an oversized or stale IPC result from bypassing the documented 1-1000 bound.
 - Transfer retry now fails closed for queued, running, and completed tasks; only failed or cancelled

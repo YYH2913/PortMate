@@ -214,7 +214,8 @@ export_session_bundle 使用与 read_screen 相同的 sessionId 参数，返回�
 
 必需 sessionId、key。支持 enter/return、lf、tab、backspace、delete、escape、方向键、
 home、end、page-up、page-down、insert、f1-f12、space 和受限 ctrl+字母等形式，不能提交
-任意 Escape 字符串。
+任意 Escape 字符串。命名按键不区分大小写，可用 `_` 代替名称内的 `-`；Ctrl+_ 发送
+0x1F。单个非空白字符按原样发送，例如 `A`、`G`、`_` 不会转换成 `a`、`g`、`-`。
 
 ### serial_send_break
 
