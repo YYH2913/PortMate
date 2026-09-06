@@ -174,7 +174,7 @@ async def check_stdio(binary: Path) -> None:
         **os.environ,
         "PORTMATE_MCP_HTTP": "0",
         "PORTMATE_MCP_CLIENT_ID": "official-python-sdk-stdio-check",
-        "PORTMATE_STORE_PATH": "",
+        "PORTMATE_STORE_PATH": os.environ["PORTMATE_MCP_TEST_STORE_PATH"],
     }
     server = StdioServerParameters(command=str(binary), cwd=Path.cwd(), env=environment)
     async with stdio_client(server) as (read_stream, write_stream):
@@ -215,7 +215,7 @@ async def check_http(binary: Path) -> None:
         "PORTMATE_MCP_HTTP_ADDR": f"127.0.0.1:{port}",
         "PORTMATE_MCP_HTTP_TOKEN": HTTP_TOKEN,
         "PORTMATE_MCP_CLIENT_ID": "official-python-sdk-http-check",
-        "PORTMATE_STORE_PATH": "",
+        "PORTMATE_STORE_PATH": os.environ["PORTMATE_MCP_TEST_STORE_PATH"],
     }
     server = subprocess.Popen(
         [str(binary), "--http"],

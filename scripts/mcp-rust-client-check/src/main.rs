@@ -72,10 +72,12 @@ fn binary_argument() -> Result<PathBuf> {
 }
 
 async fn check_stdio(binary: &Path) -> Result<()> {
+    let fixture_store = env::var("PORTMATE_MCP_TEST_STORE_PATH")
+        .context("run mcp-rust-client-check.mjs to create the test Store")?;
     let transport = TokioChildProcess::new(Command::new(binary).configure(|command| {
         command
             .env("PORTMATE_MCP_HTTP", "0")
-            .env("PORTMATE_STORE_PATH", "")
+            .env("PORTMATE_STORE_PATH", &fixture_store)
             .env("PORTMATE_MCP_CLIENT_ID", STDIO_CLIENT_ID)
             .stderr(Stdio::null());
     }))
@@ -103,7 +105,10 @@ async fn check_http(binary: &Path) -> Result<()> {
         .env("PORTMATE_MCP_HTTP_ADDR", format!("127.0.0.1:{port}"))
         .env("PORTMATE_MCP_HTTP_TOKEN", HTTP_TOKEN)
         .env("PORTMATE_MCP_CLIENT_ID", HTTP_CLIENT_ID)
-        .env("PORTMATE_STORE_PATH", "")
+        .env(
+            "PORTMATE_STORE_PATH",
+            env::var("PORTMATE_MCP_TEST_STORE_PATH").context("missing SDK test Store")?,
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);

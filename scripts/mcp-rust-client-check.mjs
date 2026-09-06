@@ -3,8 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { cargoLockPinsPackage } from "./cargo-lock-state.mjs";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-rust-sdk-stdio-check", "official-rust-sdk-http-check"]);
 const project = join(projectRoot, "scripts", "mcp-rust-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-rust-client-versions.json"), "utf8"));
 const configured = process.env.PORTMATE_MCP_BINARY?.trim();
@@ -76,6 +78,7 @@ tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-th
     binary,
   ], {
     ...process.env,
+    ...fixture.environment,
     CARGO_TARGET_DIR: join(environmentRoot, "target"),
     PORTMATE_MCP_RUST_SDK_VERSION: sdkVersion,
     PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION: protocolVersion,

@@ -19,6 +19,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Official MCP SDK compatibility checks now use isolated temporary Stores with explicit read-only
+  grants instead of assuming unconfigured clients may read session resources. TypeScript stdio/HTTP
+  checks additionally verify denied access before granting and after revocation.
 - MCP log search now filters authorized sessions before applying the result limit, so activity in
   unrelated sessions cannot hide matching authorized logs. Recent-log reads clone only the returned
   events instead of copying a session's entire retained history.

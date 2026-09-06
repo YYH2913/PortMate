@@ -2,8 +2,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-ruby-sdk-stdio-check", "official-ruby-sdk-http-check"]);
 const ruby = process.env.PORTMATE_RUBY?.trim() || "ruby";
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-ruby-client-versions.json"), "utf8"));
 const versionPattern = /^\d+\.\d+\.\d+$/;
@@ -88,6 +90,7 @@ for (const entry of matrix) {
   run(ruby, [join(projectRoot, "scripts", "mcp-ruby-client-check.rb")], {
     env: {
       ...environment,
+      ...fixture.environment,
       PORTMATE_MCP_RUBY_SDK_VERSION: entry.version,
       PORTMATE_MCP_RUBY_FARADAY_VERSION: entry.faradayVersion,
       PORTMATE_MCP_RUBY_EVENT_STREAM_VERSION: entry.eventStreamParserVersion,

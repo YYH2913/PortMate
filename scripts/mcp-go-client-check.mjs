@@ -2,8 +2,10 @@ import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-go-sdk-stdio-check", "official-go-sdk-http-check"]);
 const moduleRoot = join(projectRoot, "scripts", "mcp-go-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-go-client-versions.json"), "utf8"));
 const configured = process.env.PORTMATE_MCP_BINARY?.trim();
@@ -40,6 +42,7 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
 
   run("go", ["run", "-mod=readonly", ".", "-binary", binary], environmentRoot, {
     ...process.env,
+    ...fixture.environment,
     PORTMATE_MCP_GO_SDK_VERSION: sdkVersion,
     PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION: protocolVersion,
   });

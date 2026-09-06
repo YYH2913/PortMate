@@ -1,6 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
 const sdkModule = (relativePath, packagePath) => sdkRoot
@@ -23,14 +24,16 @@ const binary = process.env.PORTMATE_MCP_BINARY
     "debug",
     process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
   );
+const fixture = createMcpClientFixture(["official-sdk-stdio-check"]);
+fixture.setReadAccess(false);
 const transport = new StdioClientTransport({
   command: binary,
   cwd: process.cwd(),
   env: {
     ...process.env,
+    ...fixture.environment,
     PORTMATE_MCP_HTTP: "0",
     PORTMATE_MCP_CLIENT_ID: "official-sdk-stdio-check",
-    PORTMATE_STORE_PATH: "",
   },
   stderr: "pipe",
 });
@@ -63,6 +66,11 @@ try {
   assert(client.getServerVersion()?.name === "portmate-mcp", "official SDK did not initialize PortMate over stdio");
 
   await client.ping();
+  assert((await client.listResources()).resources.length === 0, "ungranted stdio client could list session resources");
+  let readDenied = false;
+  try { await client.readResource({ uri: "portmate://sessions" }); } catch { readDenied = true; }
+  assert(readDenied, "ungranted stdio client could read sessions");
+  fixture.setReadAccess(true);
   const tools = await client.listTools();
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const toolName of [
@@ -130,6 +138,11 @@ try {
   assert(prompts.prompts.length > 0, "prompts/list returned no prompts");
   const sessions = await client.readResource({ uri: "portmate://sessions" });
   assert(sessions.contents[0]?.mimeType === "application/json", "resources/read returned the wrong sessions MIME type");
+  fixture.setReadAccess(false);
+  assert((await client.listResources()).resources.length === 0, "revoked stdio client retained session resources");
+  readDenied = false;
+  try { await client.readResource({ uri: "portmate://sessions" }); } catch { readDenied = true; }
+  assert(readDenied, "revoked stdio client could still read sessions");
 
   const initialize = sent.find((message) => message.method === "initialize");
   const initialized = sent.find((message) => message.method === "notifications/initialized");
@@ -155,6 +168,7 @@ try {
   throw error;
 } finally {
   await client.close().catch(() => {});
+  fixture.dispose();
 }
 
 if (bridgeProcess?.exitCode === null && bridgeProcess.signalCode === null) {

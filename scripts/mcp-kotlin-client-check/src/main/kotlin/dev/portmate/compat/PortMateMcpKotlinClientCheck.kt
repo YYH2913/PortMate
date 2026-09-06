@@ -59,7 +59,7 @@ private suspend fun checkStdio(binary: Path) {
     val process = startBridge(binary, listOf(), mapOf(
         "PORTMATE_MCP_HTTP" to "0",
         "PORTMATE_MCP_CLIENT_ID" to "official-kotlin-sdk-stdio-check",
-        "PORTMATE_STORE_PATH" to "",
+        "PORTMATE_STORE_PATH" to requireNotNull(System.getenv("PORTMATE_MCP_TEST_STORE_PATH")) { "missing SDK test Store" },
     ))
     val client = Client(Implementation("portmate-kotlin-sdk-check", sdkVersion))
     try {
@@ -87,7 +87,7 @@ private suspend fun checkHttp(binary: Path) {
         "PORTMATE_MCP_HTTP_ADDR" to "127.0.0.1:$port",
         "PORTMATE_MCP_HTTP_TOKEN" to httpToken,
         "PORTMATE_MCP_CLIENT_ID" to "official-kotlin-sdk-http-check",
-        "PORTMATE_STORE_PATH" to "",
+        "PORTMATE_STORE_PATH" to requireNotNull(System.getenv("PORTMATE_MCP_TEST_STORE_PATH")) { "missing SDK test Store" },
     ))
     val httpClient = HttpClient(CIO) { install(SSE) }
     val transport = StreamableHttpClientTransport(

@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
 const sdkModule = (relativePath, packagePath) => sdkRoot
@@ -196,17 +197,19 @@ await verifyIpv6Listeners(binary);
 
 const port = await reservePort();
 const endpoint = httpEndpoint("127.0.0.1", port);
+const fixture = createMcpClientFixture(["official-sdk-http-check"]);
+fixture.setReadAccess(false);
 let serverOutput = "";
 const server = spawn(binary, ["--http"], {
   cwd: process.cwd(),
   env: {
     ...process.env,
+    ...fixture.environment,
     PORTMATE_MCP_HTTP_ADDR: `0.0.0.0:${port}`,
     PORTMATE_MCP_HTTP_ALLOW_REMOTE: "1",
     PORTMATE_MCP_HTTP_ORIGINS: `http://127.0.0.1:${port}`,
     PORTMATE_MCP_HTTP_TOKEN: token,
     PORTMATE_MCP_CLIENT_ID: "official-sdk-http-check",
-    PORTMATE_STORE_PATH: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -264,6 +267,11 @@ try {
   assert(transport.sessionId === undefined, "PortMate's documented stateless HTTP mode unexpectedly created a session");
 
   await client.ping();
+  assert((await client.listResources()).resources.length === 0, "ungranted HTTP client could list session resources");
+  let readDenied = false;
+  try { await client.readResource({ uri: "portmate://sessions" }); } catch { readDenied = true; }
+  assert(readDenied, "ungranted HTTP client could read sessions");
+  fixture.setReadAccess(true);
   const tools = await client.listTools();
   const toolNames = new Set(tools.tools.map((tool) => tool.name));
   for (const toolName of [
@@ -331,6 +339,11 @@ try {
   assert(prompts.prompts.length > 0, "prompts/list returned no prompts");
   const sessions = await client.readResource({ uri: "portmate://sessions" });
   assert(sessions.contents[0]?.mimeType === "application/json", "resources/read returned the wrong sessions MIME type");
+  fixture.setReadAccess(false);
+  assert((await client.listResources()).resources.length === 0, "revoked HTTP client retained session resources");
+  readDenied = false;
+  try { await client.readResource({ uri: "portmate://sessions" }); } catch { readDenied = true; }
+  assert(readDenied, "revoked HTTP client could still read sessions");
 
   await new Promise((resolve) => setTimeout(resolve, 100));
   const initialize = requests.find((request) => requestMethod(request) === "initialize");
@@ -364,4 +377,5 @@ try {
   globalThis.fetch = nativeFetch;
   await client?.close().catch(() => {});
   await stopServer(server);
+  fixture.dispose();
 }

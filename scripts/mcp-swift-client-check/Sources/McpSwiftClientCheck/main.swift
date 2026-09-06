@@ -73,7 +73,9 @@ struct McpSwiftClientCheck {
             var environment = ProcessInfo.processInfo.environment
             environment["PORTMATE_MCP_HTTP"] = "0"
             environment["PORTMATE_MCP_CLIENT_ID"] = "official-swift-sdk-stdio-check"
-            environment["PORTMATE_STORE_PATH"] = ""
+            let fixtureStore = environment["PORTMATE_MCP_TEST_STORE_PATH"] ?? ""
+            try require(!fixtureStore.isEmpty, "missing SDK test Store")
+            environment["PORTMATE_STORE_PATH"] = fixtureStore
             process.environment = environment
             try process.run()
 

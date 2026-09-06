@@ -50,7 +50,7 @@ public final class PortMateMcpJavaClientCheck {
             .env(Map.of(
                 "PORTMATE_MCP_HTTP", "0",
                 "PORTMATE_MCP_CLIENT_ID", "official-java-sdk-stdio-check",
-                "PORTMATE_STORE_PATH", ""))
+                "PORTMATE_STORE_PATH", java.util.Objects.requireNonNull(System.getenv("PORTMATE_MCP_TEST_STORE_PATH"), "missing SDK test Store")))
             .build();
         StdioClientTransport transport = new StdioClientTransport(parameters, McpJsonDefaults.getMapper());
         int messages = exercise(transport, "stdio");
@@ -85,7 +85,7 @@ public final class PortMateMcpJavaClientCheck {
             "PORTMATE_MCP_HTTP_ADDR", "127.0.0.1:" + port,
             "PORTMATE_MCP_HTTP_TOKEN", HTTP_TOKEN,
             "PORTMATE_MCP_CLIENT_ID", "official-java-sdk-http-check",
-            "PORTMATE_STORE_PATH", ""));
+            "PORTMATE_STORE_PATH", java.util.Objects.requireNonNull(System.getenv("PORTMATE_MCP_TEST_STORE_PATH"), "missing SDK test Store")));
         return builder.start();
     }
 

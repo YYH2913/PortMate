@@ -65,7 +65,7 @@ func checkStdio(binary string) error {
 	cmd := exec.Command(binary)
 	cmd.Env = append(os.Environ(),
 		"PORTMATE_MCP_HTTP=0",
-		"PORTMATE_STORE_PATH=",
+		"PORTMATE_STORE_PATH="+os.Getenv("PORTMATE_MCP_TEST_STORE_PATH"),
 		"PORTMATE_MCP_CLIENT_ID="+stdioClientID,
 	)
 	cmd.Stderr = io.Discard
@@ -117,7 +117,7 @@ func checkHTTP(binary string) error {
 		"PORTMATE_MCP_HTTP_ADDR=127.0.0.1:"+fmt.Sprint(port),
 		"PORTMATE_MCP_HTTP_TOKEN="+httpToken,
 		"PORTMATE_MCP_CLIENT_ID="+httpClientID,
-		"PORTMATE_STORE_PATH=",
+		"PORTMATE_STORE_PATH="+os.Getenv("PORTMATE_MCP_TEST_STORE_PATH"),
 	)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

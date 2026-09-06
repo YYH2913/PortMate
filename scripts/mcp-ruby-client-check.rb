@@ -55,7 +55,7 @@ def check_stdio(binary)
     env: ENV.to_h.merge(
       "PORTMATE_MCP_HTTP" => "0",
       "PORTMATE_MCP_CLIENT_ID" => "official-ruby-sdk-stdio-check",
-      "PORTMATE_STORE_PATH" => "",
+      "PORTMATE_STORE_PATH" => ENV.fetch("PORTMATE_MCP_TEST_STORE_PATH"),
     ),
     read_timeout: 10,
   )
@@ -111,7 +111,7 @@ def check_http(binary)
       "PORTMATE_MCP_HTTP_ADDR" => "127.0.0.1:#{port}",
       "PORTMATE_MCP_HTTP_TOKEN" => HTTP_TOKEN,
       "PORTMATE_MCP_CLIENT_ID" => "official-ruby-sdk-http-check",
-      "PORTMATE_STORE_PATH" => "",
+      "PORTMATE_STORE_PATH" => ENV.fetch("PORTMATE_MCP_TEST_STORE_PATH"),
     ),
     binary,
     "--http",

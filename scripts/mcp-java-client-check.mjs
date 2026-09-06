@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMavenRunner } from "./mcp-jvm-tools.mjs";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-java-sdk-stdio-check", "official-java-sdk-http-check"]);
 const manifestRoot = join(projectRoot, "scripts", "mcp-java-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-java-client-versions.json"), "utf8"));
 const tools = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-jvm-tool-versions.json"), "utf8"));
@@ -40,5 +42,5 @@ for (const entry of matrix) {
     "clean",
     "compile",
     "exec:java",
-  ], { timeout: 180_000 });
+  ], { timeout: 180_000, env: { ...process.env, ...fixture.environment } });
 }

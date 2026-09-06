@@ -30,7 +30,7 @@ static async Task CheckStdioAsync(string binary, string sdkVersion, string expec
     {
         ["PORTMATE_MCP_HTTP"] = "0",
         ["PORTMATE_MCP_CLIENT_ID"] = "official-csharp-sdk-stdio-check",
-        ["PORTMATE_STORE_PATH"] = "",
+        ["PORTMATE_STORE_PATH"] = Environment.GetEnvironmentVariable("PORTMATE_MCP_TEST_STORE_PATH") ?? throw new InvalidOperationException("missing SDK test Store"),
     };
     var transport = new StdioClientTransport(new StdioClientTransportOptions
     {
@@ -121,7 +121,7 @@ static Process StartHttpBridge(string binary, int port)
     startInfo.Environment["PORTMATE_MCP_HTTP_ADDR"] = $"127.0.0.1:{port}";
     startInfo.Environment["PORTMATE_MCP_HTTP_TOKEN"] = Constants.HttpToken;
     startInfo.Environment["PORTMATE_MCP_CLIENT_ID"] = "official-csharp-sdk-http-check";
-    startInfo.Environment["PORTMATE_STORE_PATH"] = "";
+    startInfo.Environment["PORTMATE_STORE_PATH"] = Environment.GetEnvironmentVariable("PORTMATE_MCP_TEST_STORE_PATH") ?? throw new InvalidOperationException("missing SDK test Store");
     Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start PortMate HTTP bridge");
     process.BeginOutputReadLine();
     process.BeginErrorReadLine();

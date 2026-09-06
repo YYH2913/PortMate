@@ -13,8 +13,10 @@ import { pipeline } from "node:stream/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-csharp-sdk-stdio-check", "official-csharp-sdk-http-check"]);
 const project = join(projectRoot, "scripts", "mcp-csharp-client-check", "McpCsharpClientCheck.csproj");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-csharp-client-versions.json"), "utf8"));
 validateMatrix(matrix);
@@ -30,6 +32,7 @@ if (!existsSync(binary)) throw new Error(`MCP C# client check binary does not ex
 
 const environment = {
   ...process.env,
+  ...fixture.environment,
   DOTNET_CLI_HOME: join(projectRoot, "target", "mcp-dotnet-home"),
   DOTNET_NOLOGO: "1",
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1",

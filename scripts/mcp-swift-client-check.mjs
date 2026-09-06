@@ -17,8 +17,10 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { runSwiftBuildWithRecovery } from "./swift-package-state.mjs";
+import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = createMcpClientFixture(["official-swift-sdk-stdio-check", "official-swift-sdk-http-check"]);
 const templateRoot = join(projectRoot, "scripts", "mcp-swift-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-swift-client-versions.json"), "utf8"));
 validateMatrix(matrix);
@@ -37,7 +39,7 @@ const binary = configured || join(
 );
 if (!existsSync(binary)) throw new Error(`MCP Swift client check binary does not exist: ${binary}`);
 
-const environment = { ...process.env };
+const environment = { ...process.env, ...fixture.environment };
 environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1";
 const swift = await ensureSwift(matrix.swift, environment);
 const cache = join(projectRoot, "target", "mcp-swift-cache");
@@ -303,7 +305,7 @@ function startHttpBridge(path, port, token) {
       PORTMATE_MCP_HTTP_ADDR: `127.0.0.1:${port}`,
       PORTMATE_MCP_HTTP_TOKEN: token,
       PORTMATE_MCP_CLIENT_ID: "official-swift-sdk-http-check",
-      PORTMATE_STORE_PATH: "",
+      PORTMATE_STORE_PATH: fixture.storePath,
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
