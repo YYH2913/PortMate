@@ -18,6 +18,20 @@ import {
 } from "./terminal-completion-prefs";
 
 describe("terminal completion state", () => {
+  it("never retains private text or submits private commands to history", () => {
+    for (const text of ["private", "echo private", "one\rtwo", "one\r\nthird", "private\x1b[D", "private\x04"]) {
+      expect(reduceTerminalCompletionInputWithSubmissions({ line: "public", synchronized: true }, text, true))
+        .toEqual({ state: { line: "", synchronized: false }, submittedCommands: [] });
+    }
+    for (const text of ["private\r", "private\n", "private\x03", "private\x15"]) {
+      expect(reduceTerminalCompletionInputWithSubmissions({ line: "", synchronized: false }, text, true))
+        .toEqual({ state: { line: "", synchronized: true }, submittedCommands: [] });
+    }
+    const hidden = reduceTerminalCompletionInputWithSubmissions({ line: "", synchronized: true }, "private", true).state;
+    expect(reduceTerminalCompletionInputWithSubmissions(hidden, "-suffix\recho public\r").submittedCommands)
+      .toEqual(["echo public"]);
+  });
+
   it("rebases a delayed candidate after typing/deletion and retains its trailing space", () => {
     const candidate = terminalCompletionSuggestions({ line: "git stat", preferences: defaultTerminalCompletionPreferences })
       .find((item) => item.label === "status")!;

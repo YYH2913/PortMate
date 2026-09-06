@@ -4,6 +4,7 @@ import process from "node:process";
 import { chromium } from "playwright-core";
 import { checkTerminalStreamRegressions } from "./terminal-stream-regressions.mjs";
 import { checkTerminalCompletionRegressions } from "./terminal-completion-regressions.mjs";
+import { checkTerminalPrivateInputRegressions } from "./terminal-private-input-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -1879,6 +1880,10 @@ try {
   assert(pageErrors.length === 0, `browser exceptions after completion regressions: ${JSON.stringify(pageErrors)}`);
   const streamRegressions = await checkTerminalStreamRegressions(page, screenshotPrefix);
   assert(pageErrors.length === 0, `browser exceptions after stream regressions: ${JSON.stringify(pageErrors)}`);
+  // Private-input fixtures use current prompt timestamps; run them after the
+  // historical replay matrix so they cannot advance its live replay boundary.
+  const privateInputRegressions = await checkTerminalPrivateInputRegressions(page);
+  assert(pageErrors.length === 0, `browser exceptions after private-input regressions: ${JSON.stringify(pageErrors)}`);
 
   console.log(JSON.stringify({
     initial,
@@ -1952,6 +1957,7 @@ try {
     },
     completionPlacement,
     completionRegressions,
+    privateInputRegressions,
     completionAfterRemoteCursorMove,
     completionUsageOnly,
     mobileCompletionPlacement,

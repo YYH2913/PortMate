@@ -23,6 +23,13 @@ or an unsigned artifact is not a production release. The complete release gates 
   preventing duplicate characters when the preview is still waiting for a deferred refresh.
   Stale candidates no longer intercept native Tab, and keyboard selection keeps its rendered row.
 
+### Security
+
+- Private terminal input is excluded from command completion and command history, including free-input
+  editor submissions. Once a line contains private input, turning off the toggle or losing automatic
+  prompt detection no longer makes its remaining bytes public; submission, cancellation, or clearing
+  the line releases that protection. The UI indicates when protection is retained for the current line.
+
 ## [0.1.8] - 2026-09-05
 
 ### Added

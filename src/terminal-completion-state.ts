@@ -115,10 +115,22 @@ export function terminalCompletionAppendText(
   return `${candidate.target.slice(current.line.length)}${trailingSpace}` || null;
 }
 
+export function terminalPrivateInputEndsLine(text: string): boolean {
+  // Ctrl+D may delete a character rather than end the command at a shell
+  // prompt. Keep that line private until submit, interrupt, or line clear.
+  return /[\r\n\u0003\u0015]$/.test(text);
+}
+
 export function reduceTerminalCompletionInputWithSubmissions(
   current: TerminalCompletionInputState,
   text: string,
+  sensitive = false,
 ): TerminalCompletionInputReduction {
+  if (sensitive) {
+    // Never retain a private prefix, including text following an embedded Enter.
+    // A later public suffix cannot turn the same line into command history.
+    return { state: { line: "", synchronized: terminalPrivateInputEndsLine(text) }, submittedCommands: [] };
+  }
   let line = current.line;
   let synchronized = current.synchronized;
   const submittedCommands: string[] = [];

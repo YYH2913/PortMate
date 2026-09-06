@@ -30,6 +30,7 @@ import {
   terminalCompletionSuggestions,
   terminalCompletionSupported,
   terminalCompletionUsageHint,
+  terminalPrivateInputEndsLine,
 } from "./terminal-completion-state";
 import type {
   TerminalCompletionInputState,
@@ -378,6 +379,8 @@ function TerminalCanvas({
   const [detectedPrivateInput, setDetectedPrivateInput] = useState(false);
   const manualPrivateInputRef = useRef(false);
   const detectedPrivateInputRef = useRef(false);
+  const privateInputLineRef = useRef(false);
+  const [privateInputLine, setPrivateInputLine] = useState(false);
   const privateInputTimerRef = useRef<number | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -442,7 +445,9 @@ function TerminalCanvas({
   const [gotoLineContext, setGotoLineContext] = useState<TerminalGotoLineContext | null>(null);
   const [gotoLineQuery, setGotoLineQuery] = useState("");
   const [freeInputSource, setFreeInputSource] = useState<"manual" | "normal" | null>(null);
-  const [freeInputValue, setFreeInputValue] = useState("");
+  const [freeInputValue, setFreeInputValueState] = useState("");
+  const freeInputValueRef = useRef("");
+  const freeInputSensitiveRef = useRef(false);
   const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
   // The native prompt validator needs the newest event id, but rendering the
   // completion panel for every byte of a prompt creates avoidable React work.
@@ -456,14 +461,32 @@ function TerminalCanvas({
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
-  const privateInputActive = manualPrivateInput || detectedPrivateInput;
+  const privateInputRetained = privateInputLine || (freeInputSource !== null && freeInputSensitiveRef.current);
+  const privateInputActive = manualPrivateInput || detectedPrivateInput || privateInputRetained;
   displayModeRef.current = displayMode;
   completionDismissedLineRef.current = completionDismissedLine;
 
   function commitDetectedPrivateInput(value: boolean) {
     if (detectedPrivateInputRef.current === value) return;
     detectedPrivateInputRef.current = value;
+    if (value) {
+      resetCompletionInput(false);
+      if (freeInputValueRef.current) freeInputSensitiveRef.current = true;
+    }
     setDetectedPrivateInput(value);
+  }
+
+  function commitPrivateInputLine(value: boolean) {
+    if (privateInputLineRef.current === value) return;
+    privateInputLineRef.current = value;
+    setPrivateInputLine(value);
+  }
+
+  function setFreeInputValue(value: string) {
+    freeInputValueRef.current = value;
+    freeInputSensitiveRef.current = Boolean(value) && (freeInputSensitiveRef.current
+      || manualPrivateInputRef.current || detectedPrivateInputRef.current || privateInputLineRef.current);
+    setFreeInputValueState(value);
   }
 
   function clearPrivateInput() {
@@ -481,6 +504,10 @@ function TerminalCanvas({
   function toggleManualPrivateInput() {
     const next = !manualPrivateInputRef.current;
     manualPrivateInputRef.current = next;
+    if (next) {
+      resetCompletionInput(false);
+      if (freeInputValueRef.current) freeInputSensitiveRef.current = true;
+    }
     setManualPrivateInput(next);
     if (privateInputTimerRef.current !== null) window.clearTimeout(privateInputTimerRef.current);
     privateInputTimerRef.current = next
@@ -528,6 +555,7 @@ function TerminalCanvas({
     && !gotoLineOpen
     && !freeInputSource
     && !oneKeyPrompt
+    && !privateInputActive
     && completionInput.synchronized
     && completionInput.line !== completionDismissedLine;
   const completionCandidates = useMemo(() => (
@@ -696,7 +724,7 @@ function TerminalCanvas({
   function storeCompletionInput(next: TerminalCompletionInputState) {
     cancelScheduledCompletionInput();
     completionInputRef.current = next;
-    setCompletionInput(next);
+    setCompletionInput((current) => current.line === next.line && current.synchronized === next.synchronized ? current : next);
   }
 
   function cancelScheduledCompletionInput() {
@@ -724,6 +752,8 @@ function TerminalCanvas({
 
   function resetCompletionInput(synchronized = true) {
     storeCompletionInput({ line: "", synchronized });
+    completionSuggestionsRef.current = [];
+    completionSurfaceOpenRef.current = false;
     setCompletionDismissedLine((current) => current ? "" : current);
     if (completionSelectionRef.current !== 0) {
       completionSelectionRef.current = 0;
@@ -731,12 +761,16 @@ function TerminalCanvas({
     }
   }
 
-  function updateCompletionInput(text: string): string[] {
+  function updateCompletionInput(text: string, sensitive = false): string[] {
     const current = oneKeyPromptStateRef.current.prompt
       ? { line: "", synchronized: false }
       : completionInputRef.current;
-    const reduction = reduceTerminalCompletionInputWithSubmissions(current, text);
+    const reduction = reduceTerminalCompletionInputWithSubmissions(current, text, sensitive);
     const next = reduction.state;
+    if (sensitive) {
+      resetCompletionInput(next.synchronized);
+      return [];
+    }
     if (!completionEnabledRef.current) {
       cancelScheduledCompletionInput();
       completionInputRef.current = next;
@@ -754,6 +788,11 @@ function TerminalCanvas({
 
   acceptCompletionRef.current = (suggestion) => {
     if (!active) return;
+    if (manualPrivateInputRef.current || detectedPrivateInputRef.current || privateInputLineRef.current) {
+      resetCompletionInput(false);
+      scheduleTerminalSurfaceFocus();
+      return;
+    }
     const appendText = terminalCompletionAppendText(completionInputRef.current, suggestion);
     if (!appendText) {
       dismissCompletionRef.current();
@@ -952,21 +991,26 @@ function TerminalCanvas({
     if (!active) return;
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
+    const term = termRef.current;
+    const sensitive = freeInputSensitiveRef.current || manualPrivateInputRef.current
+      || detectedPrivateInputRef.current || privateInputLineRef.current
+      || Boolean(term && terminalInputLooksSensitive(term, oneKeyPromptStateRef.current.prompt));
     void onInputRef.current(
       active.profile.id,
       payload,
       "atomic",
-      privateInputActive ? { sensitive: true } : undefined,
+      sensitive ? { sensitive: true } : undefined,
     );
-    if (privateInputActive) clearPrivateInput();
-    if (termRef.current?.buffer.active.type === "normal"
-      && !terminalInputLooksSensitive(termRef.current, oneKeyPromptStateRef.current.prompt)) {
+    if (!sensitive && term?.buffer.active.type === "normal") {
       const submitted = reduceTerminalCompletionInputWithSubmissions(
         emptyTerminalCompletionInputState,
         payload,
       ).submittedCommands;
       for (const command of submitted) onCommandSubmitRef.current?.(active.profile.id, command);
     }
+    resetCompletionInput();
+    commitPrivateInputLine(false);
+    if (sensitive) clearPrivateInput();
     closeTerminalFreeInput();
   }
 
@@ -1073,7 +1117,9 @@ function TerminalCanvas({
         }
         return false;
       }
-      if (mode === "remote" && completionSurfaceOpenRef.current && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (mode === "remote" && completionSurfaceOpenRef.current
+        && !manualPrivateInputRef.current && !detectedPrivateInputRef.current && !privateInputLineRef.current
+        && !event.altKey && !event.ctrlKey && !event.metaKey) {
         if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
           const completions = completionSuggestionsRef.current;
           // Preserve rendered indices when a deferred snapshot contains stale
@@ -2088,7 +2134,8 @@ function TerminalCanvas({
       lastInteractiveInputAt = performance.now();
       const detectedSensitive = detectSensitiveInput();
       commitDetectedPrivateInput(detectedSensitive);
-      const sensitive = manualPrivateInputRef.current || detectedSensitive;
+      const sensitive = manualPrivateInputRef.current || detectedSensitive || privateInputLineRef.current;
+      if (sensitive) commitPrivateInputLine(true);
       const isEnter = /\r|\n/.test(text);
       const inputOrigin: SyncInputOrigin = /[\u0000-\u001f\u007f]/.test(text)
         ? "atomic"
@@ -2101,7 +2148,7 @@ function TerminalCanvas({
         inputOrigin,
         sensitive ? { sensitive: true } : undefined,
       );
-      const submittedCommands = updateCompletionInput(text);
+      const submittedCommands = updateCompletionInput(text, sensitive);
       if (term.buffer.active.type === "normal"
         && submittedCommands.length
         && !sensitive) {
@@ -2109,7 +2156,8 @@ function TerminalCanvas({
           onCommandSubmitRef.current?.(active.profile.id, command);
         }
       }
-      if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
+      if (sensitive && terminalPrivateInputEndsLine(text)) commitPrivateInputLine(false);
+      if (sensitive && /[\r\n\u0003]$/.test(text)) clearPrivateInput();
       dismissOneKeyPrompt();
       if (isEnter) keepTerminalAtOutput();
     });
@@ -2131,17 +2179,18 @@ function TerminalCanvas({
         if (text) {
           resetCompletionInput(false);
           dismissOneKeyPrompt();
-          const sensitive = manualPrivateInputRef.current || terminalInputLooksSensitive(
+          const sensitive = manualPrivateInputRef.current || privateInputLineRef.current || terminalInputLooksSensitive(
             term,
             oneKeyPromptStateRef.current.prompt,
           );
+          if (sensitive) commitPrivateInputLine(!terminalPrivateInputEndsLine(text));
           void onInputRef.current(
             active.profile.id,
             text,
             "atomic",
             sensitive ? { sensitive: true } : undefined,
           );
-          if (sensitive && /\r|\n|\u0003|\u0004/.test(text)) clearPrivateInput();
+          if (sensitive && /[\r\n\u0003]$/.test(text)) clearPrivateInput();
         }
       }).catch(() => {});
     };
@@ -2517,6 +2566,7 @@ function TerminalCanvas({
 
   useEffect(() => {
     resetCompletionInput();
+    commitPrivateInputLine(false);
     clearPrivateInput();
     setFreeInputSource(null);
     setFreeInputValue("");
@@ -2718,11 +2768,14 @@ function TerminalCanvas({
               className={`terminal-private-input${privateInputActive ? " active" : ""}`}
               aria-label={detectedPrivateInput
                 ? "已自动开启私密输入"
+                : privateInputRetained && !manualPrivateInput ? "本行仍为私密输入"
                 : privateInputActive ? "关闭私密输入" : "开启私密输入"}
               aria-pressed={privateInputActive}
-              disabled={detectedPrivateInput}
+              disabled={detectedPrivateInput || (privateInputRetained && !manualPrivateInput)}
               title={detectedPrivateInput
                 ? "检测到凭据提示，已自动保护：仅发送到当前会话且不写入日志"
+                : privateInputRetained && !manualPrivateInput
+                  ? "本行已包含私密输入，将继续保护到提交、取消或清空；不会进入补全或命令历史"
                 : privateInputActive
                   ? "私密输入已开启：仅发送到当前会话且不写入日志"
                 : "私密输入：仅发送到当前会话且不写入日志"}
