@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Security
 
+- An explicit non-default MCP Client ID is no longer replaced by the desktop-selected identity
+  when its grant is missing, expired, or revoked. Such requests now fail closed instead of borrowing
+  another client's permissions; legacy default identity migration remains available.
 - Private terminal input is excluded from command completion and command history, including free-input
   editor submissions. Once a line contains private input, turning off the toggle or losing automatic
   prompt detection no longer makes its remaining bytes public; submission, cancellation, or clearing

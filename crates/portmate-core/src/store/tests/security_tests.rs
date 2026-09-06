@@ -102,6 +102,47 @@ fn http_client_identity_auto_unifies_only_when_the_boundary_is_unambiguous() {
 }
 
 #[test]
+fn explicit_mcp_identity_never_falls_back_to_a_different_stored_grant() {
+    let mut store = test_store();
+    store.mcp_http_settings.client_id = "test-client".into();
+    for configured in ["missing-reader", "bad\nreader", "removed-reader"] {
+        let resolved = store.mcp_resolved_client_id(Some(configured));
+        assert_eq!(resolved, configured);
+        assert!(!store.mcp_can_read(&resolved, McpScope::ReadLogs, Some("test-session")));
+        assert!(!store.mcp_can(&resolved, McpScope::WriteInput, Some("test-session")));
+    }
+    assert_eq!(store.mcp_resolved_client_id(Some(" readonly ")), "readonly");
+    store
+        .grants
+        .iter_mut()
+        .find(|grant| grant.client_id == "readonly")
+        .unwrap()
+        .revoked_at = Some(Utc::now());
+    assert_eq!(store.mcp_resolved_client_id(Some("readonly")), "readonly");
+    store
+        .grants
+        .iter_mut()
+        .find(|grant| grant.client_id == "readonly")
+        .unwrap()
+        .revoked_at = None;
+    store
+        .grants
+        .iter_mut()
+        .find(|grant| grant.client_id == "readonly")
+        .unwrap()
+        .expires_at = Some(Utc::now());
+    assert_eq!(store.mcp_resolved_client_id(Some("readonly")), "readonly");
+    store.grants.retain(|grant| grant.client_id != "readonly");
+    assert_eq!(store.mcp_resolved_client_id(Some("readonly")), "readonly");
+    // Unconfigured/legacy clients still follow the desktop-selected identity.
+    assert_eq!(store.mcp_resolved_client_id(None), "test-client");
+    assert_eq!(
+        store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
+        "test-client"
+    );
+}
+
+#[test]
 fn explicit_no_session_grant_allows_collection_filtering_but_no_session_data() {
     let now = Utc::now();
     let grant = McpGrant {

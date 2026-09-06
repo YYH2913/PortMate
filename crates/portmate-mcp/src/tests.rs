@@ -132,6 +132,61 @@ fn standalone_bridge_unifies_a_legacy_default_with_one_active_grant() {
 }
 
 #[test]
+fn standalone_bridge_keeps_its_explicit_identity_after_revocation_or_removal() {
+    let mut store = test_snapshot_store("client revocation");
+    grant_all_read_scopes(&mut store, "desktop-client");
+    grant_all_read_scopes(&mut store, "explicit-reader");
+    store.mcp_http_settings.client_id = "desktop-client".into();
+    let mut server = PortMateMcp {
+        client_id: resolve_mcp_client_id(&store, Some("explicit-reader")),
+        store,
+        store_path: None,
+        ipc: None,
+        allow_write: false,
+    };
+    assert!(server
+        .tool_call(&json!({"name":"list_sessions", "arguments":{}}))
+        .is_ok());
+    let now = server.store.runtimes[0].last_activity;
+    server
+        .store
+        .grants
+        .iter_mut()
+        .find(|grant| grant.client_id == "explicit-reader")
+        .unwrap()
+        .revoked_at = Some(now);
+    for removed in [false, true] {
+        if removed {
+            server
+                .store
+                .grants
+                .retain(|grant| grant.client_id != "explicit-reader");
+        }
+        server.client_id = resolve_mcp_client_id(&server.store, Some("explicit-reader"));
+        assert_eq!(server.client_id, "explicit-reader");
+        assert!(server
+            .tool_call(&json!({"name":"list_sessions", "arguments":{}}))
+            .unwrap_err()
+            .to_string()
+            .contains("ReadSessions"));
+        assert!(server
+            .tool_call(&json!({"name":"tail_log", "arguments":{"sessionId":"refresh-session"}}))
+            .unwrap_err()
+            .to_string()
+            .contains("ReadLogs"));
+        assert!(server.resources_list_result()["resources"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(resolve_mcp_client_id(&server.store, None), "desktop-client");
+    assert_eq!(
+        resolve_mcp_client_id(&server.store, Some("portmate-local")),
+        "desktop-client"
+    );
+}
+
+#[test]
 fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     let root = std::env::temp_dir().join(format!("portmate-content-upload-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();

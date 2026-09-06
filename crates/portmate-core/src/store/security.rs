@@ -101,12 +101,17 @@ impl SessionStore {
     }
 
     /// Resolve the client identity used by the HTTP bridge without widening a
-    /// grant. A matching explicit or stored identity wins; a single active
-    /// grant is adopted only for the legacy default/empty identity. With
-    /// multiple unmatched grants we retain the configured identity so the
-    /// request fails closed instead of guessing an authorization boundary.
+    /// grant. An explicit non-default identity always wins, including after
+    /// revocation or expiry; never substitute a different stored identity.
+    /// A single active grant is adopted only for the legacy default/empty
+    /// identity. Ambiguous defaults fail closed instead of guessing a grant.
     pub fn mcp_resolved_client_id(&self, configured: Option<&str>) -> String {
         let configured = configured.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(configured) =
+            configured.filter(|candidate| *candidate != DEFAULT_MCP_HTTP_CLIENT_ID)
+        {
+            return configured.to_string();
+        }
         let stored = self.mcp_http_settings.client_id.trim();
         let now = Utc::now();
         let active = self
@@ -119,12 +124,6 @@ impl SessionStore {
             .map(|grant| grant.client_id.as_str())
             .collect::<Vec<_>>();
 
-        if let Some(configured) = configured
-            .filter(|candidate| *candidate != DEFAULT_MCP_HTTP_CLIENT_ID)
-            .filter(|candidate| active.contains(candidate))
-        {
-            return configured.to_string();
-        }
         if !stored.is_empty() && active.contains(&stored) {
             return stored.to_string();
         }
@@ -132,14 +131,6 @@ impl SessionStore {
             && configured.is_none_or(|candidate| candidate == DEFAULT_MCP_HTTP_CLIENT_ID);
         if active.len() == 1 && legacy_default {
             return active[0].to_string();
-        }
-        // Multiple active grants are ambiguous. Preserve a non-default
-        // operator choice in that case so the bridge fails closed instead of
-        // guessing or combining authorization boundaries.
-        if let Some(configured) =
-            configured.filter(|candidate| *candidate != DEFAULT_MCP_HTTP_CLIENT_ID)
-        {
-            return configured.to_string();
         }
         if let Some(configured) = configured {
             return configured.to_string();
