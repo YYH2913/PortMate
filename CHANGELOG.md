@@ -8,6 +8,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Changed
 
+- Extended the official Python MCP SDK matrix to 2.1.1 with a committed dependency snapshot,
+  retaining the older SDK coverage and both stdio and Streamable HTTP checks.
 - Desktop terminal input now uses a bounded, sequence-ordered IPC pipeline instead of waiting
   for a complete IPC round trip per keystroke. Stream bindings reject input from replaced
   connections, while acknowledged sends and binary mouse frames retain ordering barriers.
