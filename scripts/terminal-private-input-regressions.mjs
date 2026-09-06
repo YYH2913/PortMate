@@ -67,6 +67,25 @@ export async function checkTerminalPrivateInputRegressions(page) {
   await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "send_text"
     && call.args.text === "echo private-editor-probe\r" && call.args.sensitive === true));
 
+  await privateButton.click();
+  await page.evaluate(async () => {
+    const { requestTerminalFreeInput } = await import("/src/terminal-free-input.ts");
+    requestTerminalFreeInput(window, "echo cancelled-private-editor");
+  });
+  await pane.getByRole("textbox", { name: "自由输入内容" }).waitFor();
+  await pane.getByRole("button", { name: "取消自由输入", exact: true }).click();
+  await privateButton.click(); // leave only the cancelled editor's old marker to test
+  await page.evaluate(async () => {
+    const { requestTerminalFreeInput } = await import("/src/terminal-free-input.ts");
+    requestTerminalFreeInput(window, "echo public-editor-after-cancel");
+  });
+  await pane.getByRole("textbox", { name: "自由输入内容" }).waitFor();
+  await page.evaluate(() => { window.__invokeCalls = []; });
+  await pane.getByRole("button", { name: "发送自由输入", exact: true }).click();
+  await pane.locator(".terminal-free-input").waitFor({ state: "detached" });
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "send_text"
+    && call.args.text === "echo public-editor-after-cancel\r" && !call.args.sensitive));
+
   await prompt("Password: ");
   await page.waitForFunction((selector) => document.querySelector(`${selector} .terminal-canvas`)?.dataset.terminalPrivateInput === "true", paneSelector);
   await textarea.focus();
@@ -87,10 +106,12 @@ export async function checkTerminalPrivateInputRegressions(page) {
     privateKeyboardHistory: recorded.includes("private-keyboard-probe"),
     privateEditorHistory: recorded.includes("private-editor-probe"),
     privateAutoHistory: recorded.includes("private-auto-probe"),
+    cancelledEditorHistory: recorded.includes("cancelled-private-editor"),
     normalHistoryResumed: recorded.includes("echo public-after-private-probe"),
   };
   assert.ok(hiddenOnEnable && hiddenDuringInput && hiddenAtPassword
-    && !results.privateKeyboardHistory && !results.privateEditorHistory && !results.privateAutoHistory,
+    && !results.privateKeyboardHistory && !results.privateEditorHistory && !results.privateAutoHistory
+    && !results.cancelledEditorHistory,
     `private input reached completion or history: ${JSON.stringify(results)}`);
   return results;
 }

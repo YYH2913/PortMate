@@ -163,6 +163,7 @@ type TerminalGotoLineContext = {
   originViewport: number;
   resumeFreeInputSource: "manual" | "normal" | null;
   resumeFreeInputValue: string;
+  resumeFreeInputSensitive: boolean;
 };
 type TerminalTimestampMarker = {
   marker: IMarker;
@@ -685,6 +686,9 @@ function TerminalCanvas({
     setSearchOpen(false);
     setSearchResult(null);
     setSearchInvalid(false);
+    // A new editor invocation starts a fresh sensitivity boundary. Existing
+    // terminal-line protection is never inherited into an unrelated editor.
+    if (value || !freeInputOpen) freeInputSensitiveRef.current = false;
     if (value || (!freeInputOpen && !gotoLineContext?.resumeFreeInputSource)) {
       setFreeInputValue(normalizeTerminalFreeInput(value));
     }
@@ -716,6 +720,7 @@ function TerminalCanvas({
       originViewport: buffer.viewportY,
       resumeFreeInputSource: freeInputSource,
       resumeFreeInputValue: freeInputValue,
+      resumeFreeInputSensitive: freeInputSensitiveRef.current,
     });
     scheduleTerminalSurfaceFocus();
   };
@@ -957,9 +962,11 @@ function TerminalCanvas({
     }
     const resumeFreeInputSource = gotoLineContext?.resumeFreeInputSource ?? null;
     const resumeFreeInputValue = gotoLineContext?.resumeFreeInputValue ?? "";
+    const resumeFreeInputSensitive = gotoLineContext?.resumeFreeInputSensitive ?? false;
     setGotoLineContext(null);
     setGotoLineQuery("");
     if (resumeFreeInputSource) {
+      freeInputSensitiveRef.current = resumeFreeInputSensitive;
       setFreeInputSource(resumeFreeInputSource);
       setFreeInputValue(resumeFreeInputValue);
       if (focusTerminal) {
@@ -2853,6 +2860,7 @@ function TerminalCanvas({
                     event.stopPropagation();
                     if (freeInputSource === "normal") {
                       setFreeInputSource(null);
+                      setFreeInputValue("");
                       keyModeRef.current = "command";
                       onKeyModeChangeRef.current("command");
                     } else {
@@ -2864,6 +2872,7 @@ function TerminalCanvas({
                     event.preventDefault();
                     event.stopPropagation();
                     setFreeInputSource(null);
+                    setFreeInputValue("");
                     keyModeRef.current = "command";
                     onKeyModeChangeRef.current("command");
                     return;
