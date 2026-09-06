@@ -271,6 +271,7 @@ uploadId 需要 transfer scope；直接访问 PortMate 主机路径还需要 hos
 retry_transfer 只需 transferId。返回的源/目标路径会脱敏，纯 local-to-local 复制不暴露。
 retry_transfer 只适用于持久路径任务；虚拟内容/uploadId 的私有暂存副本会在任务终态删除，
 应重新使用 contentBase64 或原 uploadId 调用 start_transfer。
+此外仅允许重试 `failed` 或 `cancelled` 任务；`queued`、`running` 和 `completed` 任务会被拒绝。
 SFTP/SCP 的非本地端点只支持 SSH/Tmux Profile；TFTP 和 X/Y/ZModem 还必须在该 Profile
 的传输设置中启用，并需要可用的交互会话。
 

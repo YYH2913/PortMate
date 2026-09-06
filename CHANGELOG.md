@@ -21,6 +21,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 - MCP Bridge now reapplies the requested recent-log limit after filtering desktop IPC responses,
   preventing an oversized or stale IPC result from bypassing the documented 1-1000 bound.
+- Transfer retry now fails closed for queued, running, and completed tasks; only failed or cancelled
+  tasks can be retried, matching the desktop UI and MCP contract.
 - Destroyed windows release their pending input-stream buffers and staged SSH credentials without
   closing shared sessions or invalidating another window's input stream. Cancelled close requests
   do not discard this state.

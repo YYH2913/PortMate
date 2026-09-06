@@ -67,6 +67,35 @@ fn transfer_active_statuses_cover_queued_and_running_tasks() {
 }
 
 #[test]
+fn retry_rejects_queued_running_and_completed_tasks_without_side_effects() {
+    tauri::async_runtime::block_on(async {
+        for status in [
+            TransferStatus::Queued,
+            TransferStatus::Running,
+            TransferStatus::Completed,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            let mut task = test_transfer_task(&profile.id, status.clone());
+            task.id = format!("retry-ineligible-{:?}", status);
+            task.source = root.path().join("source.bin").display().to_string();
+            task.destination = root.path().join("destination.bin").display().to_string();
+            state.store.lock().unwrap().record_transfer(task.clone());
+
+            let error = retry_transfer_inner(&state, &task.id).await.unwrap_err();
+            assert!(error.contains("not retryable"), "{status:?}: {error}");
+            assert_eq!(state.store.lock().unwrap().transfers.len(), 1);
+            assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+            assert_eq!(
+                state.transfer_task_slots.available_permits(),
+                MAX_ACTIVE_TRANSFER_TASKS
+            );
+        }
+    });
+}
+
+#[test]
 fn transfer_queue_capacity_bounds_session_app_and_overflow_counts() {
     let mut store = SessionStore::default();
     for index in 0..MAX_ACTIVE_TRANSFERS_PER_SESSION {

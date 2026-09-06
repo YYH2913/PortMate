@@ -365,7 +365,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "retry_transfer",
             "Retry Transfer",
-            "Retry an eligible previous file-transfer task with its recorded protocol, endpoints, and session. Requires transfer scope; paths are taken from the stored task and cannot be replaced by MCP. Inline virtual-content tasks and tasks whose staged bytes were deleted are not retryable; poll get_transfer for the new asynchronous task state.",
+            "Retry a failed or cancelled file-transfer task with its recorded protocol, endpoints, and session. Queued, running, and completed tasks are rejected. Requires transfer scope; paths are taken from the stored task and cannot be replaced by MCP. Inline virtual-content tasks and tasks whose staged bytes were deleted are not retryable; poll get_transfer for the new asynchronous task state.",
             transfer_id_schema(),
             false,
         ),

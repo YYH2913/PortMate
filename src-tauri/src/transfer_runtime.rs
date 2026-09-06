@@ -80,6 +80,12 @@ pub(super) async fn retry_transfer_inner_with_validation(
             .transfer_by_id(transfer_id)
             .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
     };
+    if !matches!(previous.status, TransferStatus::Failed | TransferStatus::Cancelled) {
+        return Err(format!(
+            "transfer {transfer_id} is not retryable while it is {:?}; only failed or cancelled transfers can be retried",
+            previous.status
+        ));
+    }
     if is_mcp_content_transfer_staging_source(state, &previous.source) {
         return Err(MCP_CONTENT_TRANSFER_RETRY_ERROR.to_string());
     }
