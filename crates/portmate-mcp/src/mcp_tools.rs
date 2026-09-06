@@ -103,7 +103,8 @@ impl PortMateMcp {
                         serde_json::from_value::<Vec<SessionEvent>>(value)
                             .map_err(|error| anyhow!("invalid desktop log response: {error}"))?
                     } else {
-                        self.store.search_logs(query, session_id, limit)
+                        self.store
+                            .mcp_search_logs(&self.client_id, query, session_id, limit)
                     };
                 events.retain(|event| {
                     session_id.is_none_or(|session_id| event.session_id == session_id)

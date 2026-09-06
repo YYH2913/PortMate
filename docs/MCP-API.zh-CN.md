@@ -191,6 +191,7 @@ export_session_bundle 使用与 read_screen 相同的 sessionId 参数，返回�
     { "query": "authentication failed", "sessionId": "edge-router", "limit": 50 }
 
 必需 query；sessionId 可选；limit 默认 100，范围 1-1000。查询不会执行命令。
+先筛选已授权的现有会话，再取最近 limit 条匹配事件并按时间正序返回；其他会话的日志不占用此限额。
 
 ### send_text
 

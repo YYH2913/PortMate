@@ -94,17 +94,7 @@ async fn execute_ipc_request_inner(
             let limit = bounded_log_query_limit(limit);
             let store = state.store.lock().map_err(|error| error.to_string())?;
             require_mcp_read_scope(&store, &request, McpScope::ReadLogs, session_id)?;
-            let events = store
-                .search_logs(&query, session_id, limit)
-                .into_iter()
-                .filter(|event| {
-                    store.mcp_can_read(
-                        &request.client_id,
-                        McpScope::ReadLogs,
-                        Some(&event.session_id),
-                    )
-                })
-                .collect();
+            let events = store.mcp_search_logs(&request.client_id, &query, session_id, limit);
             serde_json::to_value(redact_session_events(events)).map_err(|error| error.to_string())
         }
         "list_transfers" => {

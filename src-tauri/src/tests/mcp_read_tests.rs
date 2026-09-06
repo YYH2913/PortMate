@@ -1,6 +1,93 @@
 use super::*;
 
 #[test]
+fn mcp_log_search_applies_limit_after_session_authorization() {
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        let visible_id = state.store.lock().unwrap().profiles[0].id.clone();
+        {
+            let mut store = state.store.lock().unwrap();
+            let mut hidden = store.profiles[0].clone();
+            hidden.id = "hidden-session".into();
+            store.upsert_profile(hidden);
+            store.events.clear();
+            for (session, text) in [
+                (visible_id.as_str(), "match old"),
+                (visible_id.as_str(), "match new password=hidden-value"),
+                ("hidden-session", "match hidden one"),
+                ("hidden-session", "match hidden two"),
+                ("hidden-session", "match hidden three"),
+            ] {
+                store
+                    .record_stream_event(
+                        session,
+                        EventDirection::Inbound,
+                        EventStream::Stdout,
+                        text,
+                    )
+                    .unwrap();
+            }
+        }
+        grant_test_mcp_access(
+            &state,
+            "search-reader",
+            vec![McpScope::ReadLogs],
+            vec![visible_id.clone()],
+        );
+        let request = |args| IpcRequest {
+            token: "authenticated-token".into(),
+            client_id: "search-reader".into(),
+            trusted_write: false,
+            command: "search_logs".into(),
+            args,
+        };
+        for limit in [1, 2] {
+            let response = handle_ipc_request(
+                state.clone(),
+                request(serde_json::json!({"query":"MATCH", "limit":limit})),
+            )
+            .await
+            .unwrap();
+            let events: Vec<SessionEvent> = serde_json::from_value(response).unwrap();
+            assert_eq!(
+                events.len(),
+                limit,
+                "unauthorized events consumed the search limit"
+            );
+            assert!(events.iter().all(|event| event.session_id == visible_id));
+            assert!(events
+                .last()
+                .unwrap()
+                .text
+                .as_ref()
+                .unwrap()
+                .contains("match new"));
+            assert!(!serde_json::to_string(&events)
+                .unwrap()
+                .contains("hidden-value"));
+            if limit == 2 {
+                assert_eq!(events[0].text.as_deref(), Some("match old"));
+            }
+        }
+        assert!(handle_ipc_request(
+            state.clone(),
+            request(serde_json::json!({"query":"match", "sessionId":"hidden-session"}))
+        )
+        .await
+        .unwrap_err()
+        .contains("ReadLogs"));
+        state.store.lock().unwrap().grants.clear();
+        assert!(
+            handle_ipc_request(state, request(serde_json::json!({"query":"match"})))
+                .await
+                .unwrap_err()
+                .contains("ReadLogs")
+        );
+    });
+}
+
+#[test]
 fn mcp_ipc_reads_enforce_grants_and_reject_unlisted_commands() {
     tauri::async_runtime::block_on(async {
         let root = std::env::temp_dir().join(format!("portmate-mcp-read-scope-{}", Uuid::new_v4()));

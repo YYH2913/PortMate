@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+fn log_queries_keep_the_newest_visible_events_in_chronological_order() {
+    let mut store = test_store();
+    let mut hidden = store.profiles[0].clone();
+    hidden.id = "hidden-session".into();
+    store.upsert_profile(hidden);
+    store.events.clear();
+    for (session, text) in [
+        ("test-session", "match one"),
+        ("hidden-session", "match hidden one"),
+        ("test-session", "match two"),
+        ("test-session", "other three"),
+        ("hidden-session", "match hidden two"),
+        ("hidden-session", "match hidden three"),
+    ] {
+        store
+            .record_stream_event(session, EventDirection::Inbound, EventStream::Stdout, text)
+            .unwrap();
+    }
+    let texts = |events: Vec<SessionEvent>| {
+        events
+            .into_iter()
+            .map(|event| event.text.unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        texts(store.mcp_search_logs("test-client", "MATCH", None, 2)),
+        ["match one", "match two"]
+    );
+    assert_eq!(
+        texts(store.mcp_search_logs("test-client", "match", None, 1)),
+        ["match two"]
+    );
+    assert_eq!(
+        texts(store.search_logs("match", None, 2)),
+        ["match hidden two", "match hidden three"]
+    );
+    assert_eq!(
+        texts(store.tail_log("test-session", 2)),
+        ["match two", "other three"]
+    );
+    assert_eq!(
+        texts(store.tail_log("test-session", 10)),
+        ["match one", "match two", "other three"]
+    );
+    assert!(store.tail_log("test-session", 0).is_empty());
+    assert!(store.search_logs("match", None, 0).is_empty());
+    assert!(store
+        .mcp_search_logs("test-client", "match", None, 0)
+        .is_empty());
+    assert!(store
+        .mcp_search_logs("test-client", "match", Some("hidden-session"), 2)
+        .is_empty());
+    assert!(store
+        .mcp_search_logs("unknown-client", "match", None, 2)
+        .is_empty());
+    // Global read grants must still exclude events whose profile no longer exists.
+    store
+        .profiles
+        .retain(|profile| profile.id == "test-session");
+    assert_eq!(
+        texts(store.mcp_search_logs("readonly", "match", None, 2)),
+        ["match one", "match two"]
+    );
+    store.grants[0].expires_at = Some(Utc::now());
+    assert!(store
+        .mcp_search_logs("test-client", "match", None, 2)
+        .is_empty());
+}
+
+#[test]
 fn send_text_redacts_and_audits() {
     let mut store = test_store();
     let event = store

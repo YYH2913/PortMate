@@ -1,10 +1,11 @@
 use super::SessionStore;
 use crate::host_keys::{HostKeyEvaluation, HostKeyObservation};
 use crate::models::{
-    AuthMethod, ConnectionConfig, HostKeyDecision, McpScope, SshConnection, TrustedHostKey,
-    DEFAULT_MCP_HTTP_CLIENT_ID,
+    AuthMethod, ConnectionConfig, HostKeyDecision, McpScope, SessionEvent, SshConnection,
+    TrustedHostKey, DEFAULT_MCP_HTTP_CLIENT_ID,
 };
 use chrono::Utc;
+use std::collections::HashSet;
 
 impl SessionStore {
     pub fn record_auth_success(
@@ -74,6 +75,29 @@ impl SessionStore {
             && client_id.len() <= 128
             && !client_id.chars().any(char::is_control)
             && self.mcp_can(client_id, scope, session_id)
+    }
+
+    /// Search only existing, authorized sessions before applying the result
+    /// limit. The request's read-scope guard remains the caller's responsibility.
+    /// Resolve scope once per profile instead of once per retained log event.
+    pub fn mcp_search_logs(
+        &self,
+        client_id: &str,
+        query: &str,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<SessionEvent> {
+        let visible = self
+            .profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .filter(|id| session_id.is_none_or(|wanted| wanted == *id))
+            .filter(|id| self.mcp_can_read(client_id, McpScope::ReadLogs, Some(id)))
+            .collect::<HashSet<_>>();
+        if visible.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        self.search_logs_matching_sessions(query, limit, |id| visible.contains(id))
     }
 
     /// Resolve the client identity used by the HTTP bridge without widening a

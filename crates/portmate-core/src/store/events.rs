@@ -205,11 +205,12 @@ impl SessionStore {
         let mut events = self
             .events
             .iter()
+            .rev()
             .filter(|event| event.session_id == session_id)
+            .take(limit)
             .cloned()
             .collect::<Vec<_>>();
-        let start = events.len().saturating_sub(limit);
-        events.drain(..start);
+        events.reverse();
         events
     }
 
@@ -219,12 +220,23 @@ impl SessionStore {
         session_id: Option<&str>,
         limit: usize,
     ) -> Vec<SessionEvent> {
+        self.search_logs_matching_sessions(query, limit, |id| {
+            session_id.is_none_or(|wanted| wanted == id)
+        })
+    }
+
+    pub(crate) fn search_logs_matching_sessions(
+        &self,
+        query: &str,
+        limit: usize,
+        mut session_allowed: impl FnMut(&str) -> bool,
+    ) -> Vec<SessionEvent> {
         let needle = query.to_lowercase();
         let mut events = self
             .events
             .iter()
             .rev()
-            .filter(|event| session_id.is_none_or(|id| event.session_id == id))
+            .filter(|event| session_allowed(&event.session_id))
             .filter(|event| {
                 event
                     .text

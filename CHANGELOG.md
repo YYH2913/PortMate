@@ -19,6 +19,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP log search now filters authorized sessions before applying the result limit, so activity in
+  unrelated sessions cannot hide matching authorized logs. Recent-log reads clone only the returned
+  events instead of copying a session's entire retained history.
 - Tab and clicked completion candidates now resolve their suffix against the live input line,
   preventing duplicate characters when the preview is still waiting for a deferred refresh.
   Stale candidates no longer intercept native Tab, and keyboard selection keeps its rendered row.

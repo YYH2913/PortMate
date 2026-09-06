@@ -353,6 +353,44 @@ fn mcp_log_query_limit_matches_declared_schema_bounds() {
 }
 
 #[test]
+fn standalone_mcp_log_search_applies_limit_after_session_authorization() {
+    let mut store = test_snapshot_store("visible search session");
+    let mut hidden = store.profiles[0].clone();
+    hidden.id = "hidden-session".into();
+    store.upsert_profile(hidden);
+    store.events.clear();
+    for (session, text) in [
+        ("refresh-session", "match old"),
+        ("refresh-session", "match new password=hidden-value"),
+        ("hidden-session", "match hidden one"),
+        ("hidden-session", "match hidden two"),
+        ("hidden-session", "match hidden three"),
+    ] {
+        store.record_stream_event(session, portmate_core::EventDirection::Inbound, portmate_core::EventStream::Stdout, text).unwrap();
+    }
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "search-reader".into(), name: "Search reader".into(),
+        scopes: vec![McpScope::ReadLogs], allowed_sessions: vec!["refresh-session".into()],
+        confirm_writes: false, expires_at: None, revoked_at: None,
+    });
+    let mut server = PortMateMcp { store, store_path: None, ipc: None, client_id: "search-reader".into(), allow_write: false };
+    for limit in [1, 2] {
+        let response = server.tool_call(&json!({"name":"search_logs", "arguments":{"query":"MATCH", "limit":limit}})).unwrap();
+        let events: Vec<portmate_core::SessionEvent> = serde_json::from_str(response["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(events.len(), limit, "unauthorized events consumed the search limit");
+        assert!(events.iter().all(|event| event.session_id == "refresh-session"));
+        assert!(events.last().unwrap().text.as_ref().unwrap().contains("match new"));
+        assert!(!serde_json::to_string(&events).unwrap().contains("hidden-value"));
+        if limit == 2 { assert_eq!(events[0].text.as_deref(), Some("match old")); }
+    }
+    assert!(server.tool_call(&json!({"name":"search_logs", "arguments":{"query":"match", "sessionId":"hidden-session"}}))
+        .unwrap_err().to_string().contains("ReadLogs"));
+    server.store.grants[0].revoked_at = Some(server.store.events[0].ts);
+    assert!(server.tool_call(&json!({"name":"search_logs", "arguments":{"query":"match"}}))
+        .unwrap_err().to_string().contains("ReadLogs"));
+}
+
+#[test]
 fn mcp_transfer_query_limit_matches_declared_schema_bounds() {
     assert_eq!(bounded_transfer_query_limit(None), 100);
     assert_eq!(bounded_transfer_query_limit(Some(0)), 1);
