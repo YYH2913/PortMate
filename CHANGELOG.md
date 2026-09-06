@@ -17,6 +17,12 @@ or an unsigned artifact is not a production release. The complete release gates 
   cursor-row, and terminal-size changes recalculate its placement, avoiding repeated entrance
   animations and terminal/timestamp shifts while preserving below-cursor suggestions.
 
+### Fixed
+
+- Tab and clicked completion candidates now resolve their suffix against the live input line,
+  preventing duplicate characters when the preview is still waiting for a deferred refresh.
+  Stale candidates no longer intercept native Tab, and keyboard selection keeps its rendered row.
+
 ## [0.1.8] - 2026-09-05
 
 ### Added

@@ -4,6 +4,7 @@ import {
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
   reduceTerminalCompletionInputWithSubmissions,
+  terminalCompletionAppendText,
   terminalCompletionNeedsImmediateRefresh,
   terminalCompletionSourceLabel,
   terminalCompletionSuggestions,
@@ -17,6 +18,36 @@ import {
 } from "./terminal-completion-prefs";
 
 describe("terminal completion state", () => {
+  it("rebases a delayed candidate after typing/deletion and retains its trailing space", () => {
+    const candidate = terminalCompletionSuggestions({ line: "git stat", preferences: defaultTerminalCompletionPreferences })
+      .find((item) => item.label === "status")!;
+    for (const [line, expected] of [["git stat", "us "], ["git statu", "s "], ["git sta", "tus "], ["git status", " "]]) {
+      expect(terminalCompletionAppendText({ line, synchronized: true }, candidate)).toBe(expected);
+    }
+  });
+
+  it("does not accept a stale candidate after line clearing, navigation or unrelated input", () => {
+    const candidate = terminalCompletionSuggestions({ line: "git stat", preferences: defaultTerminalCompletionPreferences })
+      .find((item) => item.label === "status")!;
+    for (const line of ["", " ", "git statz", "git status ", "ls", "git sta;", "git sta\x1b"]) {
+      expect(terminalCompletionAppendText({ line, synchronized: true }, candidate)).toBeNull();
+    }
+    expect(terminalCompletionAppendText({ line: "git stat", synchronized: false }, candidate)).toBeNull();
+  });
+
+  it("preserves exact history and quick-command text without adding a shell delimiter", () => {
+    const candidates = terminalCompletionSuggestions({
+      line: "git st", preferences: defaultTerminalCompletionPreferences, history: ["git status"],
+      quickCommands: [{ id: "quick", label: "status", command: "git status --short" }],
+    });
+    for (const source of ["history", "quick"]) {
+      const candidate = candidates.find((item) => item.source === source)!;
+      expect(terminalCompletionAppendText({ line: "git statu", synchronized: true }, candidate))
+        .toBe(source === "history" ? "s" : "s --short");
+      expect(terminalCompletionAppendText({ line: candidate.target, synchronized: true }, candidate)).toBeNull();
+    }
+  });
+
   it("defers repeated editing but refreshes submission and navigation immediately", () => {
     for (const text of ["text", "\b", "\x7f", "\x7f\x7f", "\u0015", "\u0017"]) {
       expect(terminalCompletionNeedsImmediateRefresh(text), JSON.stringify(text)).toBe(false);

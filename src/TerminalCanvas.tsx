@@ -24,6 +24,7 @@ import {
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
   reduceTerminalCompletionInputWithSubmissions,
+  terminalCompletionAppendText,
   terminalCompletionSourceLabel,
   terminalCompletionNeedsImmediateRefresh,
   terminalCompletionSuggestions,
@@ -752,15 +753,21 @@ function TerminalCanvas({
   }
 
   acceptCompletionRef.current = (suggestion) => {
-    if (!active || !suggestion.appendText) return;
-    const next = reduceTerminalCompletionInput(completionInputRef.current, suggestion.appendText);
+    if (!active) return;
+    const appendText = terminalCompletionAppendText(completionInputRef.current, suggestion);
+    if (!appendText) {
+      dismissCompletionRef.current();
+      scheduleTerminalSurfaceFocus();
+      return;
+    }
+    const next = reduceTerminalCompletionInput(completionInputRef.current, appendText);
     storeCompletionInput(next);
     setCompletionDismissedLine(suggestion.source === "history" || suggestion.source === "quick" ? next.line : "");
     completionSelectionRef.current = 0;
     setCompletionSelection(0);
     void onInputRef.current(
       active.profile.id,
-      suggestion.appendText,
+      appendText,
       "interactive",
       privateInputActive ? { sensitive: true } : undefined,
     );
@@ -1066,20 +1073,30 @@ function TerminalCanvas({
         }
         return false;
       }
-      const completions = completionSuggestionsRef.current;
       if (mode === "remote" && completionSurfaceOpenRef.current && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        if (completions.length && (event.key === "ArrowDown" || event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey))) {
-          event.preventDefault();
-          const offset = event.key === "ArrowDown" ? 1 : -1;
-          const next = (completionSelectionRef.current + offset + completions.length) % completions.length;
-          completionSelectionRef.current = next;
-          setCompletionSelection(next);
-          return false;
-        }
-        if (completions.length && event.key === "Tab") {
-          event.preventDefault();
-          acceptCompletionRef.current(completions[completionSelectionRef.current] ?? completions[0]);
-          return false;
+        if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const completions = completionSuggestionsRef.current;
+          // Preserve rendered indices when a deferred snapshot contains stale
+          // entries. Filtering into a new index space would highlight one row
+          // while Tab accepts a different candidate. Do no work on normal keys.
+          const usableIndices = completions.flatMap((suggestion, index) => (
+            terminalCompletionAppendText(completionInputRef.current, suggestion) !== null ? [index] : []
+          ));
+          if (usableIndices.length) {
+            event.preventDefault();
+            const selected = usableIndices.indexOf(completionSelectionRef.current);
+            if (event.key === "Tab" && !event.shiftKey) {
+              acceptCompletionRef.current(completions[usableIndices[Math.max(0, selected)]]);
+            } else {
+              const offset = event.key === "ArrowDown" ? 1 : -1;
+              const next = selected < 0
+                ? (offset > 0 ? 0 : usableIndices.length - 1)
+                : (selected + offset + usableIndices.length) % usableIndices.length;
+              completionSelectionRef.current = usableIndices[next];
+              setCompletionSelection(usableIndices[next]);
+            }
+            return false;
+          }
         }
         if (event.key === "Escape") {
           event.preventDefault();

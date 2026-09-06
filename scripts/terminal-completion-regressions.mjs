@@ -33,6 +33,61 @@ function assertPlacement(state) {
   assert.equal(state.terminalTransform, state.gutterTransform, "timestamps moved separately from the terminal");
 }
 
+async function checkPendingCompletionAcceptance(page, textarea, panel) {
+  const results = [];
+  for (const { initial, edit, click, navigate, expected } of [
+    { initial: "git stat", edit: "u", expected: "us " },
+    { initial: "git statu", edit: "Backspace", expected: "\x7fus " },
+    { initial: "git stat", edit: "u", click: true, expected: "us " },
+    { initial: "git stat", edit: "z", expected: "z\t" },
+    { initial: "git stat", edit: "us", expected: "us " },
+    { initial: "git stat", edit: "Control+u", expected: "\x15\t" },
+    { initial: "git s", edit: "tat", navigate: true, expected: "tatus " },
+  ]) {
+    await textarea.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.type(initial);
+    await waitForLine(page, initial);
+    // Keep the visible snapshot old regardless of machine/CI speed. Input and
+    // native sends still run normally; only the known completion debounce waits.
+    await page.evaluate(() => {
+      window.__completionAcceptanceTimeout = window.setTimeout;
+      window.setTimeout = (handler, delay, ...args) => window.__completionAcceptanceTimeout(
+        handler, delay === 80 ? 60_000 : delay, ...args,
+      );
+      window.__invokeCalls = [];
+    });
+    try {
+      if (edit === "Backspace" || edit === "Control+u") await page.keyboard.press(edit);
+      else await page.keyboard.type(edit);
+      assert.equal(await panel.locator(".terminal-completion-preview code").first().textContent(), initial);
+      if (navigate) {
+        await page.keyboard.press("ArrowDown");
+        assert.equal(await panel.locator('[role="option"][aria-selected="true"] code').textContent(), "status",
+          "deferred candidate navigation highlighted a different command than Tab would accept");
+      }
+      if (click) await panel.getByRole("option").click();
+      else await page.keyboard.press("Tab");
+      await page.waitForFunction(() => window.__invokeCalls
+        .filter((call) => call.command === "send_text")
+        .map((call) => call.args.text).join("").match(/[ \t]$/));
+      const sent = await page.evaluate(() => window.__invokeCalls
+        .filter((call) => call.command === "send_text").map((call) => call.args.text).join(""));
+      assert.equal(sent, expected, `stale completion after ${initial} + ${edit} (${click ? "click" : "Tab"})`);
+      results.push({ initial, edit, action: click ? "click" : navigate ? "ArrowDown+Tab" : "Tab", sent });
+    } finally {
+      await page.evaluate(() => {
+        window.setTimeout = window.__completionAcceptanceTimeout;
+        delete window.__completionAcceptanceTimeout;
+      });
+      await textarea.focus();
+      await page.keyboard.press("Enter");
+      await panel.waitFor({ state: "detached" });
+    }
+  }
+  return results;
+}
+
 export async function checkTerminalCompletionRegressions(page) {
   const originalPrefs = await page.evaluate(() => localStorage.getItem("portmate.terminalPrefs"));
   const originalViewport = page.viewportSize();
@@ -216,7 +271,8 @@ export async function checkTerminalCompletionRegressions(page) {
     `reopened completion obscured the cursor: ${JSON.stringify(reopenedPlacement)}`);
     await page.keyboard.press("Enter");
     await panel.waitFor({ state: "detached" });
-    return { stableEdits, candidateHeights, geometryUpdates, tabSuffix: "us ", reopenedAnchor: true };
+    const pendingAcceptance = await checkPendingCompletionAcceptance(page, textarea, panel);
+    return { stableEdits, candidateHeights, geometryUpdates, tabSuffix: "us ", reopenedAnchor: true, pendingAcceptance };
   } finally {
     await page.evaluate((prefs) => {
       window.__completionRegressionProbe?.dispose();

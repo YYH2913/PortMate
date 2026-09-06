@@ -104,6 +104,17 @@ export function terminalCompletionNeedsImmediateRefresh(text: string): boolean {
   return false;
 }
 
+/** Resolve a rendered candidate against the live line, not its debounced preview. */
+export function terminalCompletionAppendText(
+  current: TerminalCompletionInputState,
+  candidate: TerminalCompletionSuggestion,
+): string | null {
+  if (!current.synchronized || !completionLineIsSafe(current.line)
+    || !candidate.target.startsWith(current.line)) return null;
+  const trailingSpace = candidate.appendText.endsWith(" ") && !candidate.target.endsWith(" ") ? " " : "";
+  return `${candidate.target.slice(current.line.length)}${trailingSpace}` || null;
+}
+
 export function reduceTerminalCompletionInputWithSubmissions(
   current: TerminalCompletionInputState,
   text: string,
