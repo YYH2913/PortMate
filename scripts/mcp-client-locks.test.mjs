@@ -14,6 +14,25 @@ describe("MCP client dependency locks", () => {
     expect(script("mcp-typescript-client-check.mjs")).not.toContain("--package-lock-only");
   });
 
+  it("keeps TypeScript fixture parsers aligned with the audited root lock", () => {
+    const root = JSON.parse(readFileSync(join(projectRoot, "package-lock.json"), "utf8"));
+    for (const { version } of matrix("mcp-typescript-client-versions.json")) {
+      const lock = jsonLock("mcp-typescript-client-check", version, "package-lock.json");
+      expect(lock.packages["node_modules/qs"]).toBeDefined();
+      for (const name of ["qs", "fast-uri"]) {
+        const key = `node_modules/${name}`;
+        const entry = lock.packages[key];
+        // Older SDKs do not use fast-uri. Do not add unused dependencies.
+        if (!entry) continue;
+        expect(entry, `SDK ${version}: ${name}`).toMatchObject({
+          version: root.packages[key].version,
+          resolved: root.packages[key].resolved,
+          integrity: root.packages[key].integrity,
+        });
+      }
+    }
+  });
+
   it("tracks and validates every Python SDK requirements snapshot", () => {
     for (const { version } of matrix("mcp-python-client-versions.json")) {
       const requirements = textLock("mcp-python-client-check", version, "requirements.txt");

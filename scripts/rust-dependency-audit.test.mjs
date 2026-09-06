@@ -13,7 +13,7 @@ describe("Rust dependency audit policy", () => {
     ]);
     expect(validateRustDependencyAuditReport(reviewedReport())).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 22,
+      reviewedWarnings: 21,
     });
   });
 
@@ -49,6 +49,20 @@ describe("Rust dependency audit policy", () => {
     );
   });
 
+  it.each([
+    ["aes", "0.9.0"],
+    ["chacha20", "0.10.0"],
+    ["der", "0.8.0"],
+    ["wnaf", "0.14.0"],
+    ["new-yanked-package", "1.0.0"],
+  ])("rejects yanked %s@%s without an exception", (name, version) => {
+    const report = reviewedReport();
+    report.warnings.yanked = [{ package: { name, version } }];
+    expect(() => validateRustDependencyAuditReport(report)).toThrow(
+      `unexpected: yanked:yanked:${name}@${version}`,
+    );
+  });
+
   it("accepts cargo-audit's expected vulnerability exit status after validating JSON", () => {
     const spawn = vi.fn(() => ({
       status: 1,
@@ -58,7 +72,7 @@ describe("Rust dependency audit policy", () => {
     }));
     expect(runRustDependencyAudit({ spawn, projectRoot: "/repo", environment: {} })).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 22,
+      reviewedWarnings: 21,
     });
     expect(spawn).toHaveBeenCalledWith("cargo", ["audit", "--json"], expect.objectContaining({
       cwd: "/repo",

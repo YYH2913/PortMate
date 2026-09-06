@@ -30,7 +30,6 @@ export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
   "unmaintained:RUSTSEC-2025-0098:unic-ucd-version@0.9.0",
   "unsound:RUSTSEC-2024-0429:glib@0.18.5",
   "unsound:RUSTSEC-2026-0097:rand@0.7.3",
-  "yanked:yanked:aes@0.9.0",
 ]);
 
 export function validateRustDependencyAuditReport(report) {

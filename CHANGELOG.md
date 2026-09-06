@@ -42,6 +42,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Security
 
+- Updated `fast-uri` and `qs` in the root npm lock and pinned TypeScript SDK fixtures without
+  changing the SDK matrix versions. Regression checks keep those parser versions aligned.
+- Updated compatible Rust crypto dependencies (`aes`, `chacha20`, `der`, and `wnaf`) to non-yanked
+  patch releases and removed the obsolete AES audit exception. The existing RSA mitigation and
+  exact-match RustSec review policy remain in place.
 - An explicit non-default MCP Client ID is no longer replaced by the desktop-selected identity
   when its grant is missing, expired, or revoked. Such requests now fail closed instead of borrowing
   another client's permissions; legacy default identity migration remains available.

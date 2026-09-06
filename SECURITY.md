@@ -79,8 +79,8 @@ exception and mitigation note are reviewed.
 - `rand 0.7.3` is a build-only dependency through `phf_generator -> selectors -> tauri-utils`. The
   advisory requires a runtime custom logger recursively calling `thread_rng`, which is not part of
   this build path.
-- Yanked `aes 0.9.0` is pinned by the current Russh/SSH-key release family. It has no RustSec
-  vulnerability advisory; upgrades remain tied to a compatible Russh release.
+- Yanked package warnings are not exempted. The lockfile uses compatible patch releases of
+  `aes`, `chacha20`, `der`, and `wnaf`; reintroducing their yanked versions fails the audit gate.
 - Remaining unmaintained crates are exact transitive dependencies of Tauri build/runtime support or
   IOTA Stronghold. Their full fingerprints remain in the audit script so additions, removals, or
   version changes cannot pass without review.
