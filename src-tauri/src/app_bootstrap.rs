@@ -18,13 +18,10 @@ pub fn run() {
         eprintln!("PortMate: startup failed: {error}");
         std::process::exit(1);
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            if let Err(error) = initialize_application(app) {
-                eprintln!("PortMate: startup failed: {error}");
-                std::process::exit(1);
-            }
+            initialize_application(app).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -148,9 +145,18 @@ pub fn run() {
             tunnel_commands::stop_tunnel,
             mcp_commands::mcp_manifest
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building PortMate")
-        .run(|app_handle, event| {
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            // Setup errors must leave Tauri through its normal Result path.
+            // Calling process::exit from a platform callback can appear as an
+            // aborted/non-unwinding thread on macOS instead of a clean failure.
+            eprintln!("PortMate: startup failed: {error}");
+            std::process::exit(1);
+        }
+    };
+    app.run(|app_handle, event| {
             if let tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::Destroyed,
@@ -207,7 +213,9 @@ fn preflight_native_smoke_application() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-fn initialize_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+fn initialize_application(
+    app: &mut tauri::App,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let native_smoke = native_smoke_config().map_err(std::io::Error::other)?;
     let (data_root, data_dir) = match &native_smoke {
         Some(config) => {

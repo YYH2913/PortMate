@@ -330,6 +330,9 @@ async function expectPackagedApplicationStartupRejection({
     if (!Number.isInteger(processResult.code) || processResult.code === 0 || processResult.signal) {
       throw new Error(`${label} did not fail cleanly for conflicting app data`);
     }
+    if (processResult.code < 0 || processResult.code > 255) {
+      throw new Error(`${label} exited with a platform-invalid status ${processResult.code}`);
+    }
     if (endpointObserved) throw new Error(`${label} published IPC before rejecting conflicting app data`);
     const diagnostic = stripAnsi(output);
     if (!diagnostic.includes(appDataConflictDiagnostic)) {
