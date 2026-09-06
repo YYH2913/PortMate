@@ -87,6 +87,7 @@ impl PortMateMcp {
                         && self.has_session(&event.session_id)
                         && self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
                 });
+                trim_recent_events(&mut events, limit);
                 serde_json::to_string_pretty(&redact_session_events(events))?
             }
             "search_logs" => {
@@ -111,6 +112,7 @@ impl PortMateMcp {
                         && self.has_session(&event.session_id)
                         && self.read_session_allowed(McpScope::ReadLogs, &event.session_id)
                 });
+                trim_recent_events(&mut events, limit);
                 serde_json::to_string_pretty(&redact_session_events(events))?
             }
             "list_transfers" => {
@@ -466,4 +468,10 @@ fn recent_visible_transfers(
         visible.drain(..visible.len() - limit);
     }
     visible
+}
+
+fn trim_recent_events(events: &mut Vec<SessionEvent>, limit: usize) {
+    if events.len() > limit {
+        events.drain(..events.len() - limit);
+    }
 }

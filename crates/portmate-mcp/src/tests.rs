@@ -11,8 +11,8 @@ use super::store_loader::{
 use super::*;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use portmate_core::{
-    MAX_MCP_BRIDGE_REQUEST_BYTES, MAX_MCP_CONTENT_TRANSFER_BYTES, MAX_MCP_CONTENT_UPLOAD_BYTES,
-    MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_PAYLOAD_FILE,
+    SessionEvent, MAX_MCP_BRIDGE_REQUEST_BYTES, MAX_MCP_CONTENT_TRANSFER_BYTES,
+    MAX_MCP_CONTENT_UPLOAD_BYTES, MCP_CONTENT_UPLOADS_DIRECTORY, MCP_CONTENT_UPLOAD_PAYLOAD_FILE,
     MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
 };
 use rusqlite::{params, Connection as SqliteConnection};
@@ -1164,6 +1164,89 @@ fn explicit_read_grants_filter_sessions_resources_and_global_logs() {
         .unwrap_err()
         .to_string()
         .contains("ReadSessions"));
+}
+
+#[test]
+fn desktop_log_responses_are_rebounded_after_authorization_filtering() {
+    let root = std::env::temp_dir().join(format!("portmate-log-ipc-limit-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let store_path = root.join("portmate-store.sqlite3");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let event = |id: &str, session_id: &str, text: &str| {
+        json!({
+            "id": id, "sessionId": session_id, "paneId": format!("{session_id}:main"),
+            "ts": "2026-09-07T00:00:00Z", "direction": "inbound", "stream": "stdout",
+            "bytesRef": null, "text": text, "annotations": {},
+        })
+    };
+    let ipc_events = vec![
+        event("visible-old", "refresh-session", "visible old"),
+        event("hidden", "hidden-session", "hidden secret"),
+        event("visible-new", "refresh-session", "visible new"),
+    ];
+    let server_thread = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            stream.read_to_end(&mut raw).unwrap();
+            let response = json!({ "ok": true, "value": ipc_events, "error": null });
+            stream
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .unwrap();
+        }
+    });
+    let mut store = test_snapshot_store("visible logs");
+    let mut hidden = store.profiles[0].clone();
+    hidden.id = "hidden-session".into();
+    store.upsert_profile(hidden);
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "ipc-reader".into(),
+        name: "IPC reader".into(),
+        scopes: vec![McpScope::ReadLogs],
+        allowed_sessions: vec!["refresh-session".into()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
+    let mut server = PortMateMcp {
+        store,
+        store_path: Some(store_path.clone()),
+        ipc: Some(IpcEndpointFile {
+            addr: address.to_string(),
+            token: Some("ipc-limit-token".into()),
+            token_ref: None,
+            store_path: store_path.display().to_string(),
+        }),
+        client_id: "ipc-reader".into(),
+        allow_write: false,
+    };
+    for name in ["tail_log", "search_logs"] {
+        let arguments = if name == "tail_log" {
+            json!({ "sessionId": "refresh-session", "limit": 1 })
+        } else {
+            json!({ "sessionId": "refresh-session", "query": "visible", "limit": 1 })
+        };
+        let response = server
+            .tool_call(&json!({ "name": name, "arguments": arguments }))
+            .unwrap();
+        let events: Vec<SessionEvent> =
+            serde_json::from_str(response["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "{name} returned more than the requested limit"
+        );
+        assert_eq!(
+            events[0].id, "visible-new",
+            "{name} did not retain the newest authorized event"
+        );
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains("hidden secret"));
+    }
+    server_thread.join().unwrap();
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
