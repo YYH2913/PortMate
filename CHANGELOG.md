@@ -16,6 +16,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   ZModem uses the poll/submit API and unsupported SSH host certificates fail closed.
 - Extended MCP compatibility coverage to Rust SDK 3.2.0, Ruby SDK 1.5.0 and Java SDK 2.0.1;
   updated the checksum-verified Maven distribution to 3.9.16 while retaining older SDK fixtures.
+- Added a main-window MCP Bridge shortcut to start the saved HTTP service, show its
+  runtime state, and open HTTP management when already running or startup fails.
+  The shortcut does not generate tokens or change client grants.
 - Extended the official Python MCP SDK matrix to 2.1.1 with a committed dependency snapshot,
   retaining the older SDK coverage and both stdio and Streamable HTTP checks.
 - Desktop terminal input now uses a bounded, sequence-ordered IPC pipeline instead of waiting

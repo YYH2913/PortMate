@@ -830,6 +830,21 @@ button {
   color: var(--cyan);
 }
 
+.menu-tools .menu-mcp-start {
+  flex-shrink: 0;
+  border-color: var(--line);
+  white-space: nowrap;
+}
+
+.menu-mcp-start small {
+  font-size: 10px;
+}
+
+.menu-tools .menu-mcp-start:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .menu-tools .menu-vault-status {
   max-width: 210px;
   border-color: rgba(244, 184, 96, 0.22);
@@ -8889,6 +8904,16 @@ fieldset label {
   .menu-vault-status span,
   .menu-vault-status small {
     display: none;
+  }
+
+  .menu-mcp-start span,
+  .menu-mcp-start small {
+    display: none;
+  }
+
+  .menu-tools .menu-mcp-start {
+    width: 26px;
+    justify-content: center;
   }
 
   .menu-tools button:last-child {

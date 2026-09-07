@@ -52,6 +52,7 @@ import { addDismissedTransferId } from "./transfer-visibility";
 import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
+import McpBridgeQuickStart from "./McpBridgeQuickStart";
 import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import {
@@ -307,6 +308,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
   const [utilityDialog, setUtilityDialog] = useState<UtilityDialog>(null);
+  const [mcpInitialTab, setMcpInitialTab] = useState<"grants" | "http">("grants");
   const [keyManagerCredentialOperationToken, setKeyManagerCredentialOperationToken] = useState<number | null>(null);
   const [keyManagerCredentialSyncRevision, setKeyManagerCredentialSyncRevision] = useState(0);
   const [searchDialog, setSearchDialog] = useState<SearchDialogState>({ mode: "sessions", query: "" });
@@ -4630,6 +4632,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           </div>
         </div>
         <div className="menu-tools">
+          <McpBridgeQuickStart
+            paused={Boolean(utilityDialog || dialog || screenLock)}
+            onOpen={() => { setOpenMenu(null); setMcpInitialTab("http"); setUtilityDialog("mcp"); }}
+            onError={(message) => setNotice({ title: "MCP Bridge 启动失败", message })}
+          />
           <button
             type="button"
             className={`menu-vault-status${portableVaultStatus?.unlocked ? " unlocked" : ""}`}
@@ -4986,10 +4993,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "mcp" && (
         <Suspense fallback={null}>
           <LazyMcpDialog
+            initialTab={mcpInitialTab}
             grants={grants}
             audit={audit}
             sessions={sessions}
-            onClose={() => setUtilityDialog(null)}
+            onClose={() => { setUtilityDialog(null); setMcpInitialTab("grants"); }}
             onGrantMutationStart={beginGrantMutation}
             onGrantChange={commitGrantMutation}
             onGrantMutationFinish={finishGrantMutation}

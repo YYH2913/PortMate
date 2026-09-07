@@ -41,6 +41,7 @@ export default function McpDialog({
   onGrantChange,
   onGrantMutationFinish,
   onAuditChange,
+  initialTab = "grants",
 }: {
   grants: McpGrant[];
   audit: AuditRecord[];
@@ -50,8 +51,9 @@ export default function McpDialog({
   onGrantChange: (grants: McpGrant[], token: number) => boolean;
   onGrantMutationFinish: (token: number) => void;
   onAuditChange: (audit: AuditRecord[]) => void;
+  initialTab?: McpDialogTab;
 }) {
-  const [tab, setTab] = useState<McpDialogTab>("grants");
+  const [tab, setTab] = useState<McpDialogTab>(initialTab);
   const [draft, setDraft] = useState<McpGrant | null>(() => grants[0] ?? null);
   const [editingClientId, setEditingClientId] = useState<string | null>(() => grants[0]?.clientId ?? null);
   const [creatingGrant, setCreatingGrant] = useState(false);

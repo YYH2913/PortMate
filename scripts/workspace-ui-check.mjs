@@ -1624,6 +1624,7 @@ try {
           return new Promise((resolve) => window.__pendingMcpHttpRuntimeStatuses.push({ result, resolve }));
         }
         if (command === "start_mcp_http") {
+          if (window.__mcpQuickStartFailure) throw new Error(window.__mcpQuickStartFailure);
           window.__mcpHttpRuntime = {
             phase: "running",
             endpoint: window.__mcpHttpConfig.endpoint,
@@ -6597,6 +6598,43 @@ Host staging
   await reopenedMcpRuntimeDialog.locator(".mcp-http-runtime", { hasText: "未运行" }).waitFor();
   await reopenedMcpRuntimeDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
   await reopenedMcpRuntimeDialog.waitFor({ state: "detached" });
+
+  const quickStart = page.getByRole("button", { name: "快速启动 MCP Bridge", exact: true });
+  await quickStart.waitFor();
+  const startsBeforeShortcut = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "start_mcp_http").length);
+  await page.evaluate(() => { window.__deferMcpHttpRuntimeAction = true; });
+  await quickStart.click();
+  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeActions.length === 1);
+  assert(await page.getByRole("button", { name: "正在启动 MCP Bridge", exact: true }).isDisabled(),
+    "MCP quick start did not disable duplicate clicks while starting");
+  await page.evaluate(() => {
+    const button = document.querySelector('.menu-mcp-start');
+    button.click();
+    button.click();
+    for (const pending of window.__pendingMcpHttpRuntimeActions) pending.resolve(pending.result);
+    window.__pendingMcpHttpRuntimeActions = [];
+    window.__deferMcpHttpRuntimeAction = false;
+  });
+  await page.getByRole("button", { name: "管理 MCP Bridge", exact: true }).waitFor();
+  assert(await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "start_mcp_http").length) === startsBeforeShortcut + 1,
+    "MCP quick start sent duplicate start requests");
+  await page.screenshot({ path: `${screenshotPrefix}-mcp-quick-start.png`, fullPage: true });
+  await page.getByRole("button", { name: "管理 MCP Bridge", exact: true }).click();
+  await mcpDialog.waitFor();
+  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
+  await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).click();
+  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await mcpDialog.waitFor({ state: "detached" });
+  await quickStart.waitFor();
+  await page.evaluate(() => { window.__mcpQuickStartFailure = "请先生成 MCP HTTP Token"; });
+  await quickStart.click();
+  const quickStartFailure = page.locator(".notice-dialog", { hasText: "请先生成 MCP HTTP Token" });
+  await quickStartFailure.waitFor();
+  await quickStartFailure.getByRole("button", { name: "确定", exact: true }).click();
+  await mcpDialog.waitFor();
+  await page.evaluate(() => { window.__mcpQuickStartFailure = null; });
+  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  await mcpDialog.waitFor({ state: "detached" });
 
   await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-mcp-approval") || []).length > 0);
   const approvalIds = await page.evaluate(() => {
