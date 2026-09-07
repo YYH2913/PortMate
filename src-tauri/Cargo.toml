@@ -16,7 +16,7 @@ name = "portmate_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.3", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 portmate-core = { path = "../crates/portmate-core" }
@@ -25,45 +25,45 @@ portmate-keyring = { path = "../crates/portmate-keyring" }
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = "3.0.0"
-flate2 = "1.1.9"
+flate2 = "1.1.10"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 iota_stronghold = "2.1.0"
 keyring-core = "1.0.0"
-libloading = "0.8.9"
+libloading = "0.9.0"
 libssh-rs = { path = "../crates/libssh-rs" }
-libc = "0.2"
+libc = "0.2.189"
 rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
-russh = { version = "0.62.5", features = ["async-trait"] }
+russh = { version = "0.63.2", features = ["async-trait"] }
 russh-sftp = { path = "../crates/russh-sftp" }
 portable-pty = "0.9"
 regex.workspace = true
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 sha1_11 = { package = "sha1", version = "0.11", features = ["oid"] }
 sha2.workspace = true
-serialport = { version = "4.9", default-features = false }
-socket2 = { version = "0.6.3", features = ["all"] }
+serialport = { version = "4.10.0", default-features = false }
+socket2 = { version = "0.6.5", features = ["all"] }
 native-tls = "0.2.18"
 tar = "0.4.46"
-tauri = { version = "2.10.3", default-features = false, features = [
+tauri = { version = "2.11.5", default-features = false, features = [
   "compression",
   "common-controls-v6",
   "dynamic-acl",
   "test",
   "x11",
 ] }
-tauri-plugin-dialog = "=2.7.0"
+tauri-plugin-dialog = "=2.7.3"
 tempfile = "3.27"
-tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["io-util", "net", "process", "sync", "time"] }
 tokio-native-tls = "0.3.1"
 uuid.workspace = true
 url.workspace = true
-zeroize = "1"
-zmodem2 = "0.5.0"
+zeroize = "1.9.0"
+zmodem2 = "0.7.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
+windows-sys = { version = "0.61.2", features = [
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",
@@ -73,7 +73,7 @@ windows-sys = { version = "0.61", features = [
 security-framework = "3.7"
 
 [dev-dependencies]
-rcgen = "0.14.8"
+rcgen = "0.14.10"
 
 [target.'cfg(unix)'.dev-dependencies]
-openssl = "0.10.79"
+openssl = "0.10.81"

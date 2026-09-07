@@ -59,3 +59,5 @@ pub use tunnels::{
     MAX_TUNNEL_HOST_CHARACTERS, MAX_TUNNEL_ID_CHARACTERS, MAX_TUNNEL_LABEL_CHARACTERS,
     MAX_TUNNEL_ROUTE_RULES,
 };
+mod hex;
+pub use hex::encode_hex;

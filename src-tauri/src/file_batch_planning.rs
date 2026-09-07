@@ -281,7 +281,7 @@ pub(super) fn numbered_batch_relative_path(path: &str, suffix: u32) -> Result<St
     let (stem, extension) = name
         .rsplit_once('.')
         .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
-        .map_or((name, ""), |parts| parts);
+        .unwrap_or((name, ""));
     let renamed = if extension.is_empty() {
         format!("{stem} ({suffix})")
     } else {

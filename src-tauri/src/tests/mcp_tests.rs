@@ -751,7 +751,7 @@ fn mcp_chunked_content_upload_is_owned_verified_and_copied_before_transfer() {
         protocol: TransferProtocol::Xmodem,
         file_name: "firmware.bin".to_string(),
         size_bytes: payload.len() as u64,
-        sha256: format!("{:x}", Sha256::digest(payload)),
+        sha256: portmate_core::encode_hex(&Sha256::digest(payload)),
         destination: "load:loadx".to_string(),
         created_at_unix_seconds: 1,
     };
@@ -820,7 +820,7 @@ fn mcp_chunked_content_upload_rejects_symlinked_payloads() {
         protocol: TransferProtocol::Xmodem,
         file_name: "firmware.bin".to_string(),
         size_bytes: 7,
-        sha256: format!("{:x}", Sha256::digest(b"outside")),
+        sha256: portmate_core::encode_hex(&Sha256::digest(b"outside")),
         destination: "load:loadx".to_string(),
         created_at_unix_seconds: 1,
     };
@@ -864,7 +864,7 @@ fn mcp_chunked_content_upload_enters_the_authorized_transfer_queue() {
             protocol: TransferProtocol::Xmodem,
             file_name: "queued.bin".to_string(),
             size_bytes: payload.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(payload)),
+            sha256: portmate_core::encode_hex(&Sha256::digest(payload)),
             destination: "load:loadx".to_string(),
             created_at_unix_seconds: 1,
         };
@@ -946,7 +946,7 @@ fn mcp_chunked_tftp_upload_enters_the_authorized_transfer_queue() {
             protocol: TransferProtocol::Tftp,
             file_name: "firmware.bin".to_string(),
             size_bytes: payload.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(payload)),
+            sha256: portmate_core::encode_hex(&Sha256::digest(payload)),
             destination: destination.to_string(),
             created_at_unix_seconds: 1,
         };
@@ -1174,7 +1174,7 @@ fn stale_mcp_transfer_authorization_is_rejected_at_each_commit_point() {
             protocol: TransferProtocol::Xmodem,
             file_name: "uploaded.bin".to_string(),
             size_bytes: upload_payload.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(upload_payload)),
+            sha256: portmate_core::encode_hex(&Sha256::digest(upload_payload)),
             destination: "load:loadx".to_string(),
             created_at_unix_seconds: 1,
         };

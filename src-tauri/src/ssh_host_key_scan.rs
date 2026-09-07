@@ -22,8 +22,11 @@ impl client::Handler for HostKeyScanHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key: server_public_key, .. } = server_public_key else {
+            return Ok(false);
+        };
         *lock_ssh_handler_state(&self.observed_key, "host key scan observation")? =
             Some(HostKeyObservation {
                 host: self.host.clone(),

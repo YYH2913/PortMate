@@ -104,7 +104,7 @@ fn corrupt_active_journal_freezes_new_credential_mutations() {
         .query_row(
             "select count(*) from profile_secret_migrations where active = 1",
             [],
-            |row| row.get::<_, usize>(0),
+            |row| row.get::<_, i64>(0),
         )
         .unwrap();
     assert_eq!(active, 1);

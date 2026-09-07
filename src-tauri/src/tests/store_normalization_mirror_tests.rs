@@ -67,7 +67,7 @@ fn normalize_loaded_store_quarantines_conflicting_mcp_grants_before_mirroring() 
     let store_path = root.join("portmate-store.sqlite3");
     save_store(&store_path, &normalized).unwrap();
     let connection = SqliteConnection::open(&store_path).unwrap();
-    let mirrored: usize = connection
+    let mirrored: i64 = connection
         .query_row("select count(*) from mcp_grants", [], |row| row.get(0))
         .unwrap();
     assert_eq!(mirrored, 2);
@@ -223,7 +223,7 @@ fn normalize_loaded_store_repairs_duplicate_mirror_keys() {
         ("timeline_marks", 2),
         ("sysmon_snapshots", 1),
     ] {
-        let count: usize = connection
+        let count: i64 = connection
             .query_row(&format!("select count(*) from {table}"), [], |row| {
                 row.get(0)
             })

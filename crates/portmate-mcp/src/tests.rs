@@ -191,7 +191,7 @@ fn content_upload_lifecycle_enforces_offsets_ownership_digest_and_cleanup() {
     let root = std::env::temp_dir().join(format!("portmate-content-upload-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let payload = vec![0x5a; MAX_MCP_CONTENT_TRANSFER_BYTES + 17];
-    let sha256 = format!("{:x}", Sha256::digest(&payload));
+    let sha256 = portmate_core::encode_hex(&Sha256::digest(&payload));
     let server = content_upload_server(&root, "upload-owner");
     let begin = server
         .begin_content_upload(&json!({
@@ -285,7 +285,7 @@ fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
             "protocol": "tftp",
             "fileName": "firmware.bin",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "destination": {
                 "kind": "tftpboot",
                 "deviceIp": "192.168.255.1",
@@ -329,7 +329,7 @@ fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
             "protocol": "tftp",
             "fileName": "firmware.bin",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "destination": "load:tftpboot"
         }))
         .unwrap_err()
@@ -341,7 +341,7 @@ fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
             "protocol": "tftp",
             "fileName": "firmware.bin",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "destination": { "kind": "tftpboot" }
         }))
         .unwrap_err()
@@ -356,7 +356,7 @@ fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
             "protocol": "tftp",
             "fileName": "firmware.bin;saveenv",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "destination": {
                 "kind": "tftpboot",
                 "deviceIp": "192.168.255.1"
@@ -374,7 +374,7 @@ fn tftp_content_upload_binds_structured_destination_and_rejects_late_options() {
             "protocol": "tftp",
             "fileName": "firmware.bin",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "deviceIp": "192.168.255.1",
             "destination": {
                 "kind": "tftpboot",
@@ -472,7 +472,7 @@ fn unified_start_transfer_uses_one_desktop_ipc_command_for_every_source_mode() {
             "protocol": "xmodem",
             "fileName": "firmware.bin",
             "sizeBytes": 3,
-            "sha256": format!("{:x}", Sha256::digest(b"abc")),
+            "sha256": portmate_core::encode_hex(&Sha256::digest(b"abc")),
             "destination": "load:loadx"
         }))
         .unwrap();
@@ -1060,8 +1060,18 @@ fn list_sessions_text(server: &mut PortMateMcp) -> String {
 
 #[test]
 fn serial_break_fails_closed_without_desktop_ipc() {
+    let mut store = test_snapshot_store("serial break");
+    store.grants.push(portmate_core::McpGrant {
+        client_id: "serial-operator".to_string(),
+        name: "serial break test grant".to_string(),
+        scopes: vec![McpScope::WriteInput],
+        allowed_sessions: vec!["refresh-session".to_string()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    });
     let mut server = PortMateMcp {
-        store: test_snapshot_store("serial break"),
+        store,
         store_path: None,
         ipc: None,
         client_id: "serial-operator".to_string(),

@@ -157,7 +157,7 @@ pub(super) fn stage_mcp_content_upload(
                 metadata.size_bytes
             ));
         }
-        let actual = format!("{:x}", digest.finalize());
+        let actual = portmate_core::encode_hex(&digest.finalize());
         if actual != metadata.sha256 {
             return Err("MCP content upload SHA-256 mismatch".to_string());
         }

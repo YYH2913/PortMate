@@ -17,7 +17,7 @@
   <a href="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml">Native CI</a> ·
   <a href="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml">MCP SDK Freshness</a> ·
   <a href="./LICENSE">Apache-2.0</a> ·
-  <a href="./.nvmrc">Node.js 22.20.0</a>
+  <a href="./.nvmrc">Node.js 24.20.0</a>
 </p>
 
 > [!IMPORTANT]
@@ -93,8 +93,8 @@ See [CHANGELOG.md](./CHANGELOG.md) for versioned user-visible changes, [PROGRESS
 ### Prerequisites
 
 - Git
-- Node.js `>= 22.12.0`; `.nvmrc` pins the verified `22.20.0` release
-- A stable Rust toolchain
+- Node.js `>= 24.20.0`; `.nvmrc` pins the verified `24.20.0` release
+- Rust `1.98.1` (pinned in `rust-toolchain.toml`) and npm `12.0.2`
 - The [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform
 
 Building the Linux desktop application generally also requires WebKitGTK, GTK3, libssh, Kerberos, udev, and system-tray development packages. The complete Ubuntu dependency list is available in [.github/workflows/native-ci.yml](./.github/workflows/native-ci.yml).
@@ -106,6 +106,7 @@ git clone https://github.com/YYH2913/PortMate.git
 cd PortMate
 
 nvm use
+npm install --global npm@12.0.2
 npm ci
 npm run desktop:clean
 ```

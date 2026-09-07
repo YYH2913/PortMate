@@ -17,7 +17,7 @@
   <a href="https://github.com/YYH2913/PortMate/actions/workflows/native-ci.yml">Native CI</a> ·
   <a href="https://github.com/YYH2913/PortMate/actions/workflows/mcp-sdk-freshness.yml">MCP SDK Freshness</a> ·
   <a href="./LICENSE">Apache-2.0</a> ·
-  <a href="./.nvmrc">Node.js 22.20.0</a>
+  <a href="./.nvmrc">Node.js 24.20.0</a>
 </p>
 
 > [!IMPORTANT]
@@ -91,8 +91,8 @@ PortMate 本身不内置 AI 助手；随包提供的 `portmate-mcp` bridge 是�
 ### 前置环境
 
 - Git
-- Node.js `>= 22.12.0`，仓库 `.nvmrc` 固定已验证版本 `22.20.0`
-- Rust stable toolchain
+- Node.js `>= 24.20.0`，仓库 `.nvmrc` 固定已验证版本 `24.20.0`
+- Rust `1.98.1`（由 `rust-toolchain.toml` 固定）与 npm `12.0.2`
 - 当前平台所需的 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 Linux 构建桌面应用时通常还需要 WebKitGTK、GTK3、libssh、Kerberos、udev 和系统托盘相关开发包。GitHub Actions 中的完整 Ubuntu 依赖列表可参考 [.github/workflows/native-ci.yml](./.github/workflows/native-ci.yml)。
@@ -104,6 +104,7 @@ git clone https://github.com/YYH2913/PortMate.git
 cd PortMate
 
 nvm use
+npm install --global npm@12.0.2
 npm ci
 npm run desktop:clean
 ```

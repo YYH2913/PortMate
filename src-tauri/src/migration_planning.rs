@@ -209,7 +209,7 @@ pub(super) fn profile_secret_migration_plan_token(
     ] {
         digest.update((count as u64).to_le_bytes());
     }
-    format!("{:x}", digest.finalize())
+    portmate_core::encode_hex(&digest.finalize())
 }
 
 fn journal_optional_secret_ref(

@@ -107,11 +107,11 @@ describe("CI command logging", () => {
     expect(workflow.match(/swift-actions\/setup-swift@v3/g)).toHaveLength(1);
     expect(workflow).not.toContain("dtolnay/rust-toolchain@");
     expect(workflow.match(/name: Install pinned Rust toolchain/g)).toHaveLength(4);
-    expect(workflow.match(/rustup toolchain install 1\.97\.1 --profile minimal --no-self-update/g)).toHaveLength(4);
-    expect(workflow.match(/rustup default 1\.97\.1/g)).toHaveLength(4);
-    expect(workflow).toContain("rustup component add --toolchain 1.97.1 clippy rustfmt");
+    expect(workflow.match(/rustup toolchain install 1\.98\.1 --profile minimal --no-self-update/g)).toHaveLength(4);
+    expect(workflow.match(/rustup default 1\.98\.1/g)).toHaveLength(4);
+    expect(workflow).toContain("rustup component add --toolchain 1.98.1 clippy rustfmt");
     expect(workflow).toContain(
-      "rustup target add --toolchain 1.97.1 x86_64-pc-windows-gnu aarch64-apple-darwin x86_64-unknown-freebsd",
+      "rustup target add --toolchain 1.98.1 x86_64-pc-windows-gnu aarch64-apple-darwin x86_64-unknown-freebsd",
     );
     expect(workflow.match(/actions\/checkout@v7/g)).toHaveLength(4);
     expect(workflow.match(/actions\/setup-node@v7/g)).toHaveLength(4);

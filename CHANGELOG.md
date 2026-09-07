@@ -8,6 +8,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Changed
 
+- Updated the verified toolchain and dependency baselines: Node.js 24.20.0 with npm 12.0.2,
+  Rust 1.98.1, Tauri 2.11.x, React 19.2.8, Vite 8.2.2, Vitest 5.0.0, and compatible
+  Rust ecosystem releases including base64 0.23, sha2 0.11, Argon2 0.6, libloading 0.9,
+  Russh 0.63, rusqlite 0.40, zmodem2 0.7 and the vendored libssh wrapper's bitflags 2 /
+  thiserror 2. Digest formatting and KDF regression vectors preserve existing stored data;
+  ZModem uses the poll/submit API and unsupported SSH host certificates fail closed.
 - Extended the official Python MCP SDK matrix to 2.1.1 with a committed dependency snapshot,
   retaining the older SDK coverage and both stdio and Streamable HTTP checks.
 - Desktop terminal input now uses a bounded, sequence-ordered IPC pipeline instead of waiting

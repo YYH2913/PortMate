@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-export const MINIMUM_NODE_VERSION = Object.freeze({ major: 22, minor: 12, patch: 0 });
+export const MINIMUM_NODE_VERSION = Object.freeze({ major: 24, minor: 20, patch: 0 });
 
 export function parseNodeVersion(version) {
   if (typeof version !== "string") return null;
@@ -15,12 +15,13 @@ export function parseNodeVersion(version) {
 
 export function supportsNodeVersion(version, minimum = MINIMUM_NODE_VERSION) {
   const parsed = typeof version === "string" ? parseNodeVersion(version) : version;
-  if (!parsed || !Number.isSafeInteger(parsed.major) || !Number.isSafeInteger(parsed.minor)) {
+  if (!parsed || ![parsed.major, parsed.minor, parsed.patch].every(value => Number.isSafeInteger(value) && value >= 0)) {
     return false;
   }
 
   if (parsed.major !== minimum.major) return parsed.major > minimum.major;
-  return parsed.minor >= minimum.minor;
+  if (parsed.minor !== minimum.minor) return parsed.minor > minimum.minor;
+  return parsed.patch >= minimum.patch;
 }
 
 export function assertSupportedNodeVersion(version = process.versions.node) {

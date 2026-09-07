@@ -11,12 +11,12 @@ base64.workspace = true
 fs2.workspace = true
 httparse = "1.10.1"
 keyring-core = "1.0.0"
-libc = "0.2"
+libc = "0.2.189"
 percent-encoding = "2.3.2"
 portmate-core = { path = "../portmate-core" }
 portmate-keyring = { path = "../portmate-keyring" }
 portmate-process-watchdog = { path = "../portmate-process-watchdog" }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

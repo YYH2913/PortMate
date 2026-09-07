@@ -1201,7 +1201,7 @@ impl Session {
         let sess = self.lock_session();
         let username = opt_str_to_cstring(username)?;
         Ok(unsafe {
-            AuthMethods::from_bits_unchecked(sys::ssh_userauth_list(
+            AuthMethods::from_bits_retain(sys::ssh_userauth_list(
                 **sess,
                 opt_cstring_to_cstr(&username),
             ) as u32)
@@ -1562,6 +1562,7 @@ pub enum AuthStatus {
 
 bitflags::bitflags! {
     /// bitflags that indicates permitted authentication methods
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct AuthMethods : u32 {
         /// The `"none"` authentication method is available.
         const NONE = sys::SSH_AUTH_METHOD_NONE;

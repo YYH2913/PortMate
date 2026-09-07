@@ -251,7 +251,7 @@ fn decode_mcp_hex(label: &str, data: &str) -> Result<Vec<u8>, String> {
         ));
     }
     let mut bytes = Vec::with_capacity(compact.len() / 2);
-    for pair in compact.as_bytes().chunks_exact(2) {
+    for pair in compact.as_bytes().as_chunks::<2>().0 {
         let high = hex_digit(pair[0])
             .ok_or_else(|| format!("{label} hex data contains a non-hex digit"))?;
         let low = hex_digit(pair[1])

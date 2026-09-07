@@ -87,7 +87,7 @@ fn journal_mutations_are_durable_barriers_and_advance_store_revision() {
     let encoded = serde_json::to_string(&loaded.payload).unwrap();
     for secret in ["private-a", "private-b"] {
         assert!(!encoded.contains(secret));
-        assert!(!encoded.contains(&format!("{:x}", Sha256::digest(secret.as_bytes()))));
+        assert!(!encoded.contains(&portmate_core::encode_hex(&Sha256::digest(secret.as_bytes()))));
     }
 
     let mut stale = version_before;

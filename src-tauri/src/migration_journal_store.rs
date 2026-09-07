@@ -194,7 +194,8 @@ pub(super) fn load_active_profile_secret_migration_journal_metadata(
             Ok(ActiveProfileSecretMigrationJournalMetadata {
                 row_id: row.get(0)?,
                 state: row.get(1)?,
-                payload_bytes: row.get(2)?,
+                payload_bytes: u64::try_from(row.get::<_, i64>(2)?)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, -1))?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
             })
@@ -411,7 +412,7 @@ fn verify_profile_secret_migration_journal_event(
                 .query_row(
                     "select count(*) from profile_secret_migrations where id = ?1",
                     params![migration_id],
-                    |row| row.get::<_, usize>(0),
+                    |row| row.get::<_, i64>(0),
                 )
                 .map_err(|error| format!("无法验证凭据迁移恢复记录已清除: {error}"))?;
             if remaining != 0 {

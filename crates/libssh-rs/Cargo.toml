@@ -38,10 +38,10 @@ name = "whoami"
 path = "examples/whoami.rs"
 
 [dependencies.bitflags]
-version = "1.3"
+version = "2.13.1"
 
 [dependencies.libc]
-version = "0.2"
+version = "0.2.189"
 
 [target.'cfg(target_os = "linux")'.dependencies.libssh-rs-sys]
 version = "0.2.8"
@@ -53,7 +53,7 @@ path = "../libssh-rs-sys"
 features = ["vendored", "vendored-openssl"]
 
 [dependencies.openssl-sys]
-version = "0.9.105"
+version = "0.9.117"
 
 [dependencies.thiserror]
-version = "1.0"
+version = "2.0.20"

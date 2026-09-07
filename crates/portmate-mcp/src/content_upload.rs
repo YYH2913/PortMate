@@ -347,7 +347,7 @@ pub(crate) fn verify_payload(
         }
         digest.update(&buffer[..read]);
     }
-    let actual = format!("{:x}", digest.finalize());
+    let actual = portmate_core::encode_hex(&digest.finalize());
     if actual != metadata.sha256 {
         return Err(anyhow!("content upload SHA-256 mismatch"));
     }

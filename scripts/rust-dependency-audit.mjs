@@ -12,7 +12,6 @@ export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
   "unmaintained:RUSTSEC-2024-0413:atk@0.18.2",
   "unmaintained:RUSTSEC-2024-0416:atk-sys@0.18.2",
   "unmaintained:RUSTSEC-2025-0141:bincode@1.3.3",
-  "unmaintained:RUSTSEC-2025-0057:fxhash@0.2.1",
   "unmaintained:RUSTSEC-2024-0412:gdk@0.18.2",
   "unmaintained:RUSTSEC-2024-0418:gdk-sys@0.18.2",
   "unmaintained:RUSTSEC-2024-0411:gdkwayland-sys@0.18.2",
@@ -29,7 +28,6 @@ export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
   "unmaintained:RUSTSEC-2025-0100:unic-ucd-ident@0.9.0",
   "unmaintained:RUSTSEC-2025-0098:unic-ucd-version@0.9.0",
   "unsound:RUSTSEC-2024-0429:glib@0.18.5",
-  "unsound:RUSTSEC-2026-0097:rand@0.7.3",
 ]);
 
 export function validateRustDependencyAuditReport(report) {

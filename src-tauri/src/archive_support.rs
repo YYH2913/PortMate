@@ -30,7 +30,7 @@ impl<R> HashingReader<R> {
     }
 
     fn finish(self) -> (String, u64) {
-        (format!("{:x}", self.digest.finalize()), self.bytes_read)
+        (portmate_core::encode_hex(&self.digest.finalize()), self.bytes_read)
     }
 }
 
@@ -300,7 +300,7 @@ pub(super) fn open_bundle_attachment_file(path: &Path) -> Result<fs::File, Strin
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    portmate_core::encode_hex(&Sha256::digest(bytes))
 }
 
 pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
@@ -317,7 +317,7 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(portmate_core::encode_hex(&digest.finalize()))
 }
 
 pub(super) fn sha256_file_exact(path: &Path, expected_size: u64) -> Result<(String, u64), String> {

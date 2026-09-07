@@ -36,5 +36,5 @@ pub(super) fn scp_source_prefix_sha256(
         digest.update(&buffer[..read]);
         remaining -= read as u64;
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(portmate_core::encode_hex(&digest.finalize()))
 }

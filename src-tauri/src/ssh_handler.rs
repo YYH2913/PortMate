@@ -58,8 +58,14 @@ impl client::Handler for PortMateSshHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // CA/principal/expiry verification is not implemented by the saved
+        // host-key policy. Do not silently treat a certificate as a raw key.
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key: server_public_key, .. } = server_public_key else {
+            *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some("SSH host certificates are not supported by the configured host-key policy".into());
+            return Ok(false);
+        };
         let observation = HostKeyObservation {
             host: self.host.clone(),
             port: self.port,

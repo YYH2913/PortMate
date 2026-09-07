@@ -23,8 +23,8 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --no-self-update
-          rustup default 1.97.1
+          rustup toolchain install 1.98.1 --profile minimal --no-self-update
+          rustup default 1.98.1
 
       - uses: actions/setup-node@v7
         with:
@@ -48,9 +48,9 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --no-self-update
-          rustup target add --toolchain 1.97.1 x86_64-pc-windows-gnu aarch64-apple-darwin x86_64-unknown-freebsd
-          rustup default 1.97.1
+          rustup toolchain install 1.98.1 --profile minimal --no-self-update
+          rustup target add --toolchain 1.98.1 x86_64-pc-windows-gnu aarch64-apple-darwin x86_64-unknown-freebsd
+          rustup default 1.98.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -80,9 +80,9 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --no-self-update
-          rustup component add --toolchain 1.97.1 clippy rustfmt
-          rustup default 1.97.1
+          rustup toolchain install 1.98.1 --profile minimal --no-self-update
+          rustup component add --toolchain 1.98.1 clippy rustfmt
+          rustup default 1.98.1
 
       - name: Use one static CRT for Windows native builds
         if: runner.os == 'Windows'
@@ -207,6 +207,7 @@ jobs:
             x11-utils \
             xvfb
 
+      - run: npm install --global npm@12.0.2
       - run: npm ci
       - name: Verify npm dependency policy
         run: node scripts/ci-command-log.mjs target/native-ci/dependency-audit.log npm run test:dependency-audit
@@ -340,8 +341,8 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --no-self-update
-          rustup default 1.97.1
+          rustup toolchain install 1.98.1 --profile minimal --no-self-update
+          rustup default 1.98.1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -388,6 +389,7 @@ jobs:
           test -x /usr/bin/google-chrome
           docker info
 
+      - run: npm install --global npm@12.0.2
       - run: npm ci
       - run: mkdir -p target/native-ci
       - run: node scripts/ci-command-log.mjs target/native-ci/ssh-server-compat.log npm run test:ssh-server-compat

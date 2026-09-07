@@ -13,7 +13,7 @@ describe("Rust dependency audit policy", () => {
     ]);
     expect(validateRustDependencyAuditReport(reviewedReport())).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 21,
+      reviewedWarnings: 19,
     });
   });
 
@@ -72,7 +72,7 @@ describe("Rust dependency audit policy", () => {
     }));
     expect(runRustDependencyAudit({ spawn, projectRoot: "/repo", environment: {} })).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 21,
+      reviewedWarnings: 19,
     });
     expect(spawn).toHaveBeenCalledWith("cargo", ["audit", "--json"], expect.objectContaining({
       cwd: "/repo",

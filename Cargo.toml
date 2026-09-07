@@ -18,18 +18,18 @@ license = "Apache-2.0"
 authors = ["PortMate Contributors"]
 
 [workspace.dependencies]
-anyhow = "1.0.103"
-base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0.104"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", features = ["serde"] }
 fs2 = "0.4.3"
-ipnet = "2.12"
-regex = "1.12"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.10"
-thiserror = "2.0"
-url = "2.5"
-uuid = { version = "1.18", features = ["v4", "serde"] }
+ipnet = "2.12.2"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.20"
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4", "serde"] }
 
 [profile.dev.package.portmate-kdf]
 opt-level = 3

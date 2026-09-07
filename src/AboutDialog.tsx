@@ -1,11 +1,11 @@
-import { Code2, ExternalLink, FileText, Github, Scale, X } from "lucide-react";
+import { Code2, ExternalLink, FileText, GitBranch, Scale, X } from "lucide-react";
 import packageJson from "../package.json";
 import { normalizeTerminalWebLink, openIsolatedWebLink } from "./terminal-web-link";
 
 const PROJECT_URL = "https://github.com/YYH2913/PortMate";
 
 const projectLinks = [
-  { label: "项目主页", detail: "源代码、发布说明与贡献指南", url: PROJECT_URL, icon: Github },
+  { label: "项目主页", detail: "源代码、发布说明与贡献指南", url: PROJECT_URL, icon: GitBranch },
   { label: "使用文档", detail: "README 与 MCP API 参考", url: `${PROJECT_URL}#readme`, icon: FileText },
   { label: "问题反馈", detail: "报告 Bug 或提出功能建议", url: `${PROJECT_URL}/issues`, icon: Code2 },
   { label: "版本发布", detail: "查看发行包与更新记录", url: `${PROJECT_URL}/releases`, icon: ExternalLink },

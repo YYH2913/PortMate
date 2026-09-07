@@ -246,7 +246,7 @@ fn scp_upload_command_resumes_existing_part_file() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let prefix_hash = format!("{:x}", Sha256::digest(b"abc"));
+    let prefix_hash = portmate_core::encode_hex(&Sha256::digest(b"abc"));
     child
         .stdin
         .as_mut()
@@ -319,7 +319,7 @@ fn scp_upload_command_rewrites_mismatched_existing_part_file() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let prefix_hash = format!("{:x}", Sha256::digest(b"abc"));
+    let prefix_hash = portmate_core::encode_hex(&Sha256::digest(b"abc"));
     child
         .stdin
         .as_mut()
@@ -394,7 +394,7 @@ fn scp_source_prefix_sha256_hashes_exact_prefix_and_restores_reader() {
 
     assert_eq!(
         scp_source_prefix_sha256(&mut file, 3, &progress).unwrap(),
-        format!("{:x}", Sha256::digest(b"abc"))
+        portmate_core::encode_hex(&Sha256::digest(b"abc"))
     );
     let mut suffix = Vec::new();
     file.read_to_end(&mut suffix).unwrap();

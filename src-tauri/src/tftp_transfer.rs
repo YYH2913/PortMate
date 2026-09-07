@@ -460,7 +460,7 @@ fn parse_tftp_read_request(packet: &[u8]) -> Result<TftpReadRequest, TftpRequest
         return Err(TftpRequestError::option("TFTP RRQ 选项必须成对出现"));
     }
     let mut options = Vec::with_capacity(option_fields.len() / 2);
-    for pair in option_fields.chunks_exact(2) {
+    for pair in option_fields.as_chunks::<2>().0 {
         let name = std::str::from_utf8(pair[0])
             .map_err(|_| TftpRequestError::option("TFTP RRQ 选项名不是 UTF-8"))?
             .to_ascii_lowercase();
