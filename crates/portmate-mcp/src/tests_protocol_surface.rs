@@ -37,6 +37,38 @@ fn tools_list_advertises_bridge_management_surface() {
 }
 
 #[test]
+fn bridge_management_tools_require_their_declared_scopes() {
+    let mut server = PortMateMcp {
+        store: test_snapshot_store("bridge scope guard"),
+        store_path: None,
+        ipc: None,
+        client_id: "unprivileged-client".to_string(),
+        allow_write: true,
+    };
+
+    let reload_error = server
+        .tool_call(&json!({"name": "reload_mcp", "arguments": {}}))
+        .unwrap_err()
+        .to_string();
+    assert!(reload_error.contains("ReadMcp"), "{reload_error}");
+
+    let restart_error = server
+        .tool_call(&json!({"name": "restart_mcp", "arguments": {}}))
+        .unwrap_err()
+        .to_string();
+    assert!(restart_error.contains("ManageMcp"), "{restart_error}");
+
+    let break_error = server
+        .tool_call(&json!({
+            "name": "serial_send_break",
+            "arguments": {"sessionId": "missing-session"}
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(break_error.contains("WriteInput"), "{break_error}");
+}
+
+#[test]
 fn tools_list_advertises_scp_tftp_and_session_independent_routes() {
     let response = handle_http_json_rpc(json!({
         "jsonrpc": "2.0",

@@ -31,11 +31,12 @@ impl PortMateMcp {
                 serde_json::to_string_pretty(&self.bridge_status()?)?
             }
             "reload_mcp" => {
-                self.refresh_runtime_sources();
                 self.guard_read_scope(McpScope::ReadMcp, None)?;
+                self.refresh_runtime_sources();
                 serde_json::to_string_pretty(&self.bridge_status()?)?
             }
             "restart_mcp" => {
+                self.guard_read_scope(McpScope::ManageMcp, None)?;
                 if is_desktop_managed_http_sidecar() {
                     is_error = true;
                     "restart_mcp was NOT executed: a managed HTTP sidecar cannot restart itself in-band. Call restart_mcp from a stdio Bridge or use the PortMate desktop UI.".to_string()
@@ -193,6 +194,9 @@ impl PortMateMcp {
                 }
             }
             "serial_send_break" => {
+                let session_id = required_string(&arguments, "sessionId")?;
+                self.guard_read_scope(McpScope::WriteInput, Some(session_id))?;
+                self.require_known_session(session_id)?;
                 if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
                     ipc_value_to_text(value)?
                 } else {
