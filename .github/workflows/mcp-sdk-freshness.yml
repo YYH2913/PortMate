@@ -25,6 +25,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - run: npm install --global npm@12.0.2
       - run: npm ci
 
       - name: Check pinned MCP SDK matrices against current stable releases

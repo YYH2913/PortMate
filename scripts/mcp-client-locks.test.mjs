@@ -56,6 +56,7 @@ describe("MCP client dependency locks", () => {
     for (const { version } of matrix("mcp-rust-client-versions.json")) {
       const lock = textLock("mcp-rust-client-check", version, "Cargo.lock");
       expect(cargoLockPinsPackage(lock, "rmcp", version)).toBe(true);
+      expect(cargoLockPinsPackage(lock, `portmate-mcp-rust-client-check-${version.replaceAll(".", "-")}`, "0.0.0")).toBe(true);
       expect(cargoLockPinsPackage(lock.replaceAll("\n", "\r\n"), "rmcp", version)).toBe(true);
       expect(cargoLockPinsPackage(lock, "rmcp", `${version}-mismatch`)).toBe(false);
     }
