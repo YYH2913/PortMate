@@ -1300,15 +1300,9 @@ fn stale_mcp_transfer_authorization_is_rejected_at_each_commit_point() {
 #[test]
 fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
     tauri::async_runtime::block_on(async {
-        for (index, command) in [
-            "send_text",
-            "send_key",
-            "run_command",
-            "attach_tmux",
-            "run_custom_script",
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, command) in ["send_text", "send_key", "run_command", "attach_tmux"]
+            .into_iter()
+            .enumerate()
         {
             let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -1343,23 +1337,7 @@ fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
             );
 
             let client_id = format!("queued-input-{index}");
-            let scope = if command == "run_custom_script" {
-                McpScope::RunScripts
-            } else {
-                McpScope::WriteInput
-            };
-            let script_timestamp = Utc::now();
-            let script = CustomScript {
-                id: Uuid::new_v4().to_string(),
-                name: "Queued MCP script".to_string(),
-                description: "Grant revocation regression".to_string(),
-                content: "must-not-run".to_string(),
-                allow_all_sessions: false,
-                allowed_session_ids: vec![profile.id.clone()],
-                mcp_enabled: true,
-                created_at: script_timestamp,
-                updated_at: script_timestamp,
-            };
+            let scope = McpScope::WriteInput;
             let args = match command {
                 "send_text" => serde_json::json!({
                     "sessionId": profile.id.clone(),
@@ -1377,17 +1355,10 @@ fn queued_mcp_input_revalidates_grants_at_the_outbound_commit_point() {
                     "sessionId": profile.id.clone(),
                     "target": "main",
                 }),
-                "run_custom_script" => serde_json::json!({
-                    "sessionId": profile.id.clone(),
-                    "scriptId": script.id.clone(),
-                }),
                 _ => unreachable!(),
             };
             {
                 let mut store = state.store.lock().unwrap();
-                if command == "run_custom_script" {
-                    store.custom_scripts.push(script);
-                }
                 store.grants.push(McpGrant {
                     client_id: client_id.clone(),
                     name: "Queued input".to_string(),

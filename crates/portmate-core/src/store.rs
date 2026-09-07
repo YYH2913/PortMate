@@ -46,7 +46,7 @@ pub struct SessionStore {
     pub command_history_revision: u64,
     #[serde(default)]
     pub one_keys: Vec<OneKeyCredential>,
-    #[serde(default)]
+    #[serde(default, rename = "hostScripts")]
     pub custom_scripts: Vec<CustomScript>,
     pub host_keys: HostKeyStore,
     pub grants: Vec<McpGrant>,

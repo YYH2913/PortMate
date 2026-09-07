@@ -7,8 +7,128 @@ pub const MAX_CUSTOM_SCRIPT_NAME_CHARACTERS: usize = 128;
 pub const MAX_CUSTOM_SCRIPT_DESCRIPTION_CHARACTERS: usize = 1_024;
 pub const MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS: usize = 65_536;
 pub const MAX_CUSTOM_SCRIPT_CONTENT_BYTES: usize = 256 * 1024;
-pub const MAX_CUSTOM_SCRIPT_SESSIONS: usize = 1_024;
 pub const CUSTOM_SCRIPT_EVENT_TEXT: &str = "<custom-script>";
+
+pub fn validate_host_script_config(host: &crate::HostScriptConfig) -> Result<(), String> {
+    if !(1..=60).contains(&host.timeout_seconds) {
+        return Err("host script timeout must be 1–60 seconds".into());
+    }
+    for path in [&host.interpreter, &host.working_directory] {
+        if path.len() > 4096 || path.chars().any(char::is_control) {
+            return Err("invalid host script path".into());
+        }
+        // Accept both platform path syntaxes so synced stores remain readable.
+        if !path.is_empty()
+            && !path.starts_with('/')
+            && !(path.as_bytes().get(1) == Some(&b':')
+                && path
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(|c| matches!(c, b'\\' | b'/')))
+            && !path.starts_with("\\\\")
+        {
+            return Err("host script paths must be absolute".into());
+        }
+    }
+    if host.allowed_client_ids.len() > 128 || host.parameters.len() > 32 {
+        return Err("host script allows at most 128 clients and 32 parameters".into());
+    }
+    let mut clients = HashSet::new();
+    for id in &host.allowed_client_ids {
+        if id.is_empty()
+            || id.len() > 128
+            || id.trim() != id
+            || id.chars().any(char::is_control)
+            || !clients.insert(id)
+        {
+            return Err("invalid or duplicate host script client ID".into());
+        }
+    }
+    let mut names = HashSet::new();
+    for parameter in &host.parameters {
+        if parameter.name.is_empty()
+            || parameter.name.len() > 64
+            || !parameter
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || parameter.name.as_bytes()[0].is_ascii_digit()
+            || !names.insert(parameter.name.to_ascii_lowercase())
+            || parameter.description.len() > 1024
+            || parameter.description.chars().any(char::is_control)
+        {
+            return Err("invalid or duplicate host script parameter".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_host_script_parameters(
+    host: &crate::HostScriptConfig,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    use crate::HostScriptParameterKind::*;
+    let object = value
+        .as_object()
+        .ok_or("host script parameters must be a JSON object")?;
+    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > 16 * 1024 {
+        return Err("host script parameters exceed 16 KiB".into());
+    }
+    for key in object.keys() {
+        if !host.parameters.iter().any(|p| p.name == *key) {
+            return Err(format!("unknown host script parameter: {key}"));
+        }
+    }
+    for parameter in &host.parameters {
+        let Some(value) = object.get(&parameter.name) else {
+            if parameter.required {
+                return Err(format!("missing parameter: {}", parameter.name));
+            }
+            continue;
+        };
+        let valid = match parameter.kind {
+            String => value.is_string(),
+            Number => value.is_number(),
+            Integer => value.is_i64() || value.is_u64(),
+            Boolean => value.is_boolean(),
+        };
+        if !valid {
+            return Err(format!("invalid parameter type: {}", parameter.name));
+        }
+        if value.as_str().is_some_and(|s| s.contains('\0')) {
+            return Err(format!("parameter cannot contain NUL: {}", parameter.name));
+        }
+    }
+    Ok(())
+}
+
+pub fn host_script_tool_definition(script: &CustomScript) -> Option<crate::McpToolDefinition> {
+    let host = &script.host;
+    let properties = host
+        .parameters
+        .iter()
+        .map(|p| {
+            (
+                p.name.clone(),
+                serde_json::json!({
+                    "type": p.kind, "description": p.description,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Some(crate::McpToolDefinition {
+        name: script.host_tool_name(),
+        title: script.name.clone(),
+        description: format!(
+            "Runs on the PortMate HOST, not a terminal session. {}",
+            script.description
+        ),
+        input_schema: serde_json::json!({"type":"object", "properties":properties,
+            "required":host.parameters.iter().filter(|p| p.required).map(|p| &p.name).collect::<Vec<_>>(),
+            "additionalProperties":false}),
+        read_only: false,
+    })
+}
 
 pub fn normalize_custom_script_content(value: &str) -> String {
     value.replace("\r\n", "\n").replace('\r', "\n")
@@ -58,25 +178,9 @@ pub fn validate_custom_script(script: &CustomScript) -> Result<(), String> {
             "custom script content must be non-empty, contain no NUL, and stay within {MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS} characters/{MAX_CUSTOM_SCRIPT_CONTENT_BYTES} bytes"
         ));
     }
-    if script.allowed_session_ids.len() > MAX_CUSTOM_SCRIPT_SESSIONS {
-        return Err(format!(
-            "custom script session limit exceeded ({MAX_CUSTOM_SCRIPT_SESSIONS})"
-        ));
-    }
-    if !script.allow_all_sessions && script.allowed_session_ids.is_empty() && script.mcp_enabled {
-        return Err("an MCP-enabled custom script must target at least one session".to_string());
-    }
-    let mut seen = HashSet::with_capacity(script.allowed_session_ids.len());
-    for session_id in &script.allowed_session_ids {
-        if session_id.is_empty()
-            || session_id.len() > 128
-            || session_id.chars().any(char::is_control)
-        {
-            return Err("custom script contains an invalid session ID".to_string());
-        }
-        if !seen.insert(session_id) {
-            return Err("custom script contains duplicate session IDs".to_string());
-        }
+    validate_host_script_config(&script.host)?;
+    if script.mcp_enabled && script.host.allowed_client_ids.is_empty() {
+        return Err("select at least one MCP client for a published host script".into());
     }
     if script.created_at > script.updated_at {
         return Err("custom script timestamps are inconsistent".to_string());
@@ -84,10 +188,7 @@ pub fn validate_custom_script(script: &CustomScript) -> Result<(), String> {
     Ok(())
 }
 
-pub fn normalize_loaded_custom_scripts(
-    scripts: Vec<CustomScript>,
-    known_session_ids: &HashSet<String>,
-) -> Vec<CustomScript> {
+pub fn normalize_loaded_custom_scripts(scripts: Vec<CustomScript>) -> Vec<CustomScript> {
     let mut normalized = Vec::with_capacity(scripts.len().min(MAX_CUSTOM_SCRIPTS));
     let mut seen_ids = HashSet::new();
     for mut script in scripts {
@@ -97,16 +198,6 @@ pub fn normalize_loaded_custom_scripts(
         script.name = script.name.trim().to_string();
         script.description = script.description.trim().to_string();
         script.content = normalize_custom_script_content(&script.content);
-        let was_scoped = !script.allow_all_sessions;
-        let mut seen_sessions = HashSet::new();
-        script.allowed_session_ids.retain(|session_id| {
-            known_session_ids.contains(session_id) && seen_sessions.insert(session_id.clone())
-        });
-        if script.allow_all_sessions {
-            script.allowed_session_ids.clear();
-        } else if was_scoped && script.allowed_session_ids.is_empty() {
-            script.mcp_enabled = false;
-        }
         if !seen_ids.insert(script.id.clone()) || validate_custom_script(&script).is_err() {
             continue;
         }
@@ -116,77 +207,84 @@ pub fn normalize_loaded_custom_scripts(
 }
 
 #[cfg(test)]
-mod tests {
+mod host_tests {
     use super::*;
-    use chrono::Utc;
+    use crate::{
+        HostScriptConfig, HostScriptLanguage, HostScriptParameter, HostScriptParameterKind,
+    };
 
-    fn script() -> CustomScript {
-        let now = Utc::now();
-        CustomScript {
+    fn config() -> HostScriptConfig {
+        HostScriptConfig {
+            language: HostScriptLanguage::Python,
+            interpreter: String::new(),
+            working_directory: String::new(),
+            timeout_seconds: 30,
+            allowed_client_ids: vec!["a".into()],
+            parameters: vec![HostScriptParameter {
+                name: "message".into(),
+                description: "text".into(),
+                kind: HostScriptParameterKind::String,
+                required: true,
+            }],
+        }
+    }
+    #[test]
+    fn host_parameter_validation_is_strict_and_bounded() {
+        let host = config();
+        validate_host_script_config(&host).unwrap();
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!({"message":3}),
+            serde_json::json!({"message":"x","extra":true}),
+            serde_json::json!({"message":"\0"}),
+            serde_json::json!({"message":"x".repeat(17000)}),
+        ] {
+            assert!(validate_host_script_parameters(&host, &bad).is_err());
+        }
+        validate_host_script_parameters(&host, &serde_json::json!({"message":"$(whoami); ' 中文"}))
+            .unwrap();
+        let mut invalid = host.clone();
+        invalid.timeout_seconds = 0;
+        assert!(validate_host_script_config(&invalid).is_err());
+        invalid = host.clone();
+        invalid.interpreter = "python -c injected".into();
+        assert!(validate_host_script_config(&invalid).is_err());
+        invalid = host.clone();
+        invalid.parameters.push(HostScriptParameter {
+            name: "MESSAGE".into(),
+            ..host.parameters[0].clone()
+        });
+        assert!(validate_host_script_config(&invalid).is_err());
+    }
+    #[test]
+    fn host_tool_schema_and_client_scope_survive_normalization() {
+        let now = chrono::Utc::now();
+        let script = CustomScript {
             id: Uuid::new_v4().to_string(),
-            name: "Inspect service".to_string(),
-            description: "Reads service state".to_string(),
-            content: "systemctl status portmate".to_string(),
-            allow_all_sessions: false,
-            allowed_session_ids: vec!["session-a".to_string()],
+            name: "test".into(),
+            description: "test skill".into(),
+            content: "secret source".into(),
+            host: config(),
             mcp_enabled: true,
             created_at: now,
             updated_at: now,
-        }
-    }
-
-    #[test]
-    fn validation_rejects_unscoped_and_oversized_scripts() {
-        let mut invalid = script();
-        invalid.allowed_session_ids.clear();
-        assert!(validate_custom_script(&invalid).is_err());
-
-        invalid.allow_all_sessions = true;
-        invalid.content = "x".repeat(MAX_CUSTOM_SCRIPT_CONTENT_CHARACTERS + 1);
-        assert!(validate_custom_script(&invalid).is_err());
-    }
-
-    #[test]
-    fn loaded_scripts_never_expand_a_lost_session_scope() {
-        let normalized = normalize_loaded_custom_scripts(vec![script()], &HashSet::new());
-        assert_eq!(normalized.len(), 1);
-        assert!(!normalized[0].allow_all_sessions);
-        assert!(normalized[0].allowed_session_ids.is_empty());
-        assert!(!normalized[0].mcp_enabled);
-    }
-
-    #[test]
-    fn loaded_scripts_normalize_newlines_and_deduplicate_sessions() {
-        let mut loaded = script();
-        loaded.content = "line 1\r\nline 2\r".to_string();
-        loaded.allowed_session_ids.push("session-a".to_string());
-        let known = HashSet::from(["session-a".to_string()]);
-        let normalized = normalize_loaded_custom_scripts(vec![loaded], &known);
-        assert_eq!(normalized.len(), 1);
-        assert_eq!(normalized[0].content, "line 1\nline 2\n");
-        assert_eq!(normalized[0].allowed_session_ids, ["session-a"]);
-    }
-
-    #[test]
-    fn loaded_custom_script_events_drop_persisted_bodies() {
-        let mut events = vec![crate::SessionEvent {
-            id: Uuid::new_v4().to_string(),
-            session_id: "session-a".to_string(),
-            pane_id: "session-a:main".to_string(),
-            ts: Utc::now(),
-            direction: crate::EventDirection::Outbound,
-            stream: crate::EventStream::Stdout,
-            bytes_ref: Some("raw:0:27".to_string()),
-            text: Some("private-script-body-marker".to_string()),
-            annotations: std::collections::BTreeMap::from([(
-                "customScriptId".to_string(),
-                Uuid::new_v4().to_string(),
-            )]),
-        }];
-
-        assert_eq!(redact_custom_script_event_bodies(&mut events), 1);
-        assert_eq!(events[0].text.as_deref(), Some(CUSTOM_SCRIPT_EVENT_TEXT));
-        assert_eq!(redact_custom_script_event_bodies(&mut events), 0);
-        assert!(events[0].bytes_ref.is_some());
+        };
+        assert!(script.allows_host_client("a"));
+        assert!(!script.allows_host_client("b"));
+        let tool = host_script_tool_definition(&script).unwrap();
+        assert_eq!(tool.input_schema["properties"]["message"]["type"], "string");
+        assert_eq!(
+            tool.input_schema["required"],
+            serde_json::json!(["message"])
+        );
+        assert_eq!(tool.input_schema["additionalProperties"], false);
+        assert!(!serde_json::to_string(&tool)
+            .unwrap()
+            .contains("secret source"));
+        assert_eq!(
+            normalize_loaded_custom_scripts(vec![script.clone()]),
+            vec![script]
+        );
     }
 }

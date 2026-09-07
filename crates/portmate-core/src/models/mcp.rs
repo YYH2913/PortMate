@@ -87,7 +87,11 @@ fn is_collection_read_scope(scope: McpScope) -> bool {
 }
 
 fn is_host_level_scope(scope: McpScope) -> bool {
-    matches!(scope, McpScope::Tunnel | McpScope::ManageMcp)
+    // Host scripts additionally require an explicit per-script client allowlist.
+    matches!(
+        scope,
+        McpScope::Tunnel | McpScope::ManageMcp | McpScope::RunScripts | McpScope::ReadScripts
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -223,24 +223,18 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         ),
         tool(
             "list_custom_scripts",
-            "List Custom Scripts",
-            "List saved MCP-enabled custom script summaries for one authorized session. Read-only and requires read-scripts; only IDs, names, descriptions, and version metadata are returned. Script bodies and secret material are never returned, and this tool does not execute a script.",
-            session_schema(),
+            "List Host Scripts",
+            "List Python/platform Shell skills on the PortMate host explicitly exposed to this MCP client. Requires read-scripts (also implied by run-scripts). Returns tool definitions; source code is never returned. No terminal session is involved.",
+            json!({"type":"object","additionalProperties":false,"properties":{}}),
             true,
         ),
         tool(
             "run_custom_script",
-            "Run Custom Script",
-            "Run one saved MCP-enabled custom script in an authorized currently connected session. Requires run-scripts plus the script's own MCP/session boundary; the request selects an existing script by ID and cannot provide, read, or replace its body. Write confirmation, version revalidation, output redaction, and audit still apply.",
-            json!({
-                "type":"object",
-                "required":["sessionId","scriptId"],
-                "additionalProperties":false,
-                "properties":{
-                    "sessionId":{"type":"string","minLength":1,"maxLength":128},
-                    "scriptId":{"type":"string","format":"uuid"}
-                }
-            }),
+            "Run Host Script",
+            "Run a saved Python/platform Shell script on the PortMate HOST. Requires run-scripts and the script's explicit client allowlist. Parameters are JSON data, never source code. Returns exitCode, stdout, stderr and failure. Host scripts are not sandboxed.",
+            json!({"type":"object","additionalProperties":false,"required":["scriptId"],"properties":{
+                "scriptId":{"type":"string","format":"uuid"},"parameters":{"type":"object"}
+            }}),
             false,
         ),
         tool(
@@ -963,16 +957,13 @@ mod tests {
         let list = definition("list_custom_scripts");
         assert!(list.read_only);
         assert!(list.description.contains("never returned"));
-        assert_eq!(list.input_schema["required"], json!(["sessionId"]));
+        assert!(list.input_schema["properties"].get("sessionId").is_none());
         assert!(list.input_schema["properties"].get("content").is_none());
 
         let run = definition("run_custom_script");
         assert!(!run.read_only);
         assert_eq!(run.input_schema["additionalProperties"], false);
-        assert_eq!(
-            run.input_schema["required"],
-            json!(["sessionId", "scriptId"])
-        );
+        assert_eq!(run.input_schema["required"], json!(["scriptId"]));
         assert_eq!(run.input_schema["properties"]["scriptId"]["format"], "uuid");
         assert!(run.input_schema["properties"].get("content").is_none());
     }

@@ -57,7 +57,8 @@ pub fn run() {
             custom_script_commands::list_custom_scripts,
             custom_script_commands::save_custom_script,
             custom_script_commands::delete_custom_script,
-            custom_script_commands::run_custom_script,
+            host_script_commands::run_host_script,
+            host_script_commands::cancel_host_script,
             paced_send::begin_paced_send,
             paced_send::cancel_paced_send,
             profile_commands::save_session_profile,
@@ -173,6 +174,7 @@ pub fn run() {
                     // can be cancelled), without invalidating another session view.
                     terminal_input_stream::clear_owner_streams(&state.store_path, label);
                     paced_send::clear_owner(&state.store_path, label);
+                    host_script_commands::cancel_owner(&state.store_path, Some(&format!("window:{label}")));
                     session_credentials::clear_session_credentials_for_owner(
                         state.inner(),
                         label,
@@ -181,6 +183,7 @@ pub fn run() {
             }
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<AppState>() {
+                    host_script_commands::cancel_owner(&state.store_path, None);
                     shutdown_mcp_http_runtime(state.inner());
                     shutdown_ipc_publication(state.inner());
                     shutdown_tmux_controls(state.inner());

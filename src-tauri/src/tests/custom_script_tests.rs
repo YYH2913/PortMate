@@ -1,80 +1,116 @@
 use super::*;
 use crate::custom_script_commands::{
-    delete_custom_script_from_store, normalize_custom_script_request, run_custom_script_inner,
-    upsert_custom_script_in_store,
+    delete_custom_script_from_store, normalize_custom_script_request, upsert_custom_script_in_store,
 };
-use crate::session_terminal::terminate_command_for_session;
+use crate::host_script_commands::{run_host_script_inner, RunHostScriptRequest};
+use portmate_core::{
+    HostScriptConfig, HostScriptLanguage, HostScriptParameter, HostScriptParameterKind,
+};
 
-fn save_request(session_id: &str) -> SaveCustomScriptRequest {
-    SaveCustomScriptRequest {
-        id: None,
-        name: "  Inspect service  ".to_string(),
-        description: "  Read state  ".to_string(),
-        content: "uptime\r\nwhoami\r".to_string(),
-        allow_all_sessions: false,
-        allowed_session_ids: vec![session_id.to_string(), session_id.to_string()],
-        mcp_enabled: true,
-        expected_updated_at: None,
+fn config() -> HostScriptConfig {
+    HostScriptConfig {
+        language: HostScriptLanguage::Python,
+        interpreter: String::new(),
+        working_directory: String::new(),
+        timeout_seconds: 5,
+        allowed_client_ids: vec!["script-client".into()],
+        parameters: vec![],
     }
 }
-
-fn stored_script(session_id: &str, mcp_enabled: bool) -> CustomScript {
-    let timestamp = "2026-08-14T00:00:00Z".parse().unwrap();
+fn stored_script() -> CustomScript {
+    let now = Utc::now();
     CustomScript {
-        id: "69c06a07-dc48-4d4e-9498-6f42b6deab21".to_string(),
-        name: "Inspect service".to_string(),
-        description: "Read state".to_string(),
-        content: "private-script-body-marker".to_string(),
-        allow_all_sessions: false,
-        allowed_session_ids: vec![session_id.to_string()],
-        mcp_enabled,
-        created_at: timestamp,
-        updated_at: timestamp,
+        id: Uuid::new_v4().to_string(),
+        name: "Host diagnostics".into(),
+        description: "Local diagnostics".into(),
+        content: "print('host-ok')".into(),
+        host: config(),
+        mcp_enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+fn grant() -> McpGrant {
+    McpGrant {
+        client_id: "script-client".into(),
+        name: "Script client".into(),
+        scopes: vec![McpScope::RunScripts],
+        allowed_sessions: vec![MCP_NO_SESSIONS_SENTINEL.into()],
+        confirm_writes: false,
+        expires_at: None,
+        revoked_at: None,
+    }
+}
+fn run_request(script: &CustomScript) -> RunHostScriptRequest {
+    RunHostScriptRequest {
+        script_id: script.id.clone(),
+        expected_updated_at: script.updated_at,
+        run_id: Uuid::new_v4().to_string(),
+        parameters: serde_json::json!({}),
     }
 }
 
 #[test]
-fn custom_script_mutations_normalize_and_enforce_optimistic_concurrency() {
-    let profile = test_shell_profile();
-    let session_id = profile.id.clone();
+fn host_script_save_versions_client_scope_and_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store.sqlite3");
     let mut store = SessionStore::default();
-    store.upsert_profile(profile);
-    let created_at = "2026-08-14T01:00:00Z".parse().unwrap();
-    let script =
-        normalize_custom_script_request(&store, save_request(&session_id), created_at).unwrap();
-    assert_eq!(script.name, "Inspect service");
-    assert_eq!(script.description, "Read state");
-    assert_eq!(script.content, "uptime\nwhoami\n");
-    assert_eq!(script.allowed_session_ids, [session_id.as_str()]);
-    let response = upsert_custom_script_in_store(&mut store, script.clone()).unwrap();
-    assert_eq!(response.saved_id, script.id);
-    assert_eq!(response.scripts, store.custom_scripts);
-
-    let mut stale = save_request(&session_id);
-    stale.id = Some(script.id.clone());
-    stale.expected_updated_at = Some("2026-08-14T00:59:59Z".parse().unwrap());
-    assert!(normalize_custom_script_request(
-        &store,
-        stale,
-        "2026-08-14T01:01:00Z".parse().unwrap(),
-    )
-    .unwrap_err()
-    .contains("changed in another window"));
-
+    store.grants.push(grant());
+    let script = stored_script();
+    store.custom_scripts.push(script.clone());
+    let request = SaveCustomScriptRequest {
+        id: Some(script.id.clone()),
+        name: " Host diagnostics ".into(),
+        description: String::new(),
+        content: "print('one')\r\n".into(),
+        host: config(),
+        mcp_enabled: true,
+        expected_updated_at: Some(script.updated_at),
+    };
+    for delta in [0, -3600] {
+        let saved = normalize_custom_script_request(
+            &store,
+            request.clone(),
+            script.updated_at + chrono::Duration::seconds(delta),
+        )
+        .unwrap();
+        assert!(saved.updated_at > script.updated_at);
+        assert_eq!(saved.content, "print('one')\n");
+    }
+    let saved =
+        normalize_custom_script_request(&store, request.clone(), script.updated_at).unwrap();
+    upsert_custom_script_in_store(&mut store, saved.clone()).unwrap();
+    assert!(normalize_custom_script_request(&store, request, Utc::now()).is_err());
     assert!(delete_custom_script_from_store(
         &mut store,
         &DeleteCustomScriptRequest {
             id: script.id.clone(),
-            expected_updated_at: "2026-08-14T00:59:59Z".parse().unwrap(),
-        },
+            expected_updated_at: script.updated_at
+        }
     )
-    .unwrap_err()
-    .contains("changed in another window"));
+    .is_err());
+    save_store(&path, &store).unwrap();
+    assert_eq!(
+        load_store_sqlite(&path).unwrap().custom_scripts,
+        store.custom_scripts
+    );
+    let encoded = serde_json::to_value(&store).unwrap();
+    assert!(encoded.get("hostScripts").is_some());
+    assert!(encoded.get("customScripts").is_none());
+    let mut old_store = serde_json::to_value(SessionStore::default()).unwrap();
+    old_store["customScripts"] = serde_json::json!([{"content":"must-not-migrate"}]);
+    assert!(serde_json::from_value::<SessionStore>(old_store)
+        .unwrap()
+        .custom_scripts
+        .is_empty());
+    let mut old_request = serde_json::to_value(&saved).unwrap();
+    old_request.as_object_mut().unwrap().remove("host");
+    assert!(serde_json::from_value::<CustomScript>(old_request).is_err());
     delete_custom_script_from_store(
         &mut store,
         &DeleteCustomScriptRequest {
-            id: script.id,
-            expected_updated_at: script.updated_at,
+            id: saved.id,
+            expected_updated_at: saved.updated_at,
         },
     )
     .unwrap();
@@ -82,552 +118,256 @@ fn custom_script_mutations_normalize_and_enforce_optimistic_concurrency() {
 }
 
 #[test]
-fn custom_script_commands_use_serial_carriage_returns_as_line_boundaries() {
-    let profile = test_serial_profile(portmate_core::SerialConnection {
-        port: "COM7".to_string(),
-        baud_rate: 115_200,
-        data_bits: 8,
-        stop_bits: 1,
-        parity: "none".to_string(),
-        flow_control: "none".to_string(),
-        dtr: false,
-        rts: false,
-        reconnect: false,
-        reconnect_delay_ms: 1_000,
-        receive_idle_timeout_enabled: false,
-        receive_idle_timeout_seconds: 60,
-    });
-    let session_id = profile.id.clone();
-    let mut store = SessionStore::default();
-    store.upsert_profile(profile);
-    let store = Arc::new(Mutex::new(store));
-
-    assert_eq!(
-        terminate_command_for_session("first\nsecond".to_string(), &store, &session_id).unwrap(),
-        "first\rsecond\r"
-    );
-    assert_eq!(
-        terminate_command_for_session("first\r\nsecond\rthird\n".to_string(), &store, &session_id)
-            .unwrap(),
-        "first\rsecond\rthird\r"
-    );
-}
-
-#[test]
-fn custom_script_commands_preserve_non_serial_line_ending_rules() {
+fn host_script_discovery_and_authorization_are_client_scoped_not_session_scoped() {
+    let root = tempfile::tempdir().unwrap();
     let profile = test_shell_profile();
-    let session_id = profile.id.clone();
-    let mut store = SessionStore::default();
-    store.upsert_profile(profile);
-    let store = Arc::new(Mutex::new(store));
-
-    assert_eq!(
-        terminate_command_for_session("first\nsecond".to_string(), &store, &session_id).unwrap(),
-        "first\nsecond\n"
-    );
-}
-
-#[test]
-fn deleting_profile_targets_never_widens_a_custom_script_boundary() {
-    let mut store = SessionStore::default();
-    let first = test_shell_profile();
-    let mut second = first.clone();
-    second.id = "session:2".to_string();
-    second.name = "Second session".to_string();
-    store.upsert_profile(first.clone());
-    store.upsert_profile(second.clone());
-    let mut scoped = stored_script(&first.id, true);
-    scoped.allowed_session_ids.push(second.id.clone());
-    store.custom_scripts.push(scoped);
-
-    store.delete_profile(&first.id).unwrap();
-    assert_eq!(
-        store.custom_scripts[0].allowed_session_ids,
-        [second.id.as_str()]
-    );
-    assert!(store.custom_scripts[0].mcp_enabled);
-    assert!(!store.custom_scripts[0].allow_all_sessions);
-
-    store.delete_profile(&second.id).unwrap();
-    assert!(store.custom_scripts[0].allowed_session_ids.is_empty());
-    assert!(!store.custom_scripts[0].mcp_enabled);
-    assert!(!store.custom_scripts[0].allow_all_sessions);
-}
-
-#[test]
-fn mcp_custom_script_listing_is_scoped_and_redacted() {
-    tauri::async_runtime::block_on(async {
-        let root = std::env::temp_dir().join(format!("portmate-script-list-{}", Uuid::new_v4()));
-        let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
-        let session_id = state.store.lock().unwrap().profiles[0].id.clone();
-        {
-            let mut store = state.store.lock().unwrap();
-            store.custom_scripts.push(stored_script(&session_id, true));
-            let mut desktop_only = stored_script(&session_id, false);
-            desktop_only.id = "599b2954-60bf-4f81-bb38-a3af45b0cbf0".to_string();
-            desktop_only.name = "Desktop only".to_string();
-            store.custom_scripts.push(desktop_only);
-            store.grants.push(McpGrant {
-                client_id: "script-reader".to_string(),
-                name: "Script reader".to_string(),
-                scopes: vec![McpScope::ReadScripts],
-                allowed_sessions: vec![session_id.clone()],
-                confirm_writes: false,
-                expires_at: None,
-                revoked_at: None,
-            });
-        }
-
-        let value = execute_ipc_request(
-            state,
-            IpcRequest {
-                token: "authenticated-token".to_string(),
-                client_id: "script-reader".to_string(),
-                trusted_write: false,
-                command: "list_custom_scripts".to_string(),
-                args: serde_json::json!({ "sessionId": session_id }),
-            },
-        )
-        .await
-        .unwrap();
-        let encoded = value.to_string();
-        assert!(encoded.contains("Inspect service"));
-        assert!(!encoded.contains("Desktop only"));
-        assert!(!encoded.contains("private-script-body-marker"));
-        let _ = fs::remove_dir_all(root);
-    });
-}
-
-#[test]
-fn mcp_custom_script_execution_revalidates_script_and_grant_boundaries() {
-    let root = std::env::temp_dir().join(format!("portmate-script-run-{}", Uuid::new_v4()));
-    let state = test_app_state(test_shell_profile(), root.join("portmate-store.sqlite3"));
-    let session_id = state.store.lock().unwrap().profiles[0].id.clone();
-    let script = stored_script(&session_id, true);
-    let request = IpcRequest {
-        token: "authenticated-token".to_string(),
-        client_id: "script-runner".to_string(),
-        trusted_write: false,
-        command: "run_custom_script".to_string(),
-        args: serde_json::json!({
-            "sessionId": session_id.clone(),
-            "scriptId": script.id.clone(),
-        }),
-    };
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let script = stored_script();
     {
         let mut store = state.store.lock().unwrap();
+        store.grants.push(grant());
         store.custom_scripts.push(script.clone());
-        store.grants.push(McpGrant {
-            client_id: request.client_id.clone(),
-            name: "Script runner".to_string(),
-            scopes: vec![McpScope::RunScripts],
-            allowed_sessions: vec![session_id.clone()],
-            confirm_writes: false,
-            expires_at: None,
-            revoked_at: None,
-        });
+        store.delete_profile(&profile.id).unwrap();
+        assert_eq!(store.custom_scripts[0], script);
+        let tools = host_script_tools(&store, "script-client");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, script.host_tool_name());
+        assert!(!serde_json::to_string(&tools)
+            .unwrap()
+            .contains(&script.content));
+        assert!(host_script_tools(&store, "other-client").is_empty());
     }
+    let mut request = IpcRequest {
+        token: "test".into(),
+        client_id: "script-client".into(),
+        trusted_write: false,
+        command: "run_custom_script".into(),
+        args: serde_json::json!({"scriptId":script.id,"parameters":{}}),
+    };
+    assert_eq!(ipc_write_session_id(&state, &request).unwrap(), None);
     validate_ipc_write_args(&state, &request).unwrap();
-    assert!(mcp_scope_allowed(
-        &state.store.lock().unwrap(),
-        &request.client_id,
-        false,
-        McpScope::RunScripts,
-        Some(&session_id),
-    ));
-    let details = mcp_audit_details(&request, McpScope::RunScripts, false, false);
+    let context = capture_mcp_write_execution_context(&state, &request).unwrap();
     assert_eq!(
-        details.get("scriptId").map(String::as_str),
-        Some(script.id.as_str())
+        context.approval_target().unwrap().kind,
+        "portmate-host-script"
     );
-
-    let execution_context = capture_mcp_write_execution_context(&state, &request).unwrap();
-    let approval = build_mcp_approval_request_with_target(
-        &request.client_id,
-        &request.command,
-        &session_id,
-        McpScope::RunScripts,
-        execution_context.approval_target(),
-    )
-    .unwrap();
-    let approval_json = serde_json::to_value(&approval).unwrap();
-    assert_eq!(approval_json["target"]["kind"], "custom-script");
-    assert_eq!(approval_json["target"]["id"], script.id);
-    assert_eq!(approval_json["target"]["label"], script.name);
-    assert!(!approval_json.to_string().contains(&script.content));
-
-    state.store.lock().unwrap().custom_scripts[0].updated_at =
-        script.updated_at + chrono::Duration::seconds(1);
-    assert!(revalidate_ipc_write_target_with_context(
-        &state,
-        &request,
-        McpScope::RunScripts,
-        Some(&session_id),
-        false,
-        &execution_context,
-    )
-    .unwrap_err()
-    .contains("changed after authorization"));
-    assert!(tauri::async_runtime::block_on(run_custom_script_inner(
-        &state,
-        RunCustomScriptRequest {
-            script_id: script.id.clone(),
-            session_id: session_id.clone(),
-            expected_updated_at: script.updated_at,
-        },
-        "script-runner",
-        None,
-        true,
-        None,
-    ))
-    .unwrap_err()
-    .contains("changed after authorization"));
-    assert!(tauri::async_runtime::block_on(run_custom_script_inner(
-        &state,
-        RunCustomScriptRequest {
-            script_id: script.id.clone(),
-            session_id: session_id.clone(),
-            expected_updated_at: script.updated_at,
-        },
-        "desktop-user",
-        Some("run_custom_script"),
-        false,
-        None,
-    ))
-    .unwrap_err()
-    .contains("changed in another window"));
-    state.store.lock().unwrap().custom_scripts[0].updated_at = script.updated_at;
-
-    state.store.lock().unwrap().custom_scripts[0].mcp_enabled = false;
-    assert!(revalidate_ipc_write_target(
-        &state,
-        &request,
-        McpScope::RunScripts,
-        Some(&session_id),
-        false,
-    )
-    .unwrap_err()
-    .contains("not exposed to MCP"));
-
-    state.store.lock().unwrap().custom_scripts[0].mcp_enabled = true;
-    state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
-    assert!(revalidate_ipc_write_target(
-        &state,
-        &request,
-        McpScope::RunScripts,
-        Some(&session_id),
-        false,
-    )
-    .unwrap_err()
-    .contains("grant changed"));
-    let _ = fs::remove_dir_all(root);
+    for key in ["sessionId", "content", "interpreter"] {
+        request.args[key] = serde_json::json!("injected");
+        assert!(validate_ipc_write_args(&state, &request).is_err());
+        request.args.as_object_mut().unwrap().remove(key);
+    }
+    state.store.lock().unwrap().custom_scripts[0].updated_at += chrono::Duration::seconds(1);
+    assert!(context
+        .revalidate(&state, &request)
+        .unwrap_err()
+        .contains("changed after authorization"));
+    state.store.lock().unwrap().custom_scripts[0] = script;
+    state.store.lock().unwrap().custom_scripts[0]
+        .host
+        .allowed_client_ids
+        .clear();
+    assert!(validate_ipc_write_args(&state, &request).is_err());
 }
 
 #[test]
-fn queued_custom_script_revalidates_the_script_before_writing() {
+fn host_script_real_python_shell_limits_cancellation_and_revocation() {
     tauri::async_runtime::block_on(async {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            tokio::time::timeout(Duration::from_millis(300), socket.read_u8()).await
+        let root = tempfile::tempdir().unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        let mut script = stored_script();
+        script.host.working_directory = root.path().to_string_lossy().into_owned();
+        script.host.parameters.push(HostScriptParameter {
+            name: "value".into(),
+            description: "literal input".into(),
+            kind: HostScriptParameterKind::String,
+            required: true,
         });
-
-        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-            host: "127.0.0.1".to_string(),
-            port: address.port(),
-            reconnect: false,
-            ..Default::default()
-        }));
-        let root = std::env::temp_dir().join(format!("portmate-script-queue-{}", Uuid::new_v4()));
-        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
-        let stream = TcpStream::connect(address).await.unwrap();
-        let (_reader, writer) = stream.into_split();
-        let (tap, _) = broadcast::channel(8);
-        state.tcp.lock().unwrap().insert(
-            profile.id.clone(),
-            TcpRuntime {
-                runtime_id: Uuid::new_v4().to_string(),
-                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
-                tap,
-                closed: Arc::new(AtomicBool::new(false)),
-                telnet: None,
-            },
-        );
-        let script = stored_script(&profile.id, true);
+        script.content = "import json,sys,os\np=json.load(sys.stdin)\nprint(json.dumps(p))\nprint(os.getcwd())\nprint('stderr-ok',file=sys.stderr)".into();
         state
             .store
             .lock()
             .unwrap()
             .custom_scripts
             .push(script.clone());
-
-        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
-        let lane_guard = lane.lock().await;
-        let run_state = state.clone();
-        let run_script = script.clone();
-        let run_session_id = profile.id.clone();
-        let run = tokio::spawn(async move {
-            run_custom_script_inner(
-                &run_state,
-                RunCustomScriptRequest {
-                    script_id: run_script.id,
-                    session_id: run_session_id,
-                    expected_updated_at: run_script.updated_at,
-                },
-                "desktop-user",
-                Some("run_custom_script"),
-                false,
-                None,
-            )
+        state.store.lock().unwrap().grants.push(grant());
+        let mut request = run_request(&script);
+        request.parameters = serde_json::json!({"value":"$(touch injected); ' \" 中文"});
+        let result = run_host_script_inner(&state, request.clone(), "test", None, None)
             .await
-        });
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while Arc::strong_count(&lane) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("custom script did not enter the outbound queue");
-
-        {
-            let mut store = state.store.lock().unwrap();
-            store.custom_scripts[0].content = "changed-while-queued".to_string();
-            store.custom_scripts[0].updated_at = script.updated_at + chrono::Duration::seconds(1);
-        }
-        drop(lane_guard);
-
-        assert!(run
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("changed in another window"));
-        assert!(server.await.unwrap().is_err());
+            .unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert!(result.stdout.contains("$(touch injected)"));
+        assert!(result.stdout.contains(root.path().to_str().unwrap()));
+        assert_eq!(result.stderr.trim(), "stderr-ok");
+        assert!(!root.path().join("injected").exists());
         assert!(state.store.lock().unwrap().events.is_empty());
-        let _ = fs::remove_dir_all(root);
-    });
-}
-
-#[test]
-fn queued_custom_script_rejects_a_replacement_runtime() {
-    tauri::async_runtime::block_on(async {
-        let original_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let original_address = original_listener.local_addr().unwrap();
-        let original_server = tokio::spawn(async move {
-            let (mut socket, _) = original_listener.accept().await.unwrap();
-            let _ = socket.read_u8().await;
-        });
-        let replacement_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let replacement_address = replacement_listener.local_addr().unwrap();
-        let replacement_server = tokio::spawn(async move {
-            let (mut socket, _) = replacement_listener.accept().await.unwrap();
-            tokio::time::timeout(Duration::from_millis(300), socket.read_u8()).await
-        });
-
-        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-            host: "127.0.0.1".to_string(),
-            port: original_address.port(),
-            reconnect: false,
-            ..Default::default()
-        }));
-        let root =
-            std::env::temp_dir().join(format!("portmate-script-runtime-queue-{}", Uuid::new_v4()));
-        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
-        let original_stream = TcpStream::connect(original_address).await.unwrap();
-        let (_reader, original_writer) = original_stream.into_split();
-        let (original_tap, _) = broadcast::channel(8);
-        let original_runtime_id = Uuid::new_v4().to_string();
-        state.tcp.lock().unwrap().insert(
-            profile.id.clone(),
-            TcpRuntime {
-                runtime_id: original_runtime_id,
-                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(original_writer))),
-                tap: original_tap,
-                closed: Arc::new(AtomicBool::new(false)),
-                telnet: None,
-            },
-        );
-        let script = stored_script(&profile.id, true);
-        state
-            .store
-            .lock()
-            .unwrap()
-            .custom_scripts
-            .push(script.clone());
-
-        let lane = outbound_lane(&state.store_path, &profile.id).unwrap();
-        let lane_guard = lane.lock().await;
-        let run_state = state.clone();
-        let run_script = script.clone();
-        let run_session_id = profile.id.clone();
-        let run = tokio::spawn(async move {
-            run_custom_script_inner(
-                &run_state,
-                RunCustomScriptRequest {
-                    script_id: run_script.id,
-                    session_id: run_session_id,
-                    expected_updated_at: run_script.updated_at,
-                },
-                "desktop-user",
-                Some("run_custom_script"),
-                false,
-                None,
-            )
+        let ipc = IpcRequest {
+            token: "test".into(),
+            client_id: "script-client".into(),
+            trusted_write: false,
+            command: "run_custom_script".into(),
+            args: serde_json::json!({"scriptId":script.id,"parameters":request.parameters}),
+        };
+        let result = handle_ipc_request(state.clone(), ipc.clone())
             .await
-        });
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while Arc::strong_count(&lane) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("custom script did not enter the outbound queue");
-
-        let replacement_stream = TcpStream::connect(replacement_address).await.unwrap();
-        let (_reader, replacement_writer) = replacement_stream.into_split();
-        let (replacement_tap, _) = broadcast::channel(8);
-        state.tcp.lock().unwrap().insert(
-            profile.id.clone(),
-            TcpRuntime {
-                runtime_id: Uuid::new_v4().to_string(),
-                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(
-                    replacement_writer,
-                ))),
-                tap: replacement_tap,
-                closed: Arc::new(AtomicBool::new(false)),
-                telnet: None,
-            },
+            .unwrap();
+        assert_eq!(result["exitCode"], 0);
+        assert_eq!(
+            state.store.lock().unwrap().audit.last().unwrap().decision,
+            "succeeded"
         );
-        drop(lane_guard);
-
-        assert!(run.await.unwrap().unwrap_err().contains("被新连接替换"));
-        assert!(replacement_server.await.unwrap().is_err());
-        assert!(state.store.lock().unwrap().events.is_empty());
-        original_server.abort();
-        let _ = original_server.await;
-        let _ = fs::remove_dir_all(root);
-    });
-}
-
-#[test]
-fn custom_script_execution_keeps_the_body_out_of_structured_surfaces() {
-    tauri::async_runtime::block_on(async {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let expected_wire = b"private-script-body-marker\n".to_vec();
-        let server_expected = expected_wire.clone();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut received = vec![0_u8; server_expected.len()];
-            socket.read_exact(&mut received).await.unwrap();
-            received
-        });
-
-        let mut profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
-            host: "127.0.0.1".to_string(),
-            port: address.port(),
-            reconnect: false,
-            ..Default::default()
-        }));
-        profile.logging.enabled = true;
-        profile.logging.raw = false;
-        profile.logging.text = true;
-        profile.logging.jsonl = true;
-        let root = std::env::temp_dir().join(format!("portmate-script-wire-{}", Uuid::new_v4()));
-        let store_path = root.join("portmate-store.sqlite3");
-        let state = test_app_state(profile.clone(), store_path.clone());
-        let stream = TcpStream::connect(address).await.unwrap();
-        let (_reader, writer) = stream.into_split();
-        let (tap, _) = broadcast::channel(8);
-        state.tcp.lock().unwrap().insert(
-            profile.id.clone(),
-            TcpRuntime {
-                runtime_id: Uuid::new_v4().to_string(),
-                writer: Arc::new(tokio::sync::Mutex::new(box_tcp_write_half(writer))),
-                tap,
-                closed: Arc::new(AtomicBool::new(false)),
-                telnet: None,
-            },
+        let mut unknown = request.clone();
+        unknown.parameters["other"] = serde_json::json!(true);
+        assert!(run_host_script_inner(&state, unknown, "test", None, None)
+            .await
+            .is_err());
+        assert!(
+            run_host_script_inner(&state, request.clone(), "test", Some("other-client"), None)
+                .await
+                .is_err()
         );
-        let script = stored_script(&profile.id, true);
-        state
-            .store
-            .lock()
-            .unwrap()
-            .custom_scripts
-            .push(script.clone());
-
-        let event = run_custom_script_inner(
+        assert!(run_host_script_inner(
             &state,
-            RunCustomScriptRequest {
-                script_id: script.id.clone(),
-                session_id: profile.id.clone(),
-                expected_updated_at: script.updated_at,
-            },
-            "desktop-user",
-            Some("run_custom_script"),
-            false,
+            request.clone(),
+            "test",
             None,
+            Some(Box::new(|| Err("revoked at commit".into())))
         )
         .await
-        .unwrap();
-
-        let received = tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .expect("custom script TCP server timed out")
-            .expect("custom script TCP server failed");
-        assert_eq!(received, expected_wire);
-        assert_eq!(event.text.as_deref(), Some(CUSTOM_SCRIPT_EVENT_TEXT));
-        assert_eq!(
-            event.annotations.get("customScriptId").map(String::as_str),
-            Some(script.id.as_str())
-        );
-        assert!(!serde_json::to_string(&event)
-            .unwrap()
-            .contains("private-script-body-marker"));
-
+        .unwrap_err()
+        .contains("revoked at commit"));
+        #[cfg(unix)]
         {
-            let store = state.store.lock().unwrap();
-            assert_eq!(
-                store.screen(&profile.id).as_deref(),
-                Some(CUSTOM_SCRIPT_EVENT_TEXT)
-            );
-            assert_eq!(
-                store.summaries()[0].last_line.as_deref(),
-                Some(CUSTOM_SCRIPT_EVENT_TEXT)
-            );
-            let audit = store
-                .audit
-                .iter()
-                .find(|record| record.action == "run_custom_script")
+            script.host.language = HostScriptLanguage::Shell;
+            script.content = "printf '%s\\n' \"$PORTMATE_PARAM_value\"".into();
+            state.store.lock().unwrap().custom_scripts[0] = script.clone();
+            let result = run_host_script_inner(&state, request.clone(), "test", None, None)
+                .await
                 .unwrap();
-            assert_eq!(
-                audit.details.get("bytes").cloned(),
-                Some(expected_wire.len().to_string())
-            );
-            assert!(store.events.iter().all(|stored| {
-                !stored
-                    .text
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("private-script-body-marker")
+            assert_eq!(result.stdout.trim(), "$(touch injected); ' \" 中文");
+            assert!(!root.path().join("injected").exists());
+        }
+        script.host.language = HostScriptLanguage::Python;
+        script.content = "import sys\nprint('bad',file=sys.stderr)\nsys.exit(7)".into();
+        state.store.lock().unwrap().custom_scripts[0] = script.clone();
+        let result = handle_ipc_request(state.clone(), ipc.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["exitCode"], 7);
+        assert!(result["failure"].is_string());
+        assert_eq!(
+            state.store.lock().unwrap().audit.last().unwrap().decision,
+            "failed"
+        );
+        for (source, expected) in [
+            ("print('x'*200000)", "output exceeded"),
+            ("import time\ntime.sleep(20)", "timed out"),
+        ] {
+            script.content = source.into();
+            script.host.timeout_seconds = 1;
+            state.store.lock().unwrap().custom_scripts[0] = script.clone();
+            let result = run_host_script_inner(&state, request.clone(), "test", None, None)
+                .await
+                .unwrap();
+            assert!(result.failure.unwrap().contains(expected));
+            assert!(result.stdout.len() <= 128 * 1024);
+        }
+        script.content = "import time\nprint('started',flush=True)\ntime.sleep(20)".into();
+        script.host.timeout_seconds = 5;
+        for revoke in [false, true] {
+            state.store.lock().unwrap().custom_scripts[0] = script.clone();
+            let state2 = state.clone();
+            let request2 = request.clone();
+            let run = tokio::spawn(async move {
+                run_host_script_inner(&state2, request2, "test-owner", Some("script-client"), None)
+                    .await
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if revoke {
+                state.store.lock().unwrap().grants[0].revoked_at = Some(Utc::now());
+            } else {
+                crate::host_script_commands::cancel_owner(&state.store_path, Some("test-owner"));
+            }
+            let result = tokio::time::timeout(Duration::from_secs(2), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(result
+                .failure
+                .unwrap()
+                .contains(if revoke { "revoked" } else { "cancelled" }));
+        }
+        #[cfg(unix)]
+        {
+            state.store.lock().unwrap().grants[0].revoked_at = None;
+            script.content = "import subprocess,time\nsubprocess.Popen(['sh','-c','sleep 2; touch orphan-marker'])\ntime.sleep(20)".into();
+            script.host.timeout_seconds = 1;
+            state.store.lock().unwrap().custom_scripts[0] = script.clone();
+            let result = run_host_script_inner(&state, request.clone(), "test", None, None)
+                .await
+                .unwrap();
+            assert!(result.failure.unwrap().contains("timed out"));
+            tokio::time::sleep(Duration::from_millis(1400)).await;
+            assert!(!root.path().join("orphan-marker").exists());
+        }
+        // Saturate the process budget, then ensure cancelling one owner's jobs
+        // does not silently cancel another owner's work or leak capacity.
+        script.host.timeout_seconds = 10;
+        script.content =
+            "import os,time\nopen(os.environ['PORTMATE_PARAM_value'],'w').close()\ntime.sleep(20)"
+                .into();
+        state.store.lock().unwrap().custom_scripts[0] = script.clone();
+        let mut runs = Vec::new();
+        for index in 0..4 {
+            let state2 = state.clone();
+            let mut request2 = request.clone();
+            request2.parameters = serde_json::json!({"value":format!("slot-{index}")});
+            runs.push(tokio::spawn(async move {
+                run_host_script_inner(&state2, request2, &format!("owner-{index}"), None, None)
+                    .await
             }));
         }
-
-        for extension in ["txt", "jsonl"] {
-            let log = fs::read_to_string(log_shard_path(&store_path, &profile, extension).unwrap())
-                .unwrap();
-            assert!(log.contains(CUSTOM_SCRIPT_EVENT_TEXT));
-            assert!(!log.contains("private-script-body-marker"));
-        }
-        let persisted = load_store_sqlite(&store_path).unwrap();
-        assert_eq!(
-            persisted
-                .events
-                .last()
-                .and_then(|event| event.text.as_deref()),
-            Some(CUSTOM_SCRIPT_EVENT_TEXT)
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !(0..4).all(|index| root.path().join(format!("slot-{index}")).exists()) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            run_host_script_inner(&state, request.clone(), "fifth", None, None)
+                .await
+                .unwrap_err()
+                .contains("concurrency limit")
         );
-        let _ = fs::remove_dir_all(root);
+        crate::host_script_commands::cancel_owner(&state.store_path, Some("owner-0"));
+        let first = runs.remove(0).await.unwrap().unwrap();
+        assert!(first.failure.unwrap().contains("cancelled"));
+        assert!(runs.iter().all(|task| !task.is_finished()));
+        // Dropping the driving future must retire its process tree too.
+        runs[0].abort();
+        assert!(runs.remove(0).await.unwrap_err().is_cancelled());
+        crate::host_script_commands::cancel_owner(&state.store_path, None);
+        for run in runs {
+            assert!(run
+                .await
+                .unwrap()
+                .unwrap()
+                .failure
+                .unwrap()
+                .contains("cancelled"));
+        }
+        script.host.interpreter = root
+            .path()
+            .join("missing-python")
+            .to_string_lossy()
+            .into_owned();
+        state.store.lock().unwrap().custom_scripts[0] = script;
+        assert!(run_host_script_inner(&state, request, "test", None, None)
+            .await
+            .unwrap_err()
+            .contains("could not start"));
     });
 }

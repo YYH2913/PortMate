@@ -245,22 +245,24 @@ logs, screenshots, and shared documents. Rotating the Token invalidates the prev
 | `read-logs` | Read and search logs for authorized sessions |
 | `read-transfers` | List and inspect redacted transfer status |
 | `read-tunnels` | List active SSH and PortMate-host forwards and SOCKS5 proxies |
-| `read-scripts` | List MCP-enabled script summaries for authorized sessions; script bodies are omitted |
+| `read-scripts` | Discover host script tools explicitly exposed to this client; source code is omitted |
 | `write-input` | Send text, keys, or commands to a terminal |
 | `transfer` | Start, cancel, and retry file-transfer tasks; also implies `read-transfers` |
 | `tunnel` | Create and stop SSH or PortMate-host forwards and SOCKS5 proxies; also implies `read-tunnels` |
 | `manage-sessions` | Open or close sessions |
-| `run-scripts` | Run saved MCP-enabled scripts in authorized sessions; also implies `read-scripts` |
+| `run-scripts` | Run host scripts explicitly exposed to this Client ID; also implies `read-scripts` |
 
 Grants support expiration, revocation, session access modes, and per-write confirmation. New grants deny every session by default; the UI can switch to all sessions or explicitly select one or more sessions. Session lists and queries without a `sessionId` return only the visible subset, while session-specific tools still require an authorized `sessionId`. Host-route tools have no session target and are controlled directly by the `tunnel`/`read-tunnels` scopes. Every MCP write operation is audited.
 
 ### Custom Script Tools
 
-Create and edit saved terminal scripts from `Tools -> Custom Scripts`. Each script has its own all-session or explicit-session boundary and an independent `Expose to MCP` switch. Desktop runs target an allowed session that is currently connected; scripts are sent through the existing session input lane and never start an arbitrary process on the desktop host.
+Create Python 3 or platform Shell scripts from `Tools -> Custom Scripts`. Scripts execute as independent processes on the PortMate host without terminal sessions. Defaults: `python3` / `python.exe`, `/bin/sh` on Linux/macOS, and PowerShell 7 (`pwsh.exe`) on Windows. Configure an absolute interpreter path (including a virtual environment), working directory, and 1–60 second timeout. Missing interpreters are reported, not installed.
 
-MCP uses `list_custom_scripts` to receive only `id`, `name`, `description`, and `updatedAt`. It runs a saved script with `run_custom_script` and exactly two selectors: `sessionId` and `scriptId`. MCP cannot submit, read, or replace the script body. Execution requires the Client grant's `run-scripts` scope, the script's MCP switch, and the script's session boundary; normal write confirmation, post-authorization revalidation, and audit recording still apply. `run-scripts` does not imply `write-input`.
+Each script has an explicit MCP Client ID allowlist and publication switch. Callers additionally require `run-scripts`, which does not imply `write-input` or require session access. `tools/list` dynamically advertises authorized `host_script_<UUID without hyphens>` tools with typed schemas; `list_custom_scripts` returns those definitions. Clients must re-list after edits, or reconnect if they cache discovery; `list_changed` notifications are not emitted. Alternatively, `run_custom_script` accepts `scriptId` and `parameters`. Callers cannot override source, interpreter, or working directory. Approval, version/grant revalidation, and auditing remain enforced.
 
-Script bodies are stored in the PortMate application Store and may also appear in terminal logging after execution. Do not save passwords, tokens, private keys, or other secrets in scripts.
+Parameters support string, number, integer and boolean types, with optional required fields. Unknown keys and type mismatches are rejected. Input is passed as stdin JSON, `PORTMATE_INPUT_JSON`, and individual `PORTMATE_PARAM_name` environment variables, never interpolated into code. Python can use `json.load(sys.stdin)`; sh can use `"$PORTMATE_PARAM_name"`; PowerShell can use `$env:PORTMATE_PARAM_name`. Results contain `exitCode`, `stdout`, `stderr`, and `failure`. Limits: four concurrent runs and 128 KiB per output stream. Desktop runs can be stopped; timeouts, script edits, and revoked grants terminate the process tree. MCP cancellation notifications are not yet mapped to active runs; use timeouts or revoke the grant.
+
+Scripts run as the PortMate user and are **not sandboxed**. Unix process-group cleanup cannot contain malicious code that deliberately detaches. Only save trusted code; avoid secrets in source/output. An environment allowlist is used, but scripts can still access files and networks permitted to this user. Old terminal scripts are unsupported, not loaded or migrated. The new storage field is `hostScripts`.
 
 ### MCP Serial Break
 

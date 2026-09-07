@@ -8,6 +8,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Changed
 
+- Replaced terminal custom scripts with host-executed Python 3 and platform Shell skills
+  (Unix sh / Windows PowerShell 7), with per-client exposure, typed JSON parameters,
+  dynamic MCP tools, bounded execution and captured results. Breaking change:
+  old terminal scripts are neither loaded nor migrated.
 - Updated the verified toolchain and dependency baselines: Node.js 24.20.0 with npm 12.0.2,
   Rust 1.98.1, Tauri 2.11.x, React 19.2.8, Vite 8.2.2, Vitest 5.0.0, and compatible
   Rust ecosystem releases including base64 0.23, sha2 0.11, Argon2 0.6, libloading 0.9,
@@ -37,6 +41,11 @@ or an unsigned artifact is not a production release. The complete release gates 
   per-session queues and window-owned jobs pinned to their original connections. Stops cancel
   queued writes; disconnects and closed windows retire jobs without replaying them after reconnect.
   Open-pane targets are deduplicated and invalid/odd-length Hex input is rejected instead of rewritten.
+- Custom script editing now rejects oversized/NUL-containing bodies without silently
+  truncating or rewriting commands. Confirmed refresh can recover from concurrent-save
+  conflicts while cancelled refresh preserves drafts, and initial load errors stay visible.
+- Custom script version timestamps advance even when the system clock repeats or moves
+  backwards, preserving stale-save/delete detection and execution version checks.
 - `send_key` preserves literal character case and symbols and correctly sends Ctrl+_ (0x1F).
   Named key aliases remain case-insensitive; repeated Ctrl prefixes and arbitrary escape payloads
   are rejected consistently by the desktop and MCP input path.

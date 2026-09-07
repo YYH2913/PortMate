@@ -98,13 +98,14 @@ fn remaining_command_types_keep_stable_json_contracts() {
     );
     assert!(saved_script["scripts"].as_array().unwrap().is_empty());
 
-    let run_script = serde_json::to_value(RunCustomScriptRequest {
+    let run_script = serde_json::to_value(RunHostScriptRequest {
         script_id: "69c06a07-dc48-4d4e-9498-6f42b6deab21".to_string(),
-        session_id: "ssh-1".to_string(),
+        run_id: Uuid::new_v4().to_string(),
+        parameters: serde_json::json!({}),
         expected_updated_at: "2026-08-15T04:00:00Z".parse().unwrap(),
     })
     .unwrap();
-    assert_eq!(run_script["sessionId"], "ssh-1");
+    assert!(run_script.get("sessionId").is_none());
     assert_eq!(run_script["expectedUpdatedAt"], "2026-08-15T04:00:00Z");
 
     let delete_audit: DeleteMcpAuditRequest = serde_json::from_value(serde_json::json!({

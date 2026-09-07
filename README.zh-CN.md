@@ -241,22 +241,24 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | `read-logs` | 读取和搜索已授权会话日志 |
 | `read-transfers` | 列出并查看已脱敏的传输状态 |
 | `read-tunnels` | 列出活动的 SSH 与 PortMate 主机转发和 SOCKS5 代理 |
-| `read-scripts` | 列出已授权会话可见且开放给 MCP 的脚本摘要，不返回正文 |
+| `read-scripts` | 发现明确开放给此客户端的主机脚本工具，不返回源码 |
 | `write-input` | 向终端发送文本、按键或命令 |
 | `transfer` | 启动、取消和重试文件传输，并隐含 `read-transfers` |
 | `tunnel` | 创建和停止 SSH 或 PortMate 主机转发和 SOCKS5 代理，并隐含 `read-tunnels` |
 | `manage-sessions` | 打开或关闭会话 |
-| `run-scripts` | 在已授权会话运行已保存且开放给 MCP 的脚本，并隐含 `read-scripts` |
+| `run-scripts` | 在 PortMate 主机运行明确授权给此 Client 的脚本，并隐含 `read-scripts` |
 
 授权可以设置到期时间、撤销状态、会话范围和写操作逐次确认。新建授权默认不授权任何会话；可以切换为全部会话，或明确勾选一个/多个会话。会话列表和无 `sessionId` 的查询会按范围返回可见子集，具体会话工具仍需提交已授权的 `sessionId`。主机路由没有会话目标，直接由 `tunnel`/`read-tunnels` scope 控制。所有 MCP 写操作都会进入审计记录。
 
 ### 自定义脚本工具
 
-通过 `工具 -> 自定义脚本` 新建和编辑终端脚本。每条脚本都可以限制为全部会话或明确的会话列表，并单独控制“开放给 MCP”。桌面端只能向范围内且当前已连接的会话运行脚本；执行复用现有会话输入通道，不会在桌面主机上启动任意本机进程。
+通过 `工具 -> 自定义脚本` 创建 Python 3 或平台 Shell 脚本。脚本始终在 PortMate 主机的独立进程中运行，不依赖终端会话。默认解释器为 Linux/macOS 的 `python3`、`/bin/sh`，Windows 的 `python.exe`、PowerShell 7（`pwsh.exe`）。可配置解释器绝对路径（含虚拟环境）、工作目录和 1–60 秒超时；缺少解释器时提示安装，不自动安装。
 
-MCP 使用 `list_custom_scripts` 获取 `id`、`name`、`description` 和 `updatedAt` 四个摘要字段；使用 `run_custom_script` 并只提交 `sessionId + scriptId` 选择已保存脚本。MCP 不能提交、读取或覆盖脚本正文。执行必须同时满足 Client 授权中的 `run-scripts`、脚本自身 MCP 开关和脚本会话范围，并继续经过写操作确认、授权后二次校验和审计。`run-scripts` 不隐含普通 `write-input`。
+每条脚本勾选一个或多个 MCP Client ID，并开启 MCP 暴露。客户端还必须拥有 `run-scripts` 授权；它不隐含 `write-input`，也不要求终端会话权限。`tools/list` 动态返回客户端可见的 `host_script_<脚本UUID去除连字符>` 工具及参数 schema；`list_custom_scripts` 返回同样的工具定义。保存/修改后需重新获取工具列表，不支持刷新的客户端需重连（当前不发送 `list_changed` 通知）。也可用 `run_custom_script` 提交 `scriptId` 和 `parameters`。MCP 不接受源码、解释器或工作目录覆盖，调用继续经过写操作确认、授权/版本复查和审计。
 
-脚本正文保存在 PortMate 应用 Store 中，执行后也可能进入终端日志。不要在脚本中保存密码、Token、私钥或其他 Secret。
+参数支持字符串、数字、整数、布尔值，可设必填；未知参数和类型错误会被拒绝。输入通过 stdin JSON、`PORTMATE_INPUT_JSON` 及每项的 `PORTMATE_PARAM_参数名` 环境变量传入，不拼接源码。Python 用 `json.load(sys.stdin)`；sh 用 `"$PORTMATE_PARAM_name"`；PowerShell 用 `$env:PORTMATE_PARAM_name`。结果包含 `exitCode`、`stdout`、`stderr`、`failure`。最多同时运行 4 个脚本，每路输出上限 128 KiB。桌面可停止任务；超时、脚本变更、授权撤销会终止进程树。MCP 取消通知尚未映射到运行任务，长任务请依赖超时或撤销授权。
+
+脚本以 PortMate 当前用户权限运行，不是沙箱；Unix 进程组清理不能阻止恶意脚本主动脱离进程组。只保存可信代码，不在源码/输出中包含密码或 Token。环境变量采用白名单，但脚本仍可访问此用户有权访问的文件和网络。旧版终端脚本不兼容、不加载、不自动迁移；新格式使用独立 `hostScripts` 存储字段。
 
 ### MCP 串口 Break
 

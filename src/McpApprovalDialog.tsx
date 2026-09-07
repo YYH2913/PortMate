@@ -120,7 +120,7 @@ export default function McpApprovalDialog({
         <dl>
           <div><dt>Client</dt><dd><code>{request.clientId}</code></dd></div>
           <div><dt>操作</dt><dd>{actionLabels[request.action] ?? request.action}</dd></div>
-          <div><dt>会话</dt><dd><span>{sessionName}</span><code>{request.sessionId}</code></dd></div>
+          <div><dt>{request.sessionId === "portmate-host" ? "执行主机" : "会话"}</dt><dd><span>{request.sessionId === "portmate-host" ? "PortMate 本机" : sessionName}</span><code>{request.sessionId}</code></dd></div>
           {request.target ? <div><dt>目标</dt><dd><span>{request.target.label}</span><code>{request.target.id}</code></dd></div> : null}
           <div><dt>Scope</dt><dd><code>{request.scope}</code></dd></div>
         </dl>

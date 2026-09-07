@@ -303,11 +303,6 @@ pub(super) fn normalize_loaded_store_at(
                 remap_loaded_session_id(&identity.source_profile_id, &session_id_remap);
         }
     }
-    for script in &mut store.custom_scripts {
-        for session_id in &mut script.allowed_session_ids {
-            *session_id = remap_loaded_session_id(session_id, &session_id_remap);
-        }
-    }
 
     for profile in normalized_profiles {
         let _ = store.upsert_profile(profile);
@@ -320,14 +315,8 @@ pub(super) fn normalize_loaded_store_at(
         .unwrap_or_default();
     synchronize_mcp_http_client_id_in_store(&mut store);
     normalize_loaded_one_keys(&mut store);
-    let known_session_ids = store
-        .profiles
-        .iter()
-        .map(|profile| profile.id.clone())
-        .collect::<HashSet<_>>();
     store.custom_scripts = normalize_loaded_custom_scripts(
         std::mem::take(&mut store.custom_scripts),
-        &known_session_ids,
     );
     redact_custom_script_event_bodies(&mut store.events);
     for runtime in &mut store.runtimes {

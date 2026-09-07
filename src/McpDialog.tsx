@@ -810,6 +810,7 @@ export default function McpDialog({
                 <p className={draft.scopes.includes("host-files") ? "mcp-scope-boundary elevated" : "mcp-scope-boundary"}>
                   <code>transfer</code> 可使用 MCP 虚拟内容和 <code>uploadId</code>；<code>host-files</code> 会额外开放 PortMate 主机路径，仅应授予可信客户端。
                 </p>
+                <p className="mcp-scope-boundary"><code>run-scripts</code> 在 PortMate 本机执行已明确开放给此 Client 的 Python / Shell 脚本，不受下方会话范围限制。请在“自定义脚本”中逐条选择允许的客户端。</p>
                 <fieldset className="mcp-session-list">
                   <legend>允许会话</legend>
                   <div className="mcp-session-access-mode" role="radiogroup" aria-label="MCP 会话授权范围">

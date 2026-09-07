@@ -116,7 +116,7 @@ impl PortMateMcp {
             "initialize" => self.initialize_result(&request.params),
             "ping" | "notifications/initialized" | "notifications/cancelled" => json!({}),
             "tools/list" => json!({
-                "tools": tool_definitions().into_iter().map(|tool| json!({
+                "tools": tool_definitions().into_iter().chain(self.host_script_definitions()?).map(|tool| json!({
                     "name": tool.name,
                     "title": tool.title,
                     "description": tool.description,

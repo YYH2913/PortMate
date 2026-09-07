@@ -5039,8 +5039,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "custom-scripts" && (
         <Suspense fallback={null}>
           <LazyCustomScriptDialog
-            sessions={sessions}
-            activeId={activeId}
             onNotice={(message) => setNotice({ title: "自定义脚本", message })}
             onClose={() => setUtilityDialog(null)}
           />

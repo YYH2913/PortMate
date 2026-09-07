@@ -141,21 +141,12 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(redact_transfer_task(transfer)).map_err(|error| error.to_string())
         }
         "list_custom_scripts" => {
-            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
+            if !request.args.as_object().is_some_and(|object| object.is_empty()) {
+                return Err("list_custom_scripts takes no arguments; terminal scripts are unsupported".into());
+            }
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            require_mcp_read_scope(
-                &store,
-                &request,
-                McpScope::ReadScripts,
-                Some(&session_id),
-            )?;
-            let scripts = store
-                .custom_scripts
-                .iter()
-                .filter(|script| script.mcp_enabled && script.allows_session(&session_id))
-                .map(CustomScript::summary)
-                .collect::<Vec<_>>();
-            serde_json::to_value(scripts).map_err(|error| error.to_string())
+            require_mcp_read_scope(&store, &request, McpScope::ReadScripts, None)?;
+            serde_json::to_value(host_script_tools(&store, &request.client_id)).map_err(|e| e.to_string())
         }
         "send_bytes" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
@@ -275,34 +266,14 @@ async fn execute_ipc_request_inner(
         }
         "run_custom_script" => {
             let script_id = ipc_string_arg(&request.args, "scriptId")?.to_string();
-            let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let expected_updated_at = execution_context
-                .ok_or_else(|| {
-                    "MCP custom script execution is missing its authorization context"
-                        .to_string()
-                })?
-                .custom_script_updated_at(&script_id)?;
-            let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let event = run_custom_script_inner(
-                &state,
-                RunCustomScriptRequest {
-                    script_id,
-                    session_id,
-                    expected_updated_at,
-                },
-                &actor,
-                None,
-                true,
-                Some(validation),
-            )
-            .await?;
-            serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
+                .ok_or("missing host script authorization context")?.custom_script_updated_at(&script_id)?;
+            let validation = mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
+            let result = run_host_script_inner(&state, RunHostScriptRequest {
+                script_id, expected_updated_at, run_id: Uuid::new_v4().to_string(),
+                parameters: request.args.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({})),
+            }, &format!("mcp:{}", request.client_id), Some(&request.client_id), Some(validation)).await?;
+            serde_json::to_value(result).map_err(|error| error.to_string())
         }
         "start_transfer" => {
             let transfer = normalize_mcp_start_transfer_args(&request.args)

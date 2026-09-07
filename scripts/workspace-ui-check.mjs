@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
 import { checkPacedSender } from "./paced-sender-regressions.mjs";
+import { checkHostScripts } from "./host-script-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -265,8 +266,7 @@ const customScripts = [
     name: "Inspect service",
     description: "Read service state",
     content: "systemctl status portmate",
-    allowAllSessions: false,
-    allowedSessionIds: ["edge-router"],
+    host: { language: "shell", interpreter: "", workingDirectory: "", timeoutSeconds: 30, allowedClientIds: ["ops-console"], parameters: [] },
     mcpEnabled: true,
     createdAt: isoNow,
     updatedAt: isoNow,
@@ -1239,8 +1239,7 @@ try {
               name: "Concurrent window script",
               description: "Created in another window",
               content: "hostname",
-              allowAllSessions: false,
-              allowedSessionIds: ["edge-router"],
+              host: { language: "shell", interpreter: "", workingDirectory: "", timeoutSeconds: 30, allowedClientIds: [], parameters: [] },
               mcpEnabled: false,
               createdAt: concurrentNow,
               updatedAt: concurrentNow,
@@ -1252,8 +1251,7 @@ try {
             name: request.name.trim(),
             description: request.description.trim(),
             content: request.content.replace(/\r\n?/g, "\n"),
-            allowAllSessions: request.allowAllSessions,
-            allowedSessionIds: request.allowAllSessions ? [] : [...new Set(request.allowedSessionIds)],
+            host: structuredClone(request.host),
             mcpEnabled: request.mcpEnabled,
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
@@ -1274,27 +1272,19 @@ try {
           window.__customScripts = window.__customScripts.filter((script) => script.id !== args.request.id);
           return structuredClone(window.__customScripts);
         }
-        if (command === "run_custom_script") {
+        if (command === "run_host_script") {
           const script = window.__customScripts.find((item) => item.id === args.request.scriptId);
           if (!script) throw new Error("unknown custom script");
           if (script.updatedAt !== args.request.expectedUpdatedAt) {
             throw new Error("custom script changed in another window; refresh and try again");
           }
-          const event = {
-            id: `script-event-${window.__invokeCalls.length}`,
-            sessionId: args.request.sessionId,
-            paneId: `${args.request.sessionId}:main`,
-            ts: new Date().toISOString(),
-            direction: "outbound",
-            stream: "stdin",
-            bytesRef: null,
-            text: null,
-            annotations: { customScriptId: script.id },
-          };
-          window.__events.push(event);
-          const result = structuredClone(event);
+          const result = { runId: args.request.runId, exitCode: 0, stdout: "host result", stderr: "", failure: null };
           if (!window.__deferCustomScriptRuns) return result;
           return new Promise((resolve) => window.__pendingCustomScriptRuns.push({ result, resolve }));
+        }
+        if (command === "cancel_host_script") {
+          for (const pending of window.__pendingCustomScriptRuns.splice(0)) pending.resolve({ ...pending.result, exitCode: null, failure: "host script cancelled" });
+          return null;
         }
         if (command === "list_one_keys") {
           if (window.__failOneKeyLists > 0) {
@@ -1831,16 +1821,6 @@ try {
                 revokedAt: allowedSessions.length ? grant.revokedAt : grant.revokedAt ?? new Date().toISOString(),
               };
             });
-            window.__customScripts = window.__customScripts.map((script) => {
-              if (script.allowAllSessions || !script.allowedSessionIds.includes(deletedProfileId)) return script;
-              const allowedSessionIds = script.allowedSessionIds.filter((sessionId) => sessionId !== deletedProfileId);
-              return {
-                ...script,
-                allowedSessionIds,
-                mcpEnabled: allowedSessionIds.length ? script.mcpEnabled : false,
-                updatedAt: new Date().toISOString(),
-              };
-            });
             const response = {
               deletedProfileId,
               sessions: window.__sessions,
@@ -1908,12 +1888,19 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_HOST_SCRIPTS_ONLY === "1") {
+    await checkHostScripts(context, appUrl, screenshotPrefix);
+    console.log("Host script browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_PACED_ONLY === "1") {
     await checkPacedSender(context, appUrl);
     console.log("Paced sender browser regressions passed");
     await context.close();
     break checks;
   }
+  await checkHostScripts(context, appUrl, screenshotPrefix);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -5811,11 +5798,18 @@ Host staging
   assert(await scriptBody.inputValue() === "systemctl status portmate"
     && await customScriptDialog.locator(".custom-script-list i", { hasText: "MCP" }).count() === 1,
   "custom script manager did not load the persisted MCP-enabled script");
+  const savesBeforeOversize = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length);
+  await scriptBody.fill("x".repeat(65_537));
+  await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("alert").filter({ hasText: "内容未被截断" }).waitFor();
+  assert((await scriptBody.inputValue()).length === 65_537
+    && await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length) === savesBeforeOversize,
+  "oversized script was truncated or sent to the backend instead of retaining the editor text");
   await scriptBody.fill("systemctl status portmate\nwhoami");
   assert(await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
     "custom script manager can run a stale saved body while the editor has unsaved changes");
-  assert(await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isDisabled(),
-    "custom script refresh can silently discard unsaved editor changes");
+  assert(await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isEnabled(),
+    "custom script refresh must remain available to recover from concurrent save conflicts");
   await page.evaluate(() => {
     window.__customScriptDiscardPrompts = [];
     window.__originalCustomScriptConfirm = window.confirm;
@@ -5825,6 +5819,7 @@ Host staging
     };
   });
   await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).click();
   await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
   await customScriptDialog.getByRole("option", { name: /Inspect service/ }).click();
   const retainedCustomScriptDraft = await page.evaluate(() => ({
@@ -5834,7 +5829,8 @@ Host staging
   }));
   assert(retainedCustomScriptDraft.dialogVisible
     && retainedCustomScriptDraft.body === "systemctl status portmate\nwhoami"
-    && retainedCustomScriptDraft.prompts.length === 3
+    && retainedCustomScriptDraft.prompts.length === 4
+    && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("刷新脚本"))
     && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("关闭窗口"))
     && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("新建脚本"))
     && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("切换脚本")),
@@ -5854,14 +5850,16 @@ Host staging
   await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).fill("Collect diagnostics");
   await customScriptDialog.getByRole("textbox", { name: "脚本说明", exact: true }).fill("Capture runtime state");
   await customScriptDialog.getByRole("textbox", { name: "脚本正文", exact: true }).fill("uptime\ndf -h");
-  await customScriptDialog.getByRole("checkbox", { name: "开放给 MCP", exact: true }).check();
+  await customScriptDialog.getByLabel("脚本语言").selectOption("shell");
+  await customScriptDialog.getByRole("checkbox", { name: "开放给选定 MCP 客户端", exact: true }).check();
+  await customScriptDialog.locator('[aria-label="脚本允许 MCP 客户端"] input').first().check();
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__customScripts.length === 3);
   assert(await customScriptDialog.getByRole("textbox", { name: "脚本名称", exact: true }).inputValue() === "Collect diagnostics",
     "a concurrently created script replaced the script selected by the save response");
   const customScriptRunButton = customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true });
   const customScriptOperationBaseline = await page.evaluate(() => ({
-    runCalls: window.__invokeCalls.filter((item) => item.command === "run_custom_script").length,
+    runCalls: window.__invokeCalls.filter((item) => item.command === "run_host_script").length,
     events: window.__events.length,
   }));
   await page.evaluate(() => {
@@ -5874,13 +5872,13 @@ Host staging
   });
   await page.waitForFunction(() => window.__pendingCustomScriptRuns.length === 1);
   const customScriptOperationState = await page.evaluate((baseline) => ({
-    runCalls: window.__invokeCalls.filter((item) => item.command === "run_custom_script").length - baseline.runCalls,
+    runCalls: window.__invokeCalls.filter((item) => item.command === "run_host_script").length - baseline.runCalls,
     events: window.__events.length - baseline.events,
     pending: window.__pendingCustomScriptRuns.length,
     dialogVisible: Boolean(document.querySelector(".custom-script-dialog")),
   }), customScriptOperationBaseline);
   assert(customScriptOperationState.runCalls === 1
-    && customScriptOperationState.events === 1
+    && customScriptOperationState.events === 0
     && customScriptOperationState.pending === 1
     && customScriptOperationState.dialogVisible
     && await customScriptRunButton.isDisabled()
@@ -5897,11 +5895,11 @@ Host staging
   const scriptNotice = page.locator(".notice-dialog", { hasText: "Collect diagnostics" });
   await scriptNotice.waitFor();
   const scriptInvocation = await page.evaluate(() => {
-    const call = window.__invokeCalls.filter((item) => item.command === "run_custom_script").at(-1);
+    const call = window.__invokeCalls.filter((item) => item.command === "run_host_script").at(-1);
     const script = window.__customScripts.find((item) => item.id === call?.args.request.scriptId);
     return {
       call,
-      targetAllowed: Boolean(script && (script.allowAllSessions || script.allowedSessionIds.includes(call.args.request.sessionId))),
+      targetAllowed: Boolean(script?.host && !Object.hasOwn(call.args.request, "sessionId")),
     };
   });
   assert(scriptInvocation.targetAllowed
@@ -5952,6 +5950,24 @@ Host staging
       === "Collect diagnostics"
     && await customScriptDialog.getByRole("alert").count() === 0,
   "custom script refresh did not preserve the selected script or clear its stale conflict error");
+  // A failed save must leave a recoverable editor, not disable the refresh
+  // needed to obtain the current version from the other window.
+  await scriptBody.fill("echo local-unsaved-edit");
+  await page.evaluate((scriptId) => {
+    const script = window.__customScripts.find((item) => item.id === scriptId);
+    script.content = "echo concurrent-save";
+    script.updatedAt = new Date(Date.now() + 120_000).toISOString();
+  }, scriptInvocation.call.args.request.scriptId);
+  await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
+  await customScriptDialog.getByRole("alert").filter({ hasText: "changed in another window" }).waitFor();
+  assert(await scriptBody.inputValue() === "echo local-unsaved-edit", "failed save lost the local draft");
+  await page.evaluate(() => {
+    window.__originalConflictConfirm = window.confirm;
+    window.confirm = () => true;
+  });
+  await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="脚本正文"]')?.value === "echo concurrent-save");
+  await page.evaluate(() => { window.confirm = window.__originalConflictConfirm; });
   await page.evaluate(() => {
     window.__customScriptDeletePrompts = [];
     window.__originalCustomScriptConfirm = window.confirm;
@@ -7010,10 +7026,10 @@ Host staging
       id: "33333333-3333-4333-8333-333333333333",
       clientId: "mobile-ops",
       action: "run_custom_script",
-      sessionId: "edge-router",
+      sessionId: "portmate-host",
       scope: "run-scripts",
       target: {
-        kind: "custom-script",
+        kind: "portmate-host-script",
         id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
         label: "Inspect service",
       },
@@ -7942,33 +7958,29 @@ Host staging
   await deletedScriptRunButton.click();
   await deletedScriptRunPage.waitForFunction(() => window.__pendingCustomScriptRuns.length === 1);
   await deletedScriptRunPage.evaluate(() => {
-    window.__customScripts = window.__customScripts.map((script) => ({
-      ...script,
-      allowedSessionIds: script.allowedSessionIds.filter((sessionId) => sessionId !== "edge-router"),
-      mcpEnabled: false,
-      updatedAt: new Date(Date.now() + 1_000).toISOString(),
-    }));
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
   });
   await deletedScriptRunPage.locator(".tree-session", { hasText: "Edge Router" }).waitFor({ state: "detached" });
   await deletedScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).waitFor({ state: "visible" });
-  await deletedScriptRunPage.waitForFunction(() => !document.querySelector('[aria-label="关闭自定义脚本"]')?.disabled);
+  assert(await deletedScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).isDisabled(),
+    "session deletion retired an independent host script operation");
   await deletedScriptRunPage.evaluate(() => {
     window.__deferCustomScriptRuns = false;
     const pending = window.__pendingCustomScriptRuns.shift();
     pending.resolve(pending.result);
   });
-  await deletedScriptRunPage.waitForTimeout(100);
+  await deletedScriptDialog.getByLabel("脚本运行结果").filter({ hasText: "host result" }).waitFor();
+  await deletedScriptRunPage.locator(".notice-dialog").waitFor();
   const deletedScriptRunState = await deletedScriptRunPage.evaluate(() => ({
     notices: [...document.querySelectorAll(".notice-dialog")].map((item) => item.textContent),
     pending: window.__pendingCustomScriptRuns.length,
     closeDisabled: document.querySelector('[aria-label="关闭自定义脚本"]')?.disabled,
   }));
-  assert(deletedScriptRunState.notices.length === 0
+  assert(deletedScriptRunState.notices.length === 1
     && deletedScriptRunState.pending === 0
     && deletedScriptRunState.closeDisabled === false,
-  `a custom script response survived Profile deletion: ${JSON.stringify(deletedScriptRunState)}`);
+  `an independent host script was affected by Profile deletion: ${JSON.stringify(deletedScriptRunState)}`);
   assert(deletedScriptRunErrors.length === 0,
     `deleted custom script run browser exceptions: ${JSON.stringify(deletedScriptRunErrors)}`);
   await deletedScriptRunPage.close();

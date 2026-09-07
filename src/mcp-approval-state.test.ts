@@ -96,8 +96,9 @@ describe("MCP approval state", () => {
       ...base,
       action: "run_custom_script",
       scope: "run-scripts",
+      sessionId: "portmate-host",
       target: {
-        kind: "custom-script",
+        kind: "portmate-host-script",
         id: "69c06a07-dc48-4d4e-9498-6f42b6deab21",
         label: "Inspect service",
       },
@@ -133,6 +134,9 @@ describe("MCP approval state", () => {
   });
 
   it("rejects malformed IDs, missing fields and unknown actions", () => {
+    const hostTarget = { kind: "portmate-host-script", id: "69c06a07-dc48-4d4e-9498-6f42b6deab21", label: "Host script" };
+    expect(normalizeMcpApproval({ ...base, action: "run_custom_script", scope: "run-scripts", target: hostTarget })).toBeNull();
+    expect(normalizeMcpApproval({ ...base, action: "run_custom_script", scope: "run-scripts", sessionId: "portmate-host", target: { ...hostTarget, kind: "custom-script" } })).toBeNull();
     expect(normalizeMcpApproval({ ...base, id: "not-a-uuid" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, action: "delete_everything" })).toBeNull();
     expect(normalizeMcpApproval({ ...base, sessionId: "" })).toBeNull();

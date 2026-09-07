@@ -6,6 +6,8 @@ mod app_data_migration;
 mod command_history_commands;
 mod command_types;
 mod custom_script_commands;
+mod host_script_commands;
+mod host_script_process;
 mod one_key_commands;
 mod one_key_prompt;
 mod one_key_runtime;
@@ -25,7 +27,7 @@ mod terminal_input_stream;
 mod webkit_runtime;
 
 use app_data_migration::*;
-use custom_script_commands::{custom_script_for_session, run_custom_script_inner};
+use host_script_commands::{host_script_for_client, host_script_tools, run_host_script_inner, RunHostScriptRequest};
 use one_key_prompt::*;
 use one_key_runtime::*;
 use outbound_events::*;

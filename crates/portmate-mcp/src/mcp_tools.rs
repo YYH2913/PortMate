@@ -2,9 +2,8 @@ use super::{desktop_ipc::ipc_value_to_text, PortMateMcp};
 use anyhow::{anyhow, Result};
 use portmate_core::{
     classify_mcp_start_transfer_source, redact_secrets, redact_session_event,
-    redact_session_events, redact_transfer_task, CustomScriptSummary, McpScope,
-    McpStartTransferSource, SessionEvent, SessionSummary, TransferTask,
-    MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
+    redact_session_events, redact_transfer_task, McpScope, McpStartTransferSource, SessionEvent,
+    SessionSummary, TransferTask, MAX_MCP_CONTENT_TRANSFER_BASE64_LENGTH,
 };
 use serde_json::{json, Value};
 
@@ -23,6 +22,19 @@ impl PortMateMcp {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if name.starts_with("host_script_") {
+            let tools = self.host_script_definitions()?;
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .ok_or_else(|| anyhow!("unknown or unauthorized host script"))?;
+            let id =
+                uuid::Uuid::parse_str(tool.name.trim_start_matches("host_script_"))?.to_string();
+            return self.call_host_script(&json!({"scriptId":id,"parameters":arguments}));
+        }
+        if name == "run_custom_script" {
+            return self.call_host_script(&arguments);
+        }
         let mut is_error = false;
 
         let output = match name {
@@ -163,27 +175,16 @@ impl PortMateMcp {
                 serde_json::to_string_pretty(&redact_transfer_task(transfer))?
             }
             "list_custom_scripts" => {
-                let session_id = required_string(&arguments, "sessionId")?;
-                self.guard_read_scope(McpScope::ReadScripts, Some(session_id))?;
-                self.require_known_session(session_id)?;
-                let scripts = if let Some(value) =
-                    self.call_ipc_value("list_custom_scripts", arguments.clone())?
+                if !arguments
+                    .as_object()
+                    .is_some_and(|object| object.is_empty())
                 {
-                    serde_json::from_value::<Vec<CustomScriptSummary>>(value).map_err(|error| {
-                        anyhow!("invalid desktop custom-script response: {error}")
-                    })?
-                } else {
-                    self.store
-                        .custom_scripts
-                        .iter()
-                        .filter(|script| script.mcp_enabled && script.allows_session(session_id))
-                        .map(|script| script.summary())
-                        .collect()
-                };
-                serde_json::to_string_pretty(&scripts)?
+                    return Err(anyhow!("list_custom_scripts takes no arguments"));
+                }
+                self.guard_read_scope(McpScope::ReadScripts, None)?;
+                serde_json::to_string_pretty(&self.host_script_definitions()?)?
             }
-            "send_text" | "send_bytes" | "send_key" | "run_command" | "run_local_command"
-            | "run_custom_script" => {
+            "send_text" | "send_bytes" | "send_key" | "run_command" | "run_local_command" => {
                 if let Some(output) = self.write_tool(name, &arguments)? {
                     output
                 } else {
@@ -352,6 +353,32 @@ impl PortMateMcp {
             "storePath": self.store_path.as_ref().map(|path| path.display().to_string()),
             "desktopIpcAvailable": desktop_ipc_available,
             "managedHttp": runtime,
+        }))
+    }
+
+    pub(super) fn host_script_definitions(&self) -> Result<Vec<portmate_core::McpToolDefinition>> {
+        if !self
+            .store
+            .mcp_can_read(&self.client_id, McpScope::ReadScripts, None)
+        {
+            return Ok(Vec::new());
+        }
+        // Host skills are desktop-owned. Offline snapshots never advertise runnable skills.
+        let Some(value) = self.call_ipc_value("list_custom_scripts", json!({}))? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_value(value).map_err(Into::into)
+    }
+
+    fn call_host_script(&self, arguments: &Value) -> Result<Value> {
+        self.guard_read_scope(McpScope::RunScripts, None)?;
+        let result = self
+            .call_ipc_value("run_custom_script", arguments.clone())?
+            .ok_or_else(|| anyhow!("host script was NOT executed: desktop IPC is unavailable"))?;
+        Ok(json!({
+            "content":[{"type":"text","text":serde_json::to_string_pretty(&result)?}],
+            "structuredContent":result,
+            "isError":result.get("failure").is_some_and(|failure| !failure.is_null())
         }))
     }
 

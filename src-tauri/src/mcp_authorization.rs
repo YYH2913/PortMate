@@ -345,7 +345,7 @@ fn finish_mcp_write_audit(
     })
 }
 
-fn finish_applied_mcp_write_audit(
+pub(super) fn finish_applied_mcp_write_audit(
     state: &AppState,
     audit_id: &str,
     decision: &str,
@@ -542,7 +542,7 @@ pub(super) async fn handle_ipc_request(
         }
         Err(error) => Err(error),
     };
-    let decision = if result.is_ok() {
+    let decision = if result.as_ref().is_ok_and(|value| value.get("failure").is_none_or(serde_json::Value::is_null)) {
         "succeeded"
     } else {
         "failed"

@@ -37,6 +37,7 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
   if (!Number.isFinite(createdAt) || !Number.isFinite(expiresAt) || expiresAt <= createdAt || expiresAt - createdAt > 65_000) return null;
   const target = normalizeApprovalTarget(source.action, source.target);
   if (target === null) return null;
+  if (source.action === "run_custom_script" && source.sessionId !== "portmate-host") return null;
   return {
     id: source.id.toLowerCase(),
     clientId: source.clientId,
@@ -51,7 +52,7 @@ export function normalizeMcpApproval(value: unknown): McpApprovalRequest | null 
 
 function normalizeApprovalTarget(action: string, value: unknown): McpApprovalRequest["target"] | null {
   const expectedKind = action === "run_custom_script"
-    ? "custom-script"
+    ? "portmate-host-script"
     : action === "create_tunnel"
       ? "portmate-host-proxy"
       : action === "tunnel_request" || action === "udp_request"
@@ -67,10 +68,10 @@ function normalizeApprovalTarget(action: string, value: unknown): McpApprovalReq
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   if (source.kind !== expectedKind || !validText(source.label, 512) || !validText(source.id, 512)) return null;
-  if (expectedKind === "custom-script" && !approvalIdPattern.test(source.id)) return null;
+  if (expectedKind === "portmate-host-script" && !approvalIdPattern.test(source.id)) return null;
   return {
     kind: expectedKind,
-    id: expectedKind === "custom-script" ? source.id.toLowerCase() : source.id,
+    id: expectedKind === "portmate-host-script" ? source.id.toLowerCase() : source.id,
     label: source.label,
   };
 }

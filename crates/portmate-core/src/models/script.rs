@@ -2,16 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomScript {
     pub id: String,
     pub name: String,
     pub description: String,
     pub content: String,
-    #[serde(default)]
-    pub allow_all_sessions: bool,
-    #[serde(default)]
-    pub allowed_session_ids: Vec<String>,
+    pub host: HostScriptConfig,
     #[serde(default)]
     pub mcp_enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -19,29 +16,58 @@ pub struct CustomScript {
 }
 
 impl CustomScript {
-    pub fn allows_session(&self, session_id: &str) -> bool {
-        self.allow_all_sessions
-            || self
-                .allowed_session_ids
+    pub fn allows_host_client(&self, client_id: &str) -> bool {
+        self.mcp_enabled
+            && self
+                .host
+                .allowed_client_ids
                 .iter()
-                .any(|allowed| allowed == session_id)
+                .any(|id| id == client_id)
     }
 
-    pub fn summary(&self) -> CustomScriptSummary {
-        CustomScriptSummary {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            description: self.description.clone(),
-            updated_at: self.updated_at,
-        }
+    pub fn host_tool_name(&self) -> String {
+        format!("host_script_{}", self.id.replace('-', ""))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CustomScriptSummary {
-    pub id: String,
+pub enum HostScriptLanguage {
+    Python,
+    Shell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostScriptConfig {
+    pub language: HostScriptLanguage,
+    /// Empty selects the platform default; nonempty must be an absolute executable path.
+    #[serde(default)]
+    pub interpreter: String,
+    /// Empty selects the user's home, never a terminal session's directory.
+    #[serde(default)]
+    pub working_directory: String,
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub allowed_client_ids: Vec<String>,
+    #[serde(default)]
+    pub parameters: Vec<HostScriptParameter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostScriptParameter {
     pub name: String,
     pub description: String,
-    pub updated_at: DateTime<Utc>,
+    pub kind: HostScriptParameterKind,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostScriptParameterKind {
+    String,
+    Number,
+    Integer,
+    Boolean,
 }

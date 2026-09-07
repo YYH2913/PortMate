@@ -438,7 +438,6 @@ impl McpWriteExecutionContext {
         else {
             return Ok(());
         };
-        let session_id = ipc_string_arg(&request.args, "sessionId")?;
         let current_script_id = ipc_string_arg(&request.args, "scriptId")?;
         if current_script_id != script_id {
             return Err(
@@ -447,7 +446,7 @@ impl McpWriteExecutionContext {
             );
         }
         let store = state.store.lock().map_err(|error| error.to_string())?;
-        let script = custom_script_for_session(&store, script_id, session_id, true)?;
+        let script = host_script_for_client(&store, script_id, Some(&request.client_id))?;
         if script.updated_at != *updated_at {
             return Err(
                 "MCP custom script changed after authorization; review and approve it again"
@@ -561,17 +560,16 @@ pub(super) fn capture_mcp_write_execution_context(
     if request.command != "run_custom_script" {
         return Ok(McpWriteExecutionContext::Generic);
     }
-    let session_id = ipc_string_arg(&request.args, "sessionId")?;
     let script_id = ipc_string_arg(&request.args, "scriptId")?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
-    let script = custom_script_for_session(&store, script_id, session_id, true)?;
+    let script = host_script_for_client(&store, script_id, Some(&request.client_id))?;
     Ok(McpWriteExecutionContext::CustomScript {
         script_id: script.id.clone(),
         updated_at: script.updated_at,
         approval_target: McpApprovalTarget {
-            kind: "custom-script".to_string(),
+            kind: "portmate-host-script".to_string(),
             id: script.id,
-            label: script.name,
+            label: format!("PortMate host: {}", bounded_approval_value(&script.name, 110)),
         },
     })
 }
@@ -852,10 +850,15 @@ pub(super) fn validate_ipc_write_args(
             bounded_mcp_terminal_text_arg(&request.args, "command")?;
         }
         "run_custom_script" => {
-            let session_id = ipc_string_arg(&request.args, "sessionId")?;
+            let object = request.args.as_object().ok_or("host script arguments must be an object")?;
+            if object.keys().any(|key| !matches!(key.as_str(), "scriptId" | "parameters")) {
+                return Err("host script callers may only provide scriptId and parameters".into());
+            }
             let script_id = ipc_string_arg(&request.args, "scriptId")?;
             let store = state.store.lock().map_err(|error| error.to_string())?;
-            custom_script_for_session(&store, script_id, session_id, true)?;
+            let script = host_script_for_client(&store, script_id, Some(&request.client_id))?;
+            portmate_core::custom_scripts::validate_host_script_parameters(
+                &script.host, request.args.get("parameters").unwrap_or(&serde_json::json!({})))?;
         }
         "start_transfer" => {
             match normalize_mcp_start_transfer_args(&request.args)? {
@@ -940,7 +943,7 @@ pub(super) fn ipc_write_session_id(
             validate_mcp_operation_id(ipc_string_arg(&request.args, "tunnelId")?, "tunnel")?;
             Ok(None)
         }
-        "restart_mcp_http" => Ok(None),
+        "restart_mcp_http" | "run_custom_script" => Ok(None),
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;

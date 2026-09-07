@@ -527,8 +527,7 @@ export interface CustomScript {
   name: string;
   description: string;
   content: string;
-  allowAllSessions: boolean;
-  allowedSessionIds: string[];
+  host: HostScriptConfig;
   mcpEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -539,8 +538,7 @@ export interface SaveCustomScriptRequest {
   name: string;
   description: string;
   content: string;
-  allowAllSessions: boolean;
-  allowedSessionIds: string[];
+  host: HostScriptConfig;
   mcpEnabled: boolean;
   expectedUpdatedAt: string | null;
 }
@@ -550,10 +548,35 @@ export interface SaveCustomScriptResponse {
   savedId: string;
 }
 
-export interface RunCustomScriptRequest {
+export interface RunHostScriptRequest {
   scriptId: string;
-  sessionId: string;
   expectedUpdatedAt: string;
+  runId: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface HostScriptParameter {
+  name: string;
+  description: string;
+  kind: "string" | "number" | "integer" | "boolean";
+  required: boolean;
+}
+
+export interface HostScriptConfig {
+  language: "python" | "shell";
+  interpreter: string;
+  workingDirectory: string;
+  timeoutSeconds: number;
+  allowedClientIds: string[];
+  parameters: HostScriptParameter[];
+}
+
+export interface HostScriptResult {
+  runId: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  failure: string | null;
 }
 
 export interface McpGrant {
@@ -578,7 +601,7 @@ export interface McpApprovalRequest {
 }
 
 export interface McpApprovalTarget {
-  kind: "custom-script" | "portmate-host-proxy" | "portmate-host-tunnel-request" | "command" | "transfer" | "operation";
+  kind: "portmate-host-script" | "portmate-host-proxy" | "portmate-host-tunnel-request" | "command" | "transfer" | "operation";
   id: string;
   label: string;
 }
