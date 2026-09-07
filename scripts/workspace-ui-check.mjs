@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
+import { checkPacedSender } from "./paced-sender-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -324,6 +325,7 @@ try {
     headless: true,
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
+  checks: {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, initialCustomScripts, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
@@ -1679,6 +1681,19 @@ try {
           window.__terminalInputStreams.set(args.sessionId, { streamId, next: 0, pending: new Map() });
           return { streamId };
         }
+        if (command === "begin_paced_send") {
+          window.__pacedJobs ??= new Map();
+          const jobId = crypto.randomUUID();
+          window.__pacedJobs.set(jobId, new Set(args.sessionIds));
+          return jobId;
+        }
+        if (command === "cancel_paced_send") {
+          window.__pacedJobs?.delete(args.jobId);
+          const cancelled = window.__pendingTerminalSends.filter((item) => item.args.pacedSendId === args.jobId);
+          window.__pendingTerminalSends = window.__pendingTerminalSends.filter((item) => item.args.pacedSendId !== args.jobId);
+          for (const item of cancelled) item.reject(new Error("间隔发送已取消"));
+          return null;
+        }
         if (command === "close_terminal_input_stream") {
           if (window.__terminalInputStreams.get(args.sessionId)?.streamId === args.streamId) {
             window.__terminalInputStreams.delete(args.sessionId);
@@ -1687,6 +1702,11 @@ try {
         }
         if (command === "send_text" || command === "send_bytes") {
           const admit = () => {
+            if (args.pacedSendId) {
+              if (!window.__pacedJobs?.get(args.pacedSendId)?.has(args.sessionId)) throw new Error("间隔发送已取消");
+              window.__pacedWrites ??= [];
+              window.__pacedWrites.push({ time: performance.now(), text: args.text, bytes: args.bytes, sessionId: args.sessionId });
+            }
             if (!args.inputOrder) return;
             if (!window.__sessions.some(session => session.profile.id === args.sessionId)) throw new Error("deleted input session");
             const stream = window.__terminalInputStreams.get(args.sessionId);
@@ -1887,6 +1907,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_PACED_ONLY === "1") {
+    await checkPacedSender(context, appUrl);
+    console.log("Paced sender browser regressions passed");
+    await context.close();
+    break checks;
+  }
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -10515,6 +10541,8 @@ Host staging
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
 
+  await checkPacedSender(context, appUrl);
+
   console.log(JSON.stringify({
     migratedPanels: initial.panels,
     filters: ["resource tag/endpoint", "normalized history"],
@@ -10647,6 +10675,7 @@ Host staging
     ],
   }, null, 2));
   await context.close();
+  }
 } finally {
   await browser?.close().catch(() => {});
   vite.kill("SIGTERM");

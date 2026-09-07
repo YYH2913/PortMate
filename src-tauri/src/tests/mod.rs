@@ -127,6 +127,7 @@ mod openssh_transfer_tunnel_tests;
 #[cfg(unix)]
 #[path = "openssh_tunnel_integration.rs"]
 mod openssh_tunnel_integration;
+mod paced_send_tests;
 #[path = "portable_vault_tests.rs"]
 mod portable_vault_tests;
 #[path = "proxy_runtime_tests.rs"]

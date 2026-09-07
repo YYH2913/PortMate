@@ -8,6 +8,33 @@ function deferred() {
 }
 
 describe("terminal input pump", () => {
+  it("removes a cancelled acknowledged write without waiting for preceding keyboard IPC", async () => {
+    const keyboard = deferred();
+    const executeWrite = vi.fn(async () => {});
+    const controller = new AbortController();
+    const pump = new TerminalInputPump(() => keyboard.promise, { orderedPipeline: true });
+    void pump.enqueue("s", "key", "atomic");
+    const pending = pump.enqueue("s", "repeat", "atomic", { awaitWrite: true, signal: controller.signal, executeWrite });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort();
+    await rejected;
+    keyboard.resolve();
+    await keyboard.promise;
+    await Promise.resolve();
+    expect(executeWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps job-specific writes in the keyboard lane and propagates stale connection failures", async () => {
+    const keyboard = deferred();
+    const calls: string[] = [];
+    const pump = new TerminalInputPump(async (_id, text) => { calls.push(text); await keyboard.promise; }, { orderedPipeline: true });
+    void pump.enqueue("s", "key", "atomic");
+    const pending = pump.enqueue("s", "repeat", "atomic", { awaitWrite: true, executeWrite: async () => { throw new Error("stale runtime"); } });
+    const rejected = expect(pending).rejects.toThrow("stale runtime");
+    keyboard.resolve();
+    await rejected;
+    expect(calls).toEqual(["key"]);
+  });
   it("pipelines 60 repeated deletes without accumulating 40ms IPC round trips", async () => {
     vi.useFakeTimers();
     try {

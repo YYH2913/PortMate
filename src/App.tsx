@@ -105,7 +105,7 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
 import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp-connection-settings";
-import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, dispatchPacedSends, normalizeSendCount, normalizeSendInterval } from "./send-panel-state";
+import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, dispatchPacedSends, normalizeSendCount, normalizeSendInterval, parseHexBytes, resolveSendTargets } from "./send-panel-state";
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
@@ -438,6 +438,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const serialControlOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sendOperationGateRef = useRef(new KeyedRequestGate<"send">());
   const sendCancellationRef = useRef<AbortController | null>(null);
+  const sendTargetsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => () => {
+    sendOperationGateRef.current.invalidateAll();
+    sendCancellationRef.current?.abort();
+  }, []);
+  useEffect(() => {
+    if (sessions.some((session) => sendTargetsRef.current.has(session.profile.id)
+      && session.runtime.status !== "connected")) sendCancellationRef.current?.abort();
+  }, [sessions]);
   const terminalExportOperationGateRef = useRef(new KeyedRequestGate<string>());
   const detachedWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
   const serialAnalyzerWindowOperationGateRef = useRef(new KeyedRequestGate<string>());
@@ -639,11 +648,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function invalidateTerminalInputSession(sessionId: string) {
+    if (sendTargetsRef.current.has(sessionId)) sendCancellationRef.current?.abort();
     deletedTerminalInputSessionsRef.current.add(sessionId);
     terminalInputEpochsRef.current.set(sessionId, (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1);
   }
 
   function advanceTerminalInputEpoch(sessionId: string) {
+    if (sendTargetsRef.current.has(sessionId)) sendCancellationRef.current?.abort();
     terminalInputEpochsRef.current.set(
       sessionId,
       (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1,
@@ -4064,10 +4075,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function runSendPanel() {
-    if (sendBusy) return;
+    if (sendBusy || sendOperationGateRef.current.isActive("send")) return;
     const sendModeSnapshot = sendMode;
     const textPayload = sendModeSnapshot === "text" ? sendText : "";
-    const bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(sendText) : [];
+    let bytePayload: number[];
+    try {
+      bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(sendText) : [];
+      if ((sendModeSnapshot === "hex" ? bytePayload.length : new TextEncoder().encode(textPayload).length) > 4 * 1024 * 1024) {
+        throw new Error("单次发送内容不能超过 4 MiB。");
+      }
+    } catch (error) {
+      setNotice({ title: "发送失败", message: formatError(error) });
+      return;
+    }
     if (sendModeSnapshot === "text" ? !textPayload : !bytePayload.length) return;
     if (sendTarget === "active" && activeId !== activeIdRef.current) return;
     const currentSessions = sessionsRef.current;
@@ -4086,36 +4106,72 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (sendToken === null) return;
     const cancellation = new AbortController();
     sendCancellationRef.current = cancellation;
+    sendTargetsRef.current = new Set(targets);
+    let jobId: string | null = null;
+    const cancelNative = () => {
+      if (jobId) void invokeBackend<void>("cancel_paced_send", { jobId }).catch(() => {});
+    };
+    cancellation.signal.addEventListener("abort", cancelNative, { once: true });
     setSendBusy(true);
     try {
       const countSnapshot = normalizeSendCount(sendCount);
       const intervalSnapshot = normalizeSendInterval(sendIntervalMs);
-      await syncInputDispatcherRef.current.enqueueOperation(async () => {
-        await dispatchPacedSends(countSnapshot, intervalSnapshot, async () => {
-          await Promise.all(
-            targets.map((target) => {
-              const inputEpoch = inputEpochs.get(target);
-              if (inputEpoch === null || inputEpoch === undefined) return Promise.resolve();
-              return sendModeSnapshot === "hex"
-                ? sendTerminalBytes(target, bytePayload, inputEpoch)
-                : directInputPumpRef.current?.dispatch(
-                  target,
-                  textPayload,
-                  "atomic",
-                  { awaitWrite: true },
-                ) ?? Promise.resolve();
-            }),
-          );
-        }, undefined, undefined, { signal: cancellation.signal });
-      });
+      if (isBackendAvailable()) {
+        jobId = await invokeBackend<string>("begin_paced_send", { sessionIds: targets });
+        if (!jobId) throw new Error("无法建立间隔发送任务");
+      }
+      // Only individual writes enter the per-session lane. Interval timers
+      // must not occupy the broadcast queue and delay keyboard input/Ctrl+C.
+      await dispatchPacedSends(countSnapshot, intervalSnapshot, async () => {
+        const results = await Promise.allSettled(targets.map(async (target) => {
+          try {
+            const inputEpoch = inputEpochs.get(target);
+            const validate = () => {
+              cancellation.signal.throwIfAborted();
+              if (inputEpoch === null || inputEpoch === undefined || !terminalInputIsCurrent(target, inputEpoch)) {
+                throw new Error("连接已变化，间隔发送已停止");
+              }
+            };
+            validate();
+            await directInputPumpRef.current!.dispatch(target, sendText, "atomic", {
+              awaitWrite: true,
+              signal: cancellation.signal,
+              executeWrite: async () => {
+                validate();
+                if (jobId) {
+                  if (sendModeSnapshot === "hex") {
+                    await invokeBackend("send_bytes", { sessionId: target, bytes: bytePayload, pacedSendId: jobId });
+                  } else {
+                    await invokeBackend("send_text", { sessionId: target, text: textPayload, queued: true,
+                      interactive: false, awaitWrite: true, pacedSendId: jobId });
+                  }
+                } else if (sendModeSnapshot === "hex") {
+                  await sendTerminalBytes(target, bytePayload, inputEpoch!);
+                } else {
+                  await sendTerminalInput(target, textPayload, "atomic", inputEpoch!, { awaitWrite: true });
+                }
+                validate();
+              },
+            });
+          } catch (error) {
+            cancellation.abort(error);
+            throw error;
+          }
+        }));
+        const failure = results.find((result) => result.status === "rejected");
+        if (failure?.status === "rejected") throw cancellation.signal.reason ?? failure.reason;
+      }, undefined, undefined, { signal: cancellation.signal });
       if (sendModeSnapshot === "text" && textPayload.trim()) {
         for (const target of targets) rememberCommand(textPayload, target);
       }
     } catch (error) {
-      setNotice(cancellation.signal.aborted
+      if (sendOperationGateRef.current.isCurrent("send", sendToken)) setNotice(cancellation.signal.aborted && cancellation.signal.reason?.name === "AbortError"
         ? { title: "发送已停止", message: "未开始的重复发送已取消；正在写入的批次按传输结果结束。" }
         : { title: "发送失败", message: formatError(error) });
     } finally {
+      cancellation.signal.removeEventListener("abort", cancelNative);
+      cancelNative();
+      sendTargetsRef.current = new Set();
       if (sendCancellationRef.current === cancellation) sendCancellationRef.current = null;
       if (sendOperationGateRef.current.finish("send", sendToken)) setSendBusy(false);
     }
@@ -4432,7 +4488,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                 <input type="number" min={1} max={MAX_SEND_COUNT} className="number-input" aria-label="发送次数" value={sendCount} onChange={(event) => setSendCount(normalizeSendCount(Number(event.target.value)))} />
               </label>
               <label>
-                <span>间隔</span>
+                <span title="上一批写入确认后，再等待指定时间">写入后间隔</span>
                 <input type="number" min={0} max={MAX_SEND_INTERVAL_MS} className="number-input" aria-label="发送间隔（毫秒）" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(normalizeSendInterval(Number(event.target.value)))} />
               </label>
               <label>
@@ -6921,23 +6977,6 @@ function formatDateTime(value?: string | null) {
   return date.toLocaleString();
 }
 
-function parseHexBytes(value: string) {
-  const clean = value.replace(/0x/gi, "").replace(/[^0-9a-f]/gi, "");
-  if (!clean) return [];
-  const even = clean.length % 2 === 0 ? clean : `0${clean}`;
-  return even.match(/.{1,2}/g)?.map((pair) => Number.parseInt(pair, 16)) ?? [];
-}
-
 function formatHexBytes(bytes: number[]) {
   return bytes.map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ");
-}
-
-function resolveSendTargets(target: SendTarget, activeId: string, sessions: SessionSummary[], panes: SessionSummary[]) {
-  if (target === "connected") {
-    return sessions.filter((session) => session.runtime.status === "connected").map((session) => session.profile.id);
-  }
-  if (target === "panes") {
-    return panes.filter((session) => session.runtime.status === "connected").map((session) => session.profile.id);
-  }
-  return activeId ? [activeId] : [];
 }

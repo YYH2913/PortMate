@@ -245,7 +245,18 @@ pub(crate) async fn send_text(
     await_write: Option<bool>,
     sensitive: Option<bool>,
     input_order: Option<terminal_input_stream::TerminalInputOrder>,
+    paced_send_id: Option<String>,
 ) -> Result<Option<SessionEvent>, String> {
+    if let Some(job_id) = paced_send_id {
+        if input_order.is_some() || interactive.unwrap_or(false) || !await_write.unwrap_or(false) {
+            return Err("间隔发送必须使用独立的确认写入".into());
+        }
+        let io = state.session_io();
+        let (job, runtime_id) = paced_send::target(&io, window.label(), &job_id, &session_id)?;
+        let bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
+        enqueue_paced_payload_and_wait(io, session_id, text, bytes, job, runtime_id).await?;
+        return Ok(None);
+    }
     let interactive = interactive.unwrap_or(false);
     let sensitive = sensitive.unwrap_or(false);
     if let Some(order) = input_order {
@@ -310,11 +321,21 @@ pub(crate) async fn send_text(
 #[tauri::command]
 pub(crate) async fn send_bytes(
     state: State<'_, AppState>,
+    window: WebviewWindow,
     session_id: String,
     bytes: Vec<u8>,
     queued: Option<bool>,
+    paced_send_id: Option<String>,
 ) -> Result<SessionEvent, String> {
     let io = state.inner().session_io();
+    if let Some(job_id) = paced_send_id {
+        let (job, runtime_id) = paced_send::target(&io, window.label(), &job_id, &session_id)?;
+        let summary = format_outbound_byte_summary(&bytes);
+        let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
+        let event = deferred_outbound_event(&session_id, &summary, &wire_bytes, false);
+        enqueue_paced_payload_and_wait(io, session_id, summary, wire_bytes, job, runtime_id).await?;
+        return Ok(event);
+    }
     if queued.unwrap_or(false) {
         // The terminal mouse path only needs queue admission here; the actual
         // write and persisted event are completed by the per-session worker.

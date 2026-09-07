@@ -10,6 +10,7 @@ mod one_key_commands;
 mod one_key_prompt;
 mod one_key_runtime;
 mod outbound_events;
+mod paced_send;
 mod profile_commands;
 mod profile_normalization;
 mod session_close;

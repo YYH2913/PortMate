@@ -35,8 +35,19 @@ pub(super) async fn write_tcp_bytes_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> Result<(), String> {
+    write_tcp_bytes_with_cancellation(writer, bytes, timeout, label, None).await
+}
+
+pub(super) async fn write_tcp_bytes_with_cancellation(
+    writer: &Arc<tokio::sync::Mutex<TcpWriteHalf>>,
+    bytes: &[u8], timeout: Duration, label: &str, cancellation: Option<&AtomicBool>,
+) -> Result<(), String> {
     tokio::time::timeout(timeout, async {
-        writer.lock().await.write_all(bytes).await
+        let mut writer = writer.lock().await;
+        if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "发送已取消"));
+        }
+        writer.write_all(bytes).await
     })
     .await
     .map_err(|_| format!("{label}超时（{} ms）", timeout.as_millis()))?

@@ -128,6 +128,7 @@ async fn write_serial_port_bytes(
     closed: Arc<AtomicBool>,
     bytes: &[u8],
     label: &'static str,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
     let bytes = bytes.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
@@ -140,6 +141,9 @@ async fn write_serial_port_bytes(
             .map_err(|error| format!("{label}失败: {error}"))?;
         if closed.load(Ordering::SeqCst) {
             return Err(format!("{label}失败: 串口会话已关闭"));
+        }
+        if cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err("发送已取消".into());
         }
         write_serial_payload(&mut **writer, &bytes)
             .map_err(|error| format!("{label}失败: {error}"))?;
@@ -160,6 +164,15 @@ pub(super) async fn write_session_bytes_for_runtime(
     bytes: &[u8],
     expected_runtime_id: Option<&str>,
 ) -> Result<(), String> {
+    write_session_bytes_for_runtime_with_cancellation(store, runtimes, serial_workers,
+        session_id, bytes, expected_runtime_id, None).await
+}
+
+pub(super) async fn write_session_bytes_for_runtime_with_cancellation(
+    store: &Arc<Mutex<SessionStore>>, runtimes: &RuntimeRegistry,
+    serial_workers: &Arc<SerialWorkerRegistry>, session_id: &str, bytes: &[u8],
+    expected_runtime_id: Option<&str>, cancellation: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     let writer = {
         let connections = runtimes.ssh.lock().map_err(|error| error.to_string())?;
         connections
@@ -171,11 +184,12 @@ pub(super) async fn write_session_bytes_for_runtime(
     };
 
     if let Some(writer) = writer {
-        write_ssh_channel_bytes_with_timeout(
+        write_ssh_channel_bytes_with_cancellation(
             &writer,
             bytes,
             SSH_TERMINAL_WRITE_TIMEOUT,
             "SSH 写入",
+            cancellation.as_deref(),
         )
         .await?;
     } else {
@@ -190,6 +204,9 @@ pub(super) async fn write_session_bytes_for_runtime(
         };
         if let Some(writer) = writer {
             let mut writer = writer.lock().map_err(|error| error.to_string())?;
+            if cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                return Err("发送已取消".into());
+            }
             writer
                 .write_all(bytes)
                 .map_err(|error| format!("Shell PTY 写入失败: {error}"))?;
@@ -207,7 +224,8 @@ pub(super) async fn write_session_bytes_for_runtime(
                     .map(|runtime| Arc::clone(&runtime.writer))
             };
             if let Some(writer) = writer {
-                write_tcp_bytes(&writer, bytes, "TCP/Telnet 写入").await?;
+                write_tcp_bytes_with_cancellation(&writer, bytes,
+                    transport_timing::TCP_RUNTIME_WRITE_TIMEOUT, "TCP/Telnet 写入", cancellation.as_deref()).await?;
             } else {
                 // Register before reading the runtime entry. Once close begins
                 // waiting for this session, no captured serial handle may
@@ -239,6 +257,7 @@ pub(super) async fn write_session_bytes_for_runtime(
                             closed,
                             bytes,
                             "串口写入",
+                            cancellation,
                         )
                         .await?;
                         record_serial_capture(&capture, EventDirection::Outbound, bytes);
@@ -471,6 +490,7 @@ pub(super) async fn write_runtime_bytes_for_runtime_with_lane(
                 closed,
                 &wire_bytes,
                 "串口 modem 写入",
+                None,
             )
             .await?;
             record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(

@@ -58,6 +58,8 @@ pub fn run() {
             custom_script_commands::save_custom_script,
             custom_script_commands::delete_custom_script,
             custom_script_commands::run_custom_script,
+            paced_send::begin_paced_send,
+            paced_send::cancel_paced_send,
             profile_commands::save_session_profile,
             session_profile_delete::delete_session_profile,
             session_commands::open_session,
@@ -170,6 +172,7 @@ pub fn run() {
                     // Retire state after destruction, not CloseRequested (which
                     // can be cancelled), without invalidating another session view.
                     terminal_input_stream::clear_owner_streams(&state.store_path, label);
+                    paced_send::clear_owner(&state.store_path, label);
                     session_credentials::clear_session_credentials_for_owner(
                         state.inner(),
                         label,

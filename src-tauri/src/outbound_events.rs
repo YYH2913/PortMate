@@ -415,6 +415,29 @@ pub(super) fn enqueue_terminal_stream_text(
     )
 }
 
+pub(super) async fn enqueue_paced_payload_and_wait(
+    io: SessionIo, session_id: String, text: String, wire_bytes: Vec<u8>,
+    job: Arc<paced_send::PacedSendJob>, runtime_id: String,
+) -> Result<(), String> {
+    if wire_bytes.len() > 4 * 1024 * 1024 { return Err("发送内容超过 4 MiB".into()); }
+    let (completion, result) = tokio::sync::oneshot::channel();
+    enqueue_interactive_payload_with_completion(io, session_id, text, wire_bytes, false, false,
+        InteractiveWriteCompletion {
+            runtime_id: Some(runtime_id), sender: Some(completion), cancellation: Some(Arc::clone(&job.cancelled)),
+        })?;
+    tokio::select! {
+        _ = job.wait_cancelled() => Err("间隔发送已取消；已开始的写入无法撤回".into()),
+        result = tokio::time::timeout(INTERACTIVE_WRITE_CONFIRM_TIMEOUT, result) => match result {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("终端输入队列已关闭".into()),
+            Err(_) => {
+                job.cancel();
+                Err("终端写入确认超时；未开始的间隔发送已取消".into())
+            }
+        }
+    }
+}
+
 fn enqueue_interactive_payload_with_completion(
     io: SessionIo,
     session_id: String,
@@ -533,7 +556,7 @@ fn enqueue_interactive_payload_with_completion(
                                     &runtime_id,
                                     wire_bytes,
                                     sensitive,
-                                    cancellation.as_deref(),
+                                    cancellation.clone(),
                                 )
                                 .await
                                 .map(|_| ())
@@ -630,6 +653,7 @@ fn publish_interactive_write_error(io: &SessionIo, session_id: &str, error: Stri
 }
 
 pub(super) fn clear_interactive_write_queue(store_path: &Path, session_id: &str) {
+    paced_send::clear_session(store_path, session_id);
     terminal_input_stream::clear_session_streams(store_path, session_id);
     if let Some(queues) = INTERACTIVE_WRITE_QUEUES.get() {
         let queue = queues
@@ -872,7 +896,7 @@ async fn send_text_interactive_inner_for_runtime(
     expected_runtime_id: &str,
     wire_bytes: Vec<u8>,
     sensitive: bool,
-    cancellation: Option<&AtomicBool>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<SessionEvent, String> {
     send_text_interactive_inner_for_optional_runtime(
         io,
@@ -893,10 +917,10 @@ async fn send_text_interactive_inner_for_optional_runtime(
     expected_runtime_id: Option<&str>,
     provided_wire_bytes: Option<Vec<u8>>,
     sensitive: bool,
-    cancellation: Option<&AtomicBool>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
-    if cancellation.is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+    if cancellation.as_ref().is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
         return Err("终端写入确认已超时，请求在执行前取消".to_string());
     }
     let wire_bytes = match provided_wire_bytes {
@@ -905,13 +929,14 @@ async fn send_text_interactive_inner_for_optional_runtime(
             .into_bytes(),
     };
     clear_active_command(&io, &session_id);
-    write_session_bytes_for_runtime(
+    write_session_bytes_for_runtime_with_cancellation(
         &io.store,
         &io.runtimes,
         &io.serial_workers,
         &session_id,
         &wire_bytes,
         expected_runtime_id,
+        cancellation,
     )
     .await?;
     drop(lane_guard);

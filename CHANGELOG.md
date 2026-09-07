@@ -29,6 +29,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Repeated sender batches wait the full configured interval after transport acknowledgement,
+  without blocking synchronized keyboard input between batches. Text and Hex share cancellable
+  per-session queues and window-owned jobs pinned to their original connections. Stops cancel
+  queued writes; disconnects and closed windows retire jobs without replaying them after reconnect.
+  Open-pane targets are deduplicated and invalid/odd-length Hex input is rejected instead of rewritten.
 - `send_key` preserves literal character case and symbols and correctly sends Ctrl+_ (0x1F).
   Named key aliases remain case-insensitive; repeated Ctrl prefixes and arbitrary escape payloads
   are rejected consistently by the desktop and MCP input path.

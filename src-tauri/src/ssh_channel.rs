@@ -151,16 +151,27 @@ pub(super) enum SshBackendChannelWriter {
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Channel>>),
 }
 
+#[cfg(test)]
 pub(super) async fn write_ssh_channel_bytes_with_timeout(
     writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     data: &[u8],
     timeout: Duration,
     label: &str,
 ) -> Result<(), String> {
+    write_ssh_channel_bytes_with_cancellation(writer, data, timeout, label, None).await
+}
+
+pub(super) async fn write_ssh_channel_bytes_with_cancellation(
+    writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
+    data: &[u8], timeout: Duration, label: &str, cancellation: Option<&AtomicBool>,
+) -> Result<(), String> {
     let started = Instant::now();
     let writer = tokio::time::timeout(timeout, Arc::clone(writer).lock_owned())
         .await
         .map_err(|_| format!("{label} writer lock 超时（{} ms）", timeout.as_millis()))?;
+    if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Err("发送已取消".into());
+    }
     let remaining = timeout
         .checked_sub(started.elapsed())
         .filter(|remaining| !remaining.is_zero())

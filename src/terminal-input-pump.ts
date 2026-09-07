@@ -12,6 +12,9 @@ export type TerminalInputSendOptions = {
   /** The text field contains a lossless 0..255 byte string from XTerm. */
   binary?: boolean;
   sensitive?: boolean;
+  /** Cancellable acknowledged sender-panel operation in this session's lane. */
+  signal?: AbortSignal;
+  executeWrite?: () => Promise<void>;
 };
 
 type PendingTerminalInput = {
@@ -19,6 +22,7 @@ type PendingTerminalInput = {
   text: string;
   origin: SyncInputOrigin;
   options?: TerminalInputSendOptions;
+  detachAbort?: () => void;
   waiters: Array<{
     resolve: () => void;
     reject: (reason?: unknown) => void;
@@ -37,6 +41,7 @@ const MAX_PIPELINED_TEXT_CHARACTERS = 4096;
 
 export function canPipelineTerminalInput(text: string, origin: SyncInputOrigin, options?: TerminalInputSendOptions) {
   return origin !== "command" && !options?.awaitWrite && !options?.binary
+    && !options?.signal && !options?.executeWrite
     && text.length <= MAX_PIPELINED_TEXT_CHARACTERS;
 }
 
@@ -67,12 +72,13 @@ export class TerminalInputPump {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ): Promise<void> {
+    if (options?.signal?.aborted) return Promise.reject(new DOMException("发送已取消", "AbortError"));
     if (!sessionId || !text) return Promise.resolve();
     const completion = new Promise<void>((resolve, reject) => {
       const waiter = {
         resolve,
         reject,
-        propagateErrors: Boolean(options?.awaitWrite),
+        propagateErrors: Boolean(options?.awaitWrite || options?.signal || options?.executeWrite),
       };
       const tail = this.pending.at(-1);
       if (
@@ -81,6 +87,8 @@ export class TerminalInputPump {
         && tail.sessionId === sessionId
         && !options?.awaitWrite
         && !tail.options?.awaitWrite
+        && !options?.signal && !tail.options?.signal
+        && !options?.executeWrite && !tail.options?.executeWrite
         && Boolean(options?.binary) === Boolean(tail.options?.binary)
         && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
         && (!this.config.orderedPipeline || tail.text.length + text.length <= MAX_PIPELINED_TEXT_CHARACTERS)
@@ -88,7 +96,21 @@ export class TerminalInputPump {
         tail.text += text;
         tail.waiters.push(waiter);
       } else {
-        this.pending.push({ sessionId, text, origin, options, waiters: [waiter] });
+        const item: PendingTerminalInput = { sessionId, text, origin, options, waiters: [waiter] };
+        this.pending.push(item);
+        if (options?.signal) {
+          const signal = options.signal;
+          const abort = () => {
+            const index = this.pending.indexOf(item);
+            if (index < 0) return;
+            this.pending.splice(index, 1);
+            item.detachAbort?.();
+            this.resolveWaiters(item, new DOMException("发送已取消", "AbortError"), true);
+            this.drain();
+          };
+          item.detachAbort = () => signal.removeEventListener("abort", abort);
+          signal.addEventListener("abort", abort, { once: true });
+        }
       }
     });
     this.cancelFastDrain();
@@ -116,6 +138,8 @@ export class TerminalInputPump {
     if (tail?.origin === "interactive"
       && tail.sessionId === sessionId
       && !tail.options?.awaitWrite && !options?.awaitWrite
+      && !tail.options?.signal && !options?.signal
+      && !tail.options?.executeWrite && !options?.executeWrite
       && Boolean(options?.binary) === Boolean(tail.options?.binary)
       && Boolean(options?.sensitive) === Boolean(tail.options?.sensitive)
       && (!this.config.orderedPipeline || tail.text.length + text.length <= MAX_PIPELINED_TEXT_CHARACTERS)) {
@@ -177,6 +201,7 @@ export class TerminalInputPump {
   reset(): void {
     this.cancelFastDrain();
     for (const item of this.pending) {
+      item.detachAbort?.();
       for (const waiter of item.waiters) {
         if (waiter.propagateErrors) {
           waiter.reject(new Error("terminal input was cancelled before the transport write"));
@@ -218,14 +243,16 @@ export class TerminalInputPump {
       if (!next) return;
       const pipeline = this.config.orderedPipeline
         ? canPipelineTerminalInput(next.text, next.origin, next.options)
-        : next.origin === "interactive" && next.waiters.length === 0;
+        : next.origin === "interactive" && next.waiters.length === 0 && !next.options?.executeWrite;
       if (!pipeline) {
         if (this.fastInFlightCount > 0) return;
         this.pending.shift();
+        next.detachAbort?.();
         this.launchOrdered(next);
         return;
       }
       this.pending.shift();
+      next.detachAbort?.();
       this.launchFast(next);
     }
   }
@@ -234,7 +261,9 @@ export class TerminalInputPump {
     this.active = true;
     let result: void | Promise<void>;
     try {
-      result = this.send(next.sessionId, next.text, next.origin, next.options);
+      next.options?.signal?.throwIfAborted();
+      result = next.options?.executeWrite ? next.options.executeWrite()
+        : this.send(next.sessionId, next.text, next.origin, next.options);
     } catch (error) {
       result = Promise.reject(error);
     }
@@ -304,7 +333,7 @@ export class TerminalInputPumpRegistry {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ): void | Promise<void> {
-    if (origin === "interactive" && !options?.awaitWrite) {
+    if (origin === "interactive" && !options?.awaitWrite && !options?.signal && !options?.executeWrite) {
       this.enqueueFast(sessionId, text, origin, options);
       return;
     }

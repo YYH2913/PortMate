@@ -1,3 +1,5 @@
+import type { SessionSummary } from "./types";
+
 export const DEFAULT_SEND_COUNT = 1;
 export const DEFAULT_SEND_INTERVAL_MS = 1_000;
 export const MAX_SEND_COUNT = 10_000;
@@ -18,12 +20,8 @@ export type SendPanelNow = () => number;
 export type SendPanelDispatchOptions = { signal?: AbortSignal };
 
 /**
- * Run repeated sender batches with a minimum start-to-start interval.
- *
- * Measuring from the start of each batch keeps the configured interval tied
- * to the wire scheduler rather than adding the transport write duration on
- * top of it. A slow write naturally pushes the next batch out, while a fast
- * write waits only for the remaining interval.
+ * Wait a full interval after the preceding batch's transport acknowledgement.
+ * Queue latency must never consume the interval and cause catch-up bursts.
  */
 export async function dispatchPacedSends(
   count: unknown,
@@ -35,17 +33,42 @@ export async function dispatchPacedSends(
 ): Promise<void> {
   const total = normalizeSendCount(count);
   const interval = normalizeSendInterval(intervalMs);
-  let lastStartedAt: number | null = null;
+  let lastCompletedAt: number | null = null;
   for (let index = 0; index < total; index += 1) {
     throwIfSendPanelCancelled(options.signal);
-    if (lastStartedAt !== null && interval > 0) {
-      const remaining = lastStartedAt + interval - now();
-      if (remaining > 0) await wait(Math.ceil(remaining), options.signal);
+    if (lastCompletedAt !== null && interval > 0) {
+      let remaining = lastCompletedAt + interval - now();
+      while (remaining > 0) {
+        await wait(Math.ceil(remaining), options.signal);
+        throwIfSendPanelCancelled(options.signal);
+        remaining = lastCompletedAt + interval - now();
+      }
     }
     throwIfSendPanelCancelled(options.signal);
-    lastStartedAt = now();
     await send(index);
+    lastCompletedAt = now();
   }
+}
+
+export function parseHexBytes(value: string): number[] {
+  if (!value.trim()) return [];
+  const tokens = value.trim().split(/[\s,]+/);
+  const bytes: number[] = [];
+  for (const token of tokens) {
+    const hex = token.replace(/^0x/i, "");
+    if (!/^(?:[0-9a-f]{2})+$/i.test(hex)) {
+      throw new Error("Hex 格式无效：每个字节需要两位十六进制数，可用空格或逗号分隔（例如 01 FF 或 0x01 0xFF）。");
+    }
+    for (let index = 0; index < hex.length; index += 2) bytes.push(Number.parseInt(hex.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
+export function resolveSendTargets(target: "active" | "panes" | "connected", activeId: string,
+  sessions: readonly SessionSummary[], panes: readonly SessionSummary[]): string[] {
+  const candidates = target === "panes" ? panes
+    : target === "active" ? sessions.filter((session) => session.profile.id === activeId) : sessions;
+  return [...new Set(candidates.filter((session) => session.runtime.status === "connected").map((session) => session.profile.id))];
 }
 
 function defaultSendPanelWait(milliseconds: number, signal?: AbortSignal): Promise<void> {
