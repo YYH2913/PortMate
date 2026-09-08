@@ -1,4 +1,41 @@
 #[test]
+fn windows_serial_idle_read_does_not_enter_the_synchronous_driver() {
+    struct IdleReader;
+    impl Read for IdleReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("an empty driver read would block concurrent keyboard writes");
+        }
+    }
+    let mut reader = IdleReader;
+    let mut buffer = [0; 8192];
+    let read = crate::serial_transport::read_available_serial_bytes;
+    assert_eq!(read(&mut reader, &mut buffer, Ok(0)).unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(read(&mut reader, &mut buffer, Err(std::io::ErrorKind::BrokenPipe.into())).unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn windows_serial_reads_only_available_bytes_without_changing_controls() {
+    struct QueuedReader(std::io::Cursor<Vec<u8>>, usize);
+    impl Read for QueuedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert!(buffer.len() <= self.1, "read must not wait for future bytes");
+            std::io::Read::read(&mut self.0, buffer)
+        }
+    }
+    let payload = b"\x1b[?2004l\r\n\x1b[?2004hroot# ";
+    let mut reader = QueuedReader(std::io::Cursor::new(payload.to_vec()), 1);
+    let mut buffer = [0; 8192];
+    let mut result = Vec::new();
+    while reader.0.position() < payload.len() as u64 {
+        reader.1 = ((payload.len() as u64 - reader.0.position()) as usize).min(3);
+        let available = reader.1 as u32;
+        let size = crate::serial_transport::read_available_serial_bytes(&mut reader, &mut buffer, Ok(available)).unwrap();
+        result.extend_from_slice(&buffer[..size]);
+    }
+    assert_eq!(result, payload);
+}
+
+#[test]
 fn serial_payload_writes_do_not_drain_the_physical_device_queue() {
     struct StalledDrainWriter {
         bytes: Vec<u8>,

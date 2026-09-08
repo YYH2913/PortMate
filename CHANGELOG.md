@@ -6,8 +6,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-08
+
+### Fixed
+
+- Fixed serial terminal wrapped-line erase corruption by preserving the
+  configured serial column width across pane resize and font zoom.
+- Reduced Windows serial input stalls by avoiding empty synchronous reads on
+  cloned COM handles.
+
 ### Changed
 
+- Added per-view terminal font zoom controls, Ctrl/Cmd + plus/minus/0 and
+  Ctrl/Cmd + wheel shortcuts, with persisted view sizes and profile-default reset.
+  Detached terminals now report their resized character grid to the connection.
 - Replaced terminal custom scripts with host-executed Python 3 and platform Shell skills
   (Unix sh / Windows PowerShell 7), with per-client exposure, typed JSON parameters,
   dynamic MCP tools, bounded execution and captured results. Breaking change:
@@ -36,6 +48,18 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows serial readers now read only bytes already queued and wait outside
+  the synchronous driver while idle, avoiding an empty 100 ms read delaying
+  keyboard writes through a cloned handle. Received CR/LF bytes remain intact.
+- Serial terminals retain their configured column count across window resize,
+  pane changes and font zoom. Narrow views scroll horizontally; viewport resize
+  no longer overwrites serial geometry. This prevents wrapped-input erase
+  sequences from moving into earlier output when the device uses that width.
+- Serial Insert mode now sends Escape to the device instead of silently entering
+  local Normal mode and swallowing Linux login input. Shift+Escape explicitly
+  enters Normal; a visible resume-input action exits it. Local navigation rebases
+  stale off-screen positions after incoming boot output, preventing Enter from
+  jumping back to early log rows. Main and detached windows share this behavior.
 - Repeated sender batches wait the full configured interval after transport acknowledgement,
   without blocking synchronized keyboard input between batches. Text and Hex share cancellable
   per-session queues and window-owned jobs pinned to their original connections. Stops cancel

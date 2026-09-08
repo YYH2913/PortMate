@@ -909,6 +909,7 @@ function SessionSettingsContent({
         <DialogField label="列:(C)">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
         </DialogField>
+        {draft.connection.kind === "serial" ? <p className="muted">串口使用固定列数，不随窗口或字号变化。请与设备终端列数保持一致，否则长命令跨行删除可能错位；此设置不会修改设备的 stty 配置。</p> : null}
         <DialogField label="滚屏:(S)">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
         </DialogField>

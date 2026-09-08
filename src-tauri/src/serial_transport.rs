@@ -2,6 +2,39 @@ use super::transport_timing::SERIAL_RUNTIME_SHUTDOWN_TIMEOUT;
 use super::*;
 
 pub(super) type SerialPortHandle = Box<dyn serialport::SerialPort>;
+
+#[cfg(any(windows, test))]
+pub(super) fn read_available_serial_bytes(
+    reader: &mut (impl Read + ?Sized),
+    buffer: &mut [u8],
+    available: std::io::Result<u32>,
+) -> std::io::Result<usize> {
+    let size = buffer.len().min(available? as usize);
+    if size == 0 {
+        return Err(std::io::ErrorKind::TimedOut.into());
+    }
+    reader.read(&mut buffer[..size])
+}
+
+fn read_serial_chunk(reader: &mut dyn serialport::SerialPort, buffer: &mut [u8]) -> std::io::Result<usize> {
+    #[cfg(windows)]
+    {
+        // serialport duplicates a synchronous Windows file handle. A blocking
+        // ReadFile on that shared file object can hold up WriteFile until the
+        // read timeout. Only read bytes already queued; wait outside the driver.
+        // This runtime has exactly one reader, so another consumer cannot drain
+        // the available bytes between the query and the read.
+        let available = reader.bytes_to_read().map_err(std::io::Error::from);
+        if matches!(available, Ok(0)) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        read_available_serial_bytes(reader, buffer, available)
+    }
+    #[cfg(not(windows))]
+    {
+        reader.read(buffer)
+    }
+}
 pub(super) struct SerialPortPair {
     pub(super) writer: SerialPortHandle,
     pub(super) reader: SerialPortHandle,
@@ -321,7 +354,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
         let mut disconnect_reason = None;
 
         while !closed.load(Ordering::SeqCst) {
-            match reader.read(&mut buffer) {
+            match read_serial_chunk(&mut *reader, &mut buffer) {
                 Ok(0) => {}
                 Ok(size) => {
                     last_received_at = Instant::now();

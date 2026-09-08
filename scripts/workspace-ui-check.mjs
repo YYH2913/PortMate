@@ -4,6 +4,9 @@ import process from "node:process";
 import { chromium } from "playwright-core";
 import { checkPacedSender } from "./paced-sender-regressions.mjs";
 import { checkHostScripts } from "./host-script-regressions.mjs";
+import { checkTerminalFontZoom } from "./terminal-font-zoom-regressions.mjs";
+import { checkSerialLogin } from "./serial-login-regressions.mjs";
+import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1888,6 +1891,24 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_SERIAL_WRAP_ONLY === "1") {
+    await checkSerialWrap(context, appUrl);
+    console.log("Serial wrapped-input erase browser regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_SERIAL_LOGIN_ONLY === "1") {
+    await checkSerialLogin(context, appUrl);
+    console.log("Serial Linux login browser regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_FONT_ZOOM_ONLY === "1") {
+    await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
+    console.log("Terminal font zoom browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_HOST_SCRIPTS_ONLY === "1") {
     await checkHostScripts(context, appUrl, screenshotPrefix);
     console.log("Host script browser regressions passed");
@@ -1901,6 +1922,9 @@ try {
     break checks;
   }
   await checkHostScripts(context, appUrl, screenshotPrefix);
+  await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
+  await checkSerialLogin(context, appUrl);
+  await checkSerialWrap(context, appUrl);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

@@ -2,6 +2,36 @@ use super::*;
 use crate::profile_commands::cleanup_orphaned_profile_secret_refs_with;
 
 #[test]
+fn terminal_resize_preserves_serial_remote_geometry() {
+    let mut store = SessionStore::default();
+    let mut profile = test_serial_profile(portmate_core::SerialConnection {
+        port: "/dev/ttyUSB0".to_string(),
+        baud_rate: 115200,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: "none".to_string(),
+        flow_control: "none".to_string(),
+        dtr: false,
+        rts: false,
+        reconnect: false,
+        reconnect_delay_ms: 1000,
+        receive_idle_timeout_enabled: false,
+        receive_idle_timeout_seconds: 60,
+    });
+    profile.terminal.cols = 80;
+    profile.terminal.rows = 24;
+    let id = profile.id.clone();
+    store.upsert_profile(profile);
+    let summary = resize_session_profile_in_store(&mut store, &id, 153, 45).unwrap();
+    assert_eq!(
+        (summary.profile.terminal.cols, summary.profile.terminal.rows),
+        (80, 24)
+    );
+    let saved = store.profile(&id).unwrap();
+    assert_eq!((saved.terminal.cols, saved.terminal.rows), (80, 24));
+}
+
+#[test]
 fn terminal_resize_metadata_changes_memory_only_after_persistence_succeeds() {
     let mut store = SessionStore::default();
     let profile = test_shell_profile();

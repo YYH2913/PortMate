@@ -6,7 +6,7 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
-<p align="center"><code>v0.1.8</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.9</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <strong>English</strong> |
@@ -82,6 +82,7 @@ To regenerate these documentation fixtures locally, run `npm run docs:screenshot
 - Target desktop platforms: Linux, Windows, and macOS.
 - Primary current development and native verification environment: Linux on VMware.
 - The terminal uses `@xterm/xterm` 6 with Search, Serialize, Unicode 11, Clipboard, Web Links, Fit, and optional WebGL support.
+- Serial terminals keep the column count in Session Settings → Terminal fixed across window/font changes, with horizontal scrolling in narrow panes. Match this setting to the device's terminal width (`stty size` can report it); PortMate does not send `stty` automatically. Correct existing profiles whose width was previously overwritten by viewport resizing to avoid wrapped-command erase misalignment.
 - Automated compatibility matrices cover SSH/SFTP/SCP, Telnet/TCP, vttest, full-screen applications, and multiple Tmux versions.
 - MCP compatibility covers the official TypeScript, Python, Go, Rust, Ruby, Java, Kotlin, C#, and Swift SDKs.
 - Linux DEB, RPM, and AppImage packages have local package and lifecycle gates. Windows and macOS still require successful native-runner evidence.
@@ -253,6 +254,12 @@ logs, screenshots, and shared documents. Rotating the Token invalidates the prev
 | `run-scripts` | Run host scripts explicitly exposed to this Client ID; also implies `read-scripts` |
 
 Grants support expiration, revocation, session access modes, and per-write confirmation. New grants deny every session by default; the UI can switch to all sessions or explicitly select one or more sessions. Session lists and queries without a `sessionId` return only the visible subset, while session-specific tools still require an authorized `sessionId`. Host-route tools have no session target and are controlled directly by the `tunnel`/`read-tunnels` scopes. Every MCP write operation is audited.
+
+### Terminal Font Zoom
+
+In serial Insert mode, `Esc` is sent to the device. Use `Shift+Esc` or the status-bar mode button to enter local Normal browsing. Normal mode does not send keystrokes; press `i` or click the terminal toolbar's resume-input button to return to Insert. Other session types retain their `Esc / i` mode shortcuts.
+
+Use the terminal toolbar's `− / font size / +` controls, `Ctrl/Cmd + plus/minus/0`, or `Ctrl/Cmd + wheel` over the terminal. Clicking the displayed size restores the session profile default. Sizes are bounded to 6–72px and remembered per view, including detached windows; zoom does not scale the application or other split views. Hex byte views are unaffected.
 
 ### Custom Script Tools
 

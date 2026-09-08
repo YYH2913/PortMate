@@ -3275,6 +3275,12 @@ body[data-portmate-modal-open] .portmate-context-menu {
   border-radius: 3px;
 }
 
+.terminal-font-zoom { display: inline-flex; flex: 0 0 auto; height: 24px; border: 1px solid #344252; border-radius: 3px; overflow: hidden; }
+.terminal-font-zoom button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; padding: 0 4px; border: 0; border-right: 1px solid #344252; background: transparent; color: #8fa0b2; font: inherit; cursor: pointer; }
+.terminal-font-zoom button:last-child { border-right: 0; }
+.terminal-font-zoom button:hover:not(:disabled), .terminal-font-zoom button:focus-visible { background: #1b2833; color: #e2eaf1; }
+.terminal-font-zoom button:disabled { opacity: 0.4; cursor: default; }
+
 .terminal-view-modes button {
   display: inline-flex;
   min-width: 0;
@@ -3323,6 +3329,19 @@ body[data-portmate-modal-open] .portmate-context-menu {
   cursor: pointer;
   font: inherit;
 }
+
+.terminal-resume-input {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid #b88435;
+  border-radius: 3px;
+  background: #322717;
+  color: #ffd58a;
+  font: inherit;
+  cursor: pointer;
+}
+.terminal-resume-input:hover, .terminal-resume-input:focus-visible { background: #48371d; }
 
 .terminal-private-input:hover,
 .terminal-private-input:focus-visible {
@@ -3742,6 +3761,17 @@ body[data-portmate-modal-open] .portmate-context-menu {
 
 .terminal-host .xterm {
   height: 100%;
+}
+
+.terminal-host-serial {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.terminal-host-serial .xterm {
+  width: max-content;
+  min-width: 100%;
 }
 
 .terminal-host .xterm-viewport {
