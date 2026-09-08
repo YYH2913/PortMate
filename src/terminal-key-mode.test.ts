@@ -5,6 +5,8 @@ import {
   resolveTerminalKeyModeEvent,
   terminalKeyModeCursorStyle,
   terminalKeyModeLabel,
+  terminalKeyModeShortcutHint,
+  terminalLocalNavigationStartRow,
   toggleTerminalInsertNormalMode,
   toggleTerminalRemoteLocalMode,
 } from "./terminal-key-mode";
@@ -20,6 +22,28 @@ const key = (value: string, overrides: Partial<KeyboardEvent> = {}) => ({
 });
 
 describe("terminal key modes", () => {
+  it("passes serial Escape through and requires Shift+Escape for local Normal", () => {
+    const serial = { serial: true };
+    const resolve = (value: string, overrides: Partial<KeyboardEvent> = {}) => resolveTerminalKeyModeEvent("remote", key(value, overrides), emptyTerminalKeySequenceState(), serial);
+    expect(resolve("Escape").handled).toBe(false);
+    expect(resolve("Escape").nextMode).toBeUndefined();
+    expect(resolve("Escape", { shiftKey: true })).toMatchObject({ handled: true, nextMode: "command" });
+    for (const value of ["r", "o", "t", "Enter", "Backspace"]) expect(resolve(value).handled).toBe(false);
+    expect(resolve("Escape", { ctrlKey: true })).toMatchObject({ handled: false });
+    expect(resolve("Escape", { altKey: true })).toMatchObject({ handled: false });
+    expect(resolve("Escape", { isComposing: true })).toMatchObject({ handled: false });
+    expect(resolveTerminalKeyModeEvent("command", key("i"), emptyTerminalKeySequenceState(), serial)).toMatchObject({ nextMode: "remote" });
+    expect(terminalKeyModeShortcutHint(true)).toContain("Shift+Esc");
+    expect(terminalKeyModeShortcutHint(false)).toContain("Esc / i");
+  });
+
+  it("rebases stale local navigation after boot output without overriding visible positions", () => {
+    expect(terminalLocalNavigationStartRow(3, 139, 44, 182)).toBe(182);
+    expect(terminalLocalNavigationStartRow(148, 139, 44, 182)).toBe(148);
+    expect(terminalLocalNavigationStartRow(182, 20, 44, 182)).toBe(20);
+    expect(terminalLocalNavigationStartRow(70, 20, 44, 31)).toBe(31);
+    expect(terminalLocalNavigationStartRow(30, 0, 24, 5)).toBe(5);
+  });
   it("normalizes persisted values and exposes stable labels", () => {
     expect(normalizeTerminalKeyMode("command")).toBe("command");
     expect(normalizeTerminalKeyMode("REMOTE")).toBe("remote");

@@ -101,7 +101,7 @@ import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
-import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, terminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
@@ -4758,7 +4758,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           type="button"
           className={`sync-status terminal-key-mode-status ${syncInput ? "active" : ""}`}
           data-key-mode={activeTerminalKeyMode}
-          title="切换 Insert/Normal 模式 (Esc / i)"
+          title={terminalKeyModeShortcutHint(active?.profile.connection.kind === "serial")}
           aria-label={`当前${terminalKeyModeLabel(activeTerminalKeyMode)}，切换 Insert/Normal 模式`}
           onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalInsertNormalMode(activeTerminalKeyMode))}
         >

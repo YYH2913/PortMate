@@ -39,7 +39,7 @@ import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { CommandHistorySnapshot, DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
-import { terminalKeyModeLabel, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, terminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 type DetachedOwnerControlAction = Exclude<DetachedPaneCommand["action"], "lock-screen">;
@@ -451,7 +451,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         <button
           type="button"
           data-key-mode={keyMode}
-          title="切换 Insert/Normal 模式 (Esc / i)"
+          title={terminalKeyModeShortcutHint(session?.profile.connection.kind === "serial")}
           onClick={() => setKeyMode(toggleTerminalInsertNormalMode(keyMode))}
         >
           {terminalKeyModeLabel(keyMode)}

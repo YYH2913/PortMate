@@ -6,7 +6,7 @@
 
 <p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
-<p align="center"><code>v0.1.8</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.9</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <a href="./README.md">English</a> |
@@ -80,6 +80,7 @@ PortMate 本身不内置 AI 助手；随包提供的 `portmate-mcp` bridge 是�
 - 桌面目标平台：Linux、Windows、macOS。
 - 当前主要实机开发与验收环境：Linux + VMware。
 - 终端基于 `@xterm/xterm` 6，包含 Search、Serialize、Unicode 11、Clipboard、Web Links、Fit 和按需 WebGL 支持。
+- 串口固定使用「会话设置 → 终端 → 列」的列宽，窗口缩放和字号调整不改变换行边界；窄窗口可横向滚动。该列数须与设备终端一致（可在设备上用 `stty size` 查看），PortMate 不会自动发送 `stty`。既有配置若曾被窗口尺寸覆盖，请手动校正，以免长命令跨行删除错位。
 - SSH/SFTP/SCP、Telnet/TCP、vttest、全屏程序和多个 Tmux 版本均有自动化兼容矩阵。
 - MCP 回归覆盖 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 官方 SDK。
 - Linux DEB、RPM 和 AppImage 已有本地打包与包内生命周期门禁；Windows 和 macOS 仍需原生 runner 的成功证据。
@@ -249,6 +250,12 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 | `run-scripts` | 在 PortMate 主机运行明确授权给此 Client 的脚本，并隐含 `read-scripts` |
 
 授权可以设置到期时间、撤销状态、会话范围和写操作逐次确认。新建授权默认不授权任何会话；可以切换为全部会话，或明确勾选一个/多个会话。会话列表和无 `sessionId` 的查询会按范围返回可见子集，具体会话工具仍需提交已授权的 `sessionId`。主机路由没有会话目标，直接由 `tunnel`/`read-tunnels` scope 控制。所有 MCP 写操作都会进入审计记录。
+
+### 终端字号缩放
+
+串口 Insert 模式下，`Esc` 会发送到设备，不再切换本地模式；使用 `Shift+Esc` 或底部模式按钮进入 Normal 本地浏览。Normal 模式不会向设备发送按键，按 `i` 或点击终端工具栏“恢复输入”回到 Insert。SSH 等其他会话仍使用 `Esc / i` 切换。
+
+终端工具栏中的 `− / 字号 / +` 可缩放当前文本视图；点击中间字号恢复会话设置。快捷键为 `Ctrl/Cmd + 加号`、`Ctrl/Cmd + 减号`、`Ctrl/Cmd + 0`，也支持在终端内按住 `Ctrl/Cmd` 滚动滚轮。字号范围 6–72px，按视图记忆，不改变其他分屏或整个应用界面；Hex 字节视图不受此缩放影响。
 
 ### 自定义脚本工具
 

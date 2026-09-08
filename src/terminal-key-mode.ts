@@ -79,16 +79,36 @@ export function terminalKeyModeCursorStyle(mode: TerminalKeyMode): "bar" | "bloc
   return "block";
 }
 
+export function terminalKeyModeShortcutHint(serial: boolean): string {
+  return serial
+    ? "切换 Insert/Normal 模式（串口：Shift+Esc 进入 Normal，i 恢复输入；Esc 发送到设备）"
+    : "切换 Insert/Normal 模式 (Esc / i)";
+}
+
+/** Rebase unanchored local navigation when incoming output/manual scrolling
+ * has moved its old position out of view. Do not drag the viewport back to a
+ * stale boot-log row on the first navigation key. */
+export function terminalLocalNavigationStartRow(
+  row: number, viewportTop: number, viewportRows: number, cursorRow: number,
+): number {
+  const inView = (value: number) => value >= viewportTop && value < viewportTop + viewportRows;
+  return inView(row) ? row : inView(cursorRow) ? cursorRow : viewportTop;
+}
+
 export function resolveTerminalKeyModeEvent(
   mode: TerminalKeyMode,
   event: TerminalModeKeyEvent,
   state = emptyTerminalKeySequenceState(),
+  options: { serial?: boolean } = {},
 ): TerminalKeyModeResolution {
   const empty = emptyTerminalKeySequenceState();
   if (event.isComposing) return { handled: mode !== "remote", state: empty, count: 1 };
 
-  if (mode === "remote" && event.key === "Escape" && !hasCommandModifiers(event) && !event.shiftKey) {
-    return { handled: true, state: empty, nextMode: "command", count: 1 };
+  if (mode === "remote" && event.key === "Escape" && !hasCommandModifiers(event)) {
+    // Esc is a real device key on serial consoles (bootloader menus, vi, etc.).
+    // Never silently turn subsequent Linux login input into local navigation.
+    const switchMode = options.serial ? event.shiftKey : !event.shiftKey;
+    if (switchMode) return { handled: true, state: empty, nextMode: "command", count: 1 };
   }
 
   if (isCtrlEnter(event)) {

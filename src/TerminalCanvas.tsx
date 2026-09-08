@@ -1,6 +1,6 @@
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
-import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Lock, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
+import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Lock, Minus, Plus, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -49,11 +49,13 @@ import type { TerminalSelectionRequestDetail } from "./terminal-selection-event"
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
-import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent, terminalKeyModeCursorStyle } from "./terminal-key-mode";
+import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent, terminalKeyModeCursorStyle, terminalLocalNavigationStartRow } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
 import { normalizeTerminalProfileSettings, shouldEnableTerminalWebgl } from "./terminal-settings-state";
+import { boundedTerminalFontSize, nextTerminalFontSize, readTerminalFontZoom, subscribeTerminalFontZoom, terminalFontZoomShortcut, writeTerminalFontZoom } from "./terminal-font-zoom";
+import type { TerminalFontZoomAction } from "./terminal-font-zoom";
 import {
   MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS,
   terminalSemanticHighlightingEnabled,
@@ -369,6 +371,11 @@ function TerminalCanvas({
   const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
   const sessionId = active?.profile.id ?? "";
   const stateCacheKey = terminalStateCacheKey(sessionId, viewId);
+  const baseFontSize = boundedTerminalFontSize(active?.profile.terminal.fontSize ?? 13);
+  const subscribeFontZoom = useCallback((notify: () => void) => subscribeTerminalFontZoom(stateCacheKey, notify), [stateCacheKey]);
+  const fontSnapshot = useCallback(() => readTerminalFontZoom(stateCacheKey, baseFontSize), [stateCacheKey, baseFontSize]);
+  const fontSize = useSyncExternalStore(subscribeFontZoom, fontSnapshot, () => baseFontSize);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const displayModeKey = viewId || sessionId;
   const [displayMode, setDisplayMode] = useState<TerminalDisplayMode>(() => (
     typeof window === "undefined" ? "text" : readTerminalDisplayMode(window.localStorage, displayModeKey)
@@ -412,6 +419,10 @@ function TerminalCanvas({
   const onInputRef = useRef(onInput);
   const onCommandSubmitRef = useRef(onCommandSubmit);
   const keyModeRef = useRef(keyMode);
+  const serialKeyModeRef = useRef(false);
+  serialKeyModeRef.current = active?.profile.connection.kind === "serial";
+  const serialColumnsRef = useRef(120);
+  serialColumnsRef.current = active ? normalizeTerminalProfileSettings(active.profile.terminal).cols : 120;
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
   const keySequenceRef = useRef<TerminalKeySequenceState>(emptyTerminalKeySequenceState());
@@ -464,6 +475,11 @@ function TerminalCanvas({
   const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
   const privateInputRetained = privateInputLine || (freeInputSource !== null && freeInputSensitiveRef.current);
   const privateInputActive = manualPrivateInput || detectedPrivateInput || privateInputRetained;
+  const changeFontSize = useCallback((action: TerminalFontZoomAction) => {
+    if (!sessionId || !focused || displayModeRef.current === "hex" || modalBlocksTerminalCommand(hostRef.current)) return;
+    writeTerminalFontZoom(stateCacheKey, baseFontSize, nextTerminalFontSize(readTerminalFontZoom(stateCacheKey, baseFontSize), baseFontSize, action));
+    termRef.current?.focus();
+  }, [sessionId, focused, stateCacheKey, baseFontSize]);
   displayModeRef.current = displayMode;
   completionDismissedLineRef.current = completionDismissedLine;
 
@@ -1072,7 +1088,7 @@ function TerminalCanvas({
       convertEol: false,
       drawBoldTextInBrightColors: true,
       fontFamily: terminalSettings.fontFamily,
-      fontSize: terminalSettings.fontSize,
+      fontSize: readTerminalFontZoom(stateCacheKey, terminalSettings.fontSize),
       minimumContrastRatio: 1,
       scrollOnUserInput: true,
       scrollback: terminalSettings.scrollback,
@@ -1162,7 +1178,7 @@ function TerminalCanvas({
         openSearchRef.current();
         return false;
       }
-      const resolution = resolveTerminalKeyModeEvent(mode, event, keySequenceRef.current);
+      const resolution = resolveTerminalKeyModeEvent(mode, event, keySequenceRef.current, { serial: serialKeyModeRef.current });
       keySequenceRef.current = resolution.state;
       if (!resolution.handled) return true;
       event.preventDefault();
@@ -1849,9 +1865,27 @@ function TerminalCanvas({
     configureWebglRef.current = configureWebgl;
     configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
     if (focused && displayModeRef.current !== "hex") term.focus();
+    const fitTerminal = () => {
+      if (!serialKeyModeRef.current) {
+        fit.fit();
+        return;
+      }
+      // A UART has no NAWS/PTY resize negotiation. The line editor on the
+      // device still uses its configured width when erasing wrapped input.
+      // Preserve that width across window/font changes; scroll horizontally
+      // when it cannot fit instead of silently changing the wrap boundary.
+      const dimensions = fit.proposeDimensions();
+      if (!dimensions) return;
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      const cellHeight = screen ? screen.getBoundingClientRect().height / term.rows : 0;
+      const style = getComputedStyle(host);
+      const height = host.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      if (!Number.isFinite(cellHeight) || cellHeight <= 0 || height <= 0) return;
+      term.resize(serialColumnsRef.current, Math.max(1, Math.floor(height / cellHeight)));
+    };
     const fitAndReport = () => {
       if (restorePending) return;
-      fit.fit();
+      fitTerminal();
       scheduleTimestampGutter();
       // Pixel/font changes also affect the anchor when the terminal's cell
       // count stays the same and xterm does not emit onResize.
@@ -1862,13 +1896,15 @@ function TerminalCanvas({
         window.clearTimeout(resizeReportTimer);
         resizeReportTimer = null;
       }
+      // Do not persist viewport dimensions as the remote serial geometry.
+      if (serialKeyModeRef.current) return;
       // Only the active pane may resize the shared PTY. ResizeObserver callbacks
       // can arrive after focus changes, before the inactive pane has been laid out.
       if (
         displayModeRef.current === "hex"
         || !focusedRef.current
         || host.dataset.terminalResizeOwner !== "active"
-        || !host.closest(".terminal-pane.active")
+        || !host.closest(".terminal-pane.active, .detached-pane-terminal")
         || lastSizeRef.current === size
       ) return;
       let candidateSize = size;
@@ -1876,8 +1912,8 @@ function TerminalCanvas({
       const reportStableSize = () => {
         resizeReportTimer = null;
         if (terminalDisposed || !focusedRef.current || host.dataset.terminalResizeOwner !== "active"
-          || !host.closest(".terminal-pane.active")) return;
-        fit.fit();
+          || !host.closest(".terminal-pane.active, .detached-pane-terminal")) return;
+        fitTerminal();
         scheduleTimestampGutter();
         const settledSize = `${term.cols}x${term.rows}`;
         host.dataset.terminalSize = settledSize;
@@ -2360,7 +2396,8 @@ function TerminalCanvas({
     const host = hostRef.current;
     if (!term || !host) return;
     const normalized = normalizeTerminalProfileSettings(active.profile.terminal);
-    const appliedTheme = applyTerminalPresentation(term, normalized);
+    const appliedTheme = applyTerminalPresentation(term, { ...normalized, fontSize });
+    host.dataset.terminalFontSize = String(fontSize);
     host.dataset.terminalTheme = appliedTheme;
     host.dataset.terminalCursorColor = term.options.theme?.cursor ?? "#5eead4";
     host.dataset.terminalOpacity = String(normalized.backgroundOpacity);
@@ -2374,10 +2411,31 @@ function TerminalCanvas({
     active?.profile.id,
     active?.profile.terminal.fontFamily,
     active?.profile.terminal.fontSize,
+    active?.profile.terminal.cols,
+    active?.profile.connection.kind,
     active?.profile.terminal.scrollback,
     active?.profile.terminal.theme,
     active?.profile.terminal.backgroundOpacity,
+    fontSize,
+    stateCacheKey,
   ]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !active) return;
+    // Native non-passive capture prevents browser zoom and terminal mouse reports.
+    const wheel = (event: WheelEvent) => {
+      if (!focused || displayModeRef.current === "hex" || event.altKey || event.shiftKey
+        || event.ctrlKey === event.metaKey || event.deltaY === 0 || !Number.isFinite(event.deltaY)
+        || !(event.target instanceof Element) || !event.target.closest(".terminal-host")
+        || modalBlocksTerminalCommand(hostRef.current)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      changeFontSize(event.deltaY < 0 ? "increase" : "decrease");
+    };
+    canvas.addEventListener("wheel", wheel, { capture: true, passive: false });
+    return () => canvas.removeEventListener("wheel", wheel, true);
+  }, [sessionId, focused, changeFontSize]);
 
   useEffect(() => {
     const sessionId = active?.profile.id ?? "";
@@ -2748,7 +2806,17 @@ function TerminalCanvas({
 
   return (
     <div
+      ref={canvasRef}
       className={`terminal-canvas${active ? " has-terminal-view" : ""}${completionSurfaceOpen ? " completion-open" : ""}`}
+      onKeyDownCapture={(event) => {
+        if (event.defaultPrevented || !focused || displayMode === "hex" || modalBlocksTerminalCommand(hostRef.current)
+          || !(event.target instanceof Element) || !event.target.closest(".terminal-host, .terminal-font-zoom")) return;
+        const action = terminalFontZoomShortcut(event.nativeEvent);
+        if (!action) return;
+        event.preventDefault();
+        event.stopPropagation();
+        changeFontSize(action);
+      }}
       data-terminal-focused={focused ? "true" : "false"}
       data-terminal-session-id={sessionId || undefined}
       data-terminal-view-id={viewId || undefined}
@@ -2771,6 +2839,19 @@ function TerminalCanvas({
               <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title="Hex 视图" onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
               <button type="button" className={displayMode === "split" ? "active" : ""} aria-label="对照" aria-pressed={displayMode === "split"} title="文本与 Hex 对照视图" onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>对照</span></button>
             </div>
+            <div className="terminal-font-zoom" role="group" aria-label="终端字号">
+              <button type="button" aria-label="缩小终端字号" title="缩小字号（Ctrl/Cmd+-）" disabled={displayMode === "hex" || fontSize <= 6} onClick={() => changeFontSize("decrease")}><Minus size={13} /></button>
+              <button type="button" aria-label="重置终端字号" title={`恢复会话字号 ${baseFontSize}px（Ctrl/Cmd+0）；Ctrl/Cmd+滚轮可缩放`} disabled={displayMode === "hex"} onClick={() => changeFontSize("reset")}>{fontSize}</button>
+              <button type="button" aria-label="放大终端字号" title="放大字号（Ctrl/Cmd++）" disabled={displayMode === "hex" || fontSize >= 72} onClick={() => changeFontSize("increase")}><Plus size={13} /></button>
+            </div>
+            {(keyMode === "command" || keyMode === "local") ? (
+              <button type="button" className="terminal-resume-input" aria-label="恢复终端输入" title="当前为本地浏览模式，按键不会发给设备；点击或按 i 恢复 Insert 模式" onClick={() => {
+                if (!focused || modalBlocksTerminalCommand(hostRef.current)) return;
+                keyModeRef.current = "remote";
+                onKeyModeChangeRef.current("remote");
+                termRef.current?.focus();
+              }}>恢复输入</button>
+            ) : null}
             <button
               type="button"
               className={`terminal-private-input${privateInputActive ? " active" : ""}`}
@@ -2828,7 +2909,7 @@ function TerminalCanvas({
               </div>
               <div
                 ref={hostRef}
-                className="terminal-host"
+                className={`terminal-host${active.profile.connection.kind === "serial" ? " terminal-host-serial" : ""}`}
                 inert={displayMode === "hex" || freeInputOpen || gotoLineOpen}
                 style={{ transform: completionShiftTransform }}
               />
@@ -3155,6 +3236,12 @@ function runTerminalLocalCommand(
   command: TerminalLocalCommand,
   requestedCount: number,
 ): TerminalLocalCommandResult {
+  if (current && !current.anchor) {
+    const buffer = term.buffer.active;
+    current = { ...current, row: terminalLocalNavigationStartRow(
+      current.row, buffer.viewportY, term.rows, buffer.baseY + buffer.cursorY,
+    ) };
+  }
   const state = clampLocalNavigationState(term, current);
   const count = Math.max(1, Math.min(100_000, Math.trunc(requestedCount) || 1));
   const lastRow = Math.max(0, term.buffer.active.length - 1);

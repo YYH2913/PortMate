@@ -206,8 +206,12 @@ pub(super) fn resize_session_profile_in_store(
         .iter_mut()
         .find(|profile| profile.id == session_id)
         .ok_or_else(|| format!("unknown session: {session_id}"))?;
-    profile.terminal.cols = cols;
-    profile.terminal.rows = rows;
+    // UART has no terminal-size negotiation. A frontend resize must not
+    // overwrite the user's remote geometry with a local viewport size.
+    if !matches!(profile.connection, ConnectionConfig::Serial(_)) {
+        profile.terminal.cols = cols;
+        profile.terminal.rows = rows;
+    }
     let summary = store
         .summaries()
         .into_iter()
