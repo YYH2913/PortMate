@@ -3278,6 +3278,36 @@ body[data-portmate-modal-open] .portmate-context-menu {
 .terminal-font-zoom { display: inline-flex; flex: 0 0 auto; height: 24px; border: 1px solid #344252; border-radius: 3px; overflow: hidden; }
 .terminal-font-zoom button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; padding: 0 4px; border: 0; border-right: 1px solid #344252; background: transparent; color: #8fa0b2; font: inherit; cursor: pointer; }
 .terminal-font-zoom button:last-child { border-right: 0; }
+.terminal-serial-columns-hint {
+  position: absolute;
+  right: 12px;
+  top: 6px;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 4px 7px;
+  border: 1px solid #9b7b3e;
+  border-radius: 3px;
+  background: #241e12;
+  color: #f3c969;
+  font: 11px var(--mono);
+}
+.terminal-serial-columns-hint button {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 5px;
+  border: 1px solid #9b7b3e;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.terminal-serial-columns-hint button:hover,
+.terminal-serial-columns-hint button:focus-visible { background: #45371d; }
 .terminal-font-zoom button:hover:not(:disabled), .terminal-font-zoom button:focus-visible { background: #1b2833; color: #e2eaf1; }
 .terminal-font-zoom button:disabled { opacity: 0.4; cursor: default; }
 

@@ -26,11 +26,6 @@ export type TerminalCompletionInputState = {
   synchronized: boolean;
 };
 
-export type TerminalCompletionInputReduction = {
-  state: TerminalCompletionInputState;
-  submittedCommands: string[];
-};
-
 export type TerminalCompletionUsageHint = {
   label: string;
   detail: string;
@@ -88,13 +83,6 @@ const MAX_COMPLETION_LINE_CHARACTERS = 512;
 const MAX_COMPLETION_CANDIDATES = 40;
 const supportedTerminalKinds = new Set(["serial", "shell", "ssh", "tcp", "telnet", "tmux"]);
 
-export function reduceTerminalCompletionInput(
-  current: TerminalCompletionInputState,
-  text: string,
-): TerminalCompletionInputState {
-  return reduceTerminalCompletionInputWithSubmissions(current, text).state;
-}
-
 /** Editing changes the tracked line immediately, but its UI can settle later.
  * Submission, navigation, paste controls and interrupts remain immediate. */
 export function terminalCompletionNeedsImmediateRefresh(text: string): boolean {
@@ -121,22 +109,20 @@ export function terminalPrivateInputEndsLine(text: string): boolean {
   return /[\r\n\u0003\u0015]$/.test(text);
 }
 
-export function reduceTerminalCompletionInputWithSubmissions(
+export function reduceTerminalCompletionInput(
   current: TerminalCompletionInputState,
   text: string,
   sensitive = false,
-): TerminalCompletionInputReduction {
+): TerminalCompletionInputState {
   if (sensitive) {
     // Never retain a private prefix, including text following an embedded Enter.
     // A later public suffix cannot turn the same line into command history.
-    return { state: { line: "", synchronized: terminalPrivateInputEndsLine(text) }, submittedCommands: [] };
+    return { line: "", synchronized: terminalPrivateInputEndsLine(text) };
   }
   let line = current.line;
   let synchronized = current.synchronized;
-  const submittedCommands: string[] = [];
   for (const character of text) {
     if (character === "\r" || character === "\n") {
-      if (synchronized && line.trim()) submittedCommands.push(line);
       line = "";
       synchronized = true;
       continue;
@@ -171,7 +157,7 @@ export function reduceTerminalCompletionInputWithSubmissions(
     line = "";
     synchronized = false;
   }
-  return { state: { line, synchronized }, submittedCommands };
+  return { line, synchronized };
 }
 
 export function terminalCompletionSuggestions({

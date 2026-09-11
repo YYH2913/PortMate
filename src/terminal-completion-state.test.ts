@@ -3,7 +3,6 @@ import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
-  reduceTerminalCompletionInputWithSubmissions,
   terminalCompletionAppendText,
   terminalCompletionNeedsImmediateRefresh,
   terminalCompletionSourceLabel,
@@ -18,18 +17,18 @@ import {
 } from "./terminal-completion-prefs";
 
 describe("terminal completion state", () => {
-  it("never retains private text or submits private commands to history", () => {
+  it("never retains private text in completion suggestions", () => {
     for (const text of ["private", "echo private", "one\rtwo", "one\r\nthird", "private\x1b[D", "private\x04"]) {
-      expect(reduceTerminalCompletionInputWithSubmissions({ line: "public", synchronized: true }, text, true))
-        .toEqual({ state: { line: "", synchronized: false }, submittedCommands: [] });
+      expect(reduceTerminalCompletionInput({ line: "public", synchronized: true }, text, true))
+        .toEqual({ line: "", synchronized: false });
     }
     for (const text of ["private\r", "private\n", "private\x03", "private\x15"]) {
-      expect(reduceTerminalCompletionInputWithSubmissions({ line: "", synchronized: false }, text, true))
-        .toEqual({ state: { line: "", synchronized: true }, submittedCommands: [] });
+      expect(reduceTerminalCompletionInput({ line: "", synchronized: false }, text, true))
+        .toEqual({ line: "", synchronized: true });
     }
-    const hidden = reduceTerminalCompletionInputWithSubmissions({ line: "", synchronized: true }, "private", true).state;
-    expect(reduceTerminalCompletionInputWithSubmissions(hidden, "-suffix\recho public\r").submittedCommands)
-      .toEqual(["echo public"]);
+    const hidden = reduceTerminalCompletionInput({ line: "", synchronized: true }, "private", true);
+    expect(reduceTerminalCompletionInput(hidden, "-suffix\recho public"))
+      .toEqual({ line: "echo public", synchronized: true });
   });
 
   it("rebases a delayed candidate after typing/deletion and retains its trailing space", () => {
@@ -117,25 +116,9 @@ describe("terminal completion state", () => {
     expect(reduceTerminalCompletionInput(state, "\rnext")).toEqual({ line: "next", synchronized: true });
   });
 
-  it("reports only real synchronized command submissions", () => {
-    let state = emptyTerminalCompletionInputState;
-    let reduction = reduceTerminalCompletionInputWithSubmissions(state, "git stats\u007fus\r\n");
-    expect(reduction.submittedCommands).toEqual(["git status"]);
-    state = reduction.state;
-
-    reduction = reduceTerminalCompletionInputWithSubmissions(state, "printf one\nprintf two\r\nprintf three\r");
-    expect(reduction.submittedCommands).toEqual(["printf one", "printf two", "printf three"]);
-
-    state = reduceTerminalCompletionInput(state, "secret");
-    reduction = reduceTerminalCompletionInputWithSubmissions(state, "\u001b[A\r");
-    expect(reduction.submittedCommands).toEqual([]);
-    expect(reduction.state).toEqual({ line: "", synchronized: true });
-
-    reduction = reduceTerminalCompletionInputWithSubmissions(
-      reduceTerminalCompletionInput(emptyTerminalCompletionInputState, "cancelled"),
-      "\u0003",
-    );
-    expect(reduction.submittedCommands).toEqual([]);
+  it("only returns suggestion state, with no command submission channel", () => {
+    expect(reduceTerminalCompletionInput(emptyTerminalCompletionInputState, "git stats\u007fus\r\n"))
+      .toEqual({ line: "", synchronized: true });
   });
 
   it("suggests commands, options, and subcommands as append-only suffixes", () => {

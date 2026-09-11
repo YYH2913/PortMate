@@ -23,7 +23,6 @@ import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
   reduceTerminalCompletionInput,
-  reduceTerminalCompletionInputWithSubmissions,
   terminalCompletionAppendText,
   terminalCompletionSourceLabel,
   terminalCompletionNeedsImmediateRefresh,
@@ -56,6 +55,10 @@ import type { TerminalSearchResult } from "./terminal-search";
 import { normalizeTerminalProfileSettings, shouldEnableTerminalWebgl } from "./terminal-settings-state";
 import { boundedTerminalFontSize, nextTerminalFontSize, readTerminalFontZoom, subscribeTerminalFontZoom, terminalFontZoomShortcut, writeTerminalFontZoom } from "./terminal-font-zoom";
 import type { TerminalFontZoomAction } from "./terminal-font-zoom";
+import { SerialColumnDetector } from "./terminal-serial-columns";
+import { TerminalInputController } from "./terminal-input-controller";
+import { recordCommandSubmission } from "./command-submission";
+import type { CommandSubmitHandler, CommandSubmissionSource } from "./command-submission";
 import {
   MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS,
   terminalSemanticHighlightingEnabled,
@@ -119,7 +122,7 @@ type TerminalCanvasProps = {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ) => void | Promise<void>;
-  onCommandSubmit?: (sessionId: string, command: string) => void;
+  onCommandSubmit?: CommandSubmitHandler;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,
@@ -194,6 +197,7 @@ type PendingTerminalWrite = {
   rawBytes?: Uint8Array;
   waitingForRaw?: boolean;
   fallbackTimer?: number;
+  serialDetectionKey?: string;
 };
 
 const terminalSearchDecorations: NonNullable<ISearchOptions["decorations"]> = {
@@ -418,11 +422,35 @@ function TerminalCanvas({
   const lastCopiedSelectionRef = useRef("");
   const onInputRef = useRef(onInput);
   const onCommandSubmitRef = useRef(onCommandSubmit);
+  const terminalInputControllerRef = useRef<TerminalInputController | null>(null);
+  if (!terminalInputControllerRef.current) terminalInputControllerRef.current = new TerminalInputController();
   const keyModeRef = useRef(keyMode);
   const serialKeyModeRef = useRef(false);
   serialKeyModeRef.current = active?.profile.connection.kind === "serial";
+  const configuredSerialColumns = active ? normalizeTerminalProfileSettings(active.profile.terminal).cols : 120;
+  const serialContextKey = JSON.stringify([
+    sessionId, viewId, active?.profile.connection.kind, active?.runtime.status,
+    active?.runtime.connectedSince, configuredSerialColumns,
+  ]);
+  const serialContextRef = useRef({ key: serialContextKey, connectedSince: NaN, enabled: false });
+  serialContextRef.current = {
+    key: serialContextKey,
+    connectedSince: Date.parse(active?.runtime.connectedSince ?? ""),
+    enabled: serialKeyModeRef.current && active?.runtime.status === "connected",
+  };
+  const [serialColumnsOverride, setSerialColumnsOverride] = useState<{ key: string; columns: number } | null>(null);
+  const [serialSuggestion, setSerialSuggestion] = useState<{ key: string; columns: number } | null>(null);
+  const serialSuggestionRef = useRef<{ key: string; columns: number } | null>(null);
+  const [dismissedSerialSuggestion, setDismissedSerialSuggestion] = useState<{ key: string; columns: number } | null>(null);
+  const serialColumnDetectorRef = useRef<SerialColumnDetector | null>(null);
+  const serialColumns = serialColumnsOverride?.key === serialContextKey
+    ? serialColumnsOverride.columns : configuredSerialColumns;
+  const serialColumnSuggestion = serialSuggestion?.key === serialContextKey
+    && serialSuggestion.columns !== serialColumns
+    && !(dismissedSerialSuggestion?.key === serialContextKey && dismissedSerialSuggestion.columns === serialSuggestion.columns)
+    ? serialSuggestion.columns : null;
   const serialColumnsRef = useRef(120);
-  serialColumnsRef.current = active ? normalizeTerminalProfileSettings(active.profile.terminal).cols : 120;
+  serialColumnsRef.current = serialColumns;
   const previousKeyModeRef = useRef(keyMode);
   const onKeyModeChangeRef = useRef(onKeyModeChange);
   const keySequenceRef = useRef<TerminalKeySequenceState>(emptyTerminalKeySequenceState());
@@ -782,20 +810,33 @@ function TerminalCanvas({
     }
   }
 
-  function updateCompletionInput(text: string, sensitive = false): string[] {
+  function trackCommandSubmission(text: string, source: CommandSubmissionSource, sensitive = false) {
+    const eligible = termRef.current?.buffer.active.type === "normal";
+    const submitted = terminalInputControllerRef.current!.track(text, sensitive || !eligible);
+    if (!active || !onCommandSubmitRef.current) return;
+    for (const command of submitted) {
+      recordCommandSubmission(onCommandSubmitRef.current, active.profile.id, command, source);
+    }
+  }
+
+  function invalidateExternalInputState() {
+    terminalInputControllerRef.current?.invalidate();
+    resetCompletionInput(false);
+  }
+
+  function updateCompletionInput(text: string, sensitive = false): void {
     const current = oneKeyPromptStateRef.current.prompt
       ? { line: "", synchronized: false }
       : completionInputRef.current;
-    const reduction = reduceTerminalCompletionInputWithSubmissions(current, text, sensitive);
-    const next = reduction.state;
+    const next = reduceTerminalCompletionInput(current, text, sensitive);
     if (sensitive) {
       resetCompletionInput(next.synchronized);
-      return [];
+      return;
     }
     if (!completionEnabledRef.current) {
       cancelScheduledCompletionInput();
       completionInputRef.current = next;
-      return reduction.submittedCommands;
+      return;
     }
     if (terminalCompletionNeedsImmediateRefresh(text)) storeCompletionInput(next);
     else storeCompletionInputDeferred(next);
@@ -804,7 +845,6 @@ function TerminalCanvas({
       completionSelectionRef.current = 0;
       setCompletionSelection(0);
     }
-    return reduction.submittedCommands;
   }
 
   acceptCompletionRef.current = (suggestion) => {
@@ -831,6 +871,7 @@ function TerminalCanvas({
       "interactive",
       privateInputActive ? { sensitive: true } : undefined,
     );
+    trackCommandSubmission(appendText, "interactive", privateInputActive);
     scheduleTerminalSurfaceFocus();
   };
   dismissCompletionRef.current = () => {
@@ -1025,13 +1066,7 @@ function TerminalCanvas({
       "atomic",
       sensitive ? { sensitive: true } : undefined,
     );
-    if (!sensitive && term?.buffer.active.type === "normal") {
-      const submitted = reduceTerminalCompletionInputWithSubmissions(
-        emptyTerminalCompletionInputState,
-        payload,
-      ).submittedCommands;
-      for (const command of submitted) onCommandSubmitRef.current?.(active.profile.id, command);
-    }
+    trackCommandSubmission(payload, "free-input", sensitive);
     resetCompletionInput();
     commitPrivateInputLine(false);
     if (sensitive) clearPrivateInput();
@@ -1226,6 +1261,9 @@ function TerminalCanvas({
       return false;
     });
     let terminalDisposed = false;
+    const serialColumnDetector = new SerialColumnDetector();
+    serialColumnDetectorRef.current = serialColumnDetector;
+    let serialDetectorKey = serialContextRef.current.key;
     let timestampFrame: number | null = null;
     let resizeReportTimer: number | null = null;
     let enterScrollFrame: number | null = null;
@@ -1550,7 +1588,15 @@ function TerminalCanvas({
       pendingEventWrites.splice(0, pendingEventWriteHead);
       pendingEventWriteHead = 0;
     };
-    const queueEventWrite = (pending: PendingTerminalWrite) => {
+    const queueEventWrite = (pending: PendingTerminalWrite, replay = false) => {
+      const context = serialContextRef.current;
+      if (context.enabled && !replay) {
+        const timestamp = Date.parse(pending.event.ts);
+        if (Number.isFinite(timestamp) && Number.isFinite(context.connectedSince)
+          && timestamp >= context.connectedSince && pending.event.annotations?.terminalBytesTruncated !== "true") {
+          pending.serialDetectionKey = context.key;
+        }
+      }
       pendingEventWrites.push(pending);
     };
     const nextEventWriteBatch = (): PendingTerminalWrite[] | null => {
@@ -1583,6 +1629,36 @@ function TerminalCanvas({
         ? concatTerminalWriteBytes(batch.map((pending) => pending.rawBytes!))
         : undefined;
       const eventText = batch.map((pending) => pending.event.text ?? "").join("");
+      // Consume each admitted inbound packet once, in render order. Historical
+      // replays, truncated frames and old-connection packets are not evidence.
+      const context = serialContextRef.current;
+      if (serialDetectorKey !== context.key) {
+        serialColumnDetector.reset();
+        serialDetectorKey = context.key;
+      }
+      let observedColumns: number | null | undefined;
+      if (context.enabled) for (const pending of batch) {
+        if (pending.event.direction !== "inbound") continue;
+        if (pending.serialDetectionKey === context.key
+          && term.buffer.active.type === "normal"
+          && (pending.event.stream === "stdout" || pending.event.stream === "stderr")) {
+          observedColumns = serialColumnDetector.observe(
+            pending.rawBytes ?? pending.event.text ?? "", performance.now(),
+          )?.columns ?? null;
+        } else {
+          serialColumnDetector.reset();
+          observedColumns = null;
+        }
+      }
+      if (observedColumns !== undefined) {
+        const current = serialSuggestionRef.current;
+        if (observedColumns === null ? current !== null
+          : current?.key !== context.key || current.columns !== observedColumns) {
+          const next = observedColumns === null ? null : { key: context.key, columns: observedColumns };
+          serialSuggestionRef.current = next;
+          setSerialSuggestion(next);
+        }
+      }
       const event = { ...last.event, text: eventText };
       eventWriteActive = true;
       const beforeBuffer = term.buffer.active;
@@ -1692,6 +1768,11 @@ function TerminalCanvas({
     };
     const writeEvent = (event: SessionEvent, awaitRaw = false, replay = false) => {
       if (!event.id) return false;
+      if (event.direction === "outbound"
+        && event.annotations.origin !== "interactive"
+        && event.annotations.origin !== "interactive-write-worker") {
+        invalidateExternalInputState();
+      }
       if (seenEventsRef.current.has(event.id)) return false;
       if (!replayBoundary.accept(event, replay)) return false;
       const isLiveInboundText = event.direction === "inbound"
@@ -1702,9 +1783,9 @@ function TerminalCanvas({
         const pending: PendingTerminalWrite = { event, waitingForRaw: true };
         pending.fallbackTimer = window.setTimeout(() => enqueueFallback(pending), TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS);
         pendingTextEvents.set(event.id, pending);
-        queueEventWrite(pending);
+        queueEventWrite(pending, replay);
       } else {
-        queueEventWrite({ event });
+        queueEventWrite({ event }, replay);
       }
       scheduleEventWriteDrain();
       return true;
@@ -1750,7 +1831,7 @@ function TerminalCanvas({
         };
         if (!replayBoundary.accept(syntheticEvent, replay && !cachedState)) return false;
         if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, syntheticEvent.id)) return false;
-        queueEventWrite({ event: syntheticEvent, rawBytes });
+        queueEventWrite({ event: syntheticEvent, rawBytes }, replay);
         scheduleEventWriteDrain();
         applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, syntheticEvent));
         return true;
@@ -1769,11 +1850,11 @@ function TerminalCanvas({
         text: bytesEvent.truncated
           ? "PortMate: terminal byte frame was truncated; omitted bytes were not rendered.\r\n"
           : fastPathTextDecoder.decode(rawBytes, { stream: true }),
-        annotations: { "terminalBytesFastPath": "true" },
+        annotations: { "terminalBytesFastPath": "true", terminalBytesTruncated: String(bytesEvent.truncated) },
       };
       if (!replayBoundary.accept(event, replay && !cachedState)) return false;
       if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, eventId)) return false;
-      queueEventWrite(bytesEvent.truncated ? { event } : { event, rawBytes });
+      queueEventWrite(bytesEvent.truncated ? { event } : { event, rawBytes }, replay);
       scheduleEventWriteDrain();
       return true;
     };
@@ -1782,6 +1863,11 @@ function TerminalCanvas({
     for (const { event, replay } of deferredBytes) writeTerminalBytes(event, replay);
     const writeTerminalLive = (packet: TerminalLiveEvent, replay = false) => {
       if (packet.event.sessionId !== active.profile.id) return false;
+      if (packet.event.direction === "outbound"
+        && packet.event.annotations.origin !== "interactive"
+        && packet.event.annotations.origin !== "interactive-write-worker") {
+        invalidateExternalInputState();
+      }
       const pendingText = pendingTextEvents.get(packet.event.id);
       if (pendingText) {
         if (pendingText.fallbackTimer !== undefined) window.clearTimeout(pendingText.fallbackTimer);
@@ -1790,6 +1876,7 @@ function TerminalCanvas({
           ...packet.event,
           annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" },
         };
+        if (packet.truncated) pendingText.serialDetectionKey = undefined;
         enqueueFallback(pendingText, !packet.truncated);
         return true;
       }
@@ -1802,13 +1889,13 @@ function TerminalCanvas({
         ? {
           ...packet.event,
           text: packet.event.text || "PortMate: terminal byte frame was truncated; omitted bytes were not rendered.\r\n",
-          annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" },
+          annotations: { ...packet.event.annotations, terminalBytesCanonical: "true", terminalBytesTruncated: "true" },
         }
         : { ...packet.event, annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" } };
       const rawBytes = packet.event.direction === "inbound" && !packet.truncated
         ? Uint8Array.from(packet.bytes)
         : undefined;
-      queueEventWrite(rawBytes ? { event, rawBytes } : { event });
+      queueEventWrite(rawBytes ? { event, rawBytes } : { event }, replay);
       scheduleEventWriteDrain();
       if (packet.event.direction === "inbound") {
         applyOneKeyPromptState(reduceOneKeyPromptDetection(oneKeyPromptStateRef.current, event));
@@ -2168,6 +2255,7 @@ function TerminalCanvas({
         dismissOneKeyPrompt();
       }
     };
+    let pasteInput = false;
     const inputDisposable = term.onData((text) => {
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       const mouseReport = isTerminalMouseReport(text);
@@ -2192,14 +2280,8 @@ function TerminalCanvas({
         inputOrigin,
         sensitive ? { sensitive: true } : undefined,
       );
-      const submittedCommands = updateCompletionInput(text, sensitive);
-      if (term.buffer.active.type === "normal"
-        && submittedCommands.length
-        && !sensitive) {
-        for (const command of submittedCommands) {
-          onCommandSubmitRef.current?.(active.profile.id, command);
-        }
-      }
+      trackCommandSubmission(text, pasteInput ? "paste" : "interactive", sensitive);
+      updateCompletionInput(text, sensitive);
       if (sensitive && terminalPrivateInputEndsLine(text)) commitPrivateInputLine(false);
       if (sensitive && /[\r\n\u0003]$/.test(text)) clearPrivateInput();
       dismissOneKeyPrompt();
@@ -2220,21 +2302,12 @@ function TerminalCanvas({
       event.preventDefault();
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       void navigator.clipboard?.readText().then((text) => {
-        if (text) {
+        if (text && !terminalDisposed && focusedRef.current && keyModeRef.current === "remote") {
           resetCompletionInput(false);
-          dismissOneKeyPrompt();
-          const sensitive = manualPrivateInputRef.current || privateInputLineRef.current || terminalInputLooksSensitive(
-            term,
-            oneKeyPromptStateRef.current.prompt,
-          );
-          if (sensitive) commitPrivateInputLine(!terminalPrivateInputEndsLine(text));
-          void onInputRef.current(
-            active.profile.id,
-            text,
-            "atomic",
-            sensitive ? { sensitive: true } : undefined,
-          );
-          if (sensitive && /[\r\n\u0003]$/.test(text)) clearPrivateInput();
+          // xterm normalizes line endings and honors bracketed paste. Its
+          // synchronous onData event is the only input/history dispatch path.
+          pasteInput = true;
+          try { term.paste(text); } finally { pasteInput = false; }
         }
       }).catch(() => {});
     };
@@ -2245,6 +2318,8 @@ function TerminalCanvas({
     };
     const pauseCompletionOnPaste = () => {
       resetCompletionInput(false);
+      pasteInput = true;
+      queueMicrotask(() => { pasteInput = false; });
     };
     const forceBlockSelection = (event: MouseEvent) => {
       if (!blockSelectionRef.current || event.altKey || event.button !== 0 || !event.target) return;
@@ -2273,6 +2348,7 @@ function TerminalCanvas({
 
     return () => {
       terminalDisposed = true;
+      if (serialColumnDetectorRef.current === serialColumnDetector) serialColumnDetectorRef.current = null;
       writeTerminalLiveRef.current = null;
       window.cancelAnimationFrame(readyFrame);
       window.removeEventListener("resize", handleWindowResize);
@@ -2377,6 +2453,18 @@ function TerminalCanvas({
       termRef.current = null;
     };
   }, [active?.profile.id, stateCacheKey, viewId]);
+
+  useEffect(() => {
+    serialColumnDetectorRef.current?.reset();
+    serialSuggestionRef.current = null;
+    setSerialSuggestion(null);
+    setDismissedSerialSuggestion(null);
+    setSerialColumnsOverride(current => current?.key === serialContextKey ? current : null);
+  }, [serialContextKey]);
+
+  useEffect(() => {
+    if (serialKeyModeRef.current) fitAndReportRef.current();
+  }, [serialContextKey, serialColumns]);
 
   useEffect(() => {
     setTimestampViewport(emptyTerminalTimestampViewport);
@@ -2631,6 +2719,7 @@ function TerminalCanvas({
   }, [active?.profile.id, focused, viewId]);
 
   useEffect(() => {
+    terminalInputControllerRef.current?.reset();
     resetCompletionInput();
     commitPrivateInputLine(false);
     clearPrivateInput();
@@ -2645,6 +2734,11 @@ function TerminalCanvas({
       window.clearTimeout(privateInputTimerRef.current);
     }
   }, []);
+
+  useEffect(() => {
+    // A pending line belongs to one transport connection, never its reconnect.
+    terminalInputControllerRef.current?.reset();
+  }, [active?.profile.id, active?.runtime.connectedSince, active?.runtime.status]);
 
   useEffect(() => {
     const previousMode = previousKeyModeRef.current;
@@ -2881,6 +2975,39 @@ function TerminalCanvas({
             />
           </div>
           <div className={`terminal-workspace mode-${displayMode}`}>
+            {serialContextRef.current.enabled && displayMode !== "hex" && timestampViewport.bufferType === "normal"
+              && (serialColumnSuggestion || serialColumns !== configuredSerialColumns) ? (
+              <aside className="terminal-serial-columns-hint" aria-label="串口被动列宽识别">
+                {serialColumnSuggestion ? <>
+                  <span role="status">回显推测 {serialColumnSuggestion} 列，当前 {serialColumns} 列</span>
+                  <button type="button" title="仅调整本视图，不修改设备或会话配置；不会修复已有错位内容，重连后重新识别" onClick={() => {
+                    const term = termRef.current;
+                    if (!focusedRef.current || !term || term.buffer.active.type !== "normal"
+                      || !serialColumnSuggestion || serialSuggestion?.key !== serialContextRef.current.key
+                      || modalBlocksTerminalCommand(hostRef.current)) return;
+                    if (serialColumnDetectorRef.current?.observe("", performance.now())?.columns !== serialColumnSuggestion) {
+                      serialSuggestionRef.current = null;
+                      setSerialSuggestion(null);
+                      return;
+                    }
+                    setSerialColumnsOverride({ key: serialContextRef.current.key, columns: serialColumnSuggestion });
+                    term.focus();
+                  }}>应用 {serialColumnSuggestion} 列</button>
+                  <button type="button" aria-label="忽略列宽建议" title="本次连接不再提示此列数" onClick={() => {
+                    if (!focusedRef.current || modalBlocksTerminalCommand(hostRef.current)) return;
+                    setDismissedSerialSuggestion({ key: serialContextRef.current.key, columns: serialColumnSuggestion });
+                  }}><X size={12} /></button>
+                </> : <span>本视图已适配 {serialColumns} 列</span>}
+                {serialColumns !== configuredSerialColumns ? <button type="button" title={`恢复会话配置的 ${configuredSerialColumns} 列`} onClick={() => {
+                  const term = termRef.current;
+                  if (!focusedRef.current || !term || term.buffer.active.type !== "normal"
+                    || modalBlocksTerminalCommand(hostRef.current)) return;
+                  setDismissedSerialSuggestion({ key: serialContextRef.current.key, columns: serialColumns });
+                  setSerialColumnsOverride(null);
+                  term.focus();
+                }}>恢复配置列数</button> : null}
+              </aside>
+            ) : null}
             <div className={`terminal-terminal-region${focused && freeInputOpen ? " free-input-open" : ""}`} aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
               <div
                 className="terminal-timestamp-gutter"
@@ -2910,6 +3037,8 @@ function TerminalCanvas({
               <div
                 ref={hostRef}
                 className={`terminal-host${active.profile.connection.kind === "serial" ? " terminal-host-serial" : ""}`}
+                data-terminal-serial-suggested-columns={serialColumnSuggestion ?? undefined}
+                data-terminal-serial-configured-columns={serialKeyModeRef.current ? configuredSerialColumns : undefined}
                 inert={displayMode === "hex" || freeInputOpen || gotoLineOpen}
                 style={{ transform: completionShiftTransform }}
               />
