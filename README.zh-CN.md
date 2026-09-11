@@ -81,6 +81,8 @@ PortMate 本身不内置 AI 助手；随包提供的 `portmate-mcp` bridge 是�
 - 当前主要实机开发与验收环境：Linux + VMware。
 - 终端基于 `@xterm/xterm` 6，包含 Search、Serialize、Unicode 11、Clipboard、Web Links、Fit 和按需 WebGL 支持。
 - 串口固定使用「会话设置 → 终端 → 列」的列宽，窗口缩放和字号调整不改变换行边界；窄窗口可横向滚动。该列数须与设备终端一致（可在设备上用 `stty size` 查看），PortMate 不会自动发送 `stty`。既有配置若曾被窗口尺寸覆盖，请手动校正，以免长命令跨行删除错位。
+- 串口支持被动列宽建议：在正常屏幕的 Shell 回显中，检测到两次一致的 Readline 风格跨行重绘后显示推测列数。点击「应用 N 列」只适配当前视图，可忽略建议或恢复配置列数；重连、切换会话、手动修改列数后重新识别。不会发送探测命令或保存推测值，也不会修复已有错位内容。历史回放、alternate screen 和证据不足的设备不会触发建议，此功能不是通用尺寸协商。
+- 命令历史记录可识别的终端编辑和提交后的粘贴命令，桌面与 MCP 共用历史开关、条数和保留天数。MCP `run_command` 在发送成功后记录；`send_text` 只记录本次文本中以 CR/LF 结束的完整行，不记录未提交片段和编辑控制序列。终端隐私输入不记录，bracketed paste 需等待真正回车提交。历史保存失败不影响已成功的 MCP 发送。
 - SSH/SFTP/SCP、Telnet/TCP、vttest、全屏程序和多个 Tmux 版本均有自动化兼容矩阵。
 - MCP 回归覆盖 TypeScript、Python、Go、Rust、Ruby、Java、Kotlin、C# 和 Swift 官方 SDK。
 - Linux DEB、RPM 和 AppImage 已有本地打包与包内生命周期门禁；Windows 和 macOS 仍需原生 runner 的成功证据。

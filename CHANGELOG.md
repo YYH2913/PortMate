@@ -6,6 +6,32 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Added
+
+- Command history now captures commands finalized after serial-side line
+  editing (cursor movement, backspace, delete and Enter) and successful MCP
+  `run_command` submissions. MCP `send_text` records only complete CR/LF-terminated
+  lines in the current payload, excluding unfinished fragments and editor controls.
+  Desktop and MCP writers share a persisted enabled/limit/retention policy;
+  history persistence failures do not turn a successful send into an error.
+- Serial terminals passively detect repeated wrapped-line redraws and offer a
+  suggested device column width. Applying the suggestion changes only the
+  current terminal view and never sends a probe command to the device. Two
+  matching Readline-style observations are required; historical replay and
+  alternate-screen output are excluded. Hints can be dismissed, applied widths
+  can be reverted, and reconnect/profile changes reset detection and adaptation.
+
+### Fixed
+
+- Centralized command submission recording with explicit input sources. Completion
+  only maintains suggestions, so Enter no longer records the same command twice.
+- Middle-click paste now uses xterm's normal input path, including newline conversion,
+  private-input checks and bracketed paste (which waits for a real Enter).
+- Command-line tracking recognizes actual Delete CSI, fragmented CSI/SS3 sequences
+  and non-BMP characters, and resets on connection replacement.
+- Added browser regressions for removing revoked or missing script clients and
+  saving the cleaned allowlist; removal controls now have explicit accessible names.
+
 ## [0.1.9] - 2026-09-09
 
 ### Changed
