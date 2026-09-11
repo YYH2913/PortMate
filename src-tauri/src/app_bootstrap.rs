@@ -49,6 +49,7 @@ pub fn run() {
             session_terminal::run_command,
             session_terminal::resize_session,
             command_history_commands::list_command_history,
+            command_history_commands::configure_command_history,
             command_history_commands::migrate_command_history,
             command_history_commands::record_command_history,
             command_history_commands::merge_command_history,

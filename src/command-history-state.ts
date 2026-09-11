@@ -1,3 +1,5 @@
+import type { CommandSubmissionSource } from "./command-submission";
+
 export const COMMAND_HISTORY_STORAGE_KEY = "portmate.commandHistory";
 export const COMMAND_HISTORY_VERSION = 3;
 export const DEFAULT_COMMAND_HISTORY_LIMIT = 10_000;
@@ -13,7 +15,7 @@ export type CommandHistoryEntry = {
   sessionId: string | null;
 };
 
-export type PendingCommandHistoryEntry = Pick<CommandHistoryEntry, "command" | "sessionId">;
+export type PendingCommandHistoryEntry = Pick<CommandHistoryEntry, "command" | "sessionId"> & { source?: CommandSubmissionSource };
 
 export type CommandHistoryPolicy = {
   limit: number;
@@ -106,6 +108,7 @@ export function queuePendingCommandHistory(
   policy: CommandHistoryPolicy,
   now = Date.now(),
   sessionId: string | null = null,
+  source?: CommandSubmissionSource,
 ): PendingCommandHistoryEntry[] {
   const valid = normalizeCommandHistoryCommand(command);
   if (!valid) return [...current];
@@ -115,7 +118,7 @@ export function queuePendingCommandHistory(
       ...current.filter((item) => (
         item.command !== valid || item.sessionId !== normalizedSessionId
       )),
-      { command: valid, sessionId: normalizedSessionId },
+      { command: valid, sessionId: normalizedSessionId, ...(source ? { source } : {}) },
     ],
     policy,
     now,
@@ -135,10 +138,15 @@ export function normalizePendingCommandHistory(
       sessionId: typeof item === "string" ? null : item.sessionId,
       recordedAt: Math.max(0, now - index),
     }));
+  const sources = new Map(current.filter((item): item is PendingCommandHistoryEntry => typeof item !== "string")
+    .map((item) => [commandHistoryIdentity(item.command, item.sessionId), item.source]));
   return normalizeCommandHistory({
     version: COMMAND_HISTORY_VERSION,
     entries: candidates,
-  }, policy, now).reverse().map(({ command, sessionId }) => ({ command, sessionId }));
+  }, policy, now).reverse().map(({ command, sessionId }) => {
+    const source = sources.get(commandHistoryIdentity(command, sessionId));
+    return { command, sessionId, ...(source ? { source } : {}) };
+  });
 }
 
 export function commandHistoryEntriesForSession(

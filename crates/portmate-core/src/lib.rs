@@ -43,7 +43,7 @@ pub use redaction::{
     redact_session_summary, redact_sysmon_snapshot, redact_timeline_marks, redact_transfer_task,
 };
 pub use store::{
-    normalize_session_disconnect_reason, SessionStore, MAX_COMMAND_HISTORY_COMMAND_CHARACTERS,
+    normalize_session_disconnect_reason, CommandHistoryPolicy, SessionStore, MAX_COMMAND_HISTORY_COMMAND_CHARACTERS,
     MAX_COMMAND_HISTORY_ENTRIES, MAX_COMMAND_HISTORY_RETENTION_DAYS,
     MAX_COMMAND_HISTORY_STORAGE_BYTES, MAX_SESSION_DISCONNECT_REASON_CHARACTERS,
     MAX_SESSION_PROFILES,

@@ -181,13 +181,19 @@ async fn execute_ipc_request_inner(
             )?;
             let event = send_text_inner_with_context_and_validation(
                 state.session_io(),
-                session_id,
-                text,
+                session_id.clone(),
+                text.clone(),
                 &actor,
                 None,
                 Some(validation),
             )
             .await?;
+            if let Err(error) = super::command_history_commands::record_command_submission(
+                &state, text, Some(session_id),
+                super::command_history_commands::CommandSubmissionSource::McpSendText,
+            ) {
+                eprintln!("PortMate: MCP command history persistence failed: {error}");
+            }
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "send_key" => {
@@ -245,7 +251,7 @@ async fn execute_ipc_request_inner(
                 ensure_shell_profile(&state.store, &session_id)?;
             }
             let command = ipc_string_arg(&request.args, "command")?.to_string();
-            let text = terminate_command_for_session(command, &state.store, &session_id)?;
+            let text = terminate_command_for_session(command.clone(), &state.store, &session_id)?;
             let actor = mcp_audit_actor(&request.client_id);
             let validation = mcp_commit_validation(
                 &state,
@@ -255,13 +261,19 @@ async fn execute_ipc_request_inner(
             )?;
             let event = run_command_inner_with_context_and_validation(
                 state.session_io(),
-                session_id,
+                session_id.clone(),
                 text,
                 &actor,
                 None,
                 Some(validation),
             )
             .await?;
+            if let Err(error) = super::command_history_commands::record_command_submission(
+                &state, command, Some(session_id),
+                super::command_history_commands::CommandSubmissionSource::McpRunCommand,
+            ) {
+                eprintln!("PortMate: MCP command history persistence failed: {error}");
+            }
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "run_custom_script" => {

@@ -47,6 +47,10 @@ import {
   recordCommandHistory,
 } from "./command-history-state";
 import type { CommandHistoryEntry, PendingCommandHistoryEntry } from "./command-history-state";
+import { recordCommandSubmission } from "./command-submission";
+import type { CommandSubmitHandler, CommandSubmissionSource } from "./command-submission";
+import { emptyTerminalCommandLineTracker, trackTerminalCommandInput } from "./terminal-command-line-tracker";
+import type { TerminalCommandLineTrackerState } from "./terminal-command-line-tracker";
 import { mergeTransfers } from "./transfer-state";
 import { addDismissedTransferId } from "./transfer-visibility";
 import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
@@ -542,8 +546,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   // event handlers current without forcing every pane to rerender when an
   // unrelated dialog, transfer, or audit state changes.
   const terminalPaneOnInput = useStableEvent(routeTerminalInput);
-  const terminalPaneOnCommandSubmit = useStableEvent((sessionId: string, command: string) => {
-    rememberCommand(command, sessionId);
+  const syncCommandTrackersRef = useRef(new Map<string, TerminalCommandLineTrackerState>());
+  const terminalPaneOnCommandSubmit = useStableEvent((sessionId: string, command: string, source: CommandSubmissionSource) => {
+    rememberCommand(command, sessionId, source);
   });
   const terminalPaneOnOneKeyCompletion = useStableEvent(completeOneKeyPrompt);
   const terminalPaneOnKeyModeChange = useStableEvent((paneId: string, viewId: string, mode: TerminalKeyMode) => {
@@ -650,12 +655,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function invalidateTerminalInputSession(sessionId: string) {
+    syncCommandTrackersRef.current.delete(sessionId);
     if (sendTargetsRef.current.has(sessionId)) sendCancellationRef.current?.abort();
     deletedTerminalInputSessionsRef.current.add(sessionId);
     terminalInputEpochsRef.current.set(sessionId, (terminalInputEpochsRef.current.get(sessionId) ?? 0) + 1);
   }
 
   function advanceTerminalInputEpoch(sessionId: string) {
+    syncCommandTrackersRef.current.delete(sessionId);
     if (sendTargetsRef.current.has(sessionId)) sendCancellationRef.current?.abort();
     terminalInputEpochsRef.current.set(
       sessionId,
@@ -730,7 +737,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ));
       if (index >= 0) pendingCommandHistoryRef.current.splice(index, 1);
     }
-    if (!commandHistoryEnabledRef.current) return;
+    if (!commandHistoryEnabledRef.current) {
+      commandHistoryEntriesRef.current = [];
+      setCommandHistoryEntries((current) => current.length ? [] : current);
+      return;
+    }
     let entries = normalizeCommandHistory(
       { version: 3, entries: Array.isArray(snapshot.entries) ? snapshot.entries : [] },
       commandHistoryPolicyRef.current,
@@ -1368,10 +1379,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         console.warn("PortMate command history live synchronization failed", error);
       }
       try {
-        const initial = await invokeBackend<CommandHistorySnapshot>("list_command_history", {
+        const initialSettings = {
+          enabled: commandHistoryEnabledRef.current,
           limit: commandHistoryPolicyRef.current.limit,
           retentionDays: commandHistoryPolicyRef.current.retentionDays,
-        });
+        };
+        await invokeBackend("configure_command_history", initialSettings);
+        commandHistoryPersistedSettingsRef.current = initialSettings;
+        const initial = await invokeBackend<CommandHistorySnapshot>("list_command_history", {});
         if (disposed) return;
         const snapshot = initial.migrated
           ? await invokeBackend<CommandHistorySnapshot>("merge_command_history", {
@@ -1396,8 +1411,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
               command: pending.command,
               sessionId: pending.sessionId,
-              limit: commandHistoryPolicyRef.current.limit,
-              retentionDays: commandHistoryPolicyRef.current.retentionDays,
+              source: pending.source ?? "interactive",
             }),
             pending,
           );
@@ -1463,17 +1477,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     let disposed = false;
     queueMicrotask(() => {
       if (disposed) return;
+      const historyDisabled = !terminalPrefs.historyEnabled;
+      if (historyDisabled) {
+        pendingCommandHistoryRef.current = [];
+        commandHistoryEntriesRef.current = [];
+        setCommandHistoryEntries((current) => current.length ? [] : current);
+        try { window.localStorage.removeItem(COMMAND_HISTORY_STORAGE_KEY); } catch { /* best effort */ }
+      }
       pendingCommandHistoryRef.current = terminalPrefs.historyEnabled
         ? normalizePendingCommandHistory(
           pendingCommandHistoryRef.current,
           commandHistoryPolicy,
         )
         : [];
-      const normalized = normalizeCommandHistory(
+      const normalized = historyDisabled ? [] : normalizeCommandHistory(
         commandHistorySnapshot(commandHistoryEntries),
         commandHistoryPolicy,
       );
-      if (!commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
+      if (!historyDisabled && !commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
         commandHistoryEntriesRef.current = normalized;
         setCommandHistoryEntries(normalized);
         return;
@@ -1496,22 +1517,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       };
       const previous = commandHistoryPersistedSettingsRef.current;
       commandHistoryPersistedSettingsRef.current = settings;
-      if (!previous) return;
-      if (!settings.enabled) {
-        if (previous.enabled) {
-          enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("clear_command_history", {}));
-        }
-      } else if (!previous.enabled) {
-        enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("merge_command_history", {
-          entries: normalized,
-          limit: settings.limit,
-          retentionDays: settings.retentionDays,
-        }));
-      } else if (previous.limit !== settings.limit || previous.retentionDays !== settings.retentionDays) {
-        enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("normalize_command_history", {
-          limit: settings.limit,
-          retentionDays: settings.retentionDays,
-        }));
+      if (!previous || previous.enabled !== settings.enabled
+        || previous.limit !== settings.limit || previous.retentionDays !== settings.retentionDays) {
+        enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("configure_command_history", settings));
       }
     });
     return () => { disposed = true; };
@@ -3913,12 +3921,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     // Credentials and other explicitly private input must stay on the source
     // session even when synchronized input is enabled.
     if (options?.sensitive) {
+      syncCommandTrackersRef.current.set(sessionId,
+        trackTerminalCommandInput(emptyTerminalCommandLineTracker(), text, true).state);
       return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
     }
     // When synchronization is disabled, keep each session on its dedicated
     // pump so an external atomic send cannot overtake queued keystrokes or
     // wait behind the broadcast FIFO.
     if (!broadcastEnabled) {
+      syncCommandTrackersRef.current.clear();
       return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
     }
     const settings = syncInputSettingsRef.current;
@@ -3940,8 +3951,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       applyAffixes: origin !== "interactive",
       settings,
       candidates,
-    }, (targetId, payload) => {
-      return directInputPumpRef.current?.dispatch(targetId, payload, origin, options);
+    }, async (targetId, payload) => {
+      const inputEpoch = captureTerminalInputEpoch(targetId);
+      const connectedSince = sessionsRef.current.find(s => s.profile.id === targetId)?.runtime.connectedSince;
+      try {
+        await directInputPumpRef.current?.dispatch(targetId, payload, origin, options);
+      } catch (error) {
+        syncCommandTrackersRef.current.set(targetId, { ...emptyTerminalCommandLineTracker(), synchronized: false });
+        throw error;
+      }
+      if (inputEpoch === null || !terminalInputIsCurrent(targetId, inputEpoch)
+        || connectedSince !== sessionsRef.current.find(s => s.profile.id === targetId)?.runtime.connectedSince) {
+        syncCommandTrackersRef.current.delete(targetId);
+        return;
+      }
+      const tracked = trackTerminalCommandInput(
+        syncCommandTrackersRef.current.get(targetId) ?? emptyTerminalCommandLineTracker(),
+        origin === "command" ? `${payload}\r` : payload,
+      );
+      syncCommandTrackersRef.current.set(targetId, tracked.state);
+      if (targetId !== sessionId) {
+        for (const command of tracked.submitted) recordCommandSubmission(
+          terminalPaneOnCommandSubmit, targetId, command, "sync-broadcast",
+        );
+      }
     }, () => syncInputRef.current).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
@@ -4164,7 +4197,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (failure?.status === "rejected") throw cancellation.signal.reason ?? failure.reason;
       }, undefined, undefined, { signal: cancellation.signal });
       if (sendModeSnapshot === "text" && textPayload.trim()) {
-        for (const target of targets) rememberCommand(textPayload, target);
+        for (const target of targets) {
+          recordCommandSubmission(terminalPaneOnCommandSubmit, target, textPayload, "send-panel");
+        }
       }
     } catch (error) {
       if (sendOperationGateRef.current.isCurrent("send", sendToken)) setNotice(cancellation.signal.aborted && cancellation.signal.reason?.name === "AbortError"
@@ -4189,13 +4224,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (command.appendEnter && command.command.trim()) {
-      rememberCommand(command.command, active.profile.id);
+      recordCommandSubmission(terminalPaneOnCommandSubmit, active.profile.id, command.command, "quick-command");
     }
     const dispatch = quickCommandDispatch(command);
     void routeTerminalInput(active.profile.id, dispatch.text, dispatch.origin);
   }
 
-  function rememberCommand(command: string, sessionId: string | null = activeIdRef.current || null) {
+  function rememberCommand(command: string, sessionId: string | null, source: CommandSubmissionSource) {
     if (!commandHistoryEnabledRef.current) return;
     const valid = normalizeCommandHistoryCommand(command);
     if (!valid) return;
@@ -4219,15 +4254,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       commandHistoryPolicyRef.current,
       Date.now(),
       normalizedSessionId,
+      source,
     );
     if (!commandHistoryBackendReadyRef.current) return;
-    const pending = { command: valid, sessionId: normalizedSessionId };
+    const pending = { command: valid, sessionId: normalizedSessionId, source };
     enqueueCommandHistoryOperation(
       () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
         command: valid,
         sessionId: normalizedSessionId,
-        limit: commandHistoryPolicyRef.current.limit,
-        retentionDays: commandHistoryPolicyRef.current.retentionDays,
+        source,
       }),
       pending,
     );
@@ -5610,7 +5645,7 @@ function TerminalPaneGrid({
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ) => void | Promise<void>;
-  onCommandSubmit: (sessionId: string, command: string) => void;
+  onCommandSubmit: CommandSubmitHandler;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -5706,7 +5741,7 @@ type TerminalWorkspaceNodeProps = {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ) => void | Promise<void>;
-  onCommandSubmit: (sessionId: string, command: string) => void;
+  onCommandSubmit: CommandSubmitHandler;
   onOneKeyCompletion: (
     sessionId: string,
     oneKeyId: string,
@@ -6085,7 +6120,7 @@ type TerminalCanvasProps = {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ) => void | Promise<void>;
-  onCommandSubmit?: (sessionId: string, command: string) => void;
+  onCommandSubmit?: CommandSubmitHandler;
   onOneKeyCompletion?: (
     sessionId: string,
     oneKeyId: string,

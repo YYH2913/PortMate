@@ -4,6 +4,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { AsyncOperationQueue } from "./async-operation-queue";
+import type { CommandSubmissionSource } from "./command-submission";
 import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
 import {
   COMMAND_HISTORY_STORAGE_KEY,
@@ -91,6 +92,23 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   useEffect(() => {
     document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
   }, [request.title, session?.profile.name]);
+
+  useEffect(() => {
+    if (!isBackendAvailable()) return;
+    const policy = normalizeCommandHistoryPolicy(
+      terminalInteractionPrefs.completionSettings.historyLimit,
+      terminalInteractionPrefs.completionSettings.historyRetentionDays,
+    );
+    void invokeBackend("configure_command_history", {
+      enabled: terminalInteractionPrefs.historyEnabled,
+      limit: policy.limit,
+      retentionDays: policy.retentionDays,
+    }).catch((error) => {
+      console.warn("PortMate detached command history policy synchronization failed", error);
+    });
+  }, [request.sessionId, terminalInteractionPrefs.historyEnabled,
+    terminalInteractionPrefs.completionSettings.historyLimit,
+    terminalInteractionPrefs.completionSettings.historyRetentionDays]);
 
   useEffect(() => {
     window.history.replaceState(null, "", buildDetachedPanePath({ ...request, keyMode }));
@@ -274,7 +292,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     return directInputPumpRef.current?.enqueue(sessionId, text, origin, options);
   }
 
-  function rememberDetachedCommand(sessionId: string, command: string) {
+  function rememberDetachedCommand(sessionId: string, command: string, source: CommandSubmissionSource) {
     if (!terminalInteractionPrefs.historyEnabled) return;
     const policy = normalizeCommandHistoryPolicy(
       terminalInteractionPrefs.completionSettings.historyLimit,
@@ -293,8 +311,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         const snapshot = await invokeBackend<CommandHistorySnapshot>("record_command_history", {
           command,
           sessionId,
-          limit: policy.limit,
-          retentionDays: policy.retentionDays,
+          source,
         });
         const canonical = normalizeCommandHistory(
           { version: 3, entries: snapshot.entries },

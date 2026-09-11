@@ -55,6 +55,7 @@ mod app_migration_tests;
 mod archive_tests;
 #[path = "command_type_tests.rs"]
 mod command_type_tests;
+mod command_history_tests;
 #[path = "connection_config_tests.rs"]
 mod connection_config_tests;
 #[path = "custom_script_tests.rs"]

@@ -45,6 +45,8 @@ pub struct SessionStore {
     #[serde(default)]
     pub command_history_revision: u64,
     #[serde(default)]
+    pub command_history_policy: CommandHistoryPolicy,
+    #[serde(default)]
     pub one_keys: Vec<OneKeyCredential>,
     #[serde(default, rename = "hostScripts")]
     pub custom_scripts: Vec<CustomScript>,
@@ -65,6 +67,21 @@ pub struct SessionStore {
     /// clone-then-persist-then-swap transaction pattern.
     #[serde(skip)]
     system_event_sink: SystemEventSinkRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandHistoryPolicy {
+    pub enabled: bool,
+    pub limit: usize,
+    pub retention_days: u32,
+}
+
+impl Default for CommandHistoryPolicy {
+    fn default() -> Self {
+        // Until the desktop synchronizes its preferences, do not collect MCP input.
+        Self { enabled: false, limit: 10_000, retention_days: 30 }
+    }
 }
 
 #[cfg(test)]

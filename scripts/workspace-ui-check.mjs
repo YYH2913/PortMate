@@ -7,6 +7,8 @@ import { checkHostScripts } from "./host-script-regressions.mjs";
 import { checkTerminalFontZoom } from "./terminal-font-zoom-regressions.mjs";
 import { checkSerialLogin } from "./serial-login-regressions.mjs";
 import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
+import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
+import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -639,13 +641,30 @@ try {
         }
         if (command === "plugin:path|join") return args.paths.join("/").replace(/\/{2,}/g, "/");
         if (command === "list_sessions") {
-          if (!window.__deferSessionLists) return window.__sessions;
+          // Real IPC deserializes a fresh snapshot. Returning the mutable fixture
+          // hides reconnect changes from React's state identity checks.
+          if (!window.__deferSessionLists) return structuredClone(window.__sessions);
           return new Promise((resolve) => {
             window.__pendingSessionLists.push({ result: structuredClone(window.__sessions), resolve });
           });
         }
         if (command === "list_command_history") {
           return structuredClone(window.__commandHistory);
+        }
+        if (command === "configure_command_history") {
+          window.__commandHistoryPolicy = structuredClone(args);
+          const cutoff = args.retentionDays ? Date.now() - args.retentionDays * 86_400_000 : -Infinity;
+          const entries = args.enabled
+            ? window.__commandHistory.entries.filter(entry => entry.recordedAt >= cutoff).slice(0, args.limit)
+            : [];
+          if (JSON.stringify(entries) !== JSON.stringify(window.__commandHistory.entries)) {
+            window.__commandHistory.entries = entries;
+            window.__commandHistory.revision += 1;
+          }
+          if (!args.enabled) window.__commandHistory.migrated = true;
+          const snapshot = structuredClone(window.__commandHistory);
+          window.__emitTauriEvent("portmate-command-history-updated", snapshot);
+          return snapshot;
         }
         if (command === "migrate_command_history") {
           if (!window.__commandHistory.migrated) {
@@ -670,13 +689,14 @@ try {
           return snapshot;
         }
         if (command === "record_command_history") {
+          if (window.__commandHistoryPolicy?.enabled === false) return structuredClone(window.__commandHistory);
           const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
           window.__commandHistory.entries = [
             { command: args.command, recordedAt: Date.now(), sessionId },
             ...window.__commandHistory.entries.filter((entry) => (
               entry.command !== args.command || (entry.sessionId ?? null) !== sessionId
             )),
-          ].slice(0, args.limit);
+          ].slice(0, window.__commandHistoryPolicy?.limit ?? 10_000);
           window.__commandHistory.migrated = true;
           window.__commandHistory.revision += 1;
           const snapshot = structuredClone(window.__commandHistory);
@@ -1891,6 +1911,19 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_COMMAND_SUBMISSIONS_ONLY === "1") {
+    await checkCommandSubmissions(context, appUrl);
+    await checkHostScripts(context, appUrl, screenshotPrefix);
+    console.log("Command submissions and revoked-client browser regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_SERIAL_COLUMNS_ONLY === "1") {
+    await checkSerialColumnDetection(context, appUrl);
+    console.log("Passive serial column detection browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SERIAL_WRAP_ONLY === "1") {
     await checkSerialWrap(context, appUrl);
     console.log("Serial wrapped-input erase browser regressions passed");
@@ -1922,9 +1955,11 @@ try {
     break checks;
   }
   await checkHostScripts(context, appUrl, screenshotPrefix);
+  await checkCommandSubmissions(context, appUrl);
   await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
   await checkSerialLogin(context, appUrl);
   await checkSerialWrap(context, appUrl);
+  await checkSerialColumnDetection(context, appUrl);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -4538,7 +4573,10 @@ Host staging
     && await page.locator(".terminal-pane .workspace-pane-tab", { hasText: "Bench UART" }).count() === 1,
   "view edge drop did not create one pane per terminal view");
   const activePaneBeforeSwitch = page.locator(".terminal-pane.active");
-  const activeCanvasBeforeSwitch = activePaneBeforeSwitch.locator(".terminal-canvas");
+  // A dropped pane briefly renders the Suspense fallback, which deliberately
+  // has no session identity. Wait for the actual terminal before inspecting it.
+  const activeCanvasBeforeSwitch = activePaneBeforeSwitch.locator(".terminal-canvas[data-terminal-session-id][data-terminal-view-id]");
+  await activeCanvasBeforeSwitch.locator(".terminal-host[data-terminal-ready='true']").waitFor();
   const activeSelectionTarget = {
     sessionId: await activeCanvasBeforeSwitch.getAttribute("data-terminal-session-id"),
     viewId: await activeCanvasBeforeSwitch.getAttribute("data-terminal-view-id"),
