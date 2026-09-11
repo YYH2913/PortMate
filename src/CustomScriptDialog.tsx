@@ -283,7 +283,7 @@ export default function CustomScriptDialog({
                     <label key={client.clientId}><input type="checkbox" disabled={loading || busy} checked={draft.host.allowedClientIds.includes(client.clientId)} onChange={(event) => updateHost({ allowedClientIds: event.target.checked ? [...draft.host.allowedClientIds, client.clientId] : draft.host.allowedClientIds.filter((id) => id !== client.clientId) })} /><span>{client.name}（{client.clientId}）{!client.scopes.includes("run-scripts") ? " · 尚无 run-scripts 授权" : ""}</span></label>
                   ))}
                   {draft.host.allowedClientIds.filter((id) => !clients.some((client) => client.clientId === id && !client.revokedAt)).map((id) => (
-                    <label key={id}><input type="checkbox" checked disabled={loading || busy} onChange={() => updateHost({ allowedClientIds: draft.host.allowedClientIds.filter((value) => value !== id) })} /><span>{id} · 客户端已撤销或不存在，请移除</span></label>
+                    <label key={id}><input type="checkbox" aria-label={"移除客户端 " + id} checked disabled={loading || busy} onChange={() => updateHost({ allowedClientIds: draft.host.allowedClientIds.filter((value) => value !== id) })} /><span>{id} · 客户端已撤销或不存在，请移除</span></label>
                   ))}
                   {!clients.length ? <small>请先在 MCP 管理中创建客户端授权。</small> : null}
                 </div>

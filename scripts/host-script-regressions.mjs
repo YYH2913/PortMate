@@ -5,10 +5,24 @@ export async function checkHostScripts(context, appUrl, screenshotPrefix) {
   const assert = (condition, message) => { if (!condition) throw new Error(message); };
   await page.goto(appUrl);
   await page.waitForSelector('.terminal-host[data-terminal-size] .xterm-screen');
+  await page.evaluate(() => {
+    window.__mcpGrants.push({ ...window.__mcpGrants[0], clientId: "revoked-client", revokedAt: new Date().toISOString() });
+    window.__customScripts[0].host.allowedClientIds.push("revoked-client", "missing-client");
+  });
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.getByRole("button", { name: "自定义脚本", exact: true }).click();
   const dialog = page.locator(".custom-script-dialog");
   await dialog.getByLabel("脚本正文", { exact: true }).waitFor();
+  for (const id of ["revoked-client", "missing-client"]) {
+    const checkbox = dialog.getByRole("checkbox", { name: "移除客户端 " + id, exact: true });
+    assert(await checkbox.isEnabled(), id + " cannot be removed");
+    await checkbox.click();
+    await checkbox.waitFor({ state: "detached" });
+    assert(await checkbox.count() === 0, id + " was not removed from the draft");
+  }
+  await dialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
+  await page.waitForFunction(() => window.__customScripts.every(script =>
+    !script.host.allowedClientIds.includes("revoked-client") && !script.host.allowedClientIds.includes("missing-client")));
   assert(await dialog.getByLabel("运行脚本的会话").count() === 0, "host skills still target terminal sessions");
   await dialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
   assert(await dialog.getByLabel("脚本语言").inputValue() === "python", "new skills must default to Python");
