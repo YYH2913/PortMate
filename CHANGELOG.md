@@ -6,8 +6,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Changed
+
+- Separated MCP client authorization from HTTP transport management. The Grants page
+  owns permissions, session scope, expiration, and revocation; the HTTP page owns the
+  explicit client binding, network settings, Token, connection JSON, and managed service.
+- HTTP setup now saves the selected binding before generating a missing Token and starting
+  the service. Copying connection JSON no longer changes authorization or HTTP settings.
+  Removed legacy automatic Client ID adoption: even a single active grant must be selected
+  explicitly, and revocation never switches the bridge to another client.
+
 ### Added
 
+- Added two-step MCP revocation confirmation, including exact Client ID entry, cancellation,
+  and protection against duplicate submissions while revocation is pending.
 - Command history now captures commands finalized after serial-side line
   editing (cursor movement, backspace, delete and Enter) and successful MCP
   `run_command` submissions. MCP `send_text` records only complete CR/LF-terminated
@@ -31,6 +43,11 @@ or an unsigned artifact is not a production release. The complete release gates 
   and non-BMP characters, and resets on connection replacement.
 - Added browser regressions for removing revoked or missing script clients and
   saving the cleaned allowlist; removal controls now have explicit accessible names.
+- HTTP binding, Token generation, and managed startup now require an active grant.
+  Rebinding invalidates the old Token; revoking the bound identity stops the managed bridge
+  and clears its Token. Cleanup failures are reported without restoring revoked permissions.
+- Preserved unsaved HTTP drafts on failed saves, ignored stale runtime polls after mutations,
+  and kept the authorization footer from obscuring the final instructions.
 
 ## [0.1.9] - 2026-09-09
 

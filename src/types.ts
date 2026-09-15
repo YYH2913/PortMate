@@ -638,6 +638,12 @@ export interface McpHttpAccessResponse {
   token: string | null;
 }
 
+export interface McpGrantMutationResponse {
+  grants: McpGrant[];
+  httpAccessInvalidated: boolean;
+  warnings: string[];
+}
+
 export type McpHttpRuntimePhase = "stopped" | "starting" | "running" | "failed";
 
 export interface McpHttpRuntimeStatus {

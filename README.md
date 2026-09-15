@@ -177,8 +177,10 @@ response remains authoritative.
 2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.
 3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.
 4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
-5. For HTTP clients, configure the listen IP, client address, port, Origins, and Client ID on the HTTP page, generate a token, and start the managed service. Authorization and HTTP Client IDs are reconciled automatically: a legacy portmate-local setup with exactly one active grant adopts that grant; multiple grants are never guessed or merged.
-6. For CC Switch, generate or rotate the Token, then copy the generated JSON from the HTTP page. The copied JSON includes that Token and must be treated as a secret.
+5. For HTTP clients, explicitly select a saved, active grant on the `HTTP` page, then configure the listen IP, client-facing address, port, and Origins. Use **Save and start** to save the binding, generate a Token if needed, and start the managed service. PortMate never infers a Client ID from the grant list or automatically switches to another client. Changing the bound identity invalidates the previous Token.
+6. Copy the CC Switch JSON from the `HTTP` page after a Token is available. Copying does not change grants, binding, or service state. The JSON includes the Token and must be treated as a secret.
+
+The Grants page owns client permissions, session scope, expiration, and revocation; the HTTP page owns transport binding, network settings, Tokens, and the managed service. Revocation requires an initial confirmation followed by entering the exact Client ID. Revoking the bound client also stops the managed HTTP Bridge and invalidates its Token; cleanup failures are reported without restoring the revoked grant.
 
 ### stdio Example
 
@@ -220,7 +222,7 @@ Never place the HTTP token in a README, startup command, issue, log, or public M
 
 ### CC Switch
 
-The HTTP page generates the flat single-server JSON accepted by the CC Switch editor. It intentionally omits the outer `mcpServers` object. After you explicitly generate or rotate a Token, the JSON includes that Bearer Token:
+The HTTP page generates the flat single-server JSON accepted by the CC Switch editor. It intentionally omits the outer `mcpServers` object. Starting the service generates a missing Token; you can also generate or rotate one explicitly while the service is stopped. The JSON includes that Bearer Token:
 
 ```json
 {
@@ -235,7 +237,7 @@ The HTTP page generates the flat single-server JSON accepted by the CC Switch ed
 }
 ```
 
-If the saved HTTP configuration already has a Token, PortMate displays it and reuses it in the
+If the saved HTTP configuration already has a Token and an active grant, PortMate reuses it in the
 generated JSON. Generate or rotate a Token only when the configuration has no usable Token or you
 want to invalidate the previous one. Treat copied JSON as a password: keep it out of source control,
 logs, screenshots, and shared documents. Rotating the Token invalidates the previous value.

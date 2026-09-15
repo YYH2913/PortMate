@@ -46,7 +46,7 @@ X-PortMate-MCP-Token: token。
 | PORTMATE_MCP_HTTP_ALLOW_REMOTE=1 | 允许非回环监听；绑定 0.0.0.0 前必须设置 |
 | PORTMATE_MCP_HTTP_ORIGINS | 逗号分隔的 Origin allowlist |
 | PORTMATE_MCP_HTTP_TOKEN | HTTP Token；未设置时从内部密钥存储读取或生成 |
-| PORTMATE_MCP_CLIENT_ID | 当前 MCP Client ID，默认 portmate-local；若未显式选择且 Store 中只有一个有效授权，Bridge 自动采用该授权的 Client ID |
+| PORTMATE_MCP_CLIENT_ID | 当前 MCP Client ID；未设置时使用 Store 中保存的绑定身份，未配置绑定时为 portmate-local；不会从授权列表推断或自动切换身份 |
 | PORTMATE_MCP_TRUSTED | 兼容保留但不再授予权限；读写操作都必须有显式 grant |
 | PORTMATE_MCP_PARENT_PID | 托管 sidecar 的父进程 ID；父进程退出时 sidecar 自动退出 |
 
@@ -55,7 +55,10 @@ HTTP listener 最多同时处理 64 个连接，其中长期 SSE 最多 8 个且
 
 CC Switch 的 HTTP 单服务器配置可以直接从桌面端 MCP Bridge 的 HTTP 页面生成；该 JSON
 内含 Bearer Token，必须按密码处理，不能提交到仓库或共享日志。
-Bridge 当前一次只运行一个活动 Client ID；切换到另一授权时桌面端会先轮换 Token，使旧配置立即失效。
+桌面托管的 HTTP Bridge 一次绑定一个活动 Client ID。必须在 HTTP 页明确选择有效授权；
+切换身份时清除旧 Token，启动时再按需生成新 Token。授权页只管理权限、会话范围、到期和撤销，
+复制 HTTP 接入 JSON 不会保存授权或更改绑定。撤销需要先确认影响，再输入完整 Client ID；
+撤销当前绑定身份会停止托管服务并使旧 Token 失效，不会自动改用其他授权。
 
 CC Switch 扁平配置示例：
 
@@ -94,8 +97,9 @@ isError 表示工具是否执行失败。大部分结构化结果以 JSON 字符
 
 每个 MCP Client 由 PORTMATE_MCP_CLIENT_ID 标识。桌面端 工具 -> MCP Bridge -> 授权
 中的 grant 决定 scope、允许的 session、到期时间、撤销状态和是否逐次确认写操作。
-显式设置非默认 Client ID 后，授权缺失、过期或撤销都会拒绝请求，不会自动切换为桌面端保存的另一个身份。
-只有未配置或沿用旧默认值 `portmate-local` 时才保留默认身份匹配行为；桌面 IPC 仍要求与桌面端选中的身份一致。
+显式设置 Client ID 后（包括 `portmate-local`），授权缺失、过期或撤销都会拒绝请求，
+不会自动切换为另一个身份。只有未设置 Client ID 时才使用 Store 保存的绑定身份；
+桌面 IPC 仍要求与桌面端选中的身份一致。
 
 新建授权默认不允许访问任何会话。界面中的“允许会话”有三个明确模式：
 “不授权会话”、“全部会话”和“仅选中会话”。选择单个或多个会话后，

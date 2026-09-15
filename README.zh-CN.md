@@ -174,8 +174,10 @@ Host Key 变化默认阻断连接。请在确认设备替换、系统重装或�
 2. 打开 `工具 -> MCP Bridge -> 授权`，创建独立 Client ID，并选择权限和允许访问的会话。
 3. 对写权限启用“每次确认”，由桌面端逐次批准或拒绝。
 4. stdio 客户端使用界面显示的 bridge 与 Store 精确路径。
-5. HTTP 客户端在 `HTTP` 页设置监听 IP、客户端地址、端口、Origin、Client ID，生成 Token 后启动托管服务。授权 Client ID 与 HTTP Client ID 会自动统一：旧配置使用默认 portmate-local 且只有一个有效授权时，PortMate 会自动采用该授权；存在多个授权时不会猜测或合并权限。
-6. 先生成或轮换 Token，再从 `HTTP` 页复制 CC Switch JSON。复制出的 JSON 包含该 Token，必须按敏感凭据保存。
+5. HTTP 客户端在 `HTTP` 页明确选择一个已保存且仍有效的授权，再设置监听 IP、接入地址、端口和 Origin。点击“保存并启动”会依次保存绑定、按需生成 Token 并启动托管服务。PortMate 不会根据授权数量推断 Client ID，也不会自动切换到其他客户端；更换绑定身份会使旧 Token 失效。
+6. Token 可用后，从 `HTTP` 页复制 CC Switch JSON。复制不会修改授权、绑定或服务状态。JSON 包含 Token，必须按敏感凭据保存。
+
+授权页负责客户端权限、会话范围、到期时间和撤销；HTTP 页负责接入绑定、网络配置、Token 和托管服务。撤销需要先确认影响，再输入完整 Client ID 二次确认。撤销当前绑定身份会同时停止托管 HTTP Bridge 并使旧 Token 失效；清理失败会显示警告，但不会恢复已撤销的授权。
 
 ### stdio 示例
 
@@ -217,7 +219,7 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 
 ### CC Switch
 
-`HTTP` 页会生成 CC Switch 单服务器编辑器可直接使用的扁平 JSON。它不会添加外层 `mcpServers`。显式生成或轮换 Token 后，JSON 会直接包含 Bearer Token：
+`HTTP` 页会生成 CC Switch 单服务器编辑器可直接使用的扁平 JSON。它不会添加外层 `mcpServers`。启动服务时会按需生成 Token，也可在服务停止后单独生成或轮换。JSON 会包含 Bearer Token：
 
 ```json
 {
@@ -232,7 +234,7 @@ bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoi
 }
 ```
 
-如果已保存的 HTTP 配置中存在 Token，PortMate 会直接显示并复用它生成 JSON。只有在没有
+如果已保存的 HTTP 配置中存在 Token 且绑定授权有效，PortMate 会复用它生成 JSON。只有在没有
 可用 Token 或需要使旧 Token 失效时，才应生成或轮换 Token。请把复制出的 JSON 当作密码
 处理，不要提交到代码仓库、日志、截图或共享文档；轮换 Token 会使旧值失效。
 

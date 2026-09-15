@@ -1,36 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CalendarClock, Check, Copy, Dices, Download, KeyRound, ListX, Play, Plus, RefreshCw, Save, Search, Square, Trash2, X } from "lucide-react";
+import { CalendarClock, Copy, Dices, Download, KeyRound, ListX, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { filterMcpAudit, MCP_AUDIT_GLOBAL_SESSION, mcpAuditDecisionOptions } from "./mcp-audit-state";
-import { createMcpGrant, DEFAULT_MCP_HTTP_CLIENT_ID, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpGrantIsActive, mcpSessionAccessMode, parseMcpGrantExpiryInput, resolveMcpHttpClientId, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
-import {
-  CC_SWITCH_DEFAULT_SERVER_ID,
-  CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS,
-  ccSwitchServerIdForGrant,
-  defaultMcpHttpSettings,
-  formatCcSwitchMcpJson,
-  formatMcpHttpOrigins,
-  isNonLoopbackMcpHost,
-  MCP_HTTP_CUSTOM_LISTEN_PRESET,
-  mcpHttpClientEndpoint,
-  mcpHttpListenPreset,
-  mcpHttpSettingsFromConfig,
-  parseMcpHttpOrigins,
-} from "./mcp-http-state";
-import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpHttpAccessResponse, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse, McpScope, SessionSummary } from "./types";
+import { createMcpGrant, formatMcpGrantExpiryInput, generateMcpClientId, mcpGrantDraftHasUnsavedChanges, mcpGrantIsActive, mcpSessionAccessMode, parseMcpGrantExpiryInput, setMcpSessionAccessMode, MCP_NO_SESSIONS_SENTINEL } from "./mcp-grant-state";
+import McpHttpPanel from "./McpHttpPanel";
+import McpRevokeDialog from "./McpRevokeDialog";
+import McpScopeEditor, { allMcpScopes } from "./McpScopeEditor";
+import "./mcp-management.css";
+import { useMcpHttpController } from "./use-mcp-http-controller";
+import { mcpHttpRuntimeLabel } from "./mcp-http-workflow";
+import type { AuditRecord, ExportMcpAuditResult, McpGrant, McpGrantMutationResponse, McpScope, SessionSummary } from "./types";
 
-const allMcpScopes: McpScope[] = ["read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp", "write-input", "transfer", "host-files", "tunnel", "manage-sessions", "run-scripts", "manage-mcp"];
-const mcpHttpListenOptions = [
-  ["127.0.0.1", "本机 IPv4 · 127.0.0.1"],
-  ["0.0.0.0", "所有 IPv4 · 0.0.0.0"],
-  ["::1", "本机 IPv6 · ::1"],
-  ["::", "所有 IPv6 · ::"],
-  [MCP_HTTP_CUSTOM_LISTEN_PRESET, "自定义 IP"],
-] as const;
 type McpDialogTab = "grants" | "http" | "audit";
 type McpExpiryEditorState = { date: string; time: string };
+type McpRevokeConfirmation = Pick<McpGrant, "clientId" | "name">;
 
 export default function McpDialog({
   grants,
@@ -59,21 +44,9 @@ export default function McpDialog({
   const [creatingGrant, setCreatingGrant] = useState(false);
   const [expiryEditor, setExpiryEditor] = useState<McpExpiryEditorState | null>(null);
   const [error, setError] = useState("");
-  const [httpConfig, setHttpConfig] = useState<McpHttpConfig | null>(null);
-  const [savedHttpConfig, setSavedHttpConfig] = useState<McpHttpConfig | null>(null);
-  const [httpRuntime, setHttpRuntime] = useState<McpHttpRuntimeStatus | null>(null);
-  const [httpSettings, setHttpSettings] = useState<McpHttpConfigRequest>(defaultMcpHttpSettings);
-  const [httpOriginsText, setHttpOriginsText] = useState(() => formatMcpHttpOrigins(defaultMcpHttpSettings().allowedOrigins));
-  const [httpDirty, setHttpDirty] = useState(false);
-  const [httpPreviewCurrent, setHttpPreviewCurrent] = useState(false);
-  const [httpToken, setHttpToken] = useState("");
-  const [httpBusy, setHttpBusy] = useState(false);
-  const [httpRuntimeBusy, setHttpRuntimeBusy] = useState(false);
-  const [ccSwitchServerId, setCcSwitchServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
-  const [ccSwitchToolTimeout, setCcSwitchToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
-  const [ccSwitchCopied, setCcSwitchCopied] = useState(false);
-  const [grantCcSwitchCopiedClientId, setGrantCcSwitchCopiedClientId] = useState<string | null>(null);
-  const [httpCommandCopied, setHttpCommandCopied] = useState(false);
+  const http = useMcpHttpController(grants);
+  const [grantNotice, setGrantNotice] = useState("");
+  const [revokeConfirmation, setRevokeConfirmation] = useState<McpRevokeConfirmation | null>(null);
   const [grantBusy, setGrantBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditQuery, setAuditQuery] = useState("");
@@ -85,12 +58,8 @@ export default function McpDialog({
   const clientIdInputRef = useRef<HTMLInputElement>(null);
   const expiryEditorRef = useRef<HTMLDivElement>(null);
   const expiryDateInputRef = useRef<HTMLInputElement>(null);
-  const httpListenInputRef = useRef<HTMLInputElement>(null);
-  const activeTabRef = useRef(tab);
-  const httpAccessPromiseRef = useRef<Promise<McpHttpAccessResponse> | null>(null);
-  const httpRuntimeActionRef = useRef(false);
-  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "http" | "http-preview" | "http-runtime-status" | "http-runtime-action" | "audit">());
-  activeTabRef.current = tab;
+  const loadedGrantRef = useRef<McpGrant | null>(grants[0] ?? null);
+  const requestGateRef = useRef(new KeyedRequestGate<"grants" | "audit">());
 
   const filteredAudit = useMemo(() => filterMcpAudit(audit, {
     query: auditQuery,
@@ -105,69 +74,13 @@ export default function McpDialog({
     const ids = new Set(audit.flatMap((record) => record.sessionId ? [record.sessionId] : []));
     return [...ids].sort((left, right) => (sessionNames.get(left) ?? left).localeCompare(sessionNames.get(right) ?? right));
   }, [audit, sessionNames]);
-  const httpRemoteListener = isNonLoopbackMcpHost(httpSettings.listenHost);
-  const httpRuntimeActive = httpRuntime?.phase === "starting" || httpRuntime?.phase === "running";
-  const httpRuntimeLocked = httpRuntimeBusy || httpRuntimeActive;
-  const httpControlsLocked = httpBusy || httpRuntimeLocked;
-  const resolvedHttpClientId = resolveMcpHttpClientId(
-    (savedHttpConfig?.clientId ?? httpConfig?.clientId ?? httpSettings.clientId) || DEFAULT_MCP_HTTP_CLIENT_ID,
-    grants,
-  );
-  const savedDraftGrant = editingClientId ? grants.find((grant) => grant.clientId === editingClientId) : null;
-  const grantDirty = mcpGrantDraftHasUnsavedChanges(draft, savedDraftGrant);
+  const grantDirty = mcpGrantDraftHasUnsavedChanges(draft, loadedGrantRef.current);
   const expiryCandidate = expiryEditor
     ? parseMcpGrantExpiryInput(`${expiryEditor.date}T${expiryEditor.time}`)
     : null;
-  const httpSettingsValid = Boolean(httpSettings.listenHost.trim() && httpSettings.clientId.trim())
-    && Number.isInteger(httpSettings.port) && httpSettings.port >= 1 && httpSettings.port <= 65_535
-    && Boolean(mcpHttpClientEndpoint(httpSettings))
-    && (!httpRemoteListener || httpSettings.allowRemote);
-  const ccSwitchJson = useMemo(() => formatCcSwitchMcpJson(httpSettings, {
-    serverId: ccSwitchServerId,
-    token: httpToken,
-    toolTimeoutSeconds: ccSwitchToolTimeout,
-  }), [ccSwitchServerId, ccSwitchToolTimeout, httpSettings, httpToken]);
-  const selectedGrantCcSwitchJson = draft
-    && editingClientId === draft.clientId
-    && mcpGrantIsActive(draft)
-    && savedHttpConfig
-    && !httpDirty
-    && resolveMcpHttpClientId(savedHttpConfig.clientId, grants) === draft.clientId
-    ? formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(savedHttpConfig), {
-        serverId: ccSwitchServerIdForGrant(draft.clientId),
-        token: httpToken,
-        toolTimeoutSeconds: ccSwitchToolTimeout,
-      })
-    : "";
-  const selectedGrantIsHttpClient = Boolean(
-    draft && editingClientId === draft.clientId && resolvedHttpClientId === draft.clientId,
-  );
-  const activeGrantCount = grants.filter((grant) => mcpGrantIsActive(grant)).length;
-  const runtimePhase = httpRuntime?.phase ?? "stopped";
-  const runtimeEndpoint = httpRuntime?.endpoint ?? httpConfig?.endpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-";
-
-  useEffect(() => {
-    if (httpConfig || !isBackendAvailable()) return;
-    void loadHttpAccess();
-  }, [httpConfig]);
-
-  useEffect(() => {
-    if (isBackendAvailable()) void loadHttpRuntime();
-  }, []);
-
-  useEffect(() => {
-    if (tab !== "http") {
-      requestGateRef.current.invalidate("http-runtime-status");
-      return;
-    }
-    if (isBackendAvailable()) void loadHttpRuntime();
-  }, [tab]);
-
-  useEffect(() => {
-    if (tab !== "http" || !httpRuntimeActive || !isBackendAvailable()) return;
-    const timer = window.setInterval(() => void loadHttpRuntime(), 1_000);
-    return () => window.clearInterval(timer);
-  }, [httpRuntimeActive, tab]);
+  const activeGrantCount = http.activeGrants.length;
+  const runtimePhase = http.runtime?.phase ?? "stopped";
+  const runtimeEndpoint = http.runtime?.endpoint ?? http.savedConfig?.clientEndpoint ?? "—";
 
   useEffect(() => {
     if (creatingGrant) return;
@@ -175,31 +88,13 @@ export default function McpDialog({
       ? grants.find((grant) => grant.clientId === editingClientId)
       : undefined;
     const next = selected ?? grants[0] ?? null;
+    if (selected && mcpGrantDraftHasUnsavedChanges(draft, loadedGrantRef.current)) return;
+    loadedGrantRef.current = next;
     setDraft(next);
     setEditingClientId(next?.clientId ?? null);
   }, [creatingGrant, editingClientId, grants]);
 
-  useEffect(() => {
-    if (tab !== "http") {
-      requestGateRef.current.invalidate("http-preview");
-      return;
-    }
-    if (!httpDirty || httpBusy || !isBackendAvailable()) return;
-    if (!httpSettingsValid) {
-      requestGateRef.current.invalidate("http-preview");
-      setHttpPreviewCurrent(false);
-      return;
-    }
-    const settings = currentHttpSettings();
-    const timer = window.setTimeout(() => void previewHttpSettings(settings), 180);
-    return () => window.clearTimeout(timer);
-  }, [httpBusy, httpDirty, httpOriginsText, httpSettings, httpSettingsValid, tab]);
-
   useEffect(() => () => requestGateRef.current.invalidateAll(), []);
-
-  useEffect(() => setCcSwitchCopied(false), [ccSwitchJson]);
-
-  useEffect(() => setHttpCommandCopied(false), [httpConfig?.startCommand]);
 
   useEffect(() => {
     if (!expiryEditor) return;
@@ -212,321 +107,78 @@ export default function McpDialog({
     return () => window.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, [Boolean(expiryEditor)]);
 
-  async function loadHttpAccess() {
-    const token = requestGateRef.current.begin("http");
-    if (token === null) return;
-    setHttpBusy(true);
-    try {
-      const request = httpAccessPromiseRef.current
-        ?? invokeBackend<McpHttpAccessResponse>("mcp_http_access_config", {});
-      httpAccessPromiseRef.current = request;
-      const response = await request;
-      if (requestGateRef.current.isCurrent("http", token)) {
-        applyHttpConfig(response.config);
-        setHttpToken(response.token ?? "");
-      }
-    } catch (nextError) {
-      httpAccessPromiseRef.current = null;
-      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
-    }
-  }
-
-  async function saveHttpSettings() {
-    requestGateRef.current.invalidate("http-preview");
-    const token = requestGateRef.current.begin("http");
-    if (token === null) return;
-    setError("");
-    setHttpBusy(true);
-    try {
-      const settings = currentHttpSettings();
-      const identityChanged = Boolean(
-        savedHttpConfig
-        && resolveMcpHttpClientId(savedHttpConfig.clientId, grants) !== settings.clientId,
-      );
-      if (identityChanged && httpToken) {
-        const rotated = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-        if (!requestGateRef.current.isCurrent("http", token)) return;
-        setHttpToken(rotated.token);
-      }
-      const next = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
-        settings,
-      });
-      if (requestGateRef.current.isCurrent("http", token)) applyHttpConfig(next);
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
-    }
-  }
-
-  async function loadHttpRuntime() {
-    if (httpRuntimeActionRef.current) return;
-    const token = requestGateRef.current.begin("http-runtime-status");
-    if (token === null) return;
-    try {
-      const next = await invokeBackend<McpHttpRuntimeStatus>("mcp_http_runtime_status", {});
-      if (requestGateRef.current.isCurrent("http-runtime-status", token)) setHttpRuntime(next);
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http-runtime-status", token)) setError(formatError(nextError));
-    } finally {
-      requestGateRef.current.finish("http-runtime-status", token);
-    }
-  }
-
-  async function startHttpRuntime() {
-    const token = requestGateRef.current.begin("http-runtime-action");
-    if (token === null) return;
-    httpRuntimeActionRef.current = true;
-    requestGateRef.current.invalidate("http-runtime-status");
-    setError("");
-    setHttpRuntimeBusy(true);
-    try {
-      const next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", {});
-      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setHttpRuntime(next);
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http-runtime-action", token)) {
-        httpRuntimeActionRef.current = false;
-        requestGateRef.current.invalidate("http-runtime-status");
-        setHttpRuntimeBusy(false);
-        if (activeTabRef.current === "http" && isBackendAvailable()) void loadHttpRuntime();
-      }
-    }
-  }
-
-  async function stopHttpRuntime() {
-    const token = requestGateRef.current.begin("http-runtime-action");
-    if (token === null) return;
-    httpRuntimeActionRef.current = true;
-    requestGateRef.current.invalidate("http-runtime-status");
-    setError("");
-    setHttpRuntimeBusy(true);
-    try {
-      const next = await invokeBackend<McpHttpRuntimeStatus>("stop_mcp_http", {});
-      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setHttpRuntime(next);
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http-runtime-action", token)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http-runtime-action", token)) {
-        httpRuntimeActionRef.current = false;
-        requestGateRef.current.invalidate("http-runtime-status");
-        setHttpRuntimeBusy(false);
-        if (activeTabRef.current === "http" && isBackendAvailable()) void loadHttpRuntime();
-      }
-    }
-  }
-
-  async function previewHttpSettings(settings: McpHttpConfigRequest) {
-    const token = requestGateRef.current.replace("http-preview");
-    try {
-      const next = await invokeBackend<McpHttpConfig>("preview_mcp_http_config", { settings });
-      if (requestGateRef.current.isCurrent("http-preview", token)) {
-        setHttpConfig(next);
-        setHttpPreviewCurrent(true);
-        setError("");
-      }
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http-preview", token)) {
-        setHttpPreviewCurrent(false);
-        setError(formatError(nextError));
-      }
-    } finally {
-      requestGateRef.current.finish("http-preview", token);
-    }
-  }
-
-  async function rotateHttpToken() {
-    const token = requestGateRef.current.begin("http");
-    if (token === null) return;
-    setError("");
-    setHttpBusy(true);
-    try {
-      const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-      if (requestGateRef.current.isCurrent("http", token)) {
-        applyHttpConfig(response.config);
-        setHttpToken(response.token);
-      }
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http", token)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http", token)) setHttpBusy(false);
-    }
-  }
-
-  function applyHttpConfig(config: McpHttpConfig) {
-    const settings = mcpHttpSettingsFromConfig(config);
-    setSavedHttpConfig(config);
-    setHttpConfig(config);
-    setHttpSettings(settings);
-    setHttpOriginsText(formatMcpHttpOrigins(settings.allowedOrigins));
-    setHttpDirty(false);
-    setHttpPreviewCurrent(true);
-    setError("");
-  }
-
-  function currentHttpSettings(): McpHttpConfigRequest {
-    return { ...httpSettings, allowedOrigins: parseMcpHttpOrigins(httpOriginsText) };
-  }
-
-  function updateHttpSettings(patch: Partial<McpHttpConfigRequest>) {
-    requestGateRef.current.invalidate("http-preview");
-    setHttpSettings((current) => ({ ...current, ...patch }));
-    setHttpDirty(true);
-    setHttpPreviewCurrent(false);
-    setError("");
-  }
-
-  function updateHttpListenHost(listenHost: string) {
-    updateHttpSettings({
-      listenHost,
-      ...(!isNonLoopbackMcpHost(listenHost) ? { allowRemote: false } : {}),
-    });
-  }
-
-  async function copyCcSwitchJson() {
-    if (!ccSwitchJson) return;
-    try {
-      await writeClipboardText(ccSwitchJson);
-      setCcSwitchCopied(true);
-      setError("");
-    } catch (nextError) {
-      setError(formatError(nextError));
-    }
-  }
-
-  function grantCcSwitchActionDisabled(grant: McpGrant): boolean {
-    const requiresHttpMutation = !httpToken || resolvedHttpClientId !== grant.clientId;
-    return grantBusy
-      || httpBusy
-      || httpDirty
-      || !savedHttpConfig
-      || !mcpGrantIsActive(grant)
-      || (httpRuntimeActive && requiresHttpMutation);
-  }
-
-  function grantCcSwitchActionLabel(grant: McpGrant): string {
-    const label = grant.name.trim() || grant.clientId;
-    if (grantCcSwitchCopiedClientId === grant.clientId) return `已复制 ${label} 的 CC Switch JSON`;
-    return resolvedHttpClientId === grant.clientId && httpToken
-      ? `复制 ${label} 的 CC Switch JSON`
-      : `应用并复制 ${label} 的 CC Switch JSON`;
-  }
-
-  async function copyGrantCcSwitch(grant: McpGrant) {
-    if (grantCcSwitchActionDisabled(grant) || !savedHttpConfig) return;
-    const requestToken = requestGateRef.current.begin("http");
-    if (requestToken === null) return;
-    setError("");
-    setHttpBusy(true);
-    setGrantCcSwitchCopiedClientId(null);
-    try {
-      let config = savedHttpConfig;
-      let tokenValue = httpToken;
-      const identityChanged = resolveMcpHttpClientId(config.clientId, grants) !== grant.clientId;
-      if (identityChanged && tokenValue) {
-        const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
-        tokenValue = response.token;
-        setHttpToken(tokenValue);
-      }
-      if (identityChanged) {
-        config = await invokeBackend<McpHttpConfig>("save_mcp_http_settings", {
-          settings: {
-            ...mcpHttpSettingsFromConfig(config),
-            clientId: grant.clientId,
-          },
-        });
-        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
-        applyHttpConfig(config);
-      }
-      if (!tokenValue) {
-        const response = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
-        if (!requestGateRef.current.isCurrent("http", requestToken)) return;
-        config = response.config;
-        tokenValue = response.token;
-        applyHttpConfig(config);
-        setHttpToken(tokenValue);
-      }
-      const json = formatCcSwitchMcpJson(mcpHttpSettingsFromConfig(config), {
-        serverId: ccSwitchServerIdForGrant(grant.clientId),
-        token: tokenValue,
-        toolTimeoutSeconds: ccSwitchToolTimeout,
-      });
-      if (!json) throw new Error("无法生成当前授权的 CC Switch JSON");
-      await writeClipboardText(json);
-      if (requestGateRef.current.isCurrent("http", requestToken)) {
-        setGrantCcSwitchCopiedClientId(grant.clientId);
-        setError("");
-      }
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("http", requestToken)) setError(formatError(nextError));
-    } finally {
-      if (requestGateRef.current.finish("http", requestToken)) setHttpBusy(false);
-    }
-  }
-
-  async function copyHttpCommand() {
-    const command = httpConfig?.startCommand;
-    if (!command) return;
-    try {
-      await writeClipboardText(command);
-      setHttpCommandCopied(true);
-      setError("");
-    } catch (nextError) {
-      setHttpCommandCopied(false);
-      setError(formatError(nextError));
-    }
-  }
-
-  async function saveGrant() {
-    if (!draft || grantBusy) return;
+  async function saveGrant(openHttp = false) {
+    if (!draft || grantBusy || http.isMutating()) return;
     const pendingGrant = draft;
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
     const mutationToken = onGrantMutationStart();
     setError("");
+    setGrantNotice("");
     setGrantBusy(true);
     try {
-      const saved = await invokeBackend<McpGrant[]>("save_mcp_grant", { grant: pendingGrant });
-      const accepted = onGrantChange(saved, mutationToken);
+      const result = await invokeBackend<McpGrantMutationResponse>("save_mcp_grant", { grant: pendingGrant });
+      const accepted = onGrantChange(result.grants, mutationToken);
       if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
-      const selected = saved.find((grant) => grant.clientId === pendingGrant.clientId);
-      if (selected) {
-        setDraft(selected);
-        setEditingClientId(selected.clientId);
-        setCreatingGrant(false);
-      }
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
+      const selected = result.grants.find(grant => grant.clientId === pendingGrant.clientId) ?? null;
+      loadedGrantRef.current = selected;
+      setDraft(selected);
+      setEditingClientId(selected?.clientId ?? null);
+      setCreatingGrant(false);
+      setError(result.warnings.join("\n"));
+      setGrantNotice("授权已保存；HTTP 接入需在 HTTP 页面选择此客户端。");
+      await http.refreshAfterGrantChange(result.httpAccessInvalidated);
+      if (openHttp && requestGateRef.current.isCurrent("grants", token) && !result.warnings.length) setTab("http");
+    } catch (cause) {
+      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(cause));
     } finally {
       onGrantMutationFinish(mutationToken);
       if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
     }
   }
 
-  async function revokeGrant(clientId: string) {
-    if (grantBusy) return;
-    const saved = grants.find((grant) => grant.clientId === clientId);
-    const label = saved?.name.trim() || clientId;
-    const unsavedWarning = grantDirty ? "\n\n当前授权编辑器还有未保存的更改，也会一并丢弃。" : "";
-    if (!window.confirm(`撤销 MCP 授权“${label}”（${clientId}）？${unsavedWarning}`)) return;
+  function isHttpBindingClient(clientId: string): boolean {
+    return http.savedConfig?.clientId === clientId;
+  }
+
+  function requestGrantRevocation(clientId: string) {
+    if (grantBusy || http.isMutating()) return;
+    const target = grants.find(grant => grant.clientId === clientId);
+    if (!target) return;
+    const unsavedWarning = grantDirty ? "\n当前授权草稿的更改将被丢弃。" : "";
+    const bridgeWarning = isHttpBindingClient(clientId)
+      ? "\n此身份绑定了 HTTP Bridge，将同时停止托管服务并清除旧 Token。"
+      : "";
+    if (!window.confirm(`撤销 MCP 授权“${target.name || clientId}”（${clientId}）？${bridgeWarning}${unsavedWarning}`)) return;
+    setError("");
+    setRevokeConfirmation({ clientId, name: target.name });
+  }
+
+  async function revokeGrant() {
+    const clientId = revokeConfirmation?.clientId;
+    if (!clientId || grantBusy || http.isMutating()) return;
     const token = requestGateRef.current.begin("grants");
     if (token === null) return;
     const mutationToken = onGrantMutationStart();
     setError("");
+    setGrantNotice("");
     setGrantBusy(true);
     try {
-      const saved = await invokeBackend<McpGrant[]>("revoke_mcp_grant", { clientId });
-      const accepted = onGrantChange(saved, mutationToken);
+      const result = await invokeBackend<McpGrantMutationResponse>("revoke_mcp_grant", { clientId });
+      const accepted = onGrantChange(result.grants, mutationToken);
       if (!accepted || !requestGateRef.current.isCurrent("grants", token)) return;
-      setDraft(saved[0] ?? null);
-      setEditingClientId(saved[0]?.clientId ?? null);
+      setRevokeConfirmation(null);
+      loadedGrantRef.current = result.grants[0] ?? null;
+      setDraft(loadedGrantRef.current);
+      setEditingClientId(loadedGrantRef.current?.clientId ?? null);
       setCreatingGrant(false);
-    } catch (nextError) {
-      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(nextError));
+      setError(result.warnings.join("\n"));
+      setGrantNotice(result.httpAccessInvalidated
+        ? "授权已撤销，HTTP 身份已失效。重新接入需选择有效授权。"
+        : "授权已撤销。其他客户端与 HTTP 配置保持不变。");
+      await http.refreshAfterGrantChange(result.httpAccessInvalidated);
+    } catch (cause) {
+      if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(cause));
     } finally {
       onGrantMutationFinish(mutationToken);
       if (requestGateRef.current.finish("grants", token)) setGrantBusy(false);
@@ -597,6 +249,8 @@ export default function McpDialog({
   function selectGrant(grant: McpGrant) {
     if (grantBusy || !confirmDiscardGrant("切换授权")) return;
     setExpiryEditor(null);
+    loadedGrantRef.current = grant;
+    setGrantNotice("");
     setDraft(grant);
     setEditingClientId(grant.clientId);
     setCreatingGrant(false);
@@ -606,6 +260,8 @@ export default function McpDialog({
   function newGrant() {
     if (grantBusy || !confirmDiscardGrant("新建授权")) return;
     setExpiryEditor(null);
+    loadedGrantRef.current = null;
+    setGrantNotice("");
     setDraft(createMcpGrant());
     setEditingClientId(null);
     setCreatingGrant(true);
@@ -702,13 +358,14 @@ export default function McpDialog({
   }
 
   function closeDialog() {
-    const dirtySections = [grantDirty ? "授权草稿" : "", httpDirty ? "HTTP 配置" : ""].filter(Boolean);
+    const dirtySections = [grantDirty ? "授权草稿" : "", http.dirty ? "HTTP 配置" : ""].filter(Boolean);
     if (dirtySections.length
       && !window.confirm(`MCP ${dirtySections.join("和")}尚未保存，关闭窗口将放弃这些内容。是否继续？`)) return;
     onClose();
   }
 
   return (
+    <>
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
       <section className="wind-dialog mcp-dialog" data-tab={tab} aria-label="MCP Bridge">
         <header className="dialog-title">
@@ -717,7 +374,7 @@ export default function McpDialog({
           <button type="button" title="关闭" aria-label="关闭 MCP Bridge" onClick={closeDialog}><X size={20} /></button>
         </header>
         <div className="mcp-overview" aria-label="MCP Bridge 当前状态">
-          <span className={`mcp-overview-service ${runtimePhase}`}><i aria-hidden="true" /><strong>{mcpHttpRuntimeLabel(httpRuntime)}</strong></span>
+          <span className={`mcp-overview-service ${runtimePhase}`}><i aria-hidden="true" /><strong>{mcpHttpRuntimeLabel(http.runtime)}</strong></span>
           <code title={runtimeEndpoint}>{runtimeEndpoint}</code>
           <span>{activeGrantCount} 个有效授权</span>
           <span>{audit.length} 条审计</span>
@@ -731,7 +388,10 @@ export default function McpDialog({
         {tab === "grants" ? (
           <div className="mcp-content" role="tabpanel">
             <aside className="mcp-grants">
-              <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
+              <header className="mcp-grants-header">
+                <div><strong>客户端授权</strong><span>{activeGrantCount} 个有效</span></div>
+                <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建</button>
+              </header>
               {draft && editingClientId === null ? (
                 <button type="button" className="active mcp-grant-draft" aria-current="true" disabled={grantBusy} onClick={() => clientIdInputRef.current?.focus()}>
                   <strong>{draft.name.trim() || draft.clientId.trim() || "新授权"}</strong>
@@ -739,28 +399,19 @@ export default function McpDialog({
                 </button>
               ) : null}
               {grants.map((grant) => (
-                <div key={grant.clientId} className="mcp-grant-row">
-                  <button type="button" disabled={grantBusy} className={`mcp-grant-select ${grant.clientId === editingClientId ? "active" : ""}`} onClick={() => selectGrant(grant)}>
-                    <strong>{grant.name || grant.clientId}</strong>
-                    <span>{grant.scopes.join(", ") || "read-only"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={grantCcSwitchCopiedClientId === grant.clientId ? "mcp-grant-copy copied" : "mcp-grant-copy"}
-                    title={grantCcSwitchActionLabel(grant)}
-                    aria-label={grantCcSwitchActionLabel(grant)}
-                    disabled={grantCcSwitchActionDisabled(grant)}
-                    onClick={() => void copyGrantCcSwitch(grant)}
-                  >
-                    {grantCcSwitchCopiedClientId === grant.clientId ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                </div>
+                <button key={grant.clientId} type="button" disabled={grantBusy}
+                  className={`mcp-grant-select ${grant.clientId === editingClientId ? "active" : ""}`}
+                  onClick={() => selectGrant(grant)}>
+                  <span className="mcp-grant-title"><strong>{grant.name || grant.clientId}</strong>{http.savedGrant?.clientId === grant.clientId ? <em>HTTP</em> : null}</span>
+                  <span>{mcpGrantIsActive(grant) ? `${grant.scopes.length} 项权限 · ${mcpSessionAccessMode(grant) === "none" ? "不授权会话" : mcpSessionAccessMode(grant) === "all" ? "全部会话" : `${grant.allowedSessions.length} 个会话`}` : "已过期或已撤销"}</span>
+                </button>
               ))}
               {!grants.length && !draft ? <div className="empty-pane top">没有授权规则</div> : null}
             </aside>
             {draft ? (
-              <section className="mcp-editor">
-                <header className="mcp-section-heading"><div><strong>{editingClientId ? "授权详情" : "新建授权"}</strong><span>定义客户端身份、权限和可访问会话</span></div>{grantDirty ? <em>未保存</em> : null}</header>
+              <section className="mcp-editor-shell">
+                <div className="mcp-editor">
+                <header className="mcp-section-heading"><div><strong>{editingClientId ? "授权详情" : "新建授权"}</strong><span>{http.savedGrant?.clientId === draft.clientId ? "当前 HTTP Bridge 使用此授权；网络与 Token 在 HTTP 页面管理。" : "定义客户端身份、权限和可访问会话。"}</span></div>{grantDirty ? <em>未保存</em> : null}</header>
                 <McpFieldGroup label="Client ID:">
                   <div className="mcp-client-id-control">
                     <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} disabled={grantBusy} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
@@ -803,10 +454,7 @@ export default function McpDialog({
                   </div>
                 </McpFieldGroup>
                 <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" disabled={grantBusy} checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
-                <fieldset className="mcp-check-grid">
-                  <legend>权限范围</legend>
-                  {allMcpScopes.map((scope) => <label key={scope}><input type="checkbox" disabled={grantBusy} checked={draft.scopes.includes(scope)} onChange={() => toggleScope(scope)} />{scope}</label>)}
-                </fieldset>
+                <McpScopeEditor scopes={draft.scopes} disabled={grantBusy} onToggle={toggleScope} />
                 <p className={draft.scopes.includes("host-files") ? "mcp-scope-boundary elevated" : "mcp-scope-boundary"}>
                   <code>transfer</code> 可使用 MCP 虚拟内容和 <code>uploadId</code>；<code>host-files</code> 会额外开放 PortMate 主机路径，仅应授予可信客户端。
                 </p>
@@ -827,114 +475,31 @@ export default function McpDialog({
                     <small className="mcp-session-access-hint">{mcpSessionAccessMode(draft) === "none" ? "默认不允许访问任何会话。" : "允许访问当前 PortMate 中的全部会话。"}</small>
                   )}
                 </fieldset>
+                {grantNotice ? <p className="mcp-inline-notice" role="status">{grantNotice}</p> : null}
                 {error ? <div className="utility-error">{error}</div> : null}
-                <div className="mcp-actions">
-                  <button type="button" disabled={grantBusy || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
-                  <button type="button" onClick={() => void revokeGrant(draft.clientId)} disabled={grantBusy || !editingClientId}>撤销</button>
+                <p className="mcp-bridge-binding-note">
+                  权限修改保存后生效。接入地址、Token 和服务启停在 HTTP 页面管理。
+                </p>
                 </div>
-                {editingClientId === draft.clientId && mcpGrantIsActive(draft) ? (
-                  <section className="mcp-grant-cc-switch" aria-labelledby="mcp-grant-cc-switch-title">
-                    <header>
-                      <div>
-                        <strong id="mcp-grant-cc-switch-title">CC Switch</strong>
-                        <span>{selectedGrantIsHttpClient ? "当前 HTTP 授权" : "待应用到 HTTP"}</span>
-                      </div>
-                      <button
-                        type="button"
-                        title={grantCcSwitchActionLabel(draft)}
-                        aria-label={grantCcSwitchActionLabel(draft)}
-                        disabled={grantCcSwitchActionDisabled(draft)}
-                        onClick={() => void copyGrantCcSwitch(draft)}
-                      >
-                        {grantCcSwitchCopiedClientId === draft.clientId ? <Check size={14} /> : <Copy size={14} />}
-                        <span>{grantCcSwitchCopiedClientId === draft.clientId ? "已复制" : selectedGrantIsHttpClient && httpToken ? "复制 JSON" : "应用并复制"}</span>
-                      </button>
-                    </header>
-                    <div className="mcp-grant-token"><span>Bearer Token</span><code>{httpToken || "未生成"}</code></div>
-                    <textarea readOnly aria-label="授权 CC Switch MCP JSON" value={selectedGrantCcSwitchJson} />
-                  </section>
-                ) : null}
+                <div className="mcp-actions mcp-grant-actions">
+                  <button type="button" className="danger" onClick={() => requestGrantRevocation(draft.clientId)} disabled={grantBusy || http.busy || http.loading || !editingClientId}>撤销</button>
+                  <button type="button" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
+                  <button type="button" className="primary" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => grantDirty ? void saveGrant(true) : setTab("http")}>{grantDirty ? "保存并前往 HTTP" : "前往 HTTP 接入"}</button>
+                </div>
               </section>
             ) : (
               <section className="mcp-editor mcp-editor-empty">
                 <KeyRound size={22} aria-hidden="true" />
                 <strong>尚未选择授权</strong>
+                {grantNotice ? <p className="mcp-inline-notice" role="status">{grantNotice}</p> : null}
+                {error ? <div className="utility-error" role="alert">{error}</div> : null}
                 <button type="button" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
               </section>
             )}
           </div>
         ) : null}
 
-        {tab === "http" ? (
-          <section className="mcp-http-view" role="tabpanel">
-            <div className="mcp-http-panel">
-              <header><div><strong>服务与访问</strong><small>管理监听边界、进程和客户端接入配置</small></div><span aria-live="polite">{httpDirty ? "配置未保存" : savedHttpConfig?.tokenAvailable ? "Token 已保存" : "未生成 Token"}</span></header>
-              <div className="mcp-http-settings">
-                <div className="mcp-section-heading"><div><strong>监听配置</strong><span>服务运行时锁定以下参数</span></div></div>
-                <div className="mcp-http-field-grid">
-                  <McpFieldGroup label="监听 IP:">
-                    <div className="mcp-http-listen-editor">
-                      <select aria-label="MCP HTTP 监听范围" value={mcpHttpListenPreset(httpSettings.listenHost)} disabled={httpControlsLocked} onChange={(event) => {
-                        const listenHost = event.target.value === MCP_HTTP_CUSTOM_LISTEN_PRESET ? "" : event.target.value;
-                        updateHttpListenHost(listenHost);
-                        if (!listenHost) requestAnimationFrame(() => httpListenInputRef.current?.focus());
-                      }}>
-                        {mcpHttpListenOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                      </select>
-                      <input ref={httpListenInputRef} aria-label="MCP HTTP 监听 IP" value={httpSettings.listenHost} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpListenHost(event.target.value)} />
-                    </div>
-                  </McpFieldGroup>
-                  <McpField label="端口:"><input aria-label="MCP HTTP 端口" type="number" min={1} max={65_535} value={httpSettings.port || ""} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ port: Number(event.target.value) })} /></McpField>
-                  <McpField label="Client ID:"><input aria-label="MCP HTTP Client ID" list="mcp-http-client-ids" value={httpSettings.clientId} maxLength={128} spellCheck={false} disabled={httpControlsLocked} onChange={(event) => updateHttpSettings({ clientId: event.target.value })} /><datalist id="mcp-http-client-ids">{grants.filter((grant) => mcpGrantIsActive(grant)).map((grant) => <option key={grant.clientId} value={grant.clientId}>{grant.name}</option>)}</datalist></McpField>
-                  <McpField label="客户端地址:"><input aria-label="MCP HTTP 客户端地址" value={httpSettings.clientHost} maxLength={253} spellCheck={false} disabled={httpControlsLocked} placeholder="192.168.33.222" onChange={(event) => updateHttpSettings({ clientHost: event.target.value })} /></McpField>
-                </div>
-                <McpField label="Allowed Origins:"><textarea className="mcp-http-origins" aria-label="MCP HTTP Allowed Origins" value={httpOriginsText} spellCheck={false} placeholder="https://console.example.com" disabled={httpControlsLocked} onChange={(event) => { requestGateRef.current.invalidate("http-preview"); setHttpOriginsText(event.target.value); setHttpDirty(true); setHttpPreviewCurrent(false); setError(""); }} /></McpField>
-                <div className="mcp-http-options">
-                  <label><input type="checkbox" checked={httpSettings.allowRemote} disabled={httpControlsLocked || !httpRemoteListener} onChange={(event) => updateHttpSettings({ allowRemote: event.target.checked })} />允许非本机监听</label>
-                </div>
-                {httpRemoteListener ? (
-                  <div className={`mcp-http-exposure ${httpSettings.allowRemote ? "allowed" : "blocked"}`} role="status">
-                    {httpSettings.allowRemote ? "网络可达主机可访问此端点；Token 与 Origin 校验保持启用，仅用于可信网络或 TLS 代理后方。" : "非回环监听需要显式允许远程访问。"}
-                  </div>
-                ) : null}
-              </div>
-              <section className="mcp-cc-switch" aria-labelledby="mcp-cc-switch-title">
-                <header>
-                  <div><strong id="mcp-cc-switch-title">客户端接入</strong><small>{httpDirty ? "保存配置后可复制完整 JSON" : "生成可直接粘贴到 CC Switch 的完整 JSON"}</small></div>
-                  <button type="button" title={httpDirty ? "请先保存配置" : "复制 CC Switch JSON"} aria-label="复制 CC Switch JSON" disabled={!ccSwitchJson || !httpPreviewCurrent || httpDirty} onClick={() => void copyCcSwitchJson()}><Copy size={14} /><span>{ccSwitchCopied ? "已复制" : "复制 JSON"}</span></button>
-                </header>
-                <div className="mcp-cc-switch-options">
-                  <label><span>Server ID</span><input aria-label="CC Switch Server ID" value={ccSwitchServerId} maxLength={64} spellCheck={false} onChange={(event) => setCcSwitchServerId(event.target.value)} /></label>
-                  <label><span>Bearer Token</span><input aria-label="CC Switch Bearer Token" value={httpToken} readOnly spellCheck={false} placeholder="先生成 Token" /></label>
-                  <label><span>工具超时</span><input aria-label="CC Switch 工具超时秒数" type="number" min={1} max={3_600} value={ccSwitchToolTimeout || ""} onChange={(event) => setCcSwitchToolTimeout(Number(event.target.value))} /></label>
-                </div>
-                <textarea className={httpDirty ? "mcp-cc-switch-json stale" : "mcp-cc-switch-json"} readOnly aria-label="CC Switch MCP JSON" value={ccSwitchJson} />
-              </section>
-              <div className="mcp-http-row"><span>Listen</span><code>{httpConfig?.endpoint ?? "http://127.0.0.1:8787/mcp"}</code></div>
-              <div className="mcp-http-row"><span>Client</span><code>{httpConfig?.clientEndpoint ?? mcpHttpClientEndpoint(httpSettings) ?? "-"}</code></div>
-              <div className="mcp-http-row"><span>Token Ref</span><code>{httpConfig?.tokenRef ?? "keychain:mcp-http-token"}</code></div>
-              <div className="mcp-http-row"><span>Executable</span><code>{httpConfig?.executable ?? "portmate-mcp"}</code></div>
-              <div className="mcp-http-row"><span>Store</span><code>{httpConfig?.storePath ?? "portmate-store.sqlite3"}</code></div>
-              <div className="mcp-section-heading"><div><strong>服务进程</strong><span>启动前需要先保存配置并生成 Token</span></div></div>
-              <div className={`mcp-http-runtime ${httpRuntime?.phase ?? "stopped"}`} role="status" aria-live="polite">
-                <span className="mcp-http-runtime-indicator" />
-                <strong>{mcpHttpRuntimeLabel(httpRuntime)}</strong>
-                {httpRuntime?.pid ? <code>PID {httpRuntime.pid}</code> : null}
-                {httpRuntime?.startedAt ? <time>{formatDateTime(httpRuntime.startedAt)}</time> : null}
-                {httpRuntime?.message ? <small>{httpRuntime.message}</small> : null}
-              </div>
-              <textarea className={httpDirty && !httpPreviewCurrent ? "mcp-http-command stale" : "mcp-http-command"} readOnly aria-label="MCP HTTP 启动命令" value={httpConfig?.startCommand ?? ""} />
-              {error ? <div className="utility-error">{error}</div> : null}
-              <div className="mcp-actions">
-                <button type="button" onClick={() => void saveHttpSettings()} disabled={httpBusy || httpRuntimeLocked || !httpSettingsValid || !httpDirty}><Save size={14} />保存配置</button>
-                <button type="button" onClick={() => void rotateHttpToken()} disabled={httpBusy || httpRuntimeLocked || httpDirty || !savedHttpConfig}><KeyRound size={14} />{savedHttpConfig?.tokenAvailable ? "轮换 Token" : "生成 Token"}</button>
-                <button type="button" onClick={() => void startHttpRuntime()} disabled={httpBusy || httpRuntimeBusy || !httpRuntime || httpRuntimeActive || httpDirty || !savedHttpConfig?.tokenAvailable}><Play size={14} />启动服务</button>
-                <button type="button" onClick={() => void stopHttpRuntime()} disabled={httpRuntimeBusy || !httpRuntime || httpRuntime.phase === "stopped"}><Square size={13} />停止服务</button>
-                <button type="button" onClick={() => void copyHttpCommand()} disabled={!httpConfig || !httpPreviewCurrent}><Copy size={14} />{httpCommandCopied ? "已复制" : "复制命令"}</button>
-              </div>
-            </div>
-          </section>
-        ) : null}
+        {tab === "http" ? <McpHttpPanel http={http} grantBusy={grantBusy} onManageGrants={() => setTab("grants")} /> : null}
 
         {tab === "audit" ? (
           <section className="mcp-audit-view" role="tabpanel">
@@ -970,6 +535,11 @@ export default function McpDialog({
         ) : null}
       </section>
     </div>
+    {revokeConfirmation ? <McpRevokeDialog key={revokeConfirmation.clientId} target={revokeConfirmation}
+      httpBound={isHttpBindingClient(revokeConfirmation.clientId)} busy={grantBusy || http.busy} error={error}
+      onCancel={() => { setRevokeConfirmation(null); requestAnimationFrame(() => clientIdInputRef.current?.focus()); }}
+      onConfirm={() => void revokeGrant()} /> : null}
+    </>
   );
 }
 
@@ -996,15 +566,6 @@ function McpFieldGroup({ label, children }: { label: string; children: ReactNode
   return <div className="dialog-field"><span>{label}</span>{children}</div>;
 }
 
-function mcpHttpRuntimeLabel(status: McpHttpRuntimeStatus | null) {
-  switch (status?.phase) {
-    case "starting": return "正在启动";
-    case "running": return "运行中";
-    case "failed": return "启动失败";
-    case "stopped": return "未运行";
-    default: return "读取状态";
-  }
-}
 
 function defaultMcpGrantExpiryInput() {
   const date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
@@ -1019,9 +580,4 @@ function formatDateTime(value: string) {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function writeClipboardText(text: string) {
-  if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
-  await navigator.clipboard.writeText(text);
 }

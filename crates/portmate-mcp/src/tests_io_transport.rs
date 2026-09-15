@@ -203,6 +203,7 @@ fn mcp_refreshes_store_and_endpoint_between_json_rpc_envelopes() {
     let write_store = |name: &str| {
         let mut store = test_snapshot_store(name);
         grant_all_read_scopes(&mut store, "refresh-client");
+        store.mcp_http_settings.client_id = "refresh-client".to_string();
         fs::write(
             &store_path,
             serde_json::to_vec(&store).unwrap(),

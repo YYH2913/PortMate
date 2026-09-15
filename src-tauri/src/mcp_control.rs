@@ -77,6 +77,38 @@ pub(super) fn revoke_mcp_grant_from_store(
     store.grants.clone()
 }
 
+/// HTTP transport authentication is shared by the configured bridge identity,
+/// so only a currently active grant may own that identity. This intentionally
+/// does not require any particular scope: a zero-scope grant is still a valid
+/// identity, but has no usable MCP permissions.
+pub(super) fn mcp_http_client_has_active_grant(
+    store: &SessionStore,
+    client_id: &str,
+    now: DateTime<Utc>,
+) -> bool {
+    let client_id = client_id.trim();
+    !client_id.is_empty()
+        && store.grants.iter().any(|grant| {
+            grant.client_id == client_id
+                && grant.revoked_at.is_none()
+                && !grant.expires_at.is_some_and(|expires| expires <= now)
+        })
+}
+
+pub(super) fn require_active_mcp_http_client(
+    store: &SessionStore,
+    client_id: &str,
+) -> Result<(), String> {
+    if mcp_http_client_has_active_grant(store, client_id, Utc::now()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "HTTP Bridge 必须绑定一个仍有效的 MCP 授权 Client：{}",
+            client_id.trim()
+        ))
+    }
+}
+
 pub(super) fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, String> {
     grant.client_id = normalize_mcp_client_id(&grant.client_id)?;
     grant.name = grant.name.trim().to_string();
@@ -474,32 +506,10 @@ pub(super) fn set_mcp_http_settings_in_store(
     store.mcp_http_settings.clone()
 }
 
-/// Keep the persisted HTTP bridge identity aligned with an unambiguous grant.
-/// This is deliberately a narrow migration: multiple active grants are left
-/// untouched so the bridge never guesses or combines authorization boundaries.
-pub(super) fn synchronize_mcp_http_client_id_in_store(store: &mut SessionStore) -> bool {
-    let current = store.mcp_http_settings.client_id.clone();
-    let resolved = store.mcp_resolved_client_id(Some(&current));
-    if resolved == current {
-        return false;
-    }
-    store.mcp_http_settings.client_id = resolved;
-    true
-}
-
-pub(super) fn synchronize_mcp_http_client_id(
+pub(super) fn read_mcp_http_settings(
     state: &AppState,
 ) -> Result<McpHttpSettings, String> {
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    if store.mcp_resolved_client_id(Some(&store.mcp_http_settings.client_id))
-        == store.mcp_http_settings.client_id
-    {
-        return Ok(store.mcp_http_settings.clone());
-    }
-    commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        synchronize_mcp_http_client_id_in_store(next_store);
-        Ok(())
-    })?;
+    let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.mcp_http_settings.clone())
 }
 

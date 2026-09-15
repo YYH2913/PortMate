@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_MCP_HTTP_CLIENT_ID,
   createMcpGrant,
   formatMcpGrantExpiryInput,
   generateMcpClientId,
@@ -8,7 +7,6 @@ import {
   mcpSessionAccessMode,
   mcpGrantDraftHasUnsavedChanges,
   parseMcpGrantExpiryInput,
-  resolveMcpHttpClientId,
   setMcpSessionAccessMode,
   MCP_NO_SESSIONS_SENTINEL,
 } from "./mcp-grant-state";
@@ -60,18 +58,6 @@ describe("MCP grant editor state", () => {
     expect(mcpSessionAccessMode(selected)).toBe("none");
     const one = setMcpSessionAccessMode({ ...selected, allowedSessions: ["session-a"] }, "selected");
     expect(mcpSessionAccessMode(one)).toBe("selected");
-  });
-
-  it("resolves the legacy HTTP identity only for one active grant", () => {
-    const grants = [
-      { clientId: "remote-client", expiresAt: null, revokedAt: null },
-    ];
-    expect(resolveMcpHttpClientId(DEFAULT_MCP_HTTP_CLIENT_ID, grants)).toBe("remote-client");
-    expect(resolveMcpHttpClientId("explicit-client", grants)).toBe("explicit-client");
-    expect(resolveMcpHttpClientId(DEFAULT_MCP_HTTP_CLIENT_ID, [
-      ...grants,
-      { clientId: "second-client", expiresAt: null, revokedAt: null },
-    ])).toBe(DEFAULT_MCP_HTTP_CLIENT_ID);
   });
 
   it("treats revoked, expired, and malformed-expiry grants as inactive", () => {

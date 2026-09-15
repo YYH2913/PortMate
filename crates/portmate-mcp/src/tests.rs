@@ -108,7 +108,7 @@ fn content_upload_requires_an_explicit_transfer_grant() {
 }
 
 #[test]
-fn standalone_bridge_unifies_a_legacy_default_with_one_active_grant() {
+fn standalone_bridge_never_infers_identity_from_grants() {
     let mut store = test_snapshot_store("client identity");
     store.grants.clear();
     store.mcp_http_settings.client_id = "portmate-local".to_string();
@@ -123,7 +123,7 @@ fn standalone_bridge_unifies_a_legacy_default_with_one_active_grant() {
     });
     assert_eq!(
         resolve_mcp_client_id(&store, Some("portmate-local")),
-        "remote-console"
+        "portmate-local"
     );
     assert_eq!(
         resolve_mcp_client_id(&store, Some("explicit-unknown")),
@@ -182,7 +182,7 @@ fn standalone_bridge_keeps_its_explicit_identity_after_revocation_or_removal() {
     assert_eq!(resolve_mcp_client_id(&server.store, None), "desktop-client");
     assert_eq!(
         resolve_mcp_client_id(&server.store, Some("portmate-local")),
-        "desktop-client"
+        "portmate-local"
     );
 }
 

@@ -287,7 +287,7 @@ fn mcp_http_settings_change_memory_only_after_persistence_succeeds() {
 }
 
 #[test]
-fn mcp_http_authorization_sync_persists_only_an_unambiguous_client() {
+fn mcp_http_requires_an_explicit_active_client_without_guessing() {
     let mut store = SessionStore::default();
     store.grants.push(McpGrant {
         client_id: "single-client".to_string(),
@@ -298,8 +298,9 @@ fn mcp_http_authorization_sync_persists_only_an_unambiguous_client() {
         expires_at: None,
         revoked_at: None,
     });
-    assert!(synchronize_mcp_http_client_id_in_store(&mut store));
-    assert_eq!(store.mcp_http_settings.client_id, "single-client");
+    assert!(require_active_mcp_http_client(&store, "single-client").is_ok());
+    assert!(require_active_mcp_http_client(&store, "portmate-local").is_err());
+    assert_eq!(store.mcp_http_settings.client_id, "portmate-local");
 
     store.grants.push(McpGrant {
         client_id: "second-client".to_string(),
@@ -310,7 +311,56 @@ fn mcp_http_authorization_sync_persists_only_an_unambiguous_client() {
         expires_at: None,
         revoked_at: None,
     });
-    store.mcp_http_settings.client_id = "portmate-local".to_string();
-    assert!(!synchronize_mcp_http_client_id_in_store(&mut store));
-    assert_eq!(store.mcp_http_settings.client_id, "portmate-local");
+    store.mcp_http_settings.client_id = "single-client".to_string();
+    revoke_mcp_grant_from_store(&mut store, "single-client");
+    assert!(require_active_mcp_http_client(&store, "single-client").is_err());
+    assert_eq!(store.mcp_resolved_client_id(None), "single-client");
+    assert!(require_active_mcp_http_client(&store, "second-client").is_ok());
+    store.grants[0].expires_at = Some(Utc::now());
+    assert!(require_active_mcp_http_client(&store, "second-client").is_err());
+    store.grants[0].expires_at = None;
+    store.grants[0].revoked_at = Some(Utc::now());
+    assert!(require_active_mcp_http_client(&store, "second-client").is_err());
+    assert!(require_active_mcp_http_client(&store, "").is_err());
+}
+
+#[test]
+fn revoked_http_binding_stops_transport_and_deletes_token_without_rebinding() {
+    use crate::mcp_commands::finish_mcp_grant_change_with;
+    let mut store = SessionStore::default();
+    store.mcp_http_settings.client_id = "revoked".into();
+    let calls = std::cell::RefCell::new(Vec::new());
+    let result = finish_mcp_grant_change_with(&store, "revoked",
+        || { calls.borrow_mut().push("stop"); Ok(()) },
+        || { calls.borrow_mut().push("delete-token"); Ok(()) });
+    assert!(result.http_access_invalidated);
+    assert!(result.warnings.is_empty());
+    assert_eq!(*calls.borrow(), ["stop", "delete-token"]);
+    assert_eq!(store.mcp_http_settings.client_id, "revoked");
+    assert!(result.grants.is_empty());
+}
+
+#[test]
+fn unrelated_revocation_does_not_change_http_transport_or_token() {
+    let mut store = SessionStore::default();
+    store.mcp_http_settings.client_id = "other".into();
+    let result = crate::mcp_commands::finish_mcp_grant_change_with(&store, "revoked",
+        || panic!("must not stop another client's service"),
+        || panic!("must not delete another client's token"));
+    assert!(!result.http_access_invalidated);
+    assert!(result.warnings.is_empty());
+}
+
+#[test]
+fn revocation_reports_cleanup_failures_without_restoring_permissions() {
+    let mut store = SessionStore::default();
+    store.mcp_http_settings.client_id = "revoked".into();
+    let result = crate::mcp_commands::finish_mcp_grant_change_with(&store, "revoked",
+        || Err("process busy".into()), || Err("keyring locked".into()));
+    assert!(result.http_access_invalidated);
+    assert_eq!(result.warnings.len(), 2);
+    assert!(result.warnings[0].contains("process busy"));
+    assert!(result.warnings[1].contains("keyring locked"));
+    assert!(result.grants.is_empty());
+    assert!(require_active_mcp_http_client(&store, "revoked").is_err());
 }

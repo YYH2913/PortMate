@@ -198,39 +198,92 @@ pub(crate) fn respond_mcp_approval(
     respond_mcp_approval_inner(state.inner(), &approval_id, approved)
 }
 
+/// A revoked or expired grant must not leave a running HTTP endpoint with a
+/// reusable bearer token. The persisted authorization change is authoritative
+/// even if process/keyring cleanup fails, so cleanup failures are logged but do
+/// not roll back the revocation.
+pub(super) fn finish_mcp_grant_change_with(
+    store: &SessionStore,
+    client_id: &str,
+    stop_bridge: impl FnOnce() -> Result<(), String>,
+    delete_token: impl FnOnce() -> Result<(), String>,
+) -> McpGrantMutationResponse {
+    let invalidated = store.mcp_http_settings.client_id == client_id
+        && !mcp_http_client_has_active_grant(store, client_id, Utc::now());
+    let mut warnings = Vec::new();
+    if invalidated {
+        if let Err(error) = stop_bridge() {
+            warnings.push(format!("授权已失效，但停止 HTTP Bridge 失败：{error}"));
+        }
+        if let Err(error) = delete_token() {
+            warnings.push(format!("授权已失效，但清除旧 Token 失败：{error}。重新绑定前请重试。"));
+        }
+    }
+    McpGrantMutationResponse {
+        grants: store.grants.clone(),
+        http_access_invalidated: invalidated,
+        warnings,
+    }
+}
+
+fn mutate_mcp_grant(
+    state: &AppState,
+    client_id: &str,
+    enables_access: bool,
+    mutate: impl FnOnce(&mut SessionStore) -> Result<Vec<McpGrant>, String>,
+) -> Result<McpGrantMutationResponse, String> {
+    // Same lock order as start/save/token rotation. Keep the binding stable
+    // until cleanup finishes; another window cannot rebind during revocation.
+    let mut runtime = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    if enables_access && store.mcp_http_settings.client_id == client_id
+        && !mcp_http_client_has_active_grant(&store, client_id, Utc::now())
+    {
+        // Recreating/renewing an invalid bound identity must not resurrect a
+        // token left behind by failed keyring cleanup or an expired grant.
+        stop_mcp_http_runtime_locked(&mut runtime)?;
+        delete_secret_from_store(MCP_HTTP_TOKEN_REF)?;
+    }
+    commit_store_mutation(&mut store, &state.store_path, mutate)?;
+    Ok(finish_mcp_grant_change_with(
+        &store,
+        client_id,
+        || stop_mcp_http_runtime_locked(&mut runtime).map(|_| ()),
+        || delete_secret_from_store(MCP_HTTP_TOKEN_REF),
+    ))
+}
+
 #[tauri::command]
 pub(crate) fn save_mcp_grant(
     state: State<'_, AppState>,
     grant: McpGrant,
-) -> Result<Vec<McpGrant>, String> {
+) -> Result<McpGrantMutationResponse, String> {
     let grant = normalize_mcp_grant(grant)?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        let saved = upsert_mcp_grant_in_store(next_store, grant)?;
-        synchronize_mcp_http_client_id_in_store(next_store);
-        Ok(saved)
-    })
+    let client_id = grant.client_id.clone();
+    let enables_access = grant.revoked_at.is_none()
+        && !grant.expires_at.is_some_and(|expires| expires <= Utc::now());
+    mutate_mcp_grant(state.inner(), &client_id, enables_access, |store| upsert_mcp_grant_in_store(store, grant))
 }
 
 #[tauri::command]
 pub(crate) fn revoke_mcp_grant(
     state: State<'_, AppState>,
     client_id: String,
-) -> Result<Vec<McpGrant>, String> {
+) -> Result<McpGrantMutationResponse, String> {
     let client_id = normalize_mcp_client_id(&client_id)?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    commit_store_mutation(&mut store, &state.store_path, |next_store| {
-        let saved = revoke_mcp_grant_from_store(next_store, &client_id);
-        synchronize_mcp_http_client_id_in_store(next_store);
-        Ok(saved)
-    })
+    mutate_mcp_grant(state.inner(), &client_id, false, |store| Ok(revoke_mcp_grant_from_store(store, &client_id)))
 }
 
 #[tauri::command]
 pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfig, String> {
-    let settings = synchronize_mcp_http_client_id(state.inner())?;
+    let _runtime_guard = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let settings = read_mcp_http_settings(state.inner())?;
+    let active_client = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        mcp_http_client_has_active_grant(&store, &settings.client_id, Utc::now())
+    };
     build_mcp_http_config_for_request(
-        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        active_client && has_secret_ref(MCP_HTTP_TOKEN_REF),
         &mcp_sidecar_executable_path(),
         &state.store_path,
         settings,
@@ -241,10 +294,21 @@ pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfi
 pub(crate) fn mcp_http_access_config(
     state: State<'_, AppState>,
 ) -> Result<McpHttpAccessResponse, String> {
-    let settings = synchronize_mcp_http_client_id(state.inner())?;
-    let token = mcp_http_token_from_probe(probe_secret_from_keyring(MCP_HTTP_TOKEN_REF))?;
+    let _runtime_guard = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let settings = read_mcp_http_settings(state.inner())?;
+    let active_client = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        mcp_http_client_has_active_grant(&store, &settings.client_id, Utc::now())
+    };
+    // Do not reveal or advertise a persisted token while the selected identity
+    // is no longer a valid grant. Saving a new binding will invalidate it.
+    let token = if active_client {
+        mcp_http_token_from_probe(probe_secret_from_keyring(MCP_HTTP_TOKEN_REF))?
+    } else {
+        None
+    };
     let config = build_mcp_http_config_for_request(
-        token.is_some(),
+        active_client && token.is_some(),
         &mcp_sidecar_executable_path(),
         &state.store_path,
         settings,
@@ -291,19 +355,33 @@ pub(crate) fn save_mcp_http_settings(
 ) -> Result<McpHttpConfig, String> {
     let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "保存配置")?;
     let (settings, _) = normalize_mcp_http_settings(settings)?;
-    let config = build_mcp_http_config_for_request(
-        has_secret_ref(MCP_HTTP_TOKEN_REF),
-        &mcp_sidecar_executable_path(),
-        &state.store_path,
-        settings.clone(),
-    )?;
     {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
+        require_active_mcp_http_client(&store, &settings.client_id)?;
+        let identity_changed = store.mcp_http_settings.client_id != settings.client_id;
+        // Rebinding a bearer-protected HTTP endpoint must never carry a token
+        // from the old authorization identity into the new one. Deleting it
+        // before the store commit fails closed if persistence later fails.
+        if identity_changed {
+            delete_secret_from_store(MCP_HTTP_TOKEN_REF)?;
+        }
         commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            require_active_mcp_http_client(next_store, &settings.client_id)?;
             Ok(set_mcp_http_settings_in_store(next_store, settings))
         })?;
     }
-    Ok(config)
+    let settings = state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_http_settings
+        .clone();
+    build_mcp_http_config_for_request(
+        has_secret_ref(MCP_HTTP_TOKEN_REF),
+        &mcp_sidecar_executable_path(),
+        &state.store_path,
+        settings,
+    )
 }
 
 #[tauri::command]
@@ -311,12 +389,11 @@ pub(crate) fn rotate_mcp_http_token(
     state: State<'_, AppState>,
 ) -> Result<McpHttpTokenResponse, String> {
     let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "轮换 Token")?;
-    let settings = state
-        .store
-        .lock()
-        .map_err(|error| error.to_string())?
-        .mcp_http_settings
-        .clone();
+    let settings = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        require_active_mcp_http_client(&store, &store.mcp_http_settings.client_id)?;
+        store.mcp_http_settings.clone()
+    };
     let config = build_mcp_http_config_for_request(
         true,
         &mcp_sidecar_executable_path(),

@@ -45,19 +45,6 @@ export function setMcpSessionAccessMode(
   return { ...grant, allowedSessions: selected.length ? selected : [MCP_NO_SESSIONS_SENTINEL] };
 }
 
-export function resolveMcpHttpClientId(
-  configured: string,
-  grants: readonly Pick<McpGrant, "clientId" | "expiresAt" | "revokedAt">[],
-): string {
-  const configuredId = configured.trim();
-  const active = grants.filter((grant) => mcpGrantIsActive(grant));
-  if (active.some((grant) => grant.clientId === configuredId)) return configuredId;
-  const storedIsLegacyDefault = configuredId === "" || configuredId === DEFAULT_MCP_HTTP_CLIENT_ID;
-  if (active.length === 1 && storedIsLegacyDefault) return active[0].clientId;
-  if (configuredId && configuredId !== DEFAULT_MCP_HTTP_CLIENT_ID) return configuredId;
-  return configuredId || DEFAULT_MCP_HTTP_CLIENT_ID;
-}
-
 export function mcpGrantDraftHasUnsavedChanges(
   draft: McpGrant | null,
   saved: McpGrant | null | undefined,

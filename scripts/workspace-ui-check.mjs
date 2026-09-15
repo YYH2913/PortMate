@@ -9,6 +9,7 @@ import { checkSerialLogin } from "./serial-login-regressions.mjs";
 import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
+import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -283,7 +284,7 @@ const mcpHttpConfig = {
   clientHost: "127.0.0.1",
   port: 8787,
   allowedOrigins: ["http://127.0.0.1:8787", "http://localhost:8787"],
-  clientId: "portmate-local",
+  clientId: "ops-console",
   trusted: false,
   allowRemote: false,
   remoteAccess: false,
@@ -294,7 +295,7 @@ const mcpHttpConfig = {
   defaultOrigin: "http://127.0.0.1:8787",
   executable: "/usr/bin/portmate-mcp",
   storePath: "/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3",
-  startCommand: "PORTMATE_STORE_PATH='/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787' PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787,http://localhost:8787' PORTMATE_MCP_CLIENT_ID='portmate-local' PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 PORTMATE_MCP_TRUSTED=0 '/usr/bin/portmate-mcp' --http",
+  startCommand: "PORTMATE_STORE_PATH='/home/operator/.local/share/dev.portmate.desktop/portmate-store.sqlite3' PORTMATE_MCP_HTTP=1 PORTMATE_MCP_HTTP_ADDR='127.0.0.1:8787' PORTMATE_MCP_HTTP_ORIGINS='http://127.0.0.1:8787,http://localhost:8787' PORTMATE_MCP_CLIENT_ID='ops-console' PORTMATE_MCP_HTTP_ALLOW_REMOTE=0 PORTMATE_MCP_TRUSTED=0 '/usr/bin/portmate-mcp' --http",
 };
 
 const workspace = {
@@ -461,6 +462,19 @@ try {
     window.__mcpHttpConfig = structuredClone(initialMcpHttpConfig);
     window.__mcpHttpToken = "portmate-existing-token";
     window.__mcpHttpTokenSequence = 0;
+    window.__mcpClientActive = id => window.__mcpGrants.some(grant => grant.clientId === id
+      && !grant.revokedAt && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now()));
+    window.__mcpGrantMutationResult = id => {
+      const invalidated = window.__mcpHttpConfig.clientId === id && !window.__mcpClientActive(id);
+      if (invalidated) {
+        window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
+        window.__mcpHttpToken = null;
+        window.__mcpHttpConfig.tokenAvailable = false;
+      }
+      const warnings = window.__mcpCleanupWarnings ?? [];
+      window.__mcpCleanupWarnings = [];
+      return { grants: structuredClone(window.__mcpGrants), httpAccessInvalidated: invalidated, warnings };
+    };
     window.__mcpHttpRuntime = { phase: "stopped", endpoint: null, pid: null, startedAt: null, message: null };
     window.__deferMcpHttpRuntimeStatus = false;
     window.__pendingMcpHttpRuntimeStatuses = [];
@@ -1620,12 +1634,20 @@ try {
           if (!window.__deferMcpHttpConfig) return structuredClone(window.__mcpHttpConfig);
           return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
         }
-        if (command === "mcp_http_access_config") return {
-          config: structuredClone(window.__mcpHttpConfig),
-          token: window.__mcpHttpToken,
-        };
+        if (command === "mcp_http_access_config") {
+          const active = window.__mcpClientActive(window.__mcpHttpConfig.clientId);
+          return { config: { ...structuredClone(window.__mcpHttpConfig), tokenAvailable: active && Boolean(window.__mcpHttpToken) },
+            token: active ? window.__mcpHttpToken : null };
+        }
         if (command === "preview_mcp_http_config") return window.__buildMcpHttpConfig(args.settings);
         if (command === "save_mcp_http_settings") {
+          if (!window.__mcpClientActive(args.settings.clientId)) throw new Error("invalid HTTP grant");
+          if (window.__mcpHttpRuntime.phase === "running") throw new Error("stop HTTP first");
+          if (window.__mcpHttpConfig.clientId !== args.settings.clientId) {
+            window.__mcpHttpToken = null;
+            window.__mcpHttpConfig.tokenAvailable = false;
+          }
+          if (window.__failNextMcpHttpSave) { window.__failNextMcpHttpSave = false; throw new Error("simulated HTTP save failure"); }
           window.__mcpHttpConfig = window.__buildMcpHttpConfig(args.settings);
           const result = structuredClone(window.__mcpHttpConfig);
           if (!window.__deferMcpHttpMutations) return result;
@@ -1638,6 +1660,8 @@ try {
         }
         if (command === "start_mcp_http") {
           if (window.__mcpQuickStartFailure) throw new Error(window.__mcpQuickStartFailure);
+          if (!window.__mcpClientActive(window.__mcpHttpConfig.clientId)) throw new Error("invalid HTTP grant");
+          if (!window.__mcpHttpToken) throw new Error("missing HTTP token");
           window.__mcpHttpRuntime = {
             phase: "running",
             endpoint: window.__mcpHttpConfig.endpoint,
@@ -1666,19 +1690,22 @@ try {
           const index = window.__mcpGrants.findIndex((grant) => grant.clientId === args.grant.clientId);
           if (index >= 0) window.__mcpGrants[index] = structuredClone(args.grant);
           else window.__mcpGrants.push(structuredClone(args.grant));
-          const result = structuredClone(window.__mcpGrants);
+          const result = window.__mcpGrantMutationResult(args.grant.clientId);
           if (!window.__deferGrantMutations) return result;
           return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
         if (command === "revoke_mcp_grant") {
           window.__mcpGrants = window.__mcpGrants.filter((grant) => grant.clientId !== args.clientId);
-          const result = structuredClone(window.__mcpGrants);
+          const result = window.__mcpGrantMutationResult(args.clientId);
           if (!window.__deferGrantMutations) return result;
           return new Promise((resolve) => window.__pendingGrantMutations.push({ result, resolve }));
         }
         if (command === "rotate_mcp_http_token") {
+          if (!window.__mcpClientActive(window.__mcpHttpConfig.clientId)) throw new Error("invalid HTTP grant");
+          if (window.__mcpHttpRuntime.phase === "running") throw new Error("stop HTTP first");
           window.__mcpHttpTokenSequence += 1;
           window.__mcpHttpToken = `portmate-test-token-${window.__mcpHttpTokenSequence}`;
+          window.__mcpHttpConfig.tokenAvailable = true;
           return { config: structuredClone(window.__mcpHttpConfig), token: window.__mcpHttpToken };
         }
         if (command === "export_mcp_audit") {
@@ -1911,6 +1938,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_MCP_MANAGEMENT_ONLY === "1") {
+    await checkMcpManagement(context, appUrl, screenshotPrefix);
+    console.log("MCP authorization, HTTP connection and revocation browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_COMMAND_SUBMISSIONS_ONLY === "1") {
     await checkCommandSubmissions(context, appUrl);
     await checkHostScripts(context, appUrl, screenshotPrefix);
@@ -6235,362 +6268,7 @@ Host staging
     "MCP grants did not load into the compact grant workspace");
   assert(await mcpDialog.getByRole("checkbox", { name: "写操作每次确认", exact: true }).isChecked(),
     "MCP write confirmation setting did not load for the selected grant");
-  const visibleMcpScopes = await mcpDialog.locator(".mcp-check-grid label").allTextContents();
-  assert(JSON.stringify(visibleMcpScopes.map((scope) => scope.trim())) === JSON.stringify([
-    "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts",
-    "read-mcp", "write-input", "transfer", "host-files", "tunnel", "manage-sessions", "run-scripts", "manage-mcp",
-  ]), `MCP grant editor omitted transfer/route scopes: ${JSON.stringify(visibleMcpScopes)}`);
-  const savedGrantCcSwitch = mcpDialog.getByRole("textbox", { name: "授权 CC Switch MCP JSON", exact: true });
-  assert(await savedGrantCcSwitch.inputValue() === "",
-    "inactive MCP grant exposed the token for a different active identity");
-  const savedGrantCcSwitchAction = mcpDialog.locator(".mcp-grant-cc-switch")
-    .getByRole("button", { name: `应用并复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true });
-  await savedGrantCcSwitchAction.click();
-  await mcpDialog.locator(".mcp-grant-cc-switch")
-    .getByRole("button", { name: `已复制 ${mcpGrants[0].name} 的 CC Switch JSON`, exact: true })
-    .waitFor();
-  await page.waitForFunction(() => document.querySelector('[aria-label="授权 CC Switch MCP JSON"]')?.value.includes("portmate-test-token-1"));
-  const savedGrantCcSwitchJson = await savedGrantCcSwitch.inputValue();
-  const parsedSavedGrantCcSwitch = JSON.parse(savedGrantCcSwitchJson);
-  const savedGrantHttpSelection = await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings.clientId);
-  assert(parsedSavedGrantCcSwitch["portmate-ops-console"]?.headers?.Authorization === "Bearer portmate-test-token-1"
-    && parsedSavedGrantCcSwitch["portmate-ops-console"]?.url === "http://127.0.0.1:8787/mcp"
-    && await page.evaluate(() => window.__clipboardText) === savedGrantCcSwitchJson
-    && savedGrantHttpSelection === mcpGrants[0].clientId,
-  `saved MCP grant did not expose and apply a complete CC Switch configuration: ${savedGrantCcSwitchJson}`);
-  await mcpDialog.locator(".mcp-new").click();
-  const newGrantClientId = mcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input");
-  await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
-  assert(await newGrantClientId.inputValue() === ""
-    && await newGrantClientId.evaluate((input) => input === document.activeElement)
-    && await mcpDialog.locator(".mcp-grant-draft.active", { hasText: "新授权" }).count() === 1
-    && await mcpDialog.getByRole("button", { name: "保存", exact: true }).isDisabled(),
-  "MCP new grant action did not create and focus an explicit blank draft");
-  await mcpDialog.getByRole("button", { name: "随机生成 Client ID", exact: true }).click();
-  const generatedClientId = await newGrantClientId.inputValue();
-  assert(/^client-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generatedClientId)
-    && await newGrantClientId.evaluate((input) => input === document.activeElement),
-  `MCP random Client ID action produced an invalid value: ${generatedClientId}`);
-  await page.evaluate(() => {
-    window.__mcpGrantDiscardPrompts = [];
-    window.__originalMcpConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mcpGrantDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
-  await mcpDialog.locator(".mcp-grant-select", { hasText: mcpGrants[0].name }).click();
-  assert(await newGrantClientId.inputValue() === generatedClientId
-    && await mcpDialog.locator(".mcp-grant-draft.active").count() === 1,
-  "MCP grant switch discarded a new unsaved draft after cancellation");
-  await page.evaluate(() => {
-    window.confirm = (message) => {
-      window.__mcpGrantDiscardPrompts.push(String(message));
-      return true;
-    };
-  });
-  await mcpDialog.locator(".mcp-grant-select", { hasText: mcpGrants[0].name }).click();
-  const mcpGrantDiscardPrompts = await page.evaluate(() => {
-    window.confirm = window.__originalMcpConfirm;
-    return window.__mcpGrantDiscardPrompts;
-  });
-  assert(mcpGrantDiscardPrompts.length === 2
-    && mcpGrantDiscardPrompts.every((prompt) => prompt.includes("切换授权"))
-    && mcpGrantDiscardPrompts.every((prompt) => !prompt.includes(generatedClientId)),
-  `MCP grant discard confirmation was missing or exposed draft values: ${JSON.stringify(mcpGrantDiscardPrompts)}`);
-  const mcpGrantEditorBounds = await mcpDialog.locator(".mcp-editor").evaluate((editor) => {
-    const editorRect = editor.getBoundingClientRect();
-    const actionsRect = editor.querySelector(".mcp-actions").getBoundingClientRect();
-    return {
-      editorTop: editorRect.top,
-      editorBottom: editorRect.bottom,
-      actionsTop: actionsRect.top,
-      actionsBottom: actionsRect.bottom,
-    };
-  });
-  assert(mcpGrantEditorBounds.actionsTop >= mcpGrantEditorBounds.editorTop
-    && mcpGrantEditorBounds.actionsBottom <= mcpGrantEditorBounds.editorBottom,
-  `MCP grant actions are clipped by the editor viewport: ${JSON.stringify(mcpGrantEditorBounds)}`);
-  await page.screenshot({ path: `${screenshotPrefix}-mcp-grants.png`, fullPage: true });
-
-  await page.evaluate(() => {
-    window.__mcpRevokePrompts = [];
-    window.__originalMcpConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mcpRevokePrompts.push(String(message));
-      return true;
-    };
-  });
-  for (const grant of mcpGrants) {
-    const grantRow = mcpDialog.locator(".mcp-grant-select", { hasText: grant.name });
-    await grantRow.click();
-    await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "撤销", exact: true }).click();
-    await grantRow.waitFor({ state: "detached" });
-  }
-  const mcpRevokePrompts = await page.evaluate(() => {
-    window.confirm = window.__originalMcpConfirm;
-    return window.__mcpRevokePrompts;
-  });
-  assert(mcpRevokePrompts.length === mcpGrants.length
-    && mcpGrants.every((grant) => mcpRevokePrompts.some((prompt) => (
-      prompt.includes(grant.clientId) && prompt.includes(grant.name)
-    ))),
-  `MCP revocation confirmation omitted an exact target: ${JSON.stringify(mcpRevokePrompts)}`);
-  await mcpDialog.locator(".mcp-editor-empty").waitFor();
-  assert(await mcpDialog.locator(".mcp-grant-draft").count() === 0
-    && await mcpDialog.locator(".mcp-editor .dialog-field").count() === 0,
-  "an empty MCP grant store still presented an implicit draft");
-  await mcpDialog.locator(".mcp-editor-empty").getByRole("button", { name: "新建授权", exact: true }).click();
-  await page.waitForFunction(() => document.activeElement?.matches(".mcp-editor .dialog-field input"));
-  await newGrantClientId.fill("empty-store-client");
-  await mcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Empty Store Client");
-  assert(await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-transfers" }).locator("input").isChecked()
-    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-tunnels" }).locator("input").isChecked()
-    && await mcpDialog.locator(".mcp-check-grid label", { hasText: "read-scripts" }).locator("input").isChecked(),
-  "new MCP grants do not default to complete read-only visibility");
-  const grantExpiry = mcpDialog.getByLabel("MCP 授权到期时间", { exact: true });
-  await grantExpiry.click();
-  const grantExpiryEditor = mcpDialog.locator(".mcp-expiry-editor");
-  await grantExpiryEditor.getByLabel("MCP 授权到期日期", { exact: true }).fill("2031-04-05");
-  await grantExpiryEditor.getByLabel("MCP 授权到期时刻", { exact: true }).fill("06:07");
-  const grantExpiryEditorBounds = await grantExpiryEditor.evaluate((editor) => {
-    const rect = editor.getBoundingClientRect();
-    return {
-      left: rect.left,
-      right: rect.right,
-      top: rect.top,
-      bottom: rect.bottom,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    };
-  });
-  assert(grantExpiryEditorBounds.left >= 0
-    && grantExpiryEditorBounds.right <= grantExpiryEditorBounds.viewportWidth
-    && grantExpiryEditorBounds.top >= 0
-    && grantExpiryEditorBounds.bottom <= grantExpiryEditorBounds.viewportHeight,
-  `MCP grant expiry editor exceeds the viewport: ${JSON.stringify(grantExpiryEditorBounds)}`);
-  await page.screenshot({ path: `${screenshotPrefix}-mcp-grant-expiry.png`, fullPage: true });
-  await grantExpiryEditor.getByRole("button", { name: "取消", exact: true }).click();
-  assert(await grantExpiry.inputValue() === "" && await grantExpiryEditor.count() === 0,
-    "cancelling the MCP grant expiry editor changed the grant");
-  await grantExpiry.click();
-  await grantExpiryEditor.getByLabel("MCP 授权到期日期", { exact: true }).fill("2031-04-05");
-  await grantExpiryEditor.getByLabel("MCP 授权到期时刻", { exact: true }).fill("06:07");
-  await grantExpiryEditor.getByRole("button", { name: "确定", exact: true }).click();
-  await mcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
-  await mcpDialog.locator(".mcp-grant-select", { hasText: "Empty Store Client" }).waitFor();
-  const emptyStoreGrantSave = await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "save_mcp_grant" && call.args.grant.clientId === "empty-store-client")
-    .at(-1));
-  assert(emptyStoreGrantSave?.args.grant.name === "Empty Store Client"
-    && Number.isFinite(Date.parse(emptyStoreGrantSave?.args.grant.expiresAt))
-    && await grantExpiry.inputValue() === "2031-04-05T06:07",
-    `MCP new grant action did not save from an empty store: ${JSON.stringify(emptyStoreGrantSave)}`);
-
-  await page.evaluate(() => {
-    window.__deferMcpHttpRuntimeStatus = true;
-  });
-  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
-  await mcpDialog.locator(".mcp-http-view").waitFor();
-  assert(await mcpDialog.locator(".mcp-content").count() === 0
-    && await mcpDialog.locator(".mcp-audit-view").count() === 0,
-  "MCP HTTP page renders inactive task content");
-  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 1);
-  assert(await mcpDialog.getByLabel("CC Switch Bearer Token", { exact: true }).inputValue() === "portmate-test-token-1"
-    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isEnabled(),
-  "MCP HTTP page did not reuse the existing saved Token");
-  await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
-  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
-  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 2);
-  assert(await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "mcp_http_access_config").length) === 1,
-  "switching MCP tasks redundantly exposed the saved HTTP Token");
-  assert(await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).isDisabled(),
-    "MCP HTTP start was enabled before the managed runtime status loaded");
-  await page.evaluate(() => {
-    for (const pending of window.__pendingMcpHttpRuntimeStatuses) pending.resolve(pending.result);
-    window.__pendingMcpHttpRuntimeStatuses = [];
-    window.__deferMcpHttpRuntimeStatus = false;
-  });
-  await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).waitFor();
-  await page.waitForFunction(() => ![...document.querySelectorAll(".mcp-actions button")]
-    .find((button) => button.textContent?.includes("启动服务"))?.disabled);
-  const mcpHttpText = await mcpDialog.locator(".mcp-http-panel").textContent();
-  assert(mcpHttpText.includes(mcpHttpConfig.endpoint)
-    && mcpHttpText.includes(mcpHttpConfig.executable)
-    && mcpHttpText.includes(mcpHttpConfig.storePath)
-    && (await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue()).includes("PORTMATE_MCP_CLIENT_ID='ops-console'")
-    && !mcpHttpText.includes("cargo run"),
-  "MCP HTTP packaged executable/store configuration did not load");
-  const mcpListenHost = mcpDialog.getByLabel("MCP HTTP 监听 IP", { exact: true });
-  const mcpListenPreset = mcpDialog.getByRole("combobox", { name: "MCP HTTP 监听范围", exact: true });
-  await mcpListenPreset.selectOption("0.0.0.0");
-  assert(await mcpListenHost.inputValue() === "0.0.0.0",
-    "MCP HTTP all-IPv4 listener preset did not update the explicit bind address");
-  assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
-    "MCP HTTP remote listener could be saved without explicit remote approval");
-  const mcpRemoteAccess = mcpDialog.getByRole("checkbox", { name: "允许非本机监听", exact: true });
-  await mcpRemoteAccess.check();
-  await mcpListenHost.fill("127.0.0.1");
-  assert(await mcpRemoteAccess.isDisabled() && !await mcpRemoteAccess.isChecked()
-    && await mcpListenPreset.inputValue() === "127.0.0.1",
-    "MCP HTTP loopback listener retained a stale remote-access approval");
-  await mcpListenHost.fill("0.0.0.0");
-  assert(!await mcpRemoteAccess.isChecked()
-    && await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled(),
-  "MCP HTTP remote listener reused approval after returning from loopback");
-  await mcpRemoteAccess.check();
-  const mcpClientHost = mcpDialog.getByLabel("MCP HTTP 客户端地址", { exact: true });
-  await mcpClientHost.fill("0.0.0.0");
-  assert(await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled()
-    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled(),
-  "MCP HTTP wildcard client address produced a connectable client configuration");
-  await mcpClientHost.fill("192.168.33.222");
-  await mcpDialog.getByRole("spinbutton", { name: "MCP HTTP 端口", exact: true }).fill("9088");
-  await mcpDialog.getByLabel("MCP HTTP Client ID", { exact: true }).fill("remote-automation");
-  await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).fill("https://console.example.test");
-  await page.waitForFunction(() => document.querySelector(".mcp-http-command")?.value.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"));
-  assert(await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).isEnabled()
-    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled()
-    && (await mcpDialog.locator(".mcp-cc-switch header small").textContent()).includes("保存配置后"),
-  "MCP HTTP draft did not distinguish the command preview from the inactive CC Switch configuration");
-  await page.evaluate(() => { window.__clipboardWriteFailures = 1; });
-  await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).click();
-  await mcpDialog.locator(".utility-error", { hasText: "simulated clipboard denial" }).waitFor();
-  await mcpDialog.getByRole("button", { name: "复制命令", exact: true }).click();
-  await mcpDialog.getByRole("button", { name: "已复制", exact: true }).waitFor();
-  assert((await page.evaluate(() => window.__clipboardText)).includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'"),
-    "MCP HTTP command copy did not recover after a clipboard write failure");
-  await page.evaluate(() => {
-    window.__mcpHttpDiscardPrompts = [];
-    window.__originalMcpConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mcpHttpDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
-  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  const retainedMcpHttpDraft = await page.evaluate(() => ({
-    prompts: window.__mcpHttpDiscardPrompts,
-    dialogVisible: Boolean(document.querySelector(".mcp-dialog")),
-    clientHost: document.querySelector('[aria-label="MCP HTTP 客户端地址"]')?.value,
-  }));
-  assert(retainedMcpHttpDraft.dialogVisible
-    && retainedMcpHttpDraft.clientHost === "192.168.33.222"
-    && retainedMcpHttpDraft.prompts.length === 1
-    && retainedMcpHttpDraft.prompts[0].includes("HTTP 配置")
-    && !retainedMcpHttpDraft.prompts[0].includes("192.168.33.222"),
-  `MCP HTTP draft was discarded or exposed without confirmation: ${JSON.stringify(retainedMcpHttpDraft)}`);
-  await page.evaluate(() => {
-    window.confirm = window.__originalMcpConfirm;
-    window.__deferMcpHttpMutations = true;
-  });
-  await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).click();
-  await page.waitForFunction(() => window.__pendingMcpHttpMutations.length === 1);
-  assert(await mcpListenHost.isDisabled()
-    && await mcpClientHost.isDisabled()
-    && await mcpDialog.getByRole("textbox", { name: "MCP HTTP Allowed Origins", exact: true }).isDisabled(),
-  "MCP HTTP settings remained editable while a save request was pending");
-  await page.evaluate(() => {
-    for (const pending of window.__pendingMcpHttpMutations) pending.resolve(pending.result);
-    window.__pendingMcpHttpMutations = [];
-    window.__deferMcpHttpMutations = false;
-  });
-  await page.waitForFunction(() => !document.querySelector('[aria-label="MCP HTTP 监听 IP"]')?.disabled);
-  await mcpDialog.locator(".mcp-http-row", { hasText: "http://0.0.0.0:9088/mcp" }).waitFor();
-  await mcpDialog.locator(".mcp-http-row", { hasText: "http://192.168.33.222:9088/mcp" }).waitFor();
-  const remoteCommand = await mcpDialog.getByRole("textbox", { name: "MCP HTTP 启动命令", exact: true }).inputValue();
-  const existingCcSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
-  assert(existingCcSwitchJson.includes("portmate-test-token-2")
-    && await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isEnabled(),
-  `CC Switch JSON did not rotate the Token after the active identity changed: ${existingCcSwitchJson}`);
-  await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('[aria-label="CC Switch Bearer Token"]')?.value === "portmate-test-token-3");
-  const ccSwitchJson = await mcpDialog.getByRole("textbox", { name: "CC Switch MCP JSON", exact: true }).inputValue();
-  const parsedCcSwitchJson = JSON.parse(ccSwitchJson);
-  await mcpDialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
-  const copiedCcSwitchJson = await page.evaluate(() => window.__clipboardText);
-  const savedMcpHttpSettings = await page.evaluate(() => window.__invokeCalls
-    .filter((call) => call.command === "save_mcp_http_settings").at(-1)?.args.settings);
-  assert(remoteCommand.includes("PORTMATE_MCP_HTTP_ADDR='0.0.0.0:9088'")
-    && remoteCommand.includes("PORTMATE_MCP_HTTP_ALLOW_REMOTE=1")
-    && remoteCommand.includes("PORTMATE_MCP_TRUSTED=0")
-    && remoteCommand.includes("PORTMATE_MCP_CLIENT_ID='remote-automation'")
-    && remoteCommand.includes("PORTMATE_MCP_HTTP_ORIGINS='https://console.example.test'")
-    && savedMcpHttpSettings.listenHost === "0.0.0.0"
-    && savedMcpHttpSettings.clientHost === "192.168.33.222"
-    && savedMcpHttpSettings.port === 9088
-    && savedMcpHttpSettings.allowRemote === true,
-  "MCP HTTP remote listener settings were not persisted into the generated command");
-  assert(JSON.stringify(parsedCcSwitchJson) === JSON.stringify({
-    portmate: {
-      type: "http",
-      url: "http://192.168.33.222:9088/mcp",
-      headers: {
-        Authorization: "Bearer portmate-test-token-3",
-      },
-      tool_timeout_sec: 180,
-    },
-  })
-    && copiedCcSwitchJson === ccSwitchJson
-    && !ccSwitchJson.includes("mcpServers")
-    && ccSwitchJson.includes("portmate-test-token-3")
-    && !ccSwitchJson.includes("bearer_token_env_var")
-    && !ccSwitchJson.includes("bearer_token\""),
-  `CC Switch MCP JSON is not directly importable or missing its inline token: ${ccSwitchJson}`);
-  await page.evaluate(() => { window.__deferMcpHttpRuntimeAction = true; });
-  await mcpDialog.getByRole("button", { name: "启动服务", exact: true }).click();
-  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeActions.length === 1);
-  await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
-  await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
-  assert(await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).isDisabled(),
-    "MCP HTTP runtime action lost its busy state after switching tasks");
-  assert(await mcpListenHost.isDisabled()
-    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isDisabled(),
-  "MCP HTTP configuration stayed editable while the managed service was starting");
-  await page.evaluate(() => {
-    for (const pending of window.__pendingMcpHttpRuntimeActions) pending.resolve(pending.result);
-    window.__pendingMcpHttpRuntimeActions = [];
-    window.__deferMcpHttpRuntimeAction = false;
-  });
-  const mcpRuntime = mcpDialog.locator(".mcp-http-runtime");
-  await mcpRuntime.filter({ hasText: "运行中" }).waitFor();
-  await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).waitFor({ state: "visible" });
-  assert(await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).isEnabled(),
-    "MCP HTTP runtime action stayed busy after its deferred response completed");
-  const mcpRuntimeText = await mcpRuntime.textContent();
-  assert(mcpRuntimeText?.includes("PID 4242")
-    && await mcpListenHost.isDisabled()
-    && await mcpDialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled()
-    && await mcpDialog.getByRole("button", { name: "轮换 Token", exact: true }).isDisabled(),
-  "managed MCP HTTP runtime did not lock its live configuration or expose the process state");
-  await page.screenshot({ path: `${screenshotPrefix}-mcp-http.png`, fullPage: true });
-  await page.evaluate(() => { window.__deferMcpHttpRuntimeStatus = true; });
-  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 1);
-  await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).click();
-  await mcpRuntime.filter({ hasText: "未运行" }).waitFor();
-  await page.waitForFunction(() => window.__pendingMcpHttpRuntimeStatuses.length === 2);
-  await page.evaluate(() => {
-    const stale = window.__pendingMcpHttpRuntimeStatuses.shift();
-    stale.resolve(stale.result);
-  });
-  await page.waitForTimeout(100);
-  assert((await mcpRuntime.textContent()).includes("未运行"),
-    "a stale MCP HTTP status poll overwrote the completed stop action");
-  await page.evaluate(() => {
-    for (const pending of window.__pendingMcpHttpRuntimeStatuses) pending.resolve(pending.result);
-    window.__pendingMcpHttpRuntimeStatuses = [];
-    window.__deferMcpHttpRuntimeStatus = false;
-  });
-  const managedMcpHttpCalls = await page.evaluate(() => ({
-    started: window.__invokeCalls.some((call) => call.command === "start_mcp_http"),
-    stopped: window.__invokeCalls.some((call) => call.command === "stop_mcp_http"),
-  }));
-  assert(!await mcpListenHost.isDisabled()
-    && managedMcpHttpCalls.started
-    && managedMcpHttpCalls.stopped,
-  "managed MCP HTTP runtime did not stop and release its configuration controls");
+  await checkMcpManagement(context, appUrl, screenshotPrefix);
 
   await mcpDialog.getByRole("tab", { name: "审计", exact: true }).click();
   const auditView = mcpDialog.locator(".mcp-audit-view");

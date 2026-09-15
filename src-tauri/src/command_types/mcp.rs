@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use portmate_core::McpHttpSettings;
+use portmate_core::{McpGrant, McpHttpSettings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +30,14 @@ pub struct McpHttpTokenResponse {
 pub struct McpHttpAccessResponse {
     pub config: McpHttpConfig,
     pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpGrantMutationResponse {
+    pub grants: Vec<McpGrant>,
+    pub http_access_invalidated: bool,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

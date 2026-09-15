@@ -54,7 +54,7 @@ fn read_scopes_fail_closed_then_follow_explicit_grants() {
 }
 
 #[test]
-fn http_client_identity_auto_unifies_only_when_the_boundary_is_unambiguous() {
+fn http_client_identity_never_auto_binds_to_a_grant() {
     let mut store = test_store();
     store.grants.clear();
     store.mcp_http_settings.client_id = DEFAULT_MCP_HTTP_CLIENT_ID.to_string();
@@ -69,7 +69,7 @@ fn http_client_identity_auto_unifies_only_when_the_boundary_is_unambiguous() {
     });
     assert_eq!(
         store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
-        "remote-console"
+        DEFAULT_MCP_HTTP_CLIENT_ID
     );
 
     store.grants.push(McpGrant {
@@ -93,7 +93,7 @@ fn http_client_identity_auto_unifies_only_when_the_boundary_is_unambiguous() {
     store.grants[0].revoked_at = Some(Utc::now());
     assert_eq!(
         store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
-        "audit-console"
+        DEFAULT_MCP_HTTP_CLIENT_ID
     );
     assert_eq!(
         store.mcp_resolved_client_id(Some("unknown-explicit-client")),
@@ -134,11 +134,11 @@ fn explicit_mcp_identity_never_falls_back_to_a_different_stored_grant() {
     assert_eq!(store.mcp_resolved_client_id(Some("readonly")), "readonly");
     store.grants.retain(|grant| grant.client_id != "readonly");
     assert_eq!(store.mcp_resolved_client_id(Some("readonly")), "readonly");
-    // Unconfigured/legacy clients still follow the desktop-selected identity.
+    // Only unconfigured clients follow the desktop-selected identity.
     assert_eq!(store.mcp_resolved_client_id(None), "test-client");
     assert_eq!(
         store.mcp_resolved_client_id(Some(DEFAULT_MCP_HTTP_CLIENT_ID)),
-        "test-client"
+        DEFAULT_MCP_HTTP_CLIENT_ID
     );
 }
 

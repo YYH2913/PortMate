@@ -214,6 +214,12 @@ pub(super) fn stop_mcp_http_runtime_inner(
         .mcp_http_process
         .lock()
         .map_err(|error| error.to_string())?;
+    stop_mcp_http_runtime_locked(&mut registry)
+}
+
+pub(super) fn stop_mcp_http_runtime_locked(
+    registry: &mut McpHttpProcessRegistry,
+) -> Result<McpHttpRuntimeStatus, String> {
     registry.failure = None;
     if let Some(process) = registry.process.take() {
         stop_mcp_http_process(process)?;
@@ -304,7 +310,11 @@ fn start_mcp_http_process(state: &AppState) -> Result<McpHttpProcessOwner, Strin
     if registry.process.is_some() {
         return Err("MCP HTTP 服务已经由 PortMate 托管运行".to_string());
     }
-    let settings = synchronize_mcp_http_client_id(state)?;
+    let settings = read_mcp_http_settings(state)?;
+    {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        require_active_mcp_http_client(&store, &settings.client_id)?;
+    }
     if !has_secret_ref(MCP_HTTP_TOKEN_REF) {
         return Err("请先生成 MCP HTTP Token".to_string());
     }
