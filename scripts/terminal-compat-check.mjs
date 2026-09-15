@@ -5,6 +5,7 @@ import { chromium } from "playwright-core";
 import { checkTerminalStreamRegressions } from "./terminal-stream-regressions.mjs";
 import { checkTerminalCompletionRegressions } from "./terminal-completion-regressions.mjs";
 import { checkTerminalPrivateInputRegressions } from "./terminal-private-input-regressions.mjs";
+import { checkTerminalLongSession } from "./terminal-long-session-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -188,7 +189,7 @@ function createSession(id, name) {
         term: "xterm-256color",
         rows: 32,
         cols: 120,
-        scrollback: 4096,
+        scrollback: process.env.PORTMATE_UI_LONG_SESSION_ONLY === "1" ? 30_000 : 4096,
         fontFamily: "JetBrains Mono, monospace",
         fontSize: 13,
         theme: "portmate-dark",
@@ -315,7 +316,7 @@ vite.stdout.on("data", (chunk) => { viteOutput += chunk.toString(); });
 vite.stderr.on("data", (chunk) => { viteOutput += chunk.toString(); });
 
 let browser;
-try {
+checks: try {
   await waitForServer(appUrl, () => viteOutput);
   browser = await chromium.launch({
     executablePath: chromeExecutable,
@@ -454,6 +455,13 @@ try {
   } catch (error) {
     const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
+  }
+
+  if (process.env.PORTMATE_UI_LONG_SESSION_ONLY === "1") {
+    console.log(JSON.stringify(await checkTerminalLongSession(page), null, 2));
+    assert(!pageErrors.length, `long-session browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
   }
 
   const bundledFonts = await page.evaluate(async () => {
@@ -837,6 +845,11 @@ try {
       && [...gutter.querySelectorAll("time")].some((time) => (
         time.getAttribute("datetime") === "2026-07-15T00:00:00.000000Z"
       ));
+  }).catch(async error => {
+    console.error("normal timestamp restore", await page.locator('[data-pane-id="pane-a"] .terminal-host').evaluate(host => ({
+      dataset: { ...host.dataset }, timestamps: host.closest(".terminal-canvas")?.querySelector(".terminal-timestamp-gutter")?.innerHTML,
+    })), pageErrors);
+    throw error;
   });
   const restoredTimestampNormal = await page.locator('[data-pane-id="pane-a"] .terminal-timestamp-gutter').evaluate((gutter) => ({
     bufferType: gutter.getAttribute("data-buffer-type"),

@@ -70,6 +70,7 @@ import { mapTerminalSemanticRow, terminalSemanticCellSegments } from "./terminal
 import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./terminal-semantic-cells";
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
+import { TerminalTimestampIndex } from "./terminal-timestamp-index";
 import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
@@ -81,7 +82,6 @@ import {
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
   updateAlternateTerminalTimestamps,
-  visibleSortedTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
 import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
@@ -173,7 +173,6 @@ type TerminalGotoLineContext = {
 type TerminalTimestampMarker = {
   marker: IMarker;
   ts: string;
-  lastLine: number;
 };
 type TerminalTimestampViewport = {
   bufferType: "normal" | "alternate";
@@ -1272,8 +1271,7 @@ function TerminalCanvas({
       MAX_TERMINAL_TIMESTAMPS,
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
     );
-    let timestampMarkers: TerminalTimestampMarker[] = [];
-    let normalTimestampAnchor: string | null = null;
+    const timestampIndex = new TerminalTimestampIndex(timestampMarkerLimit);
     let normalRedrawSnapshot: { marker: IMarker; lines: string[] } | null = null;
     let restorePending = Boolean(cachedState);
     const cachedAlternateTimestamp = normalizeTerminalTimestamps([
@@ -1341,54 +1339,16 @@ function TerminalCanvas({
       });
     };
 
-    const compactTimestampMarkers = () => {
-      const retained: TerminalTimestampMarker[] = [];
-      let latestDisposed: TerminalTimestampMarker | undefined;
-      let needsSort = false;
-      let previousLine = -1;
-      for (const entry of timestampMarkers) {
-        const line = entry.marker.line;
-        if (!entry.marker.isDisposed && line >= 0) {
-          entry.lastLine = line;
-          if (line < previousLine) needsSort = true;
-          previousLine = line;
-          retained.push(entry);
-        } else if (entry.lastLine < term.buffer.normal.baseY
-          && (!latestDisposed || entry.lastLine > latestDisposed.lastLine
-            || (entry.lastLine === latestDisposed.lastLine && entry.marker.id > latestDisposed.marker.id))) {
-          latestDisposed = entry;
-        }
-      }
-      normalTimestampAnchor = latestDisposed?.ts ?? normalTimestampAnchor;
-      timestampMarkers = needsSort ? retained.sort((left, right) => left.marker.line - right.marker.line) : retained;
-      while (timestampMarkers.length > timestampMarkerLimit) {
-        const removed = timestampMarkers.shift();
-        if (!removed) break;
-        normalTimestampAnchor = removed.ts;
-        removed.marker.dispose();
-      }
-    };
     const registerTimestampLine = (line: number, ts: string): boolean => {
       if (term.buffer.active.type !== "normal") return false;
       const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
       if (!normalized) return false;
-      const latest = timestampMarkers.at(-1);
-      if (latest && !latest.marker.isDisposed && latest.marker.line === normalized.line) {
-        latest.lastLine = normalized.line;
-        return false;
-      }
-      compactTimestampMarkers();
-      const existing = timestampMarkers.find((entry) => entry.marker.line === normalized.line);
-      if (existing) {
-        return false;
-      }
+      if (timestampIndex.has(normalized.line)) return false;
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
       const marker = term.registerMarker(normalized.line - cursorLine);
       if (!marker || marker.line < 0) return false;
-      timestampMarkers.push({ marker, ts: normalized.ts, lastLine: marker.line });
-      compactTimestampMarkers();
-      return true;
+      return timestampIndex.add(marker, normalized.ts);
     };
     const trackTimestampLine = (line: number, ts: string): TerminalTimestampMarker | null => {
       if (term.buffer.active.type !== "normal") return null;
@@ -1397,29 +1357,24 @@ function TerminalCanvas({
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
       const marker = term.registerMarker(normalized.line - cursorLine);
-      return marker ? { marker, ts: normalized.ts, lastLine: marker.line } : null;
+      return marker ? { marker, ts: normalized.ts } : null;
     };
-    const normalTimestampAt = (line: number): string | undefined => visibleSortedTerminalTimestamps(
-      timestampMarkers, line, 1, (entry) => entry.marker.line, (entry) => entry.ts, normalTimestampAnchor,
-    )[0]?.ts;
+    const normalTimestampAt = (line: number): string | null => timestampIndex.timestampAt(line);
     const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number, hadContent: boolean): boolean => {
       const trackedLine = tracked.marker.line;
       if (tracked.marker.isDisposed || trackedLine < 0) {
-        compactTimestampMarkers();
-        const changed = normalTimestampAnchor !== tracked.ts;
-        normalTimestampAnchor = tracked.ts;
+        const changed = timestampIndex.timestampAt(0) !== tracked.ts;
+        timestampIndex.anchor = tracked.ts;
         return changed;
       }
-      tracked.lastLine = trackedLine;
-      const existing = timestampMarkers.find((entry) => entry.marker.line === trackedLine);
+      const existing = timestampIndex.has(trackedLine);
       let changed = false;
       if (existing || (hadContent && normalTimestampAt(trackedLine))) {
         tracked.marker.dispose();
       } else if (cursorLine === trackedLine && !term.buffer.normal.getLine(trackedLine)?.translateToString(true)) {
         tracked.marker.dispose();
       } else {
-        timestampMarkers.push(tracked);
-        changed = true;
+        changed = timestampIndex.add(tracked.marker, tracked.ts);
       }
       if (cursorLine !== trackedLine) {
         const nextLine = cursorLine > trackedLine ? trackedLine + 1 : cursorLine;
@@ -1427,7 +1382,6 @@ function TerminalCanvas({
           changed = registerTimestampLine(nextLine, tracked.ts) || changed;
         }
       }
-      compactTimestampMarkers();
       return changed;
     };
     const registerTimestampRange = (startLine: number, endLine: number, ts: string): boolean => {
@@ -1436,13 +1390,8 @@ function TerminalCanvas({
       return registerTimestampLine(firstLine, ts);
     };
     const replaceTimestampRange = (firstLine: number, lastLine: number, ts: string) => {
-      compactTimestampMarkers();
       const following = normalTimestampAt(lastLine + 1);
-      timestampMarkers = timestampMarkers.filter((entry) => {
-        if (entry.marker.line < firstLine || entry.marker.line > lastLine) return true;
-        entry.marker.dispose();
-        return false;
-      });
+      timestampIndex.removeRange(firstLine, lastLine);
       registerTimestampLine(firstLine, ts);
       if (following && lastLine + 1 < term.buffer.normal.length) registerTimestampLine(lastLine + 1, following);
     };
@@ -1490,11 +1439,10 @@ function TerminalCanvas({
       for (const entry of restored) registerTimestampLine(entry.line, entry.ts);
     };
     const timestampSnapshot = (firstSerializedLine: number): TerminalTimestampEntry[] => {
-      compactTimestampMarkers();
       return rebaseTerminalTimestamps([
         ...pendingRestoredTimestamps,
-        ...timestampMarkers.map((entry) => ({ line: entry.marker.line, ts: entry.ts })),
-        ...(normalTimestampAnchor ? [{ line: 0, ts: normalTimestampAnchor }] : []),
+        ...timestampIndex.snapshot(),
+        ...(timestampIndex.anchor ? [{ line: 0, ts: timestampIndex.anchor }] : []),
       ], firstSerializedLine);
     };
     const exportTimestampSnapshot = (): TerminalTimestampEntry[] => (
@@ -1506,7 +1454,6 @@ function TerminalCanvas({
     const renderTimestampGutter = () => {
       timestampFrame = null;
       if (terminalDisposed) return;
-      compactTimestampMarkers();
       const buffer = term.buffer.active;
       const bufferType = buffer.type === "alternate" ? "alternate" : "normal";
       const screen = host.querySelector<HTMLElement>(".xterm-screen");
@@ -1516,14 +1463,7 @@ function TerminalCanvas({
       const screenTop = screenRect ? host.offsetTop + screenRect.top - hostRect.top : 0;
       const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
       const intervals = bufferType === "normal"
-        ? visibleSortedTerminalTimestamps(
-          timestampMarkers,
-          buffer.viewportY,
-          term.rows,
-          (entry) => entry.marker.line,
-          (entry) => entry.ts,
-          normalTimestampAnchor,
-        )
+        ? timestampIndex.visible(buffer.viewportY, term.rows)
         : visibleTerminalTimestamps(alternateTimestamps, 0, term.rows);
       const entries = bufferType === "normal"
         ? placeTerminalTimestampLabels(intervals, buffer.viewportY, term.rows, (line) => (
@@ -1532,7 +1472,7 @@ function TerminalCanvas({
         : intervals;
       host.dataset.terminalTimestampBuffer = bufferType;
       host.dataset.terminalTimestampCount = String(entries.length);
-      host.dataset.terminalTimestampMarkerCount = String(timestampMarkers.length);
+      host.dataset.terminalTimestampMarkerCount = String(timestampIndex.size);
       host.dataset.terminalTimestampRows = String(term.rows);
       if (!region || !screen || cellHeight <= 0) return;
       const next: TerminalTimestampViewport = { bufferType, screenTop, cellHeight, entries };
@@ -1579,6 +1519,8 @@ function TerminalCanvas({
     let fastPathTextDecoder = new TextDecoder();
     let pendingEventWriteHead = 0;
     let eventWriteActive = false;
+    let eventWriteDraining = false;
+    let synchronousDrainTimer: number | null = null;
     let eventWriteDrainQueued = false;
     let scheduleEventWriteDrain = () => {};
 
@@ -1618,10 +1560,9 @@ function TerminalCanvas({
       }
       return batch;
     };
-    drainEventWrites = () => {
-      if (terminalDisposed || restorePending || eventWriteActive) return;
+    const writeNextEventBatch = (): boolean => {
       const batch = nextEventWriteBatch();
-      if (!batch) return;
+      if (!batch) return false;
       compactPendingEventWrites();
       const first = batch[0];
       const last = batch.at(-1) ?? first;
@@ -1746,7 +1687,29 @@ function TerminalCanvas({
         if (writeReturned) drainEventWrites();
       });
       writeReturned = true;
-      if (callbackCompleted) drainEventWrites();
+      return callbackCompleted;
+    };
+    drainEventWrites = () => {
+      if (terminalDisposed || restorePending || eventWriteActive || eventWriteDraining || synchronousDrainTimer !== null) return;
+      eventWriteDraining = true;
+      try {
+        let synchronousBatches = 0;
+        while (!terminalDisposed && !restorePending && !eventWriteActive) {
+          if (!writeNextEventBatch()) return;
+          // Empty/control acknowledgements can complete synchronously. Recursing
+          // once per event overflowed the stack on a large backlog and permanently
+          // stopped the queue. Drain iteratively, yielding after a bounded burst.
+          if (++synchronousBatches >= 128) {
+            synchronousDrainTimer = window.setTimeout(() => {
+              synchronousDrainTimer = null;
+              drainEventWrites();
+            }, 0);
+            return;
+          }
+        }
+      } finally {
+        eventWriteDraining = false;
+      }
     };
     scheduleEventWriteDrain = () => {
       if (terminalDisposed || eventWriteDrainQueued) return;
@@ -2370,6 +2333,7 @@ function TerminalCanvas({
         resizeReportTimer = null;
       }
       pendingEventWrites.length = 0;
+      if (synchronousDrainTimer !== null) window.clearTimeout(synchronousDrainTimer);
       resizeObserver.disconnect();
       semanticWriteDisposable.dispose();
       semanticScrollDisposable.dispose();

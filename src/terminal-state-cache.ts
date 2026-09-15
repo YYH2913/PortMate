@@ -57,11 +57,17 @@ export function settleTerminalEventId(
   maxEvents = MAX_SERIALIZED_TERMINAL_EVENTS,
 ) {
   pending.delete(eventId);
+  // Under backpressure all retained IDs may still be pending. The ID which
+  // just completed is the only newly evictable one; do not walk the entire
+  // write backlog looking for it (including out-of-order completions).
+  if (pending.size >= Math.max(1, Math.trunc(maxEvents))) seen.delete(eventId);
   trimTerminalEventIds(seen, pending, maxEvents);
 }
 
 function trimTerminalEventIds(seen: Set<string>, pending: ReadonlySet<string>, maxEvents: number) {
-  const limit = Math.max(1, Math.trunc(maxEvents));
+  // Pending writes cannot be evicted. Scanning them on every admission made a
+  // burst above the 4k dedupe limit quadratic even before xterm parsed a byte.
+  const limit = Math.max(1, Math.trunc(maxEvents), pending.size);
   if (seen.size <= limit) return;
   for (const eventId of seen) {
     if (seen.size <= limit) break;

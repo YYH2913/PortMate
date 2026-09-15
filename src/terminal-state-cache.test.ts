@@ -159,6 +159,30 @@ describe("terminal state cache", () => {
     expect(pending.size).toBe(0);
     expect(rememberTerminalEventId(seen, pending, "c", 2)).toBe(false);
   });
+
+  it("admits and settles a 30k-event backlog without rescanning pending IDs", () => {
+    let visited = 0;
+    class CountingSet extends Set<string> {
+      override *[Symbol.iterator](): SetIterator<string> {
+        for (const value of super[Symbol.iterator]()) { visited += 1; yield value; }
+      }
+    }
+    const seen = new CountingSet();
+    const pending = new Set<string>();
+    for (let i = 0; i < 30_000; i += 1) rememberTerminalEventId(seen, pending, `${i}`);
+    expect(seen.size).toBe(30_000);
+    expect(visited).toBe(0);
+    // Completion order need not match admission order (different write paths).
+    for (let i = 0; i < 26_000; i += 1) settleTerminalEventId(seen, pending, `${25_999 - i}`);
+    expect(seen.size).toBe(MAX_SERIALIZED_TERMINAL_EVENTS);
+    expect(visited).toBe(0);
+    for (let i = 26_000; i < 30_000; i += 1) {
+      expect(rememberTerminalEventId(seen, pending, `${i}`)).toBe(false);
+      settleTerminalEventId(seen, pending, `${i}`);
+    }
+    expect(pending.size).toBe(0);
+    expect(seen.size).toBe(MAX_SERIALIZED_TERMINAL_EVENTS);
+  });
 });
 
 function state(serialized: string) {

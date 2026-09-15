@@ -35,6 +35,15 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Removed repeated full-history scans from terminal timestamp insertion, lookup,
+  redraw cleanup, and restoration. A sparse ordered index preserves timestamps
+  and follows xterm marker movement without reducing retained terminal output.
+- Prevented quadratic deduplication when more than 4,000 terminal events are pending.
+  Synchronously completed events now drain iteratively in bounded bursts, avoiding
+  stack overflow that could leave subsequent terminal input/output stuck.
+- Added 100,000-timestamp and 30,000-pending-event complexity regressions, plus a
+  long-session browser check with 20,000 restored rows, continued output, prompt
+  redraw, export, and a synchronous event backlog.
 - Centralized command submission recording with explicit input sources. Completion
   only maintains suggestions, so Enter no longer records the same command twice.
 - Middle-click paste now uses xterm's normal input path, including newline conversion,
