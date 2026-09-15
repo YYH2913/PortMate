@@ -89,7 +89,7 @@ export function createSysmonLiveStore(
       .then((snapshot) => {
         updateState(sessionId, (state) => ({
           ...state,
-          snapshot,
+          snapshot: latestSnapshot(state.snapshot, snapshot),
           history: mergeSysmonHistory(state.history, snapshot, DEFAULT_SYSMON_HISTORY_LIMIT),
           error: "",
         }));
@@ -131,7 +131,7 @@ export function createSysmonLiveStore(
         let history: SysmonSnapshot[] = [];
         updateState(sessionId, (state) => {
           history = normalizeSysmonHistory(
-            [...state.history, ...loaded],
+            [...loaded, ...state.history],
             sessionId,
             boundedLimit,
           );

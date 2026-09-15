@@ -124,6 +124,32 @@ describe("Sysmon live state", () => {
     expect(store.getState("router").snapshot?.cpuPercent).toBe(40);
     expect(store.getState("router").error).toBe("");
   });
+
+  it("does not let a late refresh replace a newer historical sample", async () => {
+    const requests: DeferredRequest[] = [];
+    const store = createSysmonLiveStore((command, args) => new Promise((resolve, reject) => requests.push({ command, args, resolve, reject })));
+    const refresh = store.refresh("router");
+    const history = store.loadHistory("router");
+    requests[1].resolve([snapshot("router", "2026-08-24T10:00:02Z", 80)]);
+    await history;
+    requests[0].resolve(snapshot("router", "2026-08-24T10:00:01Z", 10));
+    await refresh;
+    expect(store.getState("router").snapshot?.cpuPercent).toBe(80);
+    expect(store.getState("router").history.map(item => item.cpuPercent)).toEqual([10, 80]);
+  });
+
+  it("preserves live data when a delayed history result includes the same timestamp", async () => {
+    const requests: DeferredRequest[] = [];
+    const store = createSysmonLiveStore((command, args) => new Promise((resolve, reject) => requests.push({ command, args, resolve, reject })));
+    const history = store.loadHistory("router");
+    const refresh = store.refresh("router");
+    requests[1].resolve(snapshot("router", "2026-08-24T10:00:02Z", 80));
+    await refresh;
+    requests[0].resolve([snapshot("router", "2026-08-24T10:00:02Z", 10)]);
+    await history;
+    expect(store.getState("router").snapshot?.cpuPercent).toBe(80);
+    expect(store.getState("router").history[0]?.cpuPercent).toBe(80);
+  });
 });
 
 type DeferredRequest = {
