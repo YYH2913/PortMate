@@ -22,15 +22,16 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   const [now, setNow] = useState(Date.now);
   const [serverId, setServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
   const [toolTimeout, setToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
-  const [copied, setCopied] = useState(false);
+  const [copiedValue, setCopiedValue] = useState("");
   const [commandCopied, setCommandCopied] = useState(false);
-  const gate = useRef(new KeyedRequestGate<"access" | "status" | "mutation">()).current;
+  const [copying, setCopying] = useState(false);
+  const gate = useRef(new KeyedRequestGate<"access" | "status" | "mutation" | "copy">()).current;
   const available = isBackendAvailable();
   const activeGrants = grants.filter(grant => mcpGrantIsActive(grant, now));
   const selectedGrant = activeGrants.find(grant => grant.clientId === settings.clientId) ?? null;
   const savedGrant = activeGrants.find(grant => grant.clientId === savedConfig?.clientId) ?? null;
   const running = runtime?.phase === "running" || runtime?.phase === "starting";
-  const locked = busy || loading || !available || runtime === null || running;
+  const locked = busy || loading || copying || !available || runtime === null || running;
   const remote = isNonLoopbackMcpHost(settings.listenHost);
   const settingsValid = Boolean(selectedGrant && settings.listenHost.trim()
     && mcpHttpClientEndpoint(settings)) && (!remote || settings.allowRemote);
@@ -38,11 +39,12 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   // Unsaved identity/address edits must never display a usable-looking old token.
   const json = savedConfig && savedGrant && !dirty && !busy && !loading
     ? formatCcSwitchMcpJson(savedConfig, { serverId, token, toolTimeoutSeconds: toolTimeout }) : "";
+  const copied = Boolean(json && copiedValue === json);
 
   function applyAccess(access: McpHttpAccessResponse, preserveDraft = false) {
     setSavedConfig(access.config);
     setToken(access.token ?? "");
-    setCopied(false);
+    setCopiedValue("");
     setCommandCopied(false);
     if (!preserveDraft || !dirtyRef.current) {
       const next = mcpHttpSettingsFromConfig(access.config);
@@ -97,7 +99,6 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
     }, 2_000);
     return () => { window.clearInterval(timer); gate.invalidateAll(); };
   }, [available, gate]);
-  useEffect(() => setCopied(false), [json]);
 
   function update(patch: Partial<McpHttpConfigRequest>) {
     if (locked || gate.isActive("mutation")) return;
@@ -109,7 +110,7 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   }
 
   async function mutate(action: "save" | "start" | "stop" | "rotate") {
-    if (!available || loading || runtime === null) return;
+    if (!available || loading || runtime === null || gate.isActive("copy")) return;
     if (action !== "stop" && (locked || !settingsValid)) return;
     if (action === "rotate" && (dirty || !savedGrant)) return;
     if (action === "rotate" && token && !window.confirm("轮换 Token 后，旧的 HTTP 接入配置将失效。确认继续？")) return;
@@ -126,16 +127,16 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
         const next = await invokeBackend<McpHttpRuntimeStatus>("stop_mcp_http", {});
         if (current()) setRuntime(next);
       } else if (action === "rotate") {
-        const access = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", {});
+        const access = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", { expectedSettings: mcpHttpSettingsFromConfig(savedConfig!) });
         if (current()) { applyAccess(access); setNotice("新 Token 已生成，请重新复制客户端接入配置。"); }
       } else {
         const access = await prepareMcpHttpAccess(invokeBackend,
           { ...settings, allowedOrigins: parseMcpHttpOrigins(originsText) }, dirty,
-          action === "start", current);
+          action === "start", current, savedConfig ? mcpHttpSettingsFromConfig(savedConfig) : undefined);
         if (!access || !current()) return;
         applyAccess(access);
         if (action === "start") {
-          const next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", {});
+          const next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", { expectedSettings: mcpHttpSettingsFromConfig(access.config) });
           if (current()) { setRuntime(next); setNotice("服务已启动，可以复制接入 JSON。"); }
         } else setNotice(identityChanged ? "绑定已更新，旧 Token 已失效。启动时将生成新 Token。" : "配置已保存。");
       }
@@ -156,15 +157,26 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   }
 
   async function copy(kind: "json" | "command") {
-    if (busy || loading || dirty || !savedGrant) return;
-    const value = kind === "json" ? json : savedConfig?.startCommand;
-    if (!value) return;
+    if (busy || loading || dirty || !savedGrant || !savedConfig || gate.isActive("mutation")) return;
+    const request = gate.begin("copy");
+    if (request === null) return;
+    const current = () => gate.isCurrent("copy", request);
+    setCopying(true);
     try {
       if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
+      const access = await prepareMcpHttpAccess(invokeBackend, mcpHttpSettingsFromConfig(savedConfig), false, false, current);
+      if (!access || !current()) return;
+      if (kind === "json" && !access.token) throw new Error("当前 HTTP 授权或 Token 已失效，请刷新接入配置。");
+      const value = kind === "json" ? formatCcSwitchMcpJson(access.config, { serverId, token: access.token ?? undefined, toolTimeoutSeconds: toolTimeout }) : access.config.startCommand;
+      if (!value) throw new Error("接入配置无效，请检查 Server ID 和工具超时。");
+      applyAccess(access, true);
       await navigator.clipboard.writeText(value);
-      if (kind === "json") setCopied(true); else setCommandCopied(true);
+      if (!current()) return;
+      if (kind === "json") setCopiedValue(value); else setCommandCopied(true);
       setError("");
-    } catch (cause) { setError(formatError(cause)); }
+    } catch (cause) {
+      if (current()) { setError(formatError(cause)); setToken(""); await refreshAccess(); }
+    } finally { if (gate.finish("copy", request)) setCopying(false); }
   }
 
   async function refreshAfterGrantChange(invalidated: boolean) {
@@ -179,12 +191,12 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   }
 
   return {
-    savedConfig, settings, originsText, dirty, token, runtime, busy, loading, error, notice,
+    savedConfig, settings, originsText, dirty, token, runtime, busy, loading, copying, error, notice,
     serverId, toolTimeout, copied, commandCopied, activeGrants, selectedGrant, savedGrant,
     running, locked, remote, settingsValid, identityChanged, json, available,
     update, mutate, copy, refreshAfterGrantChange,
     refresh: () => { void refreshAccess(); void refreshRuntime(); },
-    isMutating: () => gate.isActive("mutation") || gate.isActive("access"),
+    isMutating: () => gate.isActive("mutation") || gate.isActive("access") || gate.isActive("copy"),
     updateOrigins: (value: string) => { if (!locked) { setOriginsText(value); update({}); } },
     resetDraft: () => { if (!locked && savedConfig) { applyAccess({ config: savedConfig, token }); setNotice(""); setError(""); } },
     setServerId, setToolTimeout,

@@ -352,11 +352,13 @@ pub(crate) fn preview_mcp_http_config(
 pub(crate) fn save_mcp_http_settings(
     state: State<'_, AppState>,
     settings: McpHttpSettings,
+    expected_settings: Option<McpHttpSettings>,
 ) -> Result<McpHttpConfig, String> {
     let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "保存配置")?;
     let (settings, _) = normalize_mcp_http_settings(settings)?;
     {
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
+        require_unchanged_mcp_http_settings(&store.mcp_http_settings, expected_settings.as_ref())?;
         require_active_mcp_http_client(&store, &settings.client_id)?;
         let identity_changed = store.mcp_http_settings.client_id != settings.client_id;
         // Rebinding a bearer-protected HTTP endpoint must never carry a token
@@ -387,10 +389,12 @@ pub(crate) fn save_mcp_http_settings(
 #[tauri::command]
 pub(crate) fn rotate_mcp_http_token(
     state: State<'_, AppState>,
+    expected_settings: Option<McpHttpSettings>,
 ) -> Result<McpHttpTokenResponse, String> {
     let _runtime_guard = lock_stopped_mcp_http_runtime(state.inner(), "轮换 Token")?;
     let settings = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
+        require_unchanged_mcp_http_settings(&store.mcp_http_settings, expected_settings.as_ref())?;
         require_active_mcp_http_client(&store, &store.mcp_http_settings.client_id)?;
         store.mcp_http_settings.clone()
     };
@@ -415,8 +419,9 @@ pub(crate) fn mcp_http_runtime_status(
 #[tauri::command]
 pub(crate) async fn start_mcp_http(
     state: State<'_, AppState>,
+    expected_settings: Option<McpHttpSettings>,
 ) -> Result<McpHttpRuntimeStatus, String> {
-    start_mcp_http_runtime_inner(state.inner()).await
+    start_mcp_http_runtime_with_settings(state.inner(), expected_settings.as_ref()).await
 }
 
 #[tauri::command]

@@ -45,4 +45,22 @@ describe("MCP HTTP connection workflow", () => {
     await expect(prepareMcpHttpAccess(invoke as McpInvoke, settings, false, true)).rejects.toThrow("keyring unavailable");
     expect(invoke).toHaveBeenCalledTimes(1);
   });
+  it("does not generate a token for an identity selected by another window", async () => {
+    const invoke = vi.fn().mockResolvedValue({ config: { ...config, clientId: "other-client" }, token: null });
+    await expect(prepareMcpHttpAccess(invoke as McpInvoke, settings, false, true)).rejects.toThrow("其他窗口");
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it("fences save and token rotation with their corresponding settings snapshots", async () => {
+    const previous = { ...settings, clientId: "previous-client" };
+    const invoke = vi.fn().mockResolvedValueOnce(config).mockResolvedValueOnce({ config, token: null })
+      .mockResolvedValueOnce({ config, token: "new-token" });
+    await prepareMcpHttpAccess(invoke as McpInvoke, settings, true, true, () => true, previous);
+    expect(invoke.mock.calls[0][1]).toEqual({ settings, expectedSettings: previous });
+    expect(invoke.mock.calls[2][1]).toEqual({ expectedSettings: settings });
+  });
+  it("rejects changed network exposure even when the client identity is unchanged", async () => {
+    const invoke = vi.fn().mockResolvedValue({ config: { ...config, listenHost: "0.0.0.0", allowRemote: true }, token: "token" });
+    await expect(prepareMcpHttpAccess(invoke as McpInvoke, settings, false, true)).rejects.toThrow("其他窗口");
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
 });

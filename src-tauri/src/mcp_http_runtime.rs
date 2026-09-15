@@ -171,7 +171,14 @@ pub(super) fn mcp_http_runtime_status_for_owner(
 pub(super) async fn start_mcp_http_runtime_inner(
     state: &AppState,
 ) -> Result<McpHttpRuntimeStatus, String> {
-    let owner = start_mcp_http_process(state)?;
+    start_mcp_http_runtime_with_settings(state, None).await
+}
+
+pub(super) async fn start_mcp_http_runtime_with_settings(
+    state: &AppState,
+    expected_settings: Option<&McpHttpSettings>,
+) -> Result<McpHttpRuntimeStatus, String> {
+    let owner = start_mcp_http_process(state, expected_settings)?;
     let deadline = Instant::now() + MCP_HTTP_STARTUP_TIMEOUT;
     loop {
         let Some(status) = mcp_http_runtime_status_for_owner(state, owner)? else {
@@ -301,7 +308,10 @@ pub(super) fn shutdown_mcp_http_runtime(state: &AppState) {
     }
 }
 
-fn start_mcp_http_process(state: &AppState) -> Result<McpHttpProcessOwner, String> {
+fn start_mcp_http_process(
+    state: &AppState,
+    expected_settings: Option<&McpHttpSettings>,
+) -> Result<McpHttpProcessOwner, String> {
     let mut registry = state
         .mcp_http_process
         .lock()
@@ -311,6 +321,7 @@ fn start_mcp_http_process(state: &AppState) -> Result<McpHttpProcessOwner, Strin
         return Err("MCP HTTP 服务已经由 PortMate 托管运行".to_string());
     }
     let settings = read_mcp_http_settings(state)?;
+    require_unchanged_mcp_http_settings(&settings, expected_settings)?;
     {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         require_active_mcp_http_client(&store, &settings.client_id)?;

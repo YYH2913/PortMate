@@ -109,6 +109,18 @@ pub(super) fn require_active_mcp_http_client(
     }
 }
 
+/// Compare while holding the HTTP runtime lock, before any token or process
+/// side effect. Quick start may intentionally use the current saved settings.
+pub(super) fn require_unchanged_mcp_http_settings(
+    current: &McpHttpSettings,
+    expected: Option<&McpHttpSettings>,
+) -> Result<(), String> {
+    if expected.is_some_and(|expected| expected != current) {
+        return Err("HTTP 配置已被其他窗口修改，请刷新并确认后重试".to_string());
+    }
+    Ok(())
+}
+
 pub(super) fn normalize_mcp_grant(mut grant: McpGrant) -> Result<McpGrant, String> {
     grant.client_id = normalize_mcp_client_id(&grant.client_id)?;
     grant.name = grant.name.trim().to_string();

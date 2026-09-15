@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn mcp_http_settings_precondition_rejects_stale_identity_and_network() {
+    let current = McpHttpSettings::default();
+    assert!(require_unchanged_mcp_http_settings(&current, Some(&current)).is_ok());
+    // The main-window quick start explicitly operates on saved settings.
+    assert!(require_unchanged_mcp_http_settings(&current, None).is_ok());
+    let mut stale = current.clone();
+    stale.client_id = "other-client".to_string();
+    assert!(
+        require_unchanged_mcp_http_settings(&current, Some(&stale))
+            .unwrap_err()
+            .contains("其他窗口")
+    );
+    stale = current.clone();
+    stale.listen_host = "0.0.0.0".to_string();
+    stale.allow_remote = true;
+    assert!(require_unchanged_mcp_http_settings(&current, Some(&stale)).is_err());
+    stale = current.clone();
+    stale.allowed_origins.clear();
+    assert!(require_unchanged_mcp_http_settings(&current, Some(&stale)).is_err());
+}
+
+#[test]
 fn empty_mcp_grant_store_rejects_caller_claimed_trusted_bootstrap() {
     let mut store = SessionStore::default();
     assert!(!mcp_scope_allowed(

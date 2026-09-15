@@ -20,7 +20,7 @@ export default function McpHttpPanel({ http, grantBusy, onManageGrants }: {
   const [reveal, setReveal] = useState(false);
   const { settings, savedConfig, selectedGrant, savedGrant, runtime, running, dirty } = http;
   const locked = http.locked || grantBusy;
-  const actionBusy = http.busy || http.loading || grantBusy;
+  const actionBusy = http.busy || http.loading || http.copying || grantBusy;
   const startLabel = dirty ? "保存并启动" : !http.token ? "生成 Token 并启动" : "启动服务";
   const mode = selectedGrant ? mcpSessionAccessMode(selectedGrant) : null;
   const currentBinding = savedGrant?.name || savedGrant?.clientId;
