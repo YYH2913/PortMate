@@ -110,6 +110,7 @@ export default function CustomScriptDialog({
       setResult(null);
       setScripts(items);
       setDraft(selected ? customScriptDraft(selected) : null);
+      if (selected?.id !== selectedId) setParameters("{}");
     } catch (reason) {
       if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
@@ -165,6 +166,8 @@ export default function CustomScriptDialog({
       if (!gate.isCurrent("operation", token)) return;
       setScripts(items);
       setDraft(items[0] ? customScriptDraft(items[0]) : null);
+      setResult(null);
+      setParameters("{}");
     } catch (reason) {
       if (gate.isCurrent("operation", token)) setError(formatError(reason));
     } finally {
