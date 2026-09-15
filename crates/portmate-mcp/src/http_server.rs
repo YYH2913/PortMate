@@ -13,7 +13,7 @@ use super::response_encoding::{
     http_response, http_response_with_protocol, http_sse_headers, http_sse_message_response,
     json_rpc_http_body, sse_event,
 };
-use super::{handle_json_rpc_value, PortMateMcp};
+use super::{json_rpc::dispatch_json_rpc_value, PortMateMcp};
 use anyhow::{anyhow, Result};
 use portmate_core::MAX_MCP_BRIDGE_REQUEST_BYTES;
 use serde_json::{json, Value};
@@ -335,7 +335,10 @@ pub(super) fn handle_http_request(request: HttpRequest, config: &HttpConfig) -> 
 
 pub(super) fn handle_http_json_rpc(value: Value) -> Result<Option<Value>> {
     let mut server = PortMateMcp::new()?;
-    handle_json_rpc_value(&mut server, value)
+    // HTTP constructs a fresh server per envelope; new() already loaded the
+    // current Store and IPC endpoint. The stdio refresh wrapper would decode
+    // and normalize the complete retained history a second time here.
+    dispatch_json_rpc_value(value, |request| server.handle(request))
 }
 
 fn http_sse_stream_start_response(request: &HttpRequest, config: &HttpConfig) -> String {

@@ -41,6 +41,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Prevented quadratic deduplication when more than 4,000 terminal events are pending.
   Synchronously completed events now drain iteratively in bounded bursts, avoiding
   stack overflow that could leave subsequent terminal input/output stuck.
+- HTTP MCP requests load the current Store once per envelope instead of twice;
+  recent log metadata updates search from the newest event rather than the oldest.
 - Added 100,000-timestamp and 30,000-pending-event complexity regressions, plus a
   long-session browser check with 20,000 restored rows, continued output, prompt
   redraw, export, and a synchronous event backlog.

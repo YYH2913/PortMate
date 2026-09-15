@@ -23,7 +23,9 @@ pub(super) fn append_logging_errors(event: &mut SessionEvent, errors: &[String])
 }
 
 pub(super) fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
-    if let Some(stored) = store.events.iter_mut().find(|stored| stored.id == event.id) {
+    // Logging metadata is normally attached to the event just appended. Search
+    // from the recent end so each byte/echo does not walk the retained log.
+    if let Some(stored) = store.events.iter_mut().rev().find(|stored| stored.id == event.id) {
         *stored = event.clone();
     }
 }
