@@ -35,6 +35,25 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- File mutations and transfers now target the successfully loaded directory, not
+  an unsubmitted address draft. Failed listings clear stale selection and disable
+  mutations; reconnects reject old directory results, and refreshes retain address
+  drafts. Permission editing rejects partially valid octal values.
+- Free-input editors in main and detached windows wait for transport acknowledgement,
+  retain drafts on failure, prevent duplicate submissions, and only record successful
+  submissions in command history. Their shared submission lifecycle cancels queued
+  work and ignores stale results when the view or connection changes. Background
+  terminal typing and paste cannot interfere with an in-flight editor submission.
+- MCP HTTP copy actions read current access details; save, token rotation, and managed
+  startup check the expected configuration before side effects, preventing stale
+  windows from overwriting another binding or operating on the wrong client.
+- Queued transfers can be cancelled individually or together with running transfers.
+  Script deletion or refresh selecting another script clears the previous parameters
+  and result. Delayed sysmon responses no longer replace newer samples.
+- Asynchronously initialized detached terminals correctly publish their ready state
+  in development without assuming a second Strict Mode initialization.
+- Detached native windows no longer replace live backend session state with another
+  window's stale or invalid browser cache, avoiding unintended terminal recreation.
 - Removed repeated full-history scans from terminal timestamp insertion, lookup,
   redraw cleanup, and restoration. A sparse ordered index preserves timestamps
   and follows xterm marker movement without reducing retained terminal output.

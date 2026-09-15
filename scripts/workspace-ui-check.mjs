@@ -10,6 +10,7 @@ import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
+import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1076,8 +1077,8 @@ try {
         }
         if (command === "list_files") {
           if (!window.__deferFileLoads) return [];
-          return new Promise((resolve) => {
-            window.__pendingFileLoads.push({ args: structuredClone(args), resolve });
+          return new Promise((resolve, reject) => {
+            window.__pendingFileLoads.push({ args: structuredClone(args), resolve, reject });
           });
         }
         if (["create_directory", "create_file", "delete_paths", "rename_path", "move_paths", "chmod_path"].includes(command)) {
@@ -1640,6 +1641,12 @@ try {
             token: active ? window.__mcpHttpToken : null };
         }
         if (command === "preview_mcp_http_config") return window.__buildMcpHttpConfig(args.settings);
+        if (["save_mcp_http_settings", "rotate_mcp_http_token", "start_mcp_http"].includes(command) && args.expectedSettings) {
+          const values = settings => [settings.clientId, settings.listenHost, settings.clientHost, settings.port, settings.trusted, settings.allowRemote, settings.allowedOrigins];
+          if (JSON.stringify(values(args.expectedSettings)) !== JSON.stringify(values(window.__mcpHttpConfig))) {
+            throw new Error("HTTP 配置已被其他窗口修改，请刷新并确认后重试");
+          }
+        }
         if (command === "save_mcp_http_settings") {
           if (!window.__mcpClientActive(args.settings.clientId)) throw new Error("invalid HTTP grant");
           if (window.__mcpHttpRuntime.phase === "running") throw new Error("stop HTTP first");
@@ -1938,6 +1945,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_MODULE_AUDIT_ONLY === "1") {
+    await checkModuleAuditRegressions(context, appUrl);
+    console.log("Module architecture/interaction audit regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_MCP_MANAGEMENT_ONLY === "1") {
     await checkMcpManagement(context, appUrl, screenshotPrefix);
     console.log("MCP authorization, HTTP connection and revocation browser regressions passed");
@@ -1993,6 +2006,7 @@ try {
   await checkSerialLogin(context, appUrl);
   await checkSerialWrap(context, appUrl);
   await checkSerialColumnDetection(context, appUrl);
+  await checkModuleAuditRegressions(context, appUrl);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
