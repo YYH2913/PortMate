@@ -49,7 +49,7 @@ export default function TransferDialog({
   const batchOperationGateRef = useRef(new KeyedRequestGate<"batch">());
   const transferOperationGateRef = useRef(new KeyedRequestGate<string>());
   const sessionTransfers = transfers.filter((task) => task.sessionId === session.profile.id);
-  const runningTransfers = sessionTransfers.filter((task) => task.status === "running");
+  const activeTransfers = sessionTransfers.filter((task) => task.status === "queued" || task.status === "running");
   const retryableTransfers = sessionTransfers.filter((task) => task.status === "failed" || task.status === "cancelled");
   const connected = session.runtime.status === "connected";
   const modemProtocol = isModemTransferProtocol(protocol);
@@ -167,13 +167,13 @@ export default function TransferDialog({
     });
   }
 
-  async function cancelRunningTransfers() {
-    if (runningTransfers.some((task) => transferOperationGateRef.current.isActive(task.id))) return;
+  async function cancelActiveTransfers() {
+    if (activeTransfers.some((task) => transferOperationGateRef.current.isActive(task.id))) return;
     const token = batchOperationGateRef.current.begin("batch");
     if (token === null) return;
     setBatchBusy(true);
     try {
-      for (const task of runningTransfers) {
+      for (const task of activeTransfers) {
         if (!batchOperationGateRef.current.isCurrent("batch", token)) return;
         await cancelTransfer(task, token);
       }
@@ -259,7 +259,7 @@ export default function TransferDialog({
               <strong>队列</strong>
               <div>
                 <button type="button" onClick={() => void retryFailedTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !retryableTransfers.length}>重试失败</button>
-                <button type="button" onClick={() => void cancelRunningTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !runningTransfers.length}>取消运行中</button>
+                <button type="button" onClick={() => void cancelActiveTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !activeTransfers.length}>取消未完成</button>
               </div>
             </header>
             <TransferList

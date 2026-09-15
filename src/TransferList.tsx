@@ -68,7 +68,7 @@ export default function TransferList({
               <strong>{task.protocol}</strong>
               <span className="transfer-status"><StatusIcon size={14} /><span>{transferStatusLabel(task.status)}</span></span>
               <div className="transfer-row-actions">
-                {task.status === "running" ? (
+                {task.status === "queued" || task.status === "running" ? (
                   <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onCancel(task)}>取消</button>
                 ) : null}
                 {task.status === "failed" || task.status === "cancelled" ? (
