@@ -4223,6 +4223,12 @@ body[data-portmate-modal-open] .portmate-context-menu {
   border-color: rgba(94, 234, 212, 0.6);
 }
 
+.terminal-free-input.has-error {
+  grid-template-rows: 32px auto minmax(64px, 1fr);
+  height: clamp(156px, 28vh, 220px);
+}
+.terminal-free-input > .utility-error { margin: 0; padding: 5px 10px; }
+
 .terminal-free-input > header {
   display: flex;
   align-items: center;

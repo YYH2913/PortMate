@@ -3988,6 +3988,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         title: failedNames.length ? "同步输入失败" : "同步输入已停止",
         message: details,
       });
+      if (options?.awaitWrite && !result.succeeded.includes(sessionId)) {
+        throw new Error("源会话未成功接收输入；其他同步目标可能已收到，请检查后重试。");
+      }
     });
   }
 

@@ -71,6 +71,8 @@ import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./termina
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalTimestampIndex } from "./terminal-timestamp-index";
+import { trackTerminalCommandInput } from "./terminal-command-line-tracker";
+import { useTerminalEditorSubmission } from "./use-terminal-editor-submission";
 import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
 import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
@@ -486,6 +488,9 @@ function TerminalCanvas({
   const [freeInputValue, setFreeInputValueState] = useState("");
   const freeInputValueRef = useRef("");
   const freeInputSensitiveRef = useRef(false);
+  const freeInputSubmission = useTerminalEditorSubmission(JSON.stringify([
+    sessionId, viewId, active?.runtime.connectedSince, active?.runtime.status,
+  ]));
   const [oneKeyPrompt, setOneKeyPrompt] = useState<OneKeyTerminalPrompt | null>(null);
   // The native prompt validator needs the newest event id, but rendering the
   // completion panel for every byte of a prompt creates avoidable React work.
@@ -706,7 +711,7 @@ function TerminalCanvas({
     window.requestAnimationFrame(focusTerminalSurface);
   };
   openSearchRef.current = () => {
-    if (!focusedRef.current || displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex" || freeInputSubmission.isBusy()) return;
     closeTerminalGotoLine(true, false);
     setFreeInputSource(null);
     setFreeInputValue("");
@@ -721,7 +726,8 @@ function TerminalCanvas({
     });
   };
   openFreeInputRef.current = (value = "") => {
-    if (!focusedRef.current || displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex" || freeInputSubmission.isBusy()) return;
+    freeInputSubmission.clearError();
     closeTerminalGotoLine(true, false);
     dismissOneKeyPrompt();
     searchRef.current?.clearDecorations();
@@ -738,7 +744,7 @@ function TerminalCanvas({
     scheduleTerminalSurfaceFocus();
   };
   openGotoLineRef.current = () => {
-    if (!focusedRef.current || displayModeRef.current === "hex") return;
+    if (!focusedRef.current || displayModeRef.current === "hex" || freeInputSubmission.isBusy()) return;
     const term = termRef.current;
     if (!term) return;
     if (gotoLineContext) {
@@ -1040,6 +1046,11 @@ function TerminalCanvas({
   }
 
   function closeTerminalFreeInput() {
+    if (freeInputSubmission.isBusy()) return;
+    finishTerminalFreeInput();
+  }
+
+  function finishTerminalFreeInput() {
     const wasNormalMode = freeInputSource === "normal";
     setFreeInputSource(null);
     setFreeInputValue("");
@@ -1051,24 +1062,28 @@ function TerminalCanvas({
   }
 
   function submitTerminalFreeInput() {
-    if (!active) return;
+    if (!active || freeInputSubmission.isBusy()) return;
     const payload = createTerminalFreeInputPayload(freeInputValue);
     if (!payload) return;
     const term = termRef.current;
     const sensitive = freeInputSensitiveRef.current || manualPrivateInputRef.current
       || detectedPrivateInputRef.current || privateInputLineRef.current
       || Boolean(term && terminalInputLooksSensitive(term, oneKeyPromptStateRef.current.prompt));
-    void onInputRef.current(
-      active.profile.id,
-      payload,
-      "atomic",
-      sensitive ? { sensitive: true } : undefined,
-    );
-    trackCommandSubmission(payload, "free-input", sensitive);
-    resetCompletionInput();
-    commitPrivateInputLine(false);
-    if (sensitive) clearPrivateInput();
-    closeTerminalFreeInput();
+    // Snapshot semantics before outbound events invalidate the interactive
+    // tracker; publish history only after transport acknowledgement succeeds.
+    const submission = trackTerminalCommandInput(terminalInputControllerRef.current!.snapshot(), payload,
+      sensitive || term?.buffer.active.type !== "normal");
+    void freeInputSubmission.submit(signal => onInputRef.current(
+      active.profile.id, payload, "atomic", { awaitWrite: true, signal, ...(sensitive ? { sensitive: true } : {}) },
+    ), () => {
+      const submit = onCommandSubmitRef.current;
+      if (submit) for (const command of submission.submitted) recordCommandSubmission(submit, active.profile.id, command, "free-input");
+      terminalInputControllerRef.current?.reset();
+      resetCompletionInput();
+      commitPrivateInputLine(false);
+      if (sensitive) clearPrivateInput();
+      finishTerminalFreeInput();
+    });
   }
 
   function changeTerminalDisplayMode(next: TerminalDisplayMode) {
@@ -1160,6 +1175,10 @@ function TerminalCanvas({
             if (selected) void navigator.clipboard?.writeText(selected).catch(() => {});
           }
         }
+        return false;
+      }
+      if (freeInputSubmission.isBusy()) {
+        event.preventDefault();
         return false;
       }
       const bufferAction = terminalBufferShortcut(event, mode);
@@ -2200,7 +2219,7 @@ function TerminalCanvas({
     host.addEventListener("keydown", guardTerminalEnter, true);
     host.addEventListener("wheel", releaseFollowOnWheel, true);
     const dispatchBinaryInput = (text: string) => {
-      if (!focusedRef.current || keyModeRef.current !== "remote" || !text) return;
+      if (!focusedRef.current || keyModeRef.current !== "remote" || !text || freeInputSubmission.isBusy()) return;
       const mouseReport = isTerminalMouseReport(text);
       if (mouseReport
         && (!mouseReportingRef.current || host.querySelector(".xterm-cursor-pointer"))) return;
@@ -2218,6 +2237,8 @@ function TerminalCanvas({
     };
     let pasteInput = false;
     const inputDisposable = term.onData((text) => {
+      // Device replies (DSR/DA, etc.) also arrive here. Block background user
+      // events at the DOM boundary, without dropping terminal protocol replies.
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
       const mouseReport = isTerminalMouseReport(text);
       if (mouseReport) {
@@ -2261,9 +2282,9 @@ function TerminalCanvas({
     });
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
-      if (!focusedRef.current || keyModeRef.current !== "remote") return;
+      if (!focusedRef.current || keyModeRef.current !== "remote" || freeInputSubmission.isBusy()) return;
       void navigator.clipboard?.readText().then((text) => {
-        if (text && !terminalDisposed && focusedRef.current && keyModeRef.current === "remote") {
+        if (text && !terminalDisposed && focusedRef.current && keyModeRef.current === "remote" && !freeInputSubmission.isBusy()) {
           resetCompletionInput(false);
           // xterm normalizes line endings and honors bracketed paste. Its
           // synchronous onData event is the only input/history dispatch path.
@@ -2277,11 +2298,23 @@ function TerminalCanvas({
         pasteFromClipboard(event);
       }
     };
-    const pauseCompletionOnPaste = () => {
+    const pauseCompletionOnPaste = (event: ClipboardEvent) => {
+      if (freeInputSubmission.isBusy()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       resetCompletionInput(false);
       pasteInput = true;
       queueMicrotask(() => { pasteInput = false; });
     };
+    const blockPendingEditorInput = (event: Event) => {
+      if (!freeInputSubmission.isBusy()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const editorInputEvents = ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "keypress"];
+    for (const type of editorInputEvents) host.addEventListener(type, blockPendingEditorInput, true);
     const forceBlockSelection = (event: MouseEvent) => {
       if (!blockSelectionRef.current || event.altKey || event.button !== 0 || !event.target) return;
       event.preventDefault();
@@ -2319,6 +2352,7 @@ function TerminalCanvas({
       selectionDisposable.dispose();
       bufferChangeDisposable.dispose();
       host.removeEventListener("paste", pauseCompletionOnPaste, true);
+      for (const type of editorInputEvents) host.removeEventListener(type, blockPendingEditorInput, true);
       host.removeEventListener("mousedown", forceBlockSelection, true);
       host.removeEventListener("auxclick", pasteOnMiddleClick);
       host.removeEventListener("keydown", guardTerminalEnter, true);
@@ -3003,7 +3037,7 @@ function TerminalCanvas({
                 style={{ transform: completionShiftTransform }}
               />
           {focused && freeInputOpen ? (
-            <form className="terminal-free-input" aria-label="自由输入编辑器" onSubmit={(event) => {
+            <form className={`terminal-free-input${freeInputSubmission.error ? " has-error" : ""}`} aria-label="自由输入编辑器" aria-busy={freeInputSubmission.busy} onSubmit={(event) => {
               event.preventDefault();
               submitTerminalFreeInput();
             }}>
@@ -3013,19 +3047,22 @@ function TerminalCanvas({
                 <span className="terminal-free-input-counter">
                   {terminalFreeInputCharacterCount(freeInputValue)}/{MAX_TERMINAL_FREE_INPUT_CHARACTERS}
                 </span>
-                <button type="submit" title="发送自由输入" aria-label="发送自由输入" disabled={!freeInputValue}><SendHorizontal size={15} /></button>
-                <button type="button" title="取消自由输入" aria-label="取消自由输入" onClick={closeTerminalFreeInput}><X size={15} /></button>
+                <button type="submit" title={freeInputSubmission.busy ? "正在等待写入确认" : "发送自由输入"} aria-label="发送自由输入" disabled={!freeInputValue || freeInputSubmission.busy}><SendHorizontal size={15} /></button>
+                <button type="button" title="取消自由输入" aria-label="取消自由输入" disabled={freeInputSubmission.busy} onClick={closeTerminalFreeInput}><X size={15} /></button>
               </header>
+              {freeInputSubmission.error ? <div className="utility-error" role="alert">发送失败：{freeInputSubmission.error}。草稿已保留，请检查设备后重试。</div> : null}
               <textarea
                 ref={freeInputRef}
                 aria-label="自由输入内容"
                 value={freeInputValue}
+                disabled={freeInputSubmission.busy}
                 wrap="off"
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
                 onChange={(event) => setFreeInputValue(normalizeTerminalFreeInput(event.target.value))}
                 onKeyDown={(event) => {
+                  if (freeInputSubmission.isBusy()) { event.preventDefault(); return; }
                   if (event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();

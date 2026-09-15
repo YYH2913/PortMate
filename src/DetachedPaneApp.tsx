@@ -363,6 +363,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     } catch (inputError) {
       if (inputOrder) terminalInputStreamsRef.current.invalidate(sessionId, inputOrder);
       if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));
+      // Acknowledged editor submissions must reject so the editor retains its
+      // draft and does not record a command that failed to reach the transport.
+      throw inputError;
     }
   }
 
