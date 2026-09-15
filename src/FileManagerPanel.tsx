@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { formatBytes } from "./display-formatters";
-import { exactNonBlankPathInput } from "./file-path-input";
+import { exactNonBlankPathInput, parseFilePermissionMode } from "./file-path-input";
 import {
   createFileNavigationHistory,
   currentFileNavigationPath,
@@ -50,7 +50,9 @@ import type {
 type NoticeState = { title: string; message: string } | null;
 
 type FilePanelState = {
+  /** Editable address, never an implicit destination for file mutations. */
   path: string;
+  directory: string | null;
   entries: FileEntry[];
   selected: FileEntry[];
   busy: boolean;
@@ -79,6 +81,7 @@ type FileOperationContext = {
   tokens: Array<{ key: FilePaneKey; token: number }>;
   requestSessionId: string | null;
   remoteSessionId: string;
+  remoteConnectionKey: string;
 };
 
 type ExternalDropState = {
@@ -103,8 +106,8 @@ export default function FileManagerPanel({
   onDismissTransfer: (transferId: string) => void;
   onNotice: (notice: NoticeState) => void;
 }) {
-  const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), entries: [], selected: [], busy: false, error: "" }));
-  const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", entries: [], selected: [], busy: false, error: "" }));
+  const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), directory: null, entries: [], selected: [], busy: false, error: "" }));
+  const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", directory: null, entries: [], selected: [], busy: false, error: "" }));
   const [localNavigation, setLocalNavigation] = useState<FileNavigationHistory>(() => createFileNavigationHistory(defaultLocalPath()));
   const [remoteNavigation, setRemoteNavigation] = useState<FileNavigationHistory>(() => createFileNavigationHistory("."));
   const [propertiesDialog, setPropertiesDialog] = useState<FilePropertiesDialogState>(null);
@@ -117,6 +120,7 @@ export default function FileManagerPanel({
   const fileLoadEpochs = useRef({ local: 0, remote: 0 });
   const activeFileLoadEpochs = useRef({ local: 0, remote: 0 });
   const activeFileSessionIdRef = useRef("");
+  const activeFileConnectionKeyRef = useRef("");
   const filePropertiesGate = useRef(new KeyedRequestGate<"properties">());
   const fileOperationGate = useRef(new KeyedRequestGate<FilePaneKey>());
   const activeFileOperationsRef = useRef<Set<FileOperationContext>>(new Set());
@@ -125,6 +129,8 @@ export default function FileManagerPanel({
   const transferOperationGate = useRef(new KeyedRequestGate<string>());
   const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
+  const remoteConnectionKey = canRemote ? JSON.stringify([active?.profile.id, active?.runtime.connectedSince]) : "";
+  activeFileConnectionKeyRef.current = remoteConnectionKey;
   const fileTransferProtocols = active ? fileTransferProtocolsForProfile(active.profile) : [];
   const fileTransferProtocol = fileTransferProtocols.includes(selectedTransferProtocol)
     ? selectedTransferProtocol
@@ -133,6 +139,8 @@ export default function FileManagerPanel({
     && Boolean(fileTransferProtocol)
     && !localPanel.busy
     && !remotePanel.busy
+    && localPanel.directory !== null
+    && remotePanel.directory !== null
     && busyFileOperationKeys.size === 0;
   activeFileSessionIdRef.current = canRemote ? active?.profile.id ?? "" : "";
 
@@ -163,15 +171,15 @@ export default function FileManagerPanel({
     filePropertiesGate.current.invalidate("properties");
     setPropertiesDialog(null);
     if (canRemote) {
-      setRemotePanel((current) => ({ ...current, path: ".", entries: [], selected: [], error: "" }));
+      setRemotePanel((current) => ({ ...current, path: ".", directory: null, entries: [], selected: [], error: "" }));
       setRemoteNavigation(createFileNavigationHistory("."));
       void loadFiles(true, ".", "reset");
     } else {
       fileLoadEpochs.current.remote += 1;
-      setRemotePanel((current) => ({ ...current, entries: [], selected: [], busy: false, error: "" }));
+      setRemotePanel((current) => ({ ...current, directory: null, entries: [], selected: [], busy: false, error: "" }));
       setRemoteNavigation(createFileNavigationHistory("."));
     }
-  }, [canRemote, active?.profile.id]);
+  }, [remoteConnectionKey]);
 
   useEffect(() => {
     if (!isBackendAvailable()) return;
@@ -204,7 +212,7 @@ export default function FileManagerPanel({
       disposed = true;
       unlisten?.();
     };
-  }, [canRemote, active?.profile.id, localPanel.path, remotePanel.path, conflictPolicy, fileTransferProtocol]);
+  }, [remoteConnectionKey, active?.profile.id, localPanel.directory, remotePanel.directory, conflictPolicy, fileTransferProtocol]);
 
   useEffect(() => {
     if (!externalDrop || externalDrop.status !== "queued" || !externalDrop.taskIds.length) return;
@@ -218,7 +226,7 @@ export default function FileManagerPanel({
     setExternalDrop((current) => current ? { ...current, message, status: failed ? "warning" : "completed" } : null);
     void loadFiles(
       externalDrop.remote,
-      externalDrop.remote ? remotePanel.path : localPanel.path,
+      (externalDrop.remote ? remotePanel.directory : localPanel.directory) ?? ".",
       "preserve",
     );
   }, [externalDrop, transfers]);
@@ -265,6 +273,7 @@ export default function FileManagerPanel({
       tokens,
       requestSessionId: active?.profile.id ?? null,
       remoteSessionId,
+      remoteConnectionKey: activeFileConnectionKeyRef.current,
     };
     activeFileOperationsRef.current.add(operation);
     return operation;
@@ -273,7 +282,8 @@ export default function FileManagerPanel({
   function isFileOperationCurrent(operation: FileOperationContext) {
     return operation.tokens.every(({ key, token }) => fileOperationGate.current.isCurrent(key, token))
       && (!operation.tokens.some(({ key }) => key === "remote")
-        || activeFileSessionIdRef.current === operation.remoteSessionId);
+        || (activeFileSessionIdRef.current === operation.remoteSessionId
+          && activeFileConnectionKeyRef.current === operation.remoteConnectionKey));
   }
 
   function finishFileOperation(operation: FileOperationContext) {
@@ -327,25 +337,30 @@ export default function FileManagerPanel({
     const loadKey = filePaneKey(remote);
     if (busyFileOperationKeysRef.current.has(loadKey)) return;
     const sessionId = remote ? active?.profile.id ?? "" : "";
+    const connectionKey = activeFileConnectionKeyRef.current;
     if (remote && (!canRemote || !sessionId)) return;
     const epoch = fileLoadEpochs.current[loadKey] + 1;
     fileLoadEpochs.current[loadKey] = epoch;
     activeFileLoadEpochs.current[loadKey] = epoch;
-    updatePanel(remote, { busy: true, error: "" });
+    updatePanel(remote, {
+      ...(navigation === "preserve" ? {} : { path: nextPath }),
+      selected: [], busy: true, error: "",
+    });
+    selectionAnchors.current[loadKey] = "";
     try {
       const nextEntries = await invokeBackend<FileEntry[]>("list_files", { request: { sessionId: sessionId || null, path: nextPath, remote } });
       if (fileLoadEpochs.current[loadKey] !== epoch
-        || (remote && activeFileSessionIdRef.current !== sessionId)) return;
-      updatePanel(remote, { entries: nextEntries, path: nextPath, selected: [] });
+        || (remote && activeFileConnectionKeyRef.current !== connectionKey)) return;
+      updatePanel(remote, { entries: nextEntries, directory: nextPath, selected: [] });
       updateNavigation(remote, nextPath, navigation);
       selectionAnchors.current[remote ? "remote" : "local"] = "";
     } catch (error) {
       if (fileLoadEpochs.current[loadKey] !== epoch
-        || (remote && activeFileSessionIdRef.current !== sessionId)) return;
-      updatePanel(remote, { entries: [], error: formatError(error) });
+        || (remote && activeFileConnectionKeyRef.current !== connectionKey)) return;
+      updatePanel(remote, { entries: [], selected: [], directory: null, error: formatError(error) });
     } finally {
       if (fileLoadEpochs.current[loadKey] === epoch
-        && (!remote || activeFileSessionIdRef.current === sessionId)) {
+        && (!remote || activeFileConnectionKeyRef.current === connectionKey)) {
         activeFileLoadEpochs.current[loadKey] = 0;
         updatePanel(remote, { busy: false });
       }
@@ -379,10 +394,12 @@ export default function FileManagerPanel({
 
   async function createDir(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
+    if (panel.directory === null) return;
+    const directory = panel.directory;
+    await runFileMutation(remote, directory, async (sessionId) => {
       const name = exactNonBlankPathInput(window.prompt("目录名"));
       if (name === null) return false;
-      const nextPath = joinFilePath(panel.path, name, remote);
+      const nextPath = joinFilePath(directory, name, remote);
       await invokeBackend("create_directory", { request: { sessionId, path: nextPath, remote } });
       return true;
     });
@@ -390,10 +407,12 @@ export default function FileManagerPanel({
 
   async function createFile(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
+    if (panel.directory === null) return;
+    const directory = panel.directory;
+    await runFileMutation(remote, directory, async (sessionId) => {
       const name = exactNonBlankPathInput(window.prompt("文件名"));
       if (name === null) return false;
-      const nextPath = joinFilePath(panel.path, name, remote);
+      const nextPath = joinFilePath(directory, name, remote);
       await invokeBackend("create_file", { request: { sessionId, path: nextPath, remote } });
       return true;
     });
@@ -401,8 +420,8 @@ export default function FileManagerPanel({
 
   async function deleteSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected.length) return;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
+    if (!panel.selected.length || panel.directory === null) return;
+    await runFileMutation(remote, panel.directory, async (sessionId) => {
       if (!window.confirm(`删除选中的 ${panel.selected.length} 项?`)) return false;
       await invokeBackend("delete_paths", {
         request: {
@@ -418,8 +437,8 @@ export default function FileManagerPanel({
   async function renameSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
-    if (panel.selected.length !== 1 || !selected) return;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
+    if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
+    await runFileMutation(remote, panel.directory, async (sessionId) => {
       const nextName = exactNonBlankPathInput(window.prompt("新名称", selected.name));
       if (nextName === null) return false;
       const nextPath = joinFilePath(parentPath(selected.path, remote), nextName, remote);
@@ -430,9 +449,10 @@ export default function FileManagerPanel({
 
   async function moveSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected.length) return;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
-      const suggestedDestination = parentPath(panel.path, remote);
+    if (!panel.selected.length || panel.directory === null) return;
+    const directory = panel.directory;
+    await runFileMutation(remote, directory, async (sessionId) => {
+      const suggestedDestination = parentPath(directory, remote);
       const destination = exactNonBlankPathInput(window.prompt(
         "移动到目录",
         suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
@@ -466,12 +486,11 @@ export default function FileManagerPanel({
   async function chmodSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
-    if (panel.selected.length !== 1 || !selected) return;
-    await runFileMutation(remote, panel.path, async (sessionId) => {
+    if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
+    await runFileMutation(remote, panel.directory, async (sessionId) => {
       const modeText = window.prompt("八进制权限", "0644");
       if (!modeText?.trim()) return false;
-      const mode = Number.parseInt(modeText.replace(/^0o/i, ""), 8);
-      if (!Number.isFinite(mode)) return false;
+      const mode = parseFilePermissionMode(modeText);
       await invokeBackend("chmod_path", { request: { sessionId, path: selected.path, mode, remote } });
       return true;
     });
@@ -504,14 +523,14 @@ export default function FileManagerPanel({
   }
 
   async function transferBetween(upload: boolean) {
-    if (!active || !canRemote) return;
+    if (!active || !canTransferFiles) return;
     const selected = upload ? localPanel.selected : remotePanel.selected;
     if (!selected.length) return;
     await queueFileBatch(
       !upload,
       selected,
       upload,
-      upload ? remotePanel.path : localPanel.path,
+      (upload ? remotePanel.directory : localPanel.directory)!,
       upload ? "批量上传" : "批量下载",
     );
   }
@@ -603,12 +622,14 @@ export default function FileManagerPanel({
     setDraggedFile(null);
     if (!active || !canTransferFiles || !dropped || dropped.remote === remote) return;
     const targetPanel = remote ? remotePanel : localPanel;
-    await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.path, "拖拽传输");
+    if (targetPanel.directory !== null) await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.directory, "拖拽传输");
   }
 
   async function startExternalDrop(remote: boolean, paths: string[]) {
     if (!active || (remote && (!canRemote || !fileTransferProtocol)) || !paths.length) return;
     const panel = remote ? remotePanel : localPanel;
+    if (panel.directory === null) return;
+    const directory = panel.directory;
     const operation = beginFileOperation([remote]);
     if (!operation) return;
     if (!operation.requestSessionId) {
@@ -628,7 +649,7 @@ export default function FileManagerPanel({
           sessionId: operation.requestSessionId,
           protocol: remote ? fileTransferProtocol : "sftp",
           paths,
-          destination: panel.path,
+          destination: directory,
           remote,
           conflictPolicy,
         },
@@ -651,7 +672,7 @@ export default function FileManagerPanel({
       onNotice({ title: "外部拖放已处理", message });
       if (!releaseCurrentFileOperation(operation)) return;
       if (!result.tasks.length) {
-        await loadFiles(remote, panel.path, "preserve");
+        await loadFiles(remote, directory, "preserve");
       }
     } catch (error) {
       if (!isFileOperationCurrent(operation)) return;
@@ -900,6 +921,7 @@ function FileBrowserPane({
     <section
       className={dropActive ? "file-browser-pane drop-active" : "file-browser-pane"}
       data-file-pane={remote ? "remote" : "local"}
+      data-file-directory={panel.directory ?? ""}
       aria-busy={locked}
       onDragOver={locked ? undefined : onDragOver}
       onDragLeave={locked ? undefined : onDragLeave}
@@ -916,10 +938,13 @@ function FileBrowserPane({
         <button type="button" title={`${title}前进`} aria-label={`${title}前进`} onClick={onGoForward} disabled={!canGoForward || locked}><ChevronRight size={13} /></button>
         <button type="button" title={`刷新${title}目录`} aria-label={`刷新${title}目录`} onClick={onRefresh} disabled={locked}><RefreshCw size={13} /></button>
       </div>
+      {panel.directory !== null && panel.path !== panel.directory ? (
+        <div className="file-pane-status">当前显示：{panel.directory}；新路径按 Enter 后打开。</div>
+      ) : null}
       <div className="file-actions">
         <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} onClick={onSelectAll} disabled={locked}><ListChecks size={13} /></button>
-        <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir} disabled={locked}><FolderPlus size={13} /></button>
-        <button type="button" title="新建文件" aria-label="新建文件" onClick={onCreateFile} disabled={locked}><FilePlus size={13} /></button>
+        <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir} disabled={locked || panel.directory === null}><FolderPlus size={13} /></button>
+        <button type="button" title="新建文件" aria-label="新建文件" onClick={onCreateFile} disabled={locked || panel.directory === null}><FilePlus size={13} /></button>
         <button type="button" title="删除" aria-label="删除" onClick={onDelete} disabled={locked || !panel.selected.length}><Trash2 size={13} /></button>
         <details className="file-action-overflow">
           <summary title="更多文件操作" aria-label="更多文件操作"><MoreHorizontal size={13} /></summary>
@@ -955,12 +980,12 @@ function FileBrowserPane({
         </button>
       </div>
       {panel.error ? (
-        <div className="file-error">{panel.error}</div>
+        <div className="file-error" role="alert">{panel.error}</div>
       ) : dropStatus ? (
         <div className={`file-pane-status ${dropStatus.status}`}>{dropStatus.message}</div>
       ) : null}
       <div className="file-list" role="listbox" aria-multiselectable="true">
-        <button className="file-row up" disabled={locked} onClick={() => onNavigate(parentPath(panel.path, remote))}>
+        <button className="file-row up" disabled={locked || panel.directory === null} onClick={() => panel.directory !== null && onNavigate(parentPath(panel.directory, remote))}>
           <span className="file-row-check" />
           <Folder size={13} />
           <span>..</span>
