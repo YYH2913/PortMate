@@ -395,7 +395,6 @@ function TerminalCanvas({
   const privateInputTimerRef = useRef<number | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
-  const terminalMountGenerationRef = useRef(0);
   const configureWebglRef = useRef<(enabled: boolean) => void>(() => {});
   const refreshSemanticHighlightingRef = useRef<() => void>(() => {});
   const refreshTimestampGutterRef = useRef<() => void>(() => {});
@@ -1099,7 +1098,6 @@ function TerminalCanvas({
   useEffect(() => {
     if (!active || !hostRef.current) return;
     const host = hostRef.current;
-    const mountGeneration = ++terminalMountGenerationRef.current;
     const terminalInstanceId = String(++terminalInstanceSequence);
     host.dataset.terminalInstanceId = terminalInstanceId;
     host.dataset.terminalReady = "false";
@@ -2301,9 +2299,7 @@ function TerminalCanvas({
     termRef.current = term;
     let readyFrame = window.requestAnimationFrame(() => {
       readyFrame = window.requestAnimationFrame(() => {
-        if (!terminalDisposed
-          && termRef.current === term
-          && (!import.meta.env.DEV || mountGeneration > 1)) {
+        if (!terminalDisposed && termRef.current === term) {
           host.dataset.terminalReady = "true";
         }
       });

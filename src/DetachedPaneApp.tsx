@@ -237,7 +237,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === SESSION_SUMMARY_CACHE_STORAGE_KEY || event.key === null) {
+      // Native events and backend refreshes own live session state. A peer's
+      // cache may be stale or invalid and must not tear down this terminal.
+      if (!isBackendAvailable() && (event.key === SESSION_SUMMARY_CACHE_STORAGE_KEY || event.key === null)) {
         sessionRefreshGenerationRef.current += 1;
         setSessions(loadLocalSessions());
       }
