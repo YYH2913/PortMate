@@ -47,12 +47,24 @@ pub(super) fn prepare_transfer_request_with_home(
         platform,
         home,
     )?;
-    request.destination = resolve_default_local_transfer_path_with_home(
-        &request.destination,
-        default_local_dir.as_deref(),
-        platform,
-        home,
-    )?;
+    // Modem path-ready uploads treat an unprefixed destination as the remote
+    // receiver path. Expanding it against default_local_dir would send a host
+    // path such as ~/Downloads/fw.bin to the device.
+    let implicit_modem_remote_destination = matches!(
+        request.protocol,
+        TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem
+    ) && !has_remote_transfer_prefix(&request.source)
+        && !is_nonlocal_transfer_endpoint(&request.destination);
+    request.destination = if implicit_modem_remote_destination {
+        request.destination
+    } else {
+        resolve_default_local_transfer_path_with_home(
+            &request.destination,
+            default_local_dir.as_deref(),
+            platform,
+            home,
+        )?
+    };
     Ok(request)
 }
 

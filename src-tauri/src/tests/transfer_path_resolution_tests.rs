@@ -224,3 +224,36 @@ fn transfer_default_directory_preserves_significant_edge_whitespace() {
         Some(directory.to_string())
     );
 }
+
+#[test]
+fn modem_path_ready_destination_is_not_joined_to_the_local_default_directory() {
+    let mut profile = test_ssh_profile();
+    let default_dir = std::env::temp_dir().join("portmate-modem-default");
+    profile.transfer.default_local_dir = Some(default_dir.to_string_lossy().into_owned());
+    let source = default_dir.join("firmware.bin");
+
+    let prepared = prepare_transfer_request(
+        &profile,
+        StartTransferRequest {
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Ymodem,
+            source: source.display().to_string(),
+            destination: "fw.bin".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared.destination, "fw.bin");
+    assert!(!prepared.destination.contains("portmate-modem-default"));
+
+    let prefixed = prepare_transfer_request(
+        &profile,
+        StartTransferRequest {
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Ymodem,
+            source: source.display().to_string(),
+            destination: "remote:/tmp/fw.bin".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(prefixed.destination, "remote:/tmp/fw.bin");
+}
