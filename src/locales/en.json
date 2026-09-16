@@ -1510,6 +1510,7 @@
   "local-file-2": "Local file:",
   "source": "Source:",
   "local-file-or-remote-remote-file": "/local/file or remote:/remote/file",
+  "remote-device-path": "remote:/device/path",
   "load-address": "Load address:",
   "optional-e-g-0x80000000": "Optional, e.g. 0x80000000",
   "transfer-baud-rate": "Transfer baud rate:",

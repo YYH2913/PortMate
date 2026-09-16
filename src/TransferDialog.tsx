@@ -254,7 +254,7 @@ export default function TransferDialog({
               <DialogField label={t("total-timeout-seconds")}><input type="number" min={5} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
             </>
           ) : (
-            <DialogField label={t("target-2")}><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder={t("local-file-or-remote-remote-file")} /></DialogField>
+            <DialogField label={t("target-2")}><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder={modemProtocol ? t("remote-device-path") : t("local-file-or-remote-remote-file")} /></DialogField>
           )}
           <div className="transfer-queue-panel">
             <header>

@@ -1510,6 +1510,7 @@
   "local-file-2": "本地文件:",
   "source": "来源:",
   "local-file-or-remote-remote-file": "/local/file 或 remote:/remote/file",
+  "remote-device-path": "remote:/device/path",
   "load-address": "加载地址:",
   "optional-e-g-0x80000000": "可选，例如 0x80000000",
   "transfer-baud-rate": "传输波特率:",

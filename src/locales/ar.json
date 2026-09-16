@@ -1510,6 +1510,7 @@
   "local-file-2": "الملف المحلي:",
   "source": "المصدر:",
   "local-file-or-remote-remote-file": "/local/file أو remote:/remote/file",
+  "remote-device-path": "remote:/device/path",
   "load-address": "عنوان الحمولة:",
   "optional-e-g-0x80000000": "اختياري، على سبيل المثال 0x80000000",
   "transfer-baud-rate": "معدل إرسال الطاقة:",
