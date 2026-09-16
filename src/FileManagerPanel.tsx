@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { formatBytes } from "./display-formatters";
-import { exactNonBlankPathInput, parseFilePermissionMode } from "./file-path-input";
+import { exactNonBlankPathInput, fileJoinPath as joinFilePath, fileParentPath as parentPath, parseFilePermissionMode } from "./file-path-input";
 import {
   createFileNavigationHistory,
   currentFileNavigationPath,
@@ -1085,13 +1085,6 @@ function filePaneKey(remote: boolean): FilePaneKey {
   return remote ? "remote" : "local";
 }
 
-function joinFilePath(base: string, name: string, remote: boolean) {
-  if (!remote && (base === "~" || base === "~/")) return `~/${name}`;
-  const separator = remote || base.includes("/") ? "/" : "\\";
-  const cleanBase = base.endsWith("/") || base.endsWith("\\") ? base.slice(0, -1) : base;
-  return cleanBase ? `${cleanBase}${separator}${name}` : name;
-}
-
 function filePaneAtPhysicalPosition(x: number, y: number): boolean | null {
   const scale = window.devicePixelRatio || 1;
   const target = document.elementFromPoint(x / scale, y / scale);
@@ -1099,15 +1092,6 @@ function filePaneAtPhysicalPosition(x: number, y: number): boolean | null {
   if (pane?.dataset.filePane === "remote") return true;
   if (pane?.dataset.filePane === "local") return false;
   return null;
-}
-
-function parentPath(path: string, remote: boolean) {
-  if (!remote && (path === "~" || path === "~/")) return "~";
-  const separator = remote || path.includes("/") ? "/" : "\\";
-  const trimmed = path.replace(/[\\/]$/, "");
-  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  if (index <= 0) return separator === "/" ? "/" : trimmed;
-  return trimmed.slice(0, index);
 }
 
 function formatFileMode(mode?: number | null) {

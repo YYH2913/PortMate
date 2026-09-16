@@ -110,6 +110,14 @@ pub(super) fn reject_local_symlink_components(
     let mut current = PathBuf::new();
     for (index, component) in path.components().enumerate() {
         current.push(component.as_os_str());
+        // Do not probe the incomplete prefix of a longer Windows path
+        // (C: or \\?\C:). In particular, probing a bare verbatim disk prefix
+        // fails with ERROR_INVALID_FUNCTION. The next RootDir/normal component
+        // completes the location; all actual ancestors are still checked.
+        // A prefix-only input must still be checked, not silently accepted.
+        if matches!(component, std::path::Component::Prefix(_)) && index + 1 < component_count {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata)
                 if metadata.file_type().is_symlink()
