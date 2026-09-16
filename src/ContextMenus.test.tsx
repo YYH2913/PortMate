@@ -28,6 +28,9 @@ describe("session context menu", () => {
     expect(html).toContain("垂直拆分视图(V)");
     expect(html).toContain("移动视图到分组(M)");
     expect(html).toContain("删除会话 Profile");
+    expect(html).not.toContain("Ctrl+Shift+D");
+    expect(html).not.toContain("Alt+H");
+    expect(html).not.toContain("Alt+V");
     expect(html).not.toContain("同步输入已开启");
     expect(html).not.toContain("复制SSH通道");
     expect(html).not.toContain("拆分为(S)");
@@ -49,6 +52,8 @@ describe("session context menu", () => {
     expect(buttonMarkup(disconnected, "重新连接会话(R)")).not.toContain("disabled");
     expect(buttonMarkup(reconnecting, "重新连接会话(R)")).toContain("disabled");
     expect(buttonMarkup(reconnecting, "断开会话(C)")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "开启同步输入(S)")).toContain("disabled");
+    expect(buttonMarkup(connected, "开启同步输入(S)")).not.toContain("disabled");
   });
 
   it("locks Profile mutation actions while a shortcut save is pending", () => {
@@ -118,6 +123,8 @@ describe("session context menu", () => {
     expect(html).toContain("在线搜索");
     expect(html).toContain("导出终端文本");
     expect(html).toContain("导出终端文本到...");
+    expect(html).toContain("Ctrl+F");
+    expect(html).not.toContain("Ctrl+Shift+F");
   });
 
   it("locks every terminal text export while one export is pending", () => {

@@ -40,6 +40,7 @@ export default function WorkspaceViewContextMenu({
   connectionBusy = false,
   profileBusy = false,
   exportBusy = false,
+  hasSelection = false,
   label,
   colors,
   canDuplicate,
@@ -65,6 +66,7 @@ export default function WorkspaceViewContextMenu({
   connectionBusy?: boolean;
   profileBusy?: boolean;
   exportBusy?: boolean;
+  hasSelection?: boolean;
   label: string;
   colors: readonly { label: string; value: string }[];
   canDuplicate: boolean;
@@ -140,7 +142,7 @@ export default function WorkspaceViewContextMenu({
       <MenuButton label={t("save-session-settings")} disabled={profileBusy} onClick={() => onAction("save")} />
       <MenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
       <MenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
-      <MenuButton label={t("export-selected-text")} disabled={exportBusy} onClick={() => onAction("export-selection")} />
+      <MenuButton label={t("export-selected-text")} disabled={exportBusy || !hasSelection} onClick={() => onAction("export-selection")} />
       <Divider />
       <MenuButton label={t("split-view-horizontally")} onClick={() => onAction("split-horizontal")} />
       <MenuButton label={t("split-view-vertically")} onClick={() => onAction("split-vertical")} />

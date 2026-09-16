@@ -77,18 +77,18 @@ export function SessionContextMenu({
           ))}
         </div>
       </ContextSubmenu>
-      <ContextMenuButton label={syncInput ? t("disable-synchronized-input-s") : t("enable-synchronized-input-s")} checked={syncInput} onClick={() => onAction("sync-toggle", sessionId)} />
+      <ContextMenuButton label={syncInput ? t("disable-synchronized-input-s") : t("enable-synchronized-input-s")} checked={syncInput} disabled={!active || status !== "connected"} onClick={() => onAction("sync-toggle", sessionId)} />
       <ContextMenuButton label={t("paste-p")} shortcut="Ctrl+V" disabled={disabled} onClick={() => onAction("paste", sessionId)} />
       <ContextMenuButton label={t("rename-session-r")} disabled={disabled || profileBusy} onClick={() => onAction("rename", sessionId)} />
-      <ContextMenuButton label={t("duplicate-session-d")} shortcut="Ctrl+Shift+D" disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
+      <ContextMenuButton label={t("duplicate-session-d")} disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label={t("copy-session-name-n")} disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
       <ContextMenuButton label={t("copy-session-url-u")} disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label={t("reconnect-session-r")} shortcut="Return" disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
-      <ContextMenuButton label={t("save-session-s")} shortcut="Ctrl+Shift+S" disabled={disabled || profileBusy} onClick={() => onAction("save", sessionId)} />
-      <ContextMenuButton label={t("split-view-horizontally-h")} shortcut="Alt+H" disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
-      <ContextMenuButton label={t("split-view-vertically-v")} shortcut="Alt+V" disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
+      <ContextMenuButton label={t("reconnect-session-r")} disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
+      <ContextMenuButton label={t("save-session-s")} disabled={disabled || profileBusy} onClick={() => onAction("save", sessionId)} />
+      <ContextMenuButton label={t("split-view-horizontally-h")} disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
+      <ContextMenuButton label={t("split-view-vertically-v")} disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
       <ContextMenuButton label={t("move-view-to-group-m")} disabled={disabled || profileBusy} onClick={() => onAction("move-group", sessionId)} />
       <ContextDivider />
       <ContextMenuButton label={t("disconnect-session-c")} disabled={disconnectDisabled} onClick={() => onAction("close", sessionId)} />
@@ -119,7 +119,7 @@ export function TerminalContextMenu({
     <div className="portmate-context-menu terminal-context-menu" aria-label={t("terminal-menu")} tabIndex={-1} style={{ left, top }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <ContextMenuButton label={t("copy")} shortcut="Ctrl+Shift+C" disabled={!state.hasSelection} onClick={() => onAction("copy")} />
       <ContextMenuButton label={t("paste")} shortcut="Ctrl+V" onClick={() => onAction("paste")} />
-      <ContextMenuButton label={t("find")} shortcut="Ctrl+Shift+F" onClick={() => onAction("find")} />
+      <ContextMenuButton label={t("find")} shortcut="Ctrl+F" onClick={() => onAction("find")} />
       <ContextMenuButton label={t("search-online")} onClick={() => onAction("search-online")} />
       <ContextDivider />
       <ContextMenuButton label={t("clear-scrollback")} shortcut="Ctrl+Shift+L" onClick={() => onAction("clear-scrollback")} />

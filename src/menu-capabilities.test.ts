@@ -5,6 +5,7 @@ import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 const ready: MenuCapabilityContext = {
   hasActiveSession: true,
   hasActiveView: true,
+  hasSelection: true,
   activeKind: "ssh",
   activeStatus: "connected",
   terminalExportBusy: false,
@@ -65,6 +66,11 @@ describe("top menu capabilities", () => {
     expect(menuItemDisabled("export-terminal-text", exporting)).toBe(true);
     expect(menuItemDisabled("export-selected-text", exporting)).toBe(true);
     expect(menuItemDisabled("find", exporting)).toBe(false);
+  });
+
+  it("disables selected-text export without a terminal selection", () => {
+    expect(menuItemDisabled("export-selected-text", context({ hasSelection: false }))).toBe(true);
+    expect(menuItemDisabled("export-terminal-text", context({ hasSelection: false }))).toBe(false);
   });
 });
 

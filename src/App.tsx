@@ -519,7 +519,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const menuCapabilityContext: MenuCapabilityContext = {
     hasActiveSession: Boolean(active),
     hasActiveView: Boolean(activeWorkspaceView),
-    activeKind: active?.profile.kind ?? null,
+    hasSelection: Boolean(activeWorkspaceView) && workspacePaneHasTerminalSelection(activePaneId),
+    activeKind: active?.profile.connection.kind ?? active?.profile.kind ?? null,
     activeStatus: active?.runtime.status ?? null,
     terminalExportBusy: terminalExportBusyViewIds.has(activeWorkspaceView?.id ?? ""),
   };
@@ -4346,7 +4347,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (terminalKeyMode) return activeTerminalKeyMode === terminalKeyMode;
     if (item === "synchronized-input") return syncInput;
     if (item === "block-selection") return blockSelection;
-    if (item === "focus-mode") return focusMode;
     return undefined;
   }
 
@@ -4853,6 +4853,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             connectionBusy={disconnectingSessionIds.has(workspaceContextSession.profile.id)}
             profileBusy={profileShortcutBusyIds.has(workspaceContextSession.profile.id)}
             exportBusy={terminalExportBusyViewIds.has(workspaceContextView.id)}
+            hasSelection={workspaceContextView.id === workspaceContextPane.activeViewId && workspacePaneHasTerminalSelection(workspaceContextPane.id)}
             label={workspaceContextView.title || workspaceContextSession.profile.name}
             colors={tabColorChoices}
             canMerge={workspaceContextCanMerge}
@@ -6721,6 +6722,12 @@ async function deleteUnreferencedSecrets(secretRefs: readonly string[]): Promise
 
 function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & { connection: Extract<ConnectionConfig, { kind: "ssh" | "tmux" }> } {
   return profile.connection.kind === "ssh" || profile.connection.kind === "tmux";
+}
+
+function workspacePaneHasTerminalSelection(paneId?: string | null): boolean {
+  if (!paneId || typeof document === "undefined") return false;
+  const pane = document.querySelector(`.terminal-pane[data-pane-id="${CSS.escape(paneId)}"]`);
+  return pane?.querySelector<HTMLElement>(".terminal-host")?.dataset.terminalHasSelection === "true";
 }
 
 function isHostKeyFailure(message: string) {

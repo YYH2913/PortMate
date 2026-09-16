@@ -27,6 +27,7 @@ export function menuSectionsForGroup(label: string, items: readonly MenuItem[]):
 export type MenuCapabilityContext = {
   hasActiveSession: boolean;
   hasActiveView: boolean;
+  hasSelection: boolean;
   activeKind: SessionKind | null;
   activeStatus: SessionStatus | null;
   terminalExportBusy: boolean;
@@ -57,6 +58,7 @@ const connectedViewItems = new Set<MenuItem>(["synchronized-input", "free-input"
 
 export function menuItemDisabled(item: MenuItem, context: MenuCapabilityContext): boolean {
   if (context.terminalExportBusy && (item === "export-terminal-text" || item === "export-selected-text")) return true;
+  if (item === "export-selected-text" && !context.hasSelection) return true;
   if (activeSessionItems.has(item) && !context.hasActiveSession) return true;
   if (activeViewItems.has(item) && !context.hasActiveView) return true;
   if (connectedViewItems.has(item)) return !context.hasActiveView || context.activeStatus !== "connected";
