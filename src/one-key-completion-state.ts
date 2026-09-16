@@ -1,6 +1,7 @@
 import type { OneKeySummary, SessionEvent } from "./types";
 
 export const MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS = 1_024;
+export const MAX_ONE_KEY_PROMPT_LINE_CHARACTERS = 160;
 
 export type OneKeyPromptField = "username" | "password";
 
@@ -62,7 +63,7 @@ export function detectOneKeyTerminalPrompt(
   const display = sanitizeTerminalPromptText(raw)
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n");
-  const line = display.split("\n").at(-1)?.trimEnd().slice(-160) ?? "";
+  const line = display.split("\n").at(-1)?.trimEnd().slice(-MAX_ONE_KEY_PROMPT_LINE_CHARACTERS) ?? "";
   if (!line) return null;
   if (/\b(?:new|retype|repeat|confirm)\s+(?:new\s+)?password(?:\s+for\s+\S+)?\s*:\s*$/i.test(line)) {
     return null;

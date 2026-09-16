@@ -99,6 +99,25 @@ fn one_key_prompt_at_event(
 }
 
 const MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS: usize = 1024;
+const MAX_ONE_KEY_PROMPT_LINE_CHARACTERS: usize = 160;
+
+fn one_key_prompt_line(display: &str) -> Option<&str> {
+    let line = display.rsplit('\n').next()?.trim_end();
+    if line.is_empty() {
+        return None;
+    }
+    Some(tail_chars(line, MAX_ONE_KEY_PROMPT_LINE_CHARACTERS))
+}
+
+fn tail_chars(value: &str, max: usize) -> &str {
+    match value
+        .char_indices()
+        .nth(value.chars().count().saturating_sub(max))
+    {
+        Some((index, _)) if index > 0 => &value[index..],
+        _ => value,
+    }
+}
 
 pub(super) fn detect_one_key_terminal_prompt(raw: &str) -> Option<DetectedOneKeyPrompt> {
     static PASSWORD_CHANGE: OnceLock<Regex> = OnceLock::new();
@@ -110,10 +129,7 @@ pub(super) fn detect_one_key_terminal_prompt(raw: &str) -> Option<DetectedOneKey
     let display = sanitize_terminal_prompt_text(raw)
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    let line = display.rsplit('\n').next()?.trim_end();
-    if line.is_empty() {
-        return None;
-    }
+    let line = one_key_prompt_line(&display)?;
     let password_change = PASSWORD_CHANGE.get_or_init(|| {
         Regex::new(
             r"(?i)\b(?:new|retype|repeat|confirm)\s+(?:new\s+)?password(?:\s+for\s+\S+)?\s*:\s*$",

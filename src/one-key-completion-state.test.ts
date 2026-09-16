@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectOneKeyTerminalPrompt,
   emptyOneKeyPromptDetectionState,
+  MAX_ONE_KEY_PROMPT_LINE_CHARACTERS,
   oneKeyPromptCandidates,
   oneKeyPromptStateFromEvents,
   reduceOneKeyPromptDetection,
@@ -81,6 +82,13 @@ describe("OneKey terminal prompt completion", () => {
     expect(detectOneKeyTerminalPrompt("New password:", "c")).toBeNull();
     expect(detectOneKeyTerminalPrompt("Retype new password:", "d")).toBeNull();
     expect(detectOneKeyTerminalPrompt("Confirm password for root:", "e")).toBeNull();
+    const longOpenSsh = `${"a".repeat(200)}@device.example's password:`;
+    const truncated = longOpenSsh.slice(-MAX_ONE_KEY_PROMPT_LINE_CHARACTERS);
+    expect(detectOneKeyTerminalPrompt(longOpenSsh, "f")).toMatchObject({
+      field: "password",
+      line: truncated,
+      usernameHint: truncated.match(/(?:^|\s)([^\s@]+)@/)?.[1],
+    });
     expect(sanitizeTerminalPromptText("PasswX\bord:")).toBe("Password:");
     expect(sanitizeTerminalPromptText("\x1b]0;password:\x07Login:")).toBe("Login:");
   });

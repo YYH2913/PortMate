@@ -175,4 +175,15 @@ fn one_key_prompt_completion_revalidates_field_username_and_event_freshness() {
     assert!(detect_one_key_terminal_prompt("Password:\r\n").is_none());
     assert!(detect_one_key_terminal_prompt("New password:").is_none());
     assert!(detect_one_key_terminal_prompt("Retype new password:").is_none());
+    let suffix = "@device.example's password:";
+    let long_line = format!("{}{suffix}", "a".repeat(200));
+    match detect_one_key_terminal_prompt(&long_line) {
+        Some(DetectedOneKeyPrompt::Password {
+            username_hint: Some(hint),
+        }) => {
+            assert!(hint.chars().all(|character| character == 'a'), "{hint}");
+            assert_eq!(hint.chars().count(), 160 - suffix.chars().count());
+        }
+        other => panic!("expected truncated OpenSSH password prompt, got {other:?}"),
+    }
 }
