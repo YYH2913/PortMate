@@ -1397,6 +1397,25 @@ body[data-portmate-modal-open] .portmate-context-menu {
   cursor: grabbing;
 }
 
+.workspace-dock-tab-label,
+.workspace-pane-tab-label {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.workspace-pointer-dragging,
+.workspace-pointer-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+[data-pointer-dock-target="true"] {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+
 .workspace-dock-tab[data-panel-drop-position="before"] {
   box-shadow: inset 2px 0 var(--cyan);
 }
@@ -1404,6 +1423,9 @@ body[data-portmate-modal-open] .portmate-context-menu {
 .workspace-dock-tab[data-panel-drop-position="after"] {
   box-shadow: inset -2px 0 var(--cyan);
 }
+
+:root[dir="rtl"] .workspace-dock-tab[data-panel-drop-position="before"] { box-shadow: inset -2px 0 var(--cyan); }
+:root[dir="rtl"] .workspace-dock-tab[data-panel-drop-position="after"] { box-shadow: inset 2px 0 var(--cyan); }
 
 .workspace-dock-tab-label {
   display: flex;

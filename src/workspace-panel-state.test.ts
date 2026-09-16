@@ -17,7 +17,9 @@ import {
   visibleWorkspaceDockPanels,
   workspaceDockEffectiveSize,
   workspaceDockForPanel,
+  workspaceDockInsertionIndex,
 } from "./workspace-panel-state";
+import type { WorkspaceDockLayout } from "./workspace-panel-state";
 
 describe("workspace panel state", () => {
   it("uses compact defaults for missing or invalid state", () => {
@@ -134,6 +136,62 @@ describe("workspace panel state", () => {
       .toEqual(["explorer", "fileManager"]);
   });
 
+  it.each([
+    [false, 2, ["fileManager", "explorer", "sender", "history", "sysmon"]],
+    [true, 3, ["fileManager", "explorer", "history", "sender", "sysmon"]],
+  ] as const)("anchors drops to the full dock order despite hidden panels (after=%s)", (after, expectedIndex, expectedOrder) => {
+    const layout = dockLayoutWithHiddenTabs();
+    const snapshot = structuredClone(layout);
+    const visibility = { ...defaultWorkspacePanelVisibility, history: true, sender: true };
+    expect(visibleWorkspaceDockPanels(layout, visibility, "left")).toEqual(["explorer", "history"]);
+    const targetIndex = workspaceDockInsertionIndex(layout, "left", { panel: "history", after });
+    expect(targetIndex).toBe(expectedIndex);
+    const moved = moveWorkspacePanelToDock(layout, "sender", "left", targetIndex);
+    expect(moved.left).toEqual(expectedOrder);
+    expect(moved.bottom).toEqual([]);
+    expect(moved.active).toEqual({ left: "sender", right: null, bottom: null });
+    expect(visibleWorkspaceDockPanels(moved, visibility, "left")).toEqual(after
+      ? ["explorer", "history", "sender"] : ["explorer", "sender", "history"]);
+    expect(layout).toEqual(snapshot);
+  });
+
+  it.each([
+    ["explorer", "sysmon", false, ["fileManager", "history", "explorer", "sysmon"]],
+    ["explorer", "sysmon", true, ["fileManager", "history", "sysmon", "explorer"]],
+    ["sysmon", "explorer", false, ["fileManager", "sysmon", "explorer", "history"]],
+    ["sysmon", "explorer", true, ["fileManager", "explorer", "sysmon", "history"]],
+    ["explorer", "explorer", false, ["fileManager", "explorer", "history", "sysmon"]],
+    ["explorer", "explorer", true, ["fileManager", "explorer", "history", "sysmon"]],
+  ] as const)("reorders %s around %s in the same dock (after=%s) without index drift", (panel, anchor, after, expectedOrder) => {
+    const layout = dockLayoutWithHiddenTabs();
+    const snapshot = structuredClone(layout);
+    const targetIndex = workspaceDockInsertionIndex(layout, "left", { panel: anchor, after });
+    const moved = moveWorkspacePanelToDock(layout, panel, "left", targetIndex);
+    expect(moved.left).toEqual(expectedOrder);
+    expect(moved.right).toEqual([]);
+    expect(moved.bottom).toEqual(["sender"]);
+    expect(moved.active).toEqual({ left: panel, right: null, bottom: "sender" });
+    expect(new Set([...moved.left, ...moved.right, ...moved.bottom]).size).toBe(5);
+    expect(layout).toEqual(snapshot);
+  });
+
+  it("appends when the drop has no anchor or its anchor no longer belongs to the target dock", () => {
+    const layout = dockLayoutWithHiddenTabs();
+    for (const anchor of [undefined, { panel: "sender", after: false }, { panel: "sender", after: true }] as const) {
+      const targetIndex = workspaceDockInsertionIndex(layout, "left", anchor);
+      expect(targetIndex).toBe(4);
+      expect(moveWorkspacePanelToDock(layout, "sender", "left", targetIndex).left)
+        .toEqual(["fileManager", "explorer", "history", "sysmon", "sender"]);
+      expect(moveWorkspacePanelToDock(layout, "explorer", "left", targetIndex).left)
+        .toEqual(["fileManager", "history", "sysmon", "explorer"]);
+    }
+    expect(workspaceDockInsertionIndex(layout, "right", { panel: "history", after: true })).toBe(0);
+    const moved = moveWorkspacePanelToDock(layout, "sender", "right", workspaceDockInsertionIndex(layout, "right"));
+    expect(moved.right).toEqual(["sender"]);
+    expect(moved.bottom).toEqual([]);
+    expect(moved.active).toEqual({ left: "explorer", right: "sender", bottom: null });
+  });
+
   it("falls back to another visible tab when the configured tab is hidden", () => {
     const visibility = {
       ...defaultWorkspacePanelVisibility,
@@ -167,3 +225,12 @@ describe("workspace panel state", () => {
     expect(isWorkspaceFocusModeShortcut({ ...event, code: "NumpadEnter" })).toBe(false);
   });
 });
+
+function dockLayoutWithHiddenTabs(): WorkspaceDockLayout {
+  return {
+    left: ["fileManager", "explorer", "history", "sysmon"],
+    right: [],
+    bottom: ["sender"],
+    active: { left: "explorer", right: null, bottom: "sender" },
+  };
+}

@@ -1,4 +1,7 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { useWorkspacePointerDrag, workspacePointerAfter, workspacePointerDropZone } from "./use-workspace-pointer-drag";
+import type { WorkspaceDockDropAnchor } from "./use-workspace-pointer-drag";
+import { workspaceDockInsertionIndex } from "./workspace-panel-state";
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
@@ -573,6 +576,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const terminalPaneOnSplitViewDrop = useStableEvent(splitWorkspaceViewFromDrop);
   const terminalPaneOnSplitRatioChange = useStableEvent((splitId: string, ratio: number) => {
     setWorkspaceRoot((current) => updateWorkspaceSplitRatio(current, splitId, ratio));
+  });
+  useWorkspacePointerDrag({
+    onDockDragChange: setDraggedWorkspacePanel,
+    onDockDrop: moveWorkspacePanelAtAnchor,
+    onViewDrop: terminalPaneOnMoveViewDrop,
+    onSplitDrop: terminalPaneOnSplitViewDrop,
   });
 
   function setWorkspaceRoot(update: SetStateAction<WorkspaceNode | null>) {
@@ -4338,7 +4347,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     event.dataTransfer.dropEffect = "move";
   }
 
-  function dropWorkspacePanel(event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) {
+  function moveWorkspacePanelAtAnchor(panel: WorkspaceDockPanelId, dock: WorkspaceDockId, anchor?: WorkspaceDockDropAnchor) {
+    setWorkspacePanels((current) => setWorkspacePanelVisibility(current, panel, true));
+    setWorkspaceDockLayout((current) => moveWorkspacePanelToDock(current, panel, dock, workspaceDockInsertionIndex(current, dock, anchor)));
+  }
+
+  function dropWorkspacePanel(event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, anchor?: WorkspaceDockDropAnchor) {
     event.preventDefault();
     event.stopPropagation();
     const transferred = event.dataTransfer.getData("application/x-portmate-workspace-panel")
@@ -4347,8 +4361,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       || "";
     if (!workspaceDockPanelIds.includes(transferred as WorkspaceDockPanelId)) return;
     const panel = transferred as WorkspaceDockPanelId;
-    setWorkspacePanels((current) => setWorkspacePanelVisibility(current, panel, true));
-    setWorkspaceDockLayout((current) => moveWorkspacePanelToDock(current, panel, dock, index));
+    moveWorkspacePanelAtAnchor(panel, dock, anchor);
     setDraggedWorkspacePanel(null);
   }
 
@@ -5355,23 +5368,34 @@ function WorkspaceDock({
   onDragStart: (event: ReactDragEvent<HTMLElement>, panel: WorkspaceDockPanelId) => void;
   onDragEnd: () => void;
   onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
-  onDrop: (event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) => void;
+  onDrop: (event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, anchor?: WorkspaceDockDropAnchor) => void;
   renderPanel: (panel: WorkspaceDockPanelId) => React.ReactNode;
 }) {
   useLocale();
   const limits = workspaceDockSizeLimits[dock];
   const resizeLabel = dock === "bottom" ? t("resize-bottom-dock-height") : t("resize-dock-width", [dock === "left" ? t("left") : t("right")]);
+  const resizePointerRef = useRef<{ pointerId: number; x: number; y: number; size: number; moved: boolean } | null>(null);
+
+  function constrainDockSize(size: number, target: HTMLButtonElement) {
+    const viewport = target.ownerDocument.defaultView;
+    // Keep keyboard and pointer limits aligned with the grid's 38vw / 45vh caps.
+    const viewportLimit = viewport
+      ? Math.floor(dock === "bottom" ? viewport.innerHeight * 0.45 : viewport.innerWidth * 0.38)
+      : limits.max;
+    return clampWorkspaceDockSize(dock, Math.min(size, viewportLimit));
+  }
 
   function updateDockSizeFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    const layout = event.currentTarget.closest(".wind-layout")?.getBoundingClientRect();
-    if (!layout) return;
-    const requested = dock === "left"
-      ? event.clientX - layout.left
+    const gesture = resizePointerRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const delta = dock === "left"
+      ? event.clientX - gesture.x
       : dock === "right"
-        ? layout.right - event.clientX
-        : layout.bottom - event.clientY;
-    const viewportLimit = dock === "bottom" ? layout.height * 0.45 : layout.width * 0.38;
-    onResize(clampWorkspaceDockSize(dock, Math.min(requested, viewportLimit)));
+        ? gesture.x - event.clientX
+        : gesture.y - event.clientY;
+    if (delta === 0 && !gesture.moved) return;
+    gesture.moved = true;
+    onResize(constrainDockSize(gesture.size + delta, event.currentTarget));
   }
 
   function handleDockSizeKey(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -5385,12 +5409,14 @@ function WorkspaceDock({
       : dock === "right"
         ? event.key === "ArrowLeft"
         : event.key === "ArrowUp";
-    let nextSize: number | null = decrease ? effectiveSize - 16 : increase ? effectiveSize + 16 : null;
+    const bounds = event.currentTarget.closest(".workspace-dock")?.getBoundingClientRect();
+    const visibleSize = bounds ? dock === "bottom" ? bounds.height : bounds.width : effectiveSize;
+    let nextSize: number | null = decrease ? visibleSize - 16 : increase ? visibleSize + 16 : null;
     if (event.key === "Home") nextSize = limits.min;
     if (event.key === "End") nextSize = limits.max;
     if (nextSize === null) return;
     event.preventDefault();
-    onResize(nextSize);
+    onResize(constrainDockSize(nextSize, event.currentTarget));
   }
 
   function handleDockTabKey(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -5418,7 +5444,7 @@ function WorkspaceDock({
           if (event.target === event.currentTarget) onDragOver(event);
         }}
         onDrop={(event) => {
-          if (event.target === event.currentTarget) onDrop(event, dock, panels.length);
+          if (event.target === event.currentTarget) onDrop(event, dock);
         }}
       >
         {panels.map((panel, index) => {
@@ -5432,7 +5458,7 @@ function WorkspaceDock({
               key={panel}
               className={active ? "workspace-dock-tab active" : "workspace-dock-tab"}
               data-panel={panel}
-              draggable
+              draggable={false}
               onDragStart={(event) => onDragStart(event, panel)}
               onDragEnd={(event) => {
                 delete event.currentTarget.dataset.panelDropPosition;
@@ -5442,7 +5468,7 @@ function WorkspaceDock({
                 event.stopPropagation();
                 onDragOver(event);
                 const bounds = event.currentTarget.getBoundingClientRect();
-                const after = event.clientX >= bounds.left + bounds.width / 2;
+                const after = workspacePointerAfter(event.clientX, bounds.left, bounds.width, getComputedStyle(event.currentTarget).direction === "rtl");
                 event.currentTarget.dataset.panelDropPosition = after ? "after" : "before";
               }}
               onDragLeave={(event) => {
@@ -5453,7 +5479,7 @@ function WorkspaceDock({
               onDrop={(event) => {
                 const after = event.currentTarget.dataset.panelDropPosition === "after";
                 delete event.currentTarget.dataset.panelDropPosition;
-                onDrop(event, dock, index + (after ? 1 : 0));
+                onDrop(event, dock, { panel, after });
               }}
             >
               <button
@@ -5493,7 +5519,7 @@ function WorkspaceDock({
           if (event.target === event.currentTarget) onDragOver(event);
         }}
         onDrop={(event) => {
-          if (event.target === event.currentTarget) onDrop(event, dock, panels.length);
+          if (event.target === event.currentTarget) onDrop(event, dock);
         }}
       >
         {panels.map((panel) => {
@@ -5526,20 +5552,42 @@ function WorkspaceDock({
         aria-valuenow={effectiveSize}
         title={t("double-click-to-reset", [resizeLabel])}
         onPointerDown={(event) => {
+          if (!event.isPrimary || event.button !== 0) return;
+          const bounds = event.currentTarget.closest(".workspace-dock")?.getBoundingClientRect();
+          if (!bounds) return;
+          event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
           event.currentTarget.setPointerCapture(event.pointerId);
+          resizePointerRef.current = {
+            pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+            size: dock === "bottom" ? bounds.height : bounds.width, moved: false,
+          };
         }}
         onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) updateDockSizeFromPointer(event);
+          if (resizePointerRef.current?.pointerId !== event.pointerId || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          if ((event.buttons & 1) === 0) {
+            resizePointerRef.current = null;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+            return;
+          }
+          updateDockSizeFromPointer(event);
         }}
         onPointerUp={(event) => {
+          if (resizePointerRef.current?.pointerId !== event.pointerId) return;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            updateDockSizeFromPointer(event);
+            resizePointerRef.current = null;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          } else resizePointerRef.current = null;
+        }}
+        onPointerCancel={(event) => {
+          if (resizePointerRef.current?.pointerId === event.pointerId) resizePointerRef.current = null;
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
         }}
-        onPointerCancel={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
+        onLostPointerCapture={(event) => {
+          if (resizePointerRef.current?.pointerId === event.pointerId) resizePointerRef.current = null;
         }}
         onDoubleClick={() => onResize(null)}
         onKeyDown={handleDockSizeKey}
@@ -5919,7 +5967,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                 className={`workspace-pane-tab status-${item.runtime.status}${isActiveView ? " active" : ""}${view.color ? " has-color" : ""}`}
                 role="presentation"
                 data-view-id={view.id}
-                draggable
+                draggable={false}
                 key={view.id}
                 style={view.color ? { "--workspace-view-color": view.color } as CSSProperties : undefined}
                 onContextMenu={(event) => {
@@ -6086,6 +6134,7 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
   useLocale();
   const { node } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const resizePointerRef = useRef<{ pointerId: number; x: number; y: number; ratio: number; length: number; moved: boolean } | null>(null);
   const firstTrack = `${node.ratio}fr`;
   const secondTrack = `${1 - node.ratio}fr`;
   const zoomFirst = Boolean(props.zoomedPaneId && findWorkspacePane(node.first, props.zoomedPaneId));
@@ -6096,12 +6145,12 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
     : { gridTemplateColumns: zoomed ? "minmax(0, 1fr)" : `minmax(0, ${firstTrack}) 5px minmax(0, ${secondTrack})` };
 
   function updateFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const ratio = node.direction === "horizontal"
-      ? (event.clientY - rect.top) / Math.max(1, rect.height)
-      : (event.clientX - rect.left) / Math.max(1, rect.width);
-    props.onSplitRatioChange(node.id, ratio);
+    const gesture = resizePointerRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const delta = node.direction === "horizontal" ? event.clientY - gesture.y : event.clientX - gesture.x;
+    if (delta === 0 && !gesture.moved) return;
+    gesture.moved = true;
+    props.onSplitRatioChange(node.id, gesture.ratio + delta / gesture.length);
   }
 
   function handleSplitterKey(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -6138,21 +6187,45 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
         aria-valuenow={Math.round(node.ratio * 100)}
         title={node.direction === "horizontal" ? t("drag-to-resize-upper-lower-panes-double-click-to") : t("drag-to-resize-left-right-panes-double-click-to")}
         onPointerDown={(event) => {
+          if (!event.isPrimary || event.button !== 0) return;
+          const bounds = containerRef.current?.getBoundingClientRect();
+          if (!bounds) return;
+          const divider = event.currentTarget.getBoundingClientRect();
+          const first = event.currentTarget.previousElementSibling?.getBoundingClientRect();
+          const length = Math.max(1, node.direction === "horizontal" ? bounds.height - divider.height : bounds.width - divider.width);
+          const ratio = first ? (node.direction === "horizontal" ? first.height : first.width) / length : node.ratio;
+          event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateFromPointer(event);
+          resizePointerRef.current = {
+            pointerId: event.pointerId, x: event.clientX, y: event.clientY, ratio, length, moved: false,
+          };
         }}
         onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) updateFromPointer(event);
+          if (resizePointerRef.current?.pointerId !== event.pointerId || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          if ((event.buttons & 1) === 0) {
+            resizePointerRef.current = null;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+            return;
+          }
+          updateFromPointer(event);
         }}
         onPointerUp={(event) => {
+          if (resizePointerRef.current?.pointerId !== event.pointerId) return;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            updateFromPointer(event);
+            resizePointerRef.current = null;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          } else resizePointerRef.current = null;
+        }}
+        onPointerCancel={(event) => {
+          if (resizePointerRef.current?.pointerId === event.pointerId) resizePointerRef.current = null;
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
         }}
-        onPointerCancel={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
+        onLostPointerCapture={(event) => {
+          if (resizePointerRef.current?.pointerId === event.pointerId) resizePointerRef.current = null;
         }}
         onDoubleClick={() => props.onSplitRatioChange(node.id, 0.5)}
         onKeyDown={handleSplitterKey}
@@ -6255,17 +6328,7 @@ function readWorkspaceViewDrag(dataTransfer: DataTransfer): { paneId: string; vi
 }
 
 function workspaceViewDropZone(element: HTMLElement, clientX: number, clientY: number): WorkspaceViewDropZone {
-  const bounds = element.getBoundingClientRect();
-  const x = Math.min(1, Math.max(0, (clientX - bounds.left) / Math.max(1, bounds.width)));
-  const y = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
-  const edges: Array<[WorkspacePaneDirection, number]> = [
-    ["left", x],
-    ["right", 1 - x],
-    ["up", y],
-    ["down", 1 - y],
-  ];
-  const nearest = edges.sort((left, right) => left[1] - right[1])[0];
-  return nearest[1] <= 0.24 ? nearest[0] : "center";
+  return workspacePointerDropZone(element.getBoundingClientRect(), clientX, clientY);
 }
 
 function readWorkspaceViewDropZone(value: string | undefined): WorkspaceViewDropZone | null {

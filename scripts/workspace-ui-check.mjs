@@ -13,6 +13,8 @@ import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 import { checkI18n } from "./i18n-regressions.mjs";
 import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
+import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
+import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1959,6 +1961,19 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_DRAG_OVERFLOW_ONLY === "1") {
+    await checkWorkspaceDragOverflow(context, appUrl);
+    console.log("Overflow tab auto-scroll and keyboard activation regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_DRAG_ONLY === "1") {
+    await checkWorkspaceDragging(context, appUrl, screenshotPrefix);
+    await checkWorkspaceDragOverflow(context, appUrl);
+    console.log("Real-pointer dock, tab, split, resize and cancellation regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_FILE_DETAILS_ONLY === "1") {
     await checkFileManagerDetails(context, appUrl, screenshotPrefix);
     console.log("File manager metadata, sorting and selection browser regressions passed");
@@ -2027,6 +2042,8 @@ try {
     break checks;
   }
   await checkI18n(context, appUrl);
+  await checkWorkspaceDragging(context, appUrl, screenshotPrefix);
+  await checkWorkspaceDragOverflow(context, appUrl);
   await checkFileManagerDetails(context, appUrl, screenshotPrefix);
   await checkHostScripts(context, appUrl, screenshotPrefix);
   await checkCommandSubmissions(context, appUrl);
@@ -4276,10 +4293,12 @@ Host staging
     "visible docks do not expose one resize separator each");
   const layoutBox = await page.locator(".wind-layout").boundingBox();
   const leftResizerBox = await leftResizer.boundingBox();
-  assert(layoutBox && leftResizerBox, "left dock resize geometry is unavailable");
+  const leftDockBeforeResize = await leftDock.boundingBox();
+  assert(layoutBox && leftResizerBox && leftDockBeforeResize, "left dock resize geometry is unavailable");
   await page.mouse.move(leftResizerBox.x + leftResizerBox.width / 2, leftResizerBox.y + 80);
   await page.mouse.down();
-  await page.mouse.move(layoutBox.x + 420, leftResizerBox.y + 80, { steps: 4 });
+  // Resize preserves the pointer's initial grab offset within the handle.
+  await page.mouse.move(leftResizerBox.x + leftResizerBox.width / 2 + 420 - leftDockBeforeResize.width, leftResizerBox.y + 80, { steps: 4 });
   await page.mouse.up();
   await rightResizer.focus();
   await rightResizer.press("ArrowLeft");

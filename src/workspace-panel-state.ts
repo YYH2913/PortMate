@@ -207,6 +207,17 @@ export function moveWorkspacePanelToDock(
   return { ...nextOrder, active };
 }
 
+/** A visible tab's ordinal is not an index in a dock that contains hidden panels. */
+export function workspaceDockInsertionIndex(
+  layout: WorkspaceDockLayout,
+  dock: WorkspaceDockId,
+  anchor?: { panel: WorkspaceDockPanelId; after: boolean },
+): number {
+  if (!anchor) return layout[dock].length;
+  const index = layout[dock].indexOf(anchor.panel);
+  return index < 0 ? layout[dock].length : index + Number(anchor.after);
+}
+
 export function workspaceDockForPanel(
   layout: WorkspaceDockLayout,
   panel: WorkspaceDockPanelId,
