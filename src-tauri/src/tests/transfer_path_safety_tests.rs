@@ -58,6 +58,23 @@ fn sftp_transfer_paths_reject_root_and_dot_components() {
 }
 
 #[test]
+fn remote_transfer_paths_reject_backslash_dot_components() {
+    for path in [
+        r"C:\Users\..\Windows\system32\config",
+        r"C:\Users\operator\.\input.bin",
+        r"/tmp\..\etc\passwd",
+        r"C:/Users/..\Windows",
+    ] {
+        let error = validate_remote_transfer_path(path, "SFTP 远端源路径")
+            .expect_err("unsafe Windows-style remote path was accepted");
+        assert!(error.contains("SFTP 远端源路径"), "{path}: {error}");
+    }
+    assert!(
+        validate_remote_transfer_path(r"C:\Users\operator\input.bin", "SFTP 远端源路径").is_ok()
+    );
+}
+
+#[test]
 fn scp_transfer_paths_reject_root_and_dot_components() {
     for path in ["/", "//", "~", "/tmp/../input.bin", "/tmp/./input.bin"] {
         let target_error = validate_remote_transfer_path(path, "SCP 远端目标路径")

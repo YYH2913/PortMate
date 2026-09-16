@@ -187,7 +187,7 @@ pub(super) fn normalize_remote_batch_source(path: &str) -> Result<String, String
 }
 
 pub(super) fn remote_path_has_dot_components(path: &str) -> bool {
-    path.split('/')
+    path.split(['/', '\\'])
         .any(|component| matches!(component, "." | ".."))
 }
 
