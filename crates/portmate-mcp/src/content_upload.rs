@@ -83,6 +83,11 @@ impl PortMateMcp {
             .destination
             .normalize(&request.protocol)
             .map_err(anyhow::Error::msg)?;
+        if !portmate_core::is_nonlocal_transfer_endpoint(&destination) {
+            return Err(anyhow!(
+                "begin_content_upload destination must use remote:, ssh:, or load:; local-to-local copy is not exposed"
+            ));
+        }
 
         let staging_root = self.content_upload_staging_root()?;
         create_private_directory(&staging_root)?;

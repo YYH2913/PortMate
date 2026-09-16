@@ -276,15 +276,15 @@ fn expand_local_home_transfer_path(
 }
 
 pub(super) fn has_remote_transfer_prefix(value: &str) -> bool {
-    value.starts_with("remote:") || value.starts_with("ssh:")
+    portmate_core::has_remote_transfer_prefix(value)
 }
 
 pub(super) fn has_load_receiver_prefix(value: &str) -> bool {
-    value.starts_with("load:")
+    portmate_core::has_load_receiver_prefix(value)
 }
 
 pub(super) fn is_nonlocal_transfer_endpoint(value: &str) -> bool {
-    has_remote_transfer_prefix(value) || has_load_receiver_prefix(value)
+    portmate_core::is_nonlocal_transfer_endpoint(value)
 }
 
 pub(super) fn validate_load_receiver_endpoint(

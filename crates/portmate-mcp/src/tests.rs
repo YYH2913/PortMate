@@ -108,6 +108,31 @@ fn content_upload_requires_an_explicit_transfer_grant() {
 }
 
 #[test]
+fn begin_content_upload_rejects_local_only_destinations_before_staging() {
+    let root = std::env::temp_dir().join(format!(
+        "portmate-content-upload-local-dest-{}",
+        Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let server = content_upload_server(&root, "local-dest-owner");
+    let error = server
+        .begin_content_upload(&json!({
+            "sessionId": "refresh-session",
+            "protocol": "xmodem",
+            "fileName": "firmware.bin",
+            "sizeBytes": 1,
+            "sha256": "0".repeat(64),
+            "destination": "/tmp/firmware.bin"
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("remote:"), "{error}");
+    assert!(error.contains("load:"), "{error}");
+    assert!(!root.join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY).exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn standalone_bridge_never_infers_identity_from_grants() {
     let mut store = test_snapshot_store("client identity");
     store.grants.clear();

@@ -16,6 +16,18 @@ const TFTP_OPTION_FIELDS: &[&str] = &[
     "timeoutSeconds",
 ];
 
+pub fn has_remote_transfer_prefix(value: &str) -> bool {
+    value.starts_with("remote:") || value.starts_with("ssh:")
+}
+
+pub fn has_load_receiver_prefix(value: &str) -> bool {
+    value.starts_with("load:")
+}
+
+pub fn is_nonlocal_transfer_endpoint(value: &str) -> bool {
+    has_remote_transfer_prefix(value) || has_load_receiver_prefix(value)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpStartTransferSource {
     Source,
@@ -481,5 +493,14 @@ mod tests {
         assert!(error.contains("structured `destination`"));
         assert!(error.contains("begin_content_upload"));
         assert!(!error.contains("another source mode"));
+    }
+
+    #[test]
+    fn nonlocal_transfer_endpoints_require_an_explicit_prefix() {
+        assert!(is_nonlocal_transfer_endpoint("remote:/tmp/firmware.bin"));
+        assert!(is_nonlocal_transfer_endpoint("ssh:/tmp/firmware.bin"));
+        assert!(is_nonlocal_transfer_endpoint("load:loady"));
+        assert!(!is_nonlocal_transfer_endpoint("/tmp/firmware.bin"));
+        assert!(!is_nonlocal_transfer_endpoint("Remote:/tmp/firmware.bin"));
     }
 }

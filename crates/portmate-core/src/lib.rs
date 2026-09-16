@@ -32,7 +32,8 @@ pub use mcp::{
     MCP_CONTENT_UPLOAD_PAYLOAD_FILE, MCP_CONTENT_UPLOAD_STAGING_DIRECTORY,
 };
 pub use mcp_transfer::{
-    classify_mcp_start_transfer_source, misplaced_mcp_tftp_destination_option,
+    classify_mcp_start_transfer_source, has_load_receiver_prefix, has_remote_transfer_prefix,
+    is_nonlocal_transfer_endpoint, misplaced_mcp_tftp_destination_option,
     parse_tftp_receiver_endpoint, validate_tftp_file_name, McpStartTransferSource,
     McpStructuredTransferDestination, McpTransferDestination, TftpReceiverSpec, DEFAULT_TFTP_PORT,
     DEFAULT_TFTP_TIMEOUT_SECONDS,
