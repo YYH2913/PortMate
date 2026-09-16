@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 export const TERMINAL_BUFFER_ACTION_REQUEST_EVENT = "portmate-terminal-buffer-action";
@@ -35,7 +36,7 @@ export function resolveTerminalBufferAction(
   bufferType: TerminalBufferType,
 ): TerminalBufferActionResolution {
   if (bufferType === "alternate" && action !== "clear-scrollback") {
-    return { ok: false, error: "全屏程序使用 alternate screen 时不能清除当前屏幕。" };
+    return { ok: false, error: t("cannot-clear-the-current-screen-while-a-full-screen") };
   }
   switch (action) {
     case "clear-scrollback":
@@ -70,7 +71,7 @@ export function requestTerminalBufferAction(
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("未找到目标终端视图。"));
+      reject(new Error(t("target-terminal-view-not-found")));
     }, timeoutMs);
     const respond = (response: TerminalBufferActionResponse) => {
       if (settled) return;
@@ -91,7 +92,7 @@ export async function executeTerminalBufferAction(
 ): Promise<TerminalBufferActionPayload> {
   const payload = await requestTerminalBufferAction(request, target);
   if (payload.sessionId !== request.sessionId || payload.viewId !== request.viewId || payload.action !== request.action) {
-    throw new Error("终端缓冲操作响应与目标视图不匹配。");
+    throw new Error(t("terminal-buffer-response-does-not-match-the-target-view"));
   }
   return payload;
 }

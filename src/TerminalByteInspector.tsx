@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
@@ -37,6 +38,7 @@ export default function TerminalByteInspector({
   onFollowChange,
   onSelectionChange,
 }: TerminalByteInspectorProps) {
+  useLocale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowWidth = Math.max(1, Math.trunc(bytesPerRow));
   const rows = useMemo(() => terminalByteRows(snapshot.frames, rowWidth), [rowWidth, snapshot.frames]);
@@ -121,12 +123,12 @@ export default function TerminalByteInspector({
   }
 
   return (
-    <section className="terminal-byte-inspector" aria-label="终端字节检查器" data-bytes-per-row={rowWidth}>
+    <section className="terminal-byte-inspector" aria-label={t("terminal-byte-inspector")} data-bytes-per-row={rowWidth}>
       <div
         ref={scrollRef}
         className="terminal-byte-scroll"
         role="grid"
-        aria-label="实时终端 Hex 与 ASCII"
+        aria-label={t("live-terminal-hex-and-ascii")}
         aria-colcount={6}
         aria-rowcount={rows.length + 1}
         tabIndex={0}
@@ -146,14 +148,14 @@ export default function TerminalByteInspector({
           style={{ height: `${contentHeight}px` } as CSSProperties}
         >
           <div className="terminal-byte-header" role="row" aria-rowindex={1}>
-            <span role="columnheader">时间</span>
-            <span role="columnheader">方向</span>
-            <span role="columnheader">偏移</span>
+            <span role="columnheader">{t("time")}</span>
+            <span role="columnheader">{t("direction")}</span>
+            <span role="columnheader">{t("offset")}</span>
             <span role="columnheader">Hex</span>
             <span role="columnheader">ASCII</span>
-            <span role="columnheader">状态</span>
+            <span role="columnheader">{t("status")}</span>
           </div>
-          {!rows.length ? <div className="terminal-byte-empty">等待实时字节</div> : null}
+          {!rows.length ? <div className="terminal-byte-empty">{t("waiting-for-live-bytes")}</div> : null}
           {visibleRows.map((row, visibleIndex) => {
             const rowIndex = firstVisibleRow + visibleIndex;
             return (
@@ -167,10 +169,10 @@ export default function TerminalByteInspector({
                 data-row-offset={row.offset}
               >
                 <span role="gridcell" title={formatTerminalByteTimestamp(row.ts)}>{formatTerminalByteTime(row.ts)}</span>
-                <strong role="gridcell" title={`${row.direction === "inbound" ? "接收" : "发送"} · ${row.stream}`}>
+                <strong role="gridcell" title={`${row.direction === "inbound" ? t("receive") : t("send")} · ${row.stream}`}>
                   {row.direction === "inbound" ? "RX" : "TX"}
                 </strong>
-                <code role="gridcell" title={`十进制偏移 ${row.offset}`}>{row.offset.toString(16).padStart(8, "0").toUpperCase()}</code>
+                <code role="gridcell" title={t("decimal-offset", [row.offset])}>{row.offset.toString(16).padStart(8, "0").toUpperCase()}</code>
                 <div className="terminal-byte-hex-cells" role="gridcell">
                   {Array.from({ length: rowWidth }, (_, index) => {
                     const byte = row.bytes[index];
@@ -184,7 +186,7 @@ export default function TerminalByteInspector({
                         key={index}
                         type="button"
                         className={`${selected ? "selected " : ""}${linked ? "linked" : ""}`.trim()}
-                        aria-label={`${row.direction === "inbound" ? "接收" : "发送"}偏移 ${row.offset + index}，Hex ${terminalByteHex(byte)}，${terminalByteCellLabel(byte)}`}
+                        aria-label={t("offset-hex", [row.direction === "inbound" ? t("receive") : t("send"), row.offset + index, terminalByteHex(byte), terminalByteCellLabel(byte)])}
                         aria-pressed={selected}
                         title={`0x${(row.offset + index).toString(16).padStart(8, "0").toUpperCase()} · ${terminalByteCellLabel(byte)}`}
                         tabIndex={-1}
@@ -210,7 +212,7 @@ export default function TerminalByteInspector({
                         key={index}
                         type="button"
                         className={`${selected ? "selected " : ""}${linked ? "linked" : ""}`.trim()}
-                        aria-label={`${row.direction === "inbound" ? "接收" : "发送"}偏移 ${row.offset + index}，ASCII ${terminalByteCellLabel(byte)}，Hex ${terminalByteHex(byte)}`}
+                        aria-label={t("offset-ascii-hex", [row.direction === "inbound" ? t("receive") : t("send"), row.offset + index, terminalByteCellLabel(byte), terminalByteHex(byte)])}
                         aria-pressed={selected}
                         title={`0x${(row.offset + index).toString(16).padStart(8, "0").toUpperCase()} · ${terminalByteCellLabel(byte)}`}
                         tabIndex={-1}
@@ -223,7 +225,7 @@ export default function TerminalByteInspector({
                     );
                   })}
                 </div>
-                <span className={row.omittedBytes ? "terminal-byte-status truncated" : "terminal-byte-status"} role="gridcell" title={row.omittedBytes ? `该传输帧还有 ${row.omittedBytes} B 未进入实时窗口` : row.stream}>
+                <span className={row.omittedBytes ? "terminal-byte-status truncated" : "terminal-byte-status"} role="gridcell" title={row.omittedBytes ? t("another-b-from-this-transport-frame-are-outside-the", [row.omittedBytes]) : row.stream}>
                   {row.omittedBytes ? `+${row.omittedBytes} B` : row.stream === "stderr" ? "ERR" : ""}
                 </span>
               </div>

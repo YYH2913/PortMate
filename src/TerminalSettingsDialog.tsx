@@ -28,18 +28,20 @@ import {
   workspaceKeymapConflicts,
 } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
+import LanguageSelector from "./LanguageSelector";
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 
 const terminalSettingPages = [
-  "应用",
-  "安全",
-  "快捷键",
-  "自动补全",
-  "命令历史",
-  "鼠标",
-  "同步输入",
+  "application",
+  "security",
+  "keyboard-shortcuts",
+  "autocomplete",
+  "command-history-settings",
+  "mouse",
+  "synchronized-input",
 ] as const;
 
 const sessionKindLabels: Record<SessionKind, string> = {
@@ -76,7 +78,8 @@ export default function TerminalSettingsDialog({
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
 }) {
-  const [activeItem, setActiveItem] = useState("应用");
+  useLocale();
+  const [activeItem, setActiveItem] = useState("application");
   const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
@@ -124,16 +127,16 @@ export default function TerminalSettingsDialog({
   }
 
   function closeDialog() {
-    if (dirty && !window.confirm("终端设置有未保存的更改，关闭窗口将放弃这些内容。是否继续？")) return;
+    if (dirty && !window.confirm(t("terminal-settings-have-unsaved-changes-closing-will-discard-them"))) return;
     onClose();
   }
 
   return (
-    <DialogFrame title="终端设置" className="terminal-settings-dialog" onClose={closeDialog}>
-      <nav className="settings-tabs" role="tablist" aria-label="终端设置页面">
+    <DialogFrame title={t("terminal-settings")} className="terminal-settings-dialog" onClose={closeDialog}>
+      <nav className="settings-tabs" role="tablist" aria-label={t("terminal-settings-pages")}>
         {terminalSettingPages.map((page) => (
           <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
-              {page}
+              {t(page)}
             </button>
         ))}
       </nav>
@@ -159,11 +162,11 @@ export default function TerminalSettingsDialog({
       </section>
       <div className="dialog-footer">
         <div className={keymapConflictCount || settingsError ? "dialog-note error" : "dialog-note"}>
-          {keymapConflictCount ? `${keymapConflictCount} 组快捷键冲突` : settingsError}
+          {keymapConflictCount ? t("keyboard-shortcut-conflicts", [keymapConflictCount]) : localizeDiagnostic(settingsError)}
         </div>
         <div className="dialog-actions inline">
-          <button onClick={savePrefs} disabled={keymapConflictCount > 0}>保存</button>
-          <button onClick={closeDialog}>取消</button>
+          <button onClick={savePrefs} disabled={keymapConflictCount > 0}>{t("save")}</button>
+          <button onClick={closeDialog}>{t("cancel")}</button>
         </div>
       </div>
     </DialogFrame>
@@ -199,18 +202,23 @@ function TerminalSettingsContent({
   onChooseExportDirectory: () => void;
   onExportDirectoryChange: (value: string) => void;
 }) {
+  useLocale();
   switch (activeItem) {
-    case "应用":
+    case "application":
       return (
         <>
-          <SettingsSection title="启动">
-            <SettingRadio label="无会话(N)" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
-            <SettingRadio label="上次会话(L)" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
-            <SettingRadio label="指定一个会话或一组会话(S)" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
+          <SettingsSection title={t("interface-language")}>
+            <LanguageSelector />
+            <p className="dialog-note">{t("applies-immediately-to-all-windows-unsupported-languages-use-english")}</p>
+          </SettingsSection>
+          <SettingsSection title={t("start")}>
+            <SettingRadio label={t("no-sessions-n")} checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
+            <SettingRadio label={t("previous-sessions-l")} checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
+            <SettingRadio label={t("specific-session-or-session-group-s")} checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
             {[0, 1, 2, 3].map((index) => (
               <SettingSelect
                 key={index}
-                label={`会话 ${index + 1}:`}
+                label={t("session-2", [index + 1])}
                 value={prefs.startupSessions[index] ?? ""}
                 options={terminalStartupSessionOptions(sessions, prefs.startupSessions[index])}
                 disabled={prefs.startupMode !== "specific"}
@@ -222,11 +230,11 @@ function TerminalSettingsContent({
               />
             ))}
           </SettingsSection>
-          <SettingsSection title="终端文本导出">
+          <SettingsSection title={t("terminal-text-export")}>
             <SettingPath
-              label="默认目录:"
+              label={t("default-directory")}
               value={prefs.terminalTextExportDirectory}
-              placeholder="PortMate 默认 exports 目录"
+              placeholder={t("portmate-default-exports-directory")}
               canBrowse={canChooseExportDirectory}
               disabled={exportDirectoryBusy}
               onBrowse={onChooseExportDirectory}
@@ -235,12 +243,12 @@ function TerminalSettingsContent({
           </SettingsSection>
         </>
       );
-    case "安全":
+    case "security":
       return (
-        <SettingsSection title="安全">
-          <SettingCheck label="空闲后锁屏" checked={prefs.lockOnIdle} onChange={(value) => updatePref("lockOnIdle", value)} />
+        <SettingsSection title={t("security")}>
+          <SettingCheck label={t("lock-screen-after-idle-time")} checked={prefs.lockOnIdle} onChange={(value) => updatePref("lockOnIdle", value)} />
           <SettingInput
-            label="锁屏超时（分钟）"
+            label={t("lock-timeout-minutes")}
             type="number"
             value={prefs.lockScreenTimeoutMinutes}
             min={MIN_SCREEN_LOCK_TIMEOUT_MINUTES}
@@ -248,15 +256,15 @@ function TerminalSettingsContent({
             step={1}
             onChange={(value) => updatePref("lockScreenTimeoutMinutes", normalizeScreenLockTimeoutMinutes(value))}
           />
-          <SettingCheck label="启动时锁屏" checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
+          <SettingCheck label={t("lock-screen-on-startup")} checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
         </SettingsSection>
       );
-    case "快捷键":
+    case "keyboard-shortcuts":
       return <WorkspaceKeymapSettings keymap={workspaceKeymap} onChange={onWorkspaceKeymapChange} />;
-    case "同步输入":
+    case "synchronized-input":
       return (
         <>
-          <SettingsSection title="目标协议">
+          <SettingsSection title={t("target-protocols")}>
             {allSyncProtocols.map((protocol) => (
               <SettingCheck
                 key={protocol}
@@ -271,65 +279,63 @@ function TerminalSettingsContent({
               />
             ))}
           </SettingsSection>
-          <SettingsSection title="输入变换">
+          <SettingsSection title={t("input-transformation")}>
             <label className="setting-row">
-              <span>换行策略:</span>
+              <span>{t("newline-policy")}</span>
               <select value={syncSettings.newlineMode} onChange={(event) => onSyncSettingsChange({ ...syncSettings, newlineMode: event.target.value as SyncNewlineMode })}>
-                <option value="protocol">按协议</option>
-                <option value="preserve">保持原样</option>
+                <option value="protocol">{t("protocol-default")}</option>
+                <option value="preserve">{t("preserve")}</option>
                 <option value="lf">LF</option>
                 <option value="crlf">CRLF</option>
               </select>
             </label>
-            <SettingInput label="目标间延迟(ms):" type="number" value={syncSettings.delayMs} onChange={(value) => onSyncSettingsChange({ ...syncSettings, delayMs: Math.min(5000, Math.max(0, Math.trunc(Number(value) || 0))) })} />
-            <SettingInput label="批量发送前缀:" value={syncSettings.prefix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, prefix: value.slice(0, 1024) })} />
-            <SettingInput label="批量发送后缀:" value={syncSettings.suffix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, suffix: value.slice(0, 1024) })} />
+            <SettingInput label={t("delay-between-targets-ms")} type="number" value={syncSettings.delayMs} onChange={(value) => onSyncSettingsChange({ ...syncSettings, delayMs: Math.min(5000, Math.max(0, Math.trunc(Number(value) || 0))) })} />
+            <SettingInput label={t("batch-prefix")} value={syncSettings.prefix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, prefix: value.slice(0, 1024) })} />
+            <SettingInput label={t("batch-suffix")} value={syncSettings.suffix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, suffix: value.slice(0, 1024) })} />
           </SettingsSection>
         </>
       );
-    case "自动补全":
+    case "autocomplete":
       return (
         <>
-          <SettingsSection title="完成">
-            <SettingCheck label="启用自动补全(A)" checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
-            <SettingCheck label="OneKey 终端提示补全(K)" checked={prefs.oneKeyCompletionEnabled} onChange={(value) => updatePref("oneKeyCompletionEnabled", value)} />
-            <div className="settings-subtitle">自动完成命令使用：</div>
-            <SettingCheck label="命令名称(N)" checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
-            <SettingCheck label="命令选项(O)" checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
-            <SettingCheck label="子命令与参数(P)" checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
-            <SettingCheck label="历史命令(H)" checked={prefs.completionHistory} onChange={(value) => updatePref("completionHistory", value)} />
-            <SettingCheck label="快速命令(Q)" checked={prefs.completionQuickCommands} onChange={(value) => updatePref("completionQuickCommands", value)} />
-            <SettingSelect label="输入后开始自动补全:(S)" value={prefs.completionTriggerChars} options={["1 字符", "2 字符", "3 字符"]} onChange={(value) => updatePref("completionTriggerChars", value)} />
+          <SettingsSection title={t("completion")}>
+            <SettingCheck label={t("enable-autocomplete-a")} checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
+            <SettingCheck label={t("onekey-terminal-prompt-completion-k")} checked={prefs.oneKeyCompletionEnabled} onChange={(value) => updatePref("oneKeyCompletionEnabled", value)} />
+            <div className="settings-subtitle">{t("autocomplete-sources")}</div>
+            <SettingCheck label={t("command-names-n")} checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
+            <SettingCheck label={t("command-options-o")} checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
+            <SettingCheck label={t("subcommands-and-arguments-p")} checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
+            <SettingCheck label={t("command-history-h")} checked={prefs.completionHistory} onChange={(value) => updatePref("completionHistory", value)} />
+            <SettingCheck label={t("quick-commands-q")} checked={prefs.completionQuickCommands} onChange={(value) => updatePref("completionQuickCommands", value)} />
+            <SettingSelect label={t("start-autocomplete-after-s")} value={String(prefs.completionTriggerChars)} options={[1, 2, 3].map(value => ({ value: String(value), label: t(value === 1 ? "1-character" : `${value}-characters`) }))} onChange={(value) => updatePref("completionTriggerChars", Number(value))} />
           </SettingsSection>
-          <SettingsSection title="外观">
-            <SettingCheck label="命令与输出自动多色" checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
-            <SettingSelect label="完成列表高度:(H)" value={prefs.completionListHeight} options={["5 行", "7 行", "10 行"]} onChange={(value) => updatePref("completionListHeight", value)} />
-            <SettingSelect label="预览最佳匹配项:(P)" value={prefs.completionPreviewMode} options={["无处", "输入框", "列表顶部"]} onChange={(value) => updatePref("completionPreviewMode", value)} />
+          <SettingsSection title={t("appearance")}>
+            <SettingCheck label={t("multicolor-commands-and-output")} checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
+            <SettingSelect label={t("completion-list-height-h")} value={String(prefs.completionListHeight)} options={[5, 7, 10].map(value => ({ value: String(value), label: t(`${value}-rows`) }))} onChange={(value) => updatePref("completionListHeight", Number(value))} />
+            <SettingSelect label={t("preview-best-match-p")} value={prefs.completionPreviewMode} options={[{ value: "none", label: t("no-preview") }, { value: "input", label: t("input-field") }, { value: "top", label: t("top-of-list") }]} onChange={(value) => updatePref("completionPreviewMode", value)} />
           </SettingsSection>
         </>
       );
-    case "命令历史":
+    case "command-history-settings":
       return (
         <>
-          <SettingsSection title="容量">
-            <SettingInput label="保留历史天数:(D)" type="number" min={0} max={MAX_COMMAND_HISTORY_RETENTION_DAYS} step={1} value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
-            <SettingInput label="历史大小:(H)" type="number" min={1} max={MAX_COMMAND_HISTORY_LIMIT} step={1} value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
+          <SettingsSection title={t("capacity")}>
+            <SettingInput label={t("history-retention-days-d")} type="number" min={0} max={MAX_COMMAND_HISTORY_RETENTION_DAYS} step={1} value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
+            <SettingInput label={t("history-size-h")} type="number" min={1} max={MAX_COMMAND_HISTORY_LIMIT} step={1} value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
           </SettingsSection>
-          <SettingsSection title="存储">
-            <SettingCheck label="将命令历史保存到磁盘(S)" checked={prefs.historyEnabled} onChange={(value) => updatePref("historyEnabled", value)} />
-            <SettingButtonRow label="已保存的命令历史:">
-              <button className="settings-secondary-button" type="button" onClick={onClearCommandHistory}>
-                清除(C)
-              </button>
+          <SettingsSection title={t("storage")}>
+            <SettingCheck label={t("save-command-history-to-disk-s")} checked={prefs.historyEnabled} onChange={(value) => updatePref("historyEnabled", value)} />
+            <SettingButtonRow label={t("saved-command-history")}>
+              <button className="settings-secondary-button" type="button" onClick={onClearCommandHistory}>{t("clear-c")}</button>
             </SettingButtonRow>
           </SettingsSection>
         </>
       );
-    case "鼠标":
+    case "mouse":
       return (
-        <SettingsSection title="鼠标">
-          <SettingCheck label="允许终端应用接收鼠标事件" checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
-          <SettingCheck label="选择即复制" checked={prefs.mouseCopyOnSelect} onChange={(value) => updatePref("mouseCopyOnSelect", value)} />
+        <SettingsSection title={t("mouse")}>
+          <SettingCheck label={t("allow-terminal-applications-to-receive-mouse-events")} checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
+          <SettingCheck label={t("copy-on-selection")} checked={prefs.mouseCopyOnSelect} onChange={(value) => updatePref("mouseCopyOnSelect", value)} />
         </SettingsSection>
       );
     default:
@@ -344,6 +350,7 @@ function WorkspaceKeymapSettings({
   keymap: WorkspaceKeymap;
   onChange: (keymap: WorkspaceKeymap) => void;
 }) {
+  useLocale();
   const [capturing, setCapturing] = useState<WorkspaceHotkeyCommandId | null>(null);
   const [capturePrefix, setCapturePrefix] = useState<{ commandId: WorkspaceHotkeyCommandId; binding: string } | null>(null);
   const [captureError, setCaptureError] = useState<WorkspaceHotkeyCommandId | null>(null);
@@ -403,15 +410,15 @@ function WorkspaceKeymapSettings({
   }
 
   return (
-    <SettingsSection title="快捷键">
+    <SettingsSection title={t("keyboard-shortcuts")}>
       <div className="workspace-keymap">
         <header className="workspace-keymap-header">
-          <span>命令</span>
-          <span>按键</span>
+          <span>{t("command")}</span>
+          <span>{t("keys")}</span>
           <button
             type="button"
-            title="恢复全部默认快捷键"
-            aria-label="恢复全部默认快捷键"
+            title={t("restore-all-default-shortcuts")}
+            aria-label={t("restore-all-default-shortcuts")}
             onClick={() => {
               onChange({ ...defaultWorkspaceKeymap });
               stopCapture();
@@ -429,25 +436,25 @@ function WorkspaceKeymapSettings({
           return (
             <div key={command.id} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
               <span className="workspace-keymap-command">
-                <strong>{command.label}</strong>
-                {conflictLabels ? <small>与 {conflictLabels}{conflict?.kind === "prefix" ? " 前缀冲突" : " 冲突"}</small> : invalid ? <small>每段需要修饰键</small> : null}
+                <strong>{t(command.label)}</strong>
+                {conflictLabels ? <small>{t("with")}{conflictLabels}{conflict?.kind === "prefix" ? t("prefix-conflict") : t("conflict")}</small> : invalid ? <small>{t("each-chord-requires-a-modifier-key")}</small> : null}
               </span>
               <button
                 type="button"
                 className={capturing === command.id ? "workspace-key-capture capturing" : "workspace-key-capture"}
                 aria-pressed={capturing === command.id}
-                title={capturing === command.id ? "录入快捷键" : formattedBinding}
+                title={capturing === command.id ? t("record-shortcut") : formattedBinding}
                 onClick={() => beginCapture(command.id)}
                 onBlur={() => stopCapture(command.id)}
                 onKeyDown={(event) => captureBinding(event, command.id)}
               >
-                {pendingBinding ? `${formatWorkspaceKeyBinding(pendingBinding)}  →  …` : capturing === command.id ? "等待第 1 键" : formattedBinding}
+                {pendingBinding ? `${formatWorkspaceKeyBinding(pendingBinding)}  →  …` : capturing === command.id ? t("waiting-for-the-first-key") : formattedBinding}
               </button>
               <button
                 type="button"
                 className="workspace-key-disable"
-                title={`禁用 ${command.label} 快捷键`}
-                aria-label={`禁用 ${command.label} 快捷键`}
+                title={t("disable-shortcut-for", [command.label])}
+                aria-label={t("disable-shortcut-for", [command.label])}
                 disabled={!keymap[command.id]}
                 onClick={() => {
                   updateBinding(command.id, "");
@@ -459,8 +466,8 @@ function WorkspaceKeymapSettings({
               <button
                 type="button"
                 className="workspace-key-reset"
-                title={`恢复 ${command.label} 默认快捷键`}
-                aria-label={`恢复 ${command.label} 默认快捷键`}
+                title={t("restore-default-shortcut-for", [command.label])}
+                aria-label={t("restore-default-shortcut-for", [command.label])}
                 disabled={keymap[command.id] === command.defaultBinding}
                 onClick={() => {
                   updateBinding(command.id, command.defaultBinding);
@@ -488,13 +495,14 @@ function DialogFrame({
   onClose: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <div className="dialog-backdrop">
       <section className={`wind-dialog ${className}`}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button type="button" title={`关闭${title}`} aria-label={`关闭${title}`} onClick={onClose}><X size={22} /></button>
+          <button type="button" title={t("close-2", [title])} aria-label={t("close-2", [title])} onClick={onClose}><X size={22} /></button>
         </header>
         {children}
       </section>
@@ -503,6 +511,7 @@ function DialogFrame({
 }
 
 function SettingsSection({ title, children }: { title?: string; children: ReactNode }) {
+  useLocale();
   return (
     <section className="settings-section">
       {title ? <h2>{title}</h2> : null}
@@ -512,6 +521,7 @@ function SettingsSection({ title, children }: { title?: string; children: ReactN
 }
 
 function SettingRadio({ label, checked, name, onChange }: { label: string; checked: boolean; name: string; onChange: () => void }) {
+  useLocale();
   return (
     <label className="setting-radio">
       <input type="radio" name={name} checked={checked} onChange={onChange} />
@@ -521,6 +531,7 @@ function SettingRadio({ label, checked, name, onChange }: { label: string; check
 }
 
 function SettingCheck({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  useLocale();
   return (
     <label className="setting-check">
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
@@ -530,6 +541,7 @@ function SettingCheck({ label, checked, onChange }: { label: string; checked: bo
 }
 
 function SettingInput({ label, value, type = "text", min, max, step, onChange }: { label: string; value: string | number; type?: string; min?: number; max?: number; step?: number; onChange: (value: string) => void }) {
+  useLocale();
   return (
     <label className="setting-row">
       <span>{label}</span>
@@ -555,12 +567,13 @@ function SettingPath({
   onBrowse: () => void;
   onChange: (value: string) => void;
 }) {
+  useLocale();
   return (
     <label className="setting-row terminal-export-path-setting">
       <span>{label}</span>
       <span className="setting-path-control">
         <input
-          aria-label="终端文本默认导出目录"
+          aria-label={t("default-terminal-text-export-directory")}
           value={value}
           disabled={disabled}
           maxLength={MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS}
@@ -569,8 +582,8 @@ function SettingPath({
         />
         <button
           type="button"
-          aria-label="选择终端文本导出目录"
-          title={disabled ? "正在选择目录" : canBrowse ? "选择目录" : "目录选择仅在桌面版可用"}
+          aria-label={t("choose-terminal-text-export-directory")}
+          title={disabled ? t("choosing-directory") : canBrowse ? t("choose-directory") : t("directory-selection-is-available-only-in-the-desktop-app")}
           disabled={disabled || !canBrowse}
           onClick={onBrowse}
         >
@@ -584,15 +597,16 @@ function SettingPath({
 type SettingSelectOption = string | { value: string; label: string };
 
 function SettingSelect({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: readonly SettingSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
+  useLocale();
   return (
     <label className="setting-row">
       <span>{label}</span>
       <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => {
           const optionValue = typeof option === "string" ? option : option.value;
-          const optionLabel = typeof option === "string" ? option || "未指定" : option.label;
+          const optionLabel = typeof option === "string" ? option || t("unspecified") : option.label;
           return <option key={optionValue || "blank"} value={optionValue}>
-            {optionLabel}
+            {typeof option === "string" ? t(optionLabel) : optionLabel}
           </option>;
         })}
       </select>
@@ -601,6 +615,7 @@ function SettingSelect({ label, value, options, disabled = false, onChange }: { 
 }
 
 function SettingButtonRow({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return (
     <div className="setting-row">
       <span>{label}</span>
@@ -625,9 +640,9 @@ function createTerminalPrefs() {
     completionCommandArgs: true,
     completionHistory: true,
     completionQuickCommands: true,
-    completionTriggerChars: "1 字符",
-    completionListHeight: "7 行",
-    completionPreviewMode: "无处",
+    completionTriggerChars: 1,
+    completionListHeight: 7,
+    completionPreviewMode: "none",
     historyEnabled: true,
     historyRetentionDays: "30",
     historyLimit: "10000",

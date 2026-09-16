@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const TERMINAL_SEARCH_REQUEST_EVENT = "portmate-terminal-search";
 export const MAX_TERMINAL_SEARCH_QUERY_LENGTH = 512;
 
@@ -26,9 +27,9 @@ export function terminalSearchResultLabel(
   result: TerminalSearchResult | null,
   invalidExpression = false,
 ): string {
-  if (invalidExpression) return "表达式无效";
+  if (invalidExpression) return t("invalid-expression");
   if (!query || !result || result.resultCount <= 0) return "0/0";
-  if (result.resultIndex < 0) return `${result.resultCount} 个结果`;
+  if (result.resultIndex < 0) return t("results", [result.resultCount]);
   return `${Math.min(result.resultIndex + 1, result.resultCount)}/${result.resultCount}`;
 }
 

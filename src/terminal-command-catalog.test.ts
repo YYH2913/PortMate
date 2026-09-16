@@ -1,8 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { terminalCommandCatalog } from "./terminal-command-catalog";
+import { terminalCommandCatalog, terminalCommandDetailMessage } from "./terminal-command-catalog";
+import en from "./locales/en.json";
+import { setLanguagePreference } from "./i18n";
 import type { TerminalCommandSchema } from "./terminal-command-catalog";
 
 describe("terminal command catalog", () => {
+  it("keeps every token and usage placeholder in English independently of the UI language", () => {
+    const before = JSON.stringify(terminalCommandCatalog);
+    for (const locale of ["ar", "zh", "en", "fr", "ru", "es"] as const) {
+      setLanguagePreference(locale);
+      expect(JSON.stringify(terminalCommandCatalog)).toBe(before);
+    }
+    expect(before).not.toMatch(/\p{Script=Han}/u);
+    function check(entry: TerminalCommandSchema) {
+      for (const item of [entry, ...entry.options, ...entry.arguments]) {
+        expect(Object.hasOwn(en, terminalCommandDetailMessage(item.detail)), item.detail).toBe(true);
+      }
+      entry.subcommands.forEach(check);
+    }
+    terminalCommandCatalog.forEach(check);
+  });
   it("keeps command, option, argument, and nested subcommand keys unique", () => {
     expect(new Set(terminalCommandCatalog.map((command) => command.value)).size)
       .toBe(terminalCommandCatalog.length);

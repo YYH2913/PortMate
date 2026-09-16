@@ -324,6 +324,7 @@ checks: try {
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
   const context = await browser.newContext({
+    locale: "zh-CN",
     viewport: { width: 1440, height: 900 },
     reducedMotion: "reduce",
   });
@@ -1578,7 +1579,7 @@ checks: try {
     .map((call) => call.args.text)
     .join("") === "terraform pl");
   const terraformCompletion = await activeCompletion.textContent();
-  assert(terraformCompletion?.includes("plan") && terraformCompletion.includes("terraform [全局选项]"),
+  assert(terraformCompletion?.includes("plan") && terraformCompletion.includes("terraform [global-options]"),
     `Terraform command completion did not expose its structured schema: ${terraformCompletion}`);
   await clearCalls();
   await page.keyboard.press("Tab");
@@ -1591,14 +1592,14 @@ checks: try {
   await page.keyboard.type("cmd /");
   await activeCompletion.waitFor();
   const cmdCompletion = await activeCompletion.textContent();
-  assert(cmdCompletion?.includes("/c") && cmdCompletion.includes("cmd [选项] [命令]"),
+  assert(cmdCompletion?.includes("/c") && cmdCompletion.includes("cmd [options] [command]"),
     `Windows slash-style command options were not rendered: ${cmdCompletion}`);
   await page.keyboard.press("Enter");
 
   await page.keyboard.type("winget.exe install ");
   await activeCompletion.waitFor();
   const wingetUsage = await activeCompletion.locator(".terminal-completion-usage").textContent();
-  assert(wingetUsage?.includes("winget.exe install [选项] <查询>"),
+  assert(wingetUsage?.includes("winget.exe install [options] <query>"),
     `Windows executable command context was not resolved: ${wingetUsage}`);
   await page.keyboard.press("Enter");
 
@@ -1630,7 +1631,7 @@ checks: try {
     usage: completion.querySelector(".terminal-completion-usage")?.textContent ?? "",
     candidates: completion.querySelectorAll(".terminal-completion-list > button").length,
   }));
-  assert(unknownCompletionUsage.usage.includes("portmate-unknown [参数...]")
+  assert(unknownCompletionUsage.usage.includes("portmate-unknown [args...]")
     && unknownCompletionUsage.candidates === 0,
   `unknown command did not receive a non-inserting parameter hint: ${JSON.stringify(unknownCompletionUsage)}`);
   await page.waitForFunction(() => window.__invokeCalls
@@ -1768,9 +1769,9 @@ checks: try {
     completionCommandArgs: false,
     completionHistory: false,
     completionQuickCommands: false,
-    completionTriggerChars: "3 字符",
-    completionListHeight: "5 行",
-    completionPreviewMode: "输入框",
+    completionTriggerChars: 3,
+    completionListHeight: 5,
+    completionPreviewMode: "input",
   });
   await page.keyboard.type("gi");
   await page.waitForTimeout(100);
@@ -1800,7 +1801,7 @@ checks: try {
     completionCommandArgs: false,
     completionHistory: false,
     completionQuickCommands: false,
-    completionTriggerChars: "1 字符",
+    completionTriggerChars: 1,
     semanticHighlightingEnabled: true,
   });
   await page.keyboard.type("git");
@@ -1840,9 +1841,9 @@ checks: try {
     completionCommandArgs: true,
     completionHistory: true,
     completionQuickCommands: true,
-    completionTriggerChars: "1 字符",
-    completionListHeight: "7 行",
-    completionPreviewMode: "无处",
+    completionTriggerChars: 1,
+    completionListHeight: 7,
+    completionPreviewMode: "none",
   });
   await page.keyboard.press("Enter");
   await page.keyboard.type("git s");

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SessionProfile, SessionSummary } from "./types";
 
 export const TERMINAL_STARTUP_SESSION_SLOTS = 4;
@@ -88,9 +89,9 @@ export function terminalStartupSessionOptions(
     }];
   });
   const unavailable = validSessionId(currentValue) && !seen.has(currentValue)
-    ? [{ value: currentValue, label: `不可用会话 · ${currentValue}` }]
+    ? [{ value: currentValue, label: t("unavailable-session", [currentValue]) }]
     : [];
-  return [{ value: "", label: "未指定" }, ...unavailable, ...available];
+  return [{ value: "", label: t("unspecified") }, ...unavailable, ...available];
 }
 
 function validSessionId(value: unknown): value is string {

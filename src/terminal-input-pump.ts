@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SyncInputOrigin } from "./sync-input-state";
 
 export type TerminalInputSender = (
@@ -72,7 +73,7 @@ export class TerminalInputPump {
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ): Promise<void> {
-    if (options?.signal?.aborted) return Promise.reject(new DOMException("发送已取消", "AbortError"));
+    if (options?.signal?.aborted) return Promise.reject(new DOMException(t("send-cancelled"), "AbortError"));
     if (!sessionId || !text) return Promise.resolve();
     const completion = new Promise<void>((resolve, reject) => {
       const waiter = {
@@ -105,7 +106,7 @@ export class TerminalInputPump {
             if (index < 0) return;
             this.pending.splice(index, 1);
             item.detachAbort?.();
-            this.resolveWaiters(item, new DOMException("发送已取消", "AbortError"), true);
+            this.resolveWaiters(item, new DOMException(t("send-cancelled"), "AbortError"), true);
             this.drain();
           };
           item.detachAbort = () => signal.removeEventListener("abort", abort);

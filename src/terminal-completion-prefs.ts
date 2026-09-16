@@ -64,9 +64,9 @@ export function terminalCompletionPreferencesFromSettings(value: unknown): Termi
     quickCommands: source.completionQuickCommands,
     triggerCharacters: numericSetting(source.completionTriggerChars, [1, 2, 3]),
     listRows: numericSetting(source.completionListHeight, [5, 7, 10]),
-    previewMode: source.completionPreviewMode === "输入框"
+    previewMode: source.completionPreviewMode === "input"
       ? "input"
-      : source.completionPreviewMode === "列表顶部"
+      : source.completionPreviewMode === "top"
         ? "top"
         : "none",
   });
@@ -77,7 +77,7 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 }
 
 function numericSetting(value: unknown, allowed: readonly number[]): number | undefined {
-  if (typeof value !== "string" && typeof value !== "number") return undefined;
-  const parsed = Number.parseInt(String(value), 10);
+  if (typeof value !== "number") return undefined;
+  const parsed = value;
   return allowed.includes(parsed) ? parsed : undefined;
 }

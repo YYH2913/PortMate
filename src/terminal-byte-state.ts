@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TerminalBytesEvent } from "./types";
 
 export type TerminalDisplayMode = "text" | "hex" | "split";
@@ -237,7 +238,7 @@ export function terminalByteCellLabel(byte: number): string {
   if (byte === 0x09) return "TAB \\t";
   if (byte === 0x00) return "NUL";
   if (byte >= 0x20 && byte <= 0x7e) return String.fromCharCode(byte);
-  return `非打印字节 0x${terminalByteHex(byte)}`;
+  return t("non-printable-byte-0x", [terminalByteHex(byte)]);
 }
 
 export function terminalByteHex(byte: number): string {

@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Lock, Minus, Plus, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
@@ -370,6 +371,7 @@ function TerminalCanvas({
   onCommandSubmit,
   onOneKeyCompletion,
 }: TerminalCanvasProps) {
+  const { locale } = useLocale();
   const themeId = normalizeTerminalTheme(active?.profile.terminal.theme);
   const backgroundOpacity = active?.profile.terminal.backgroundOpacity ?? 100;
   const activeTerminalTheme = terminalTheme(themeId, backgroundOpacity);
@@ -617,6 +619,7 @@ function TerminalCanvas({
       }).slice(0, completionPreferences.listRows)
       : []
   ), [
+    locale,
     completionDismissedLine,
     completionHistoryIndex,
     completionInput,
@@ -631,7 +634,7 @@ function TerminalCanvas({
         preferences: completionPreferences,
       })
       : null
-  ), [completionContextActive, completionInput.line, completionPreferences]);
+  ), [locale, completionContextActive, completionInput.line, completionPreferences]);
   const activeCompletionIndex = completionCandidates.length
     ? Math.min(completionSelection, completionCandidates.length - 1)
     : 0;
@@ -2589,17 +2592,17 @@ function TerminalCanvas({
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
       if (modalBlocksTerminalCommand(hostRef.current)) {
-        detail.respond({ ok: false, error: "顶层对话框打开时不能导出终端文本。" });
+        detail.respond({ ok: false, error: t("cannot-export-terminal-text-while-a-modal-dialog-is") });
         return;
       }
       const source = (detail as { source?: unknown }).source;
       if (source !== "buffer" && source !== "selection") {
-        detail.respond({ ok: false, error: "不支持的终端文本导出来源。" });
+        detail.respond({ ok: false, error: t("unsupported-terminal-text-export-source") });
         return;
       }
       const term = termRef.current;
       if (!term) {
-        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        detail.respond({ ok: false, error: t("the-terminal-has-not-finished-loading") });
         return;
       }
       const extracted = source === "selection"
@@ -2609,10 +2612,10 @@ function TerminalCanvas({
         detail.respond({
           ok: false,
           error: extracted.reason === "empty"
-            ? source === "selection" ? "当前终端没有选中文本。" : "当前终端缓冲为空。"
+            ? source === "selection" ? t("the-terminal-has-no-selected-text") : t("the-terminal-buffer-is-empty")
             : extracted.reason === "missing-timestamp"
-              ? "终端时间戳尚未就绪，请稍后重试。"
-            : `终端文本超过 ${MAX_TERMINAL_EXPORT_BYTES / (1024 * 1024)} MiB 导出上限。`,
+              ? t("terminal-timestamps-are-not-ready-try-again-shortly")
+            : t("terminal-text-exceeds-the-mib-export-limit", [MAX_TERMINAL_EXPORT_BYTES / (1024 * 1024)]),
         });
         return;
       }
@@ -2638,17 +2641,17 @@ function TerminalCanvas({
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
       if (modalBlocksTerminalCommand(hostRef.current)) {
-        detail.respond({ ok: false, error: "顶层对话框打开时不能修改终端缓冲。" });
+        detail.respond({ ok: false, error: t("cannot-modify-the-terminal-buffer-while-a-modal-dialog") });
         return;
       }
       const action = (detail as { action?: unknown }).action;
       if (action !== "clear-scrollback" && action !== "clear-screen" && action !== "clear-all") {
-        detail.respond({ ok: false, error: "不支持的终端缓冲操作。" });
+        detail.respond({ ok: false, error: t("unsupported-terminal-buffer-action") });
         return;
       }
       const term = termRef.current;
       if (!term) {
-        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        detail.respond({ ok: false, error: t("the-terminal-has-not-finished-loading") });
         return;
       }
       const bufferType = terminalBufferType(term);
@@ -2675,23 +2678,23 @@ function TerminalCanvas({
       if (!detail || typeof detail.respond !== "function" || !active || !focused || !viewId
         || detail.sessionId !== active.profile.id || detail.viewId !== viewId) return;
       if (modalBlocksTerminalCommand(hostRef.current)) {
-        detail.respond({ ok: false, error: "顶层对话框打开时不能访问终端选区。" });
+        detail.respond({ ok: false, error: t("cannot-access-the-terminal-selection-while-a-modal-dialog") });
         return;
       }
       const action = (detail as { action?: unknown }).action;
       if (action !== "read" && action !== "copy" && action !== "select-all" && action !== "clear") {
-        detail.respond({ ok: false, error: "不支持的终端选择命令。" });
+        detail.respond({ ok: false, error: t("unsupported-terminal-selection-command") });
         return;
       }
       const term = termRef.current;
       if (!term) {
-        detail.respond({ ok: false, error: "终端尚未完成加载。" });
+        detail.respond({ ok: false, error: t("the-terminal-has-not-finished-loading") });
         return;
       }
       if (action === "read" || action === "copy") {
         const selection = term.getSelection() || null;
         if (action === "copy" && !selection) {
-          detail.respond({ ok: false, error: "当前终端没有选中文本。" });
+          detail.respond({ ok: false, error: t("the-terminal-has-no-selected-text") });
           return;
         }
         detail.respond({
@@ -2921,45 +2924,45 @@ function TerminalCanvas({
     >
       {active ? (
         <>
-          <div className="terminal-view-toolbar" role="toolbar" aria-label="终端显示">
-            <div className="terminal-view-modes" role="group" aria-label="终端显示模式">
-              <button type="button" className={displayMode === "text" ? "active" : ""} aria-label="文本" aria-pressed={displayMode === "text"} title="文本视图" onClick={() => changeTerminalDisplayMode("text")}><AlignLeft size={13} /><span>文本</span></button>
-              <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title="Hex 视图" onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
-              <button type="button" className={displayMode === "split" ? "active" : ""} aria-label="对照" aria-pressed={displayMode === "split"} title="文本与 Hex 对照视图" onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>对照</span></button>
+          <div className="terminal-view-toolbar" role="toolbar" aria-label={t("terminal-display")}>
+            <div className="terminal-view-modes" role="group" aria-label={t("terminal-display-mode")}>
+              <button type="button" className={displayMode === "text" ? "active" : ""} aria-label={t("text")} aria-pressed={displayMode === "text"} title={t("text-view")} onClick={() => changeTerminalDisplayMode("text")}><AlignLeft size={13} /><span>{t("text")}</span></button>
+              <button type="button" className={displayMode === "hex" ? "active" : ""} aria-label="Hex" aria-pressed={displayMode === "hex"} title={t("hex-view")} onClick={() => changeTerminalDisplayMode("hex")}><Binary size={13} /><span>Hex</span></button>
+              <button type="button" className={displayMode === "split" ? "active" : ""} aria-label={t("compare")} aria-pressed={displayMode === "split"} title={t("text-and-hex-comparison-view")} onClick={() => changeTerminalDisplayMode("split")}><Columns2 size={13} /><span>{t("compare")}</span></button>
             </div>
-            <div className="terminal-font-zoom" role="group" aria-label="终端字号">
-              <button type="button" aria-label="缩小终端字号" title="缩小字号（Ctrl/Cmd+-）" disabled={displayMode === "hex" || fontSize <= 6} onClick={() => changeFontSize("decrease")}><Minus size={13} /></button>
-              <button type="button" aria-label="重置终端字号" title={`恢复会话字号 ${baseFontSize}px（Ctrl/Cmd+0）；Ctrl/Cmd+滚轮可缩放`} disabled={displayMode === "hex"} onClick={() => changeFontSize("reset")}>{fontSize}</button>
-              <button type="button" aria-label="放大终端字号" title="放大字号（Ctrl/Cmd++）" disabled={displayMode === "hex" || fontSize >= 72} onClick={() => changeFontSize("increase")}><Plus size={13} /></button>
+            <div className="terminal-font-zoom" role="group" aria-label={t("terminal-font-size")}>
+              <button type="button" aria-label={t("decrease-terminal-font-size")} title={t("decrease-font-size-ctrl-cmd")} disabled={displayMode === "hex" || fontSize <= 6} onClick={() => changeFontSize("decrease")}><Minus size={13} /></button>
+              <button type="button" aria-label={t("reset-terminal-font-size")} title={t("restore-session-font-size-px-ctrl-cmd-0-zoom", [baseFontSize])} disabled={displayMode === "hex"} onClick={() => changeFontSize("reset")}>{fontSize}</button>
+              <button type="button" aria-label={t("increase-terminal-font-size")} title={t("increase-font-size-ctrl-cmd")} disabled={displayMode === "hex" || fontSize >= 72} onClick={() => changeFontSize("increase")}><Plus size={13} /></button>
             </div>
             {(keyMode === "command" || keyMode === "local") ? (
-              <button type="button" className="terminal-resume-input" aria-label="恢复终端输入" title="当前为本地浏览模式，按键不会发给设备；点击或按 i 恢复 Insert 模式" onClick={() => {
+              <button type="button" className="terminal-resume-input" aria-label={t("resume-terminal-input")} title={t("local-browsing-mode-keys-are-not-sent-to-the")} onClick={() => {
                 if (!focused || modalBlocksTerminalCommand(hostRef.current)) return;
                 keyModeRef.current = "remote";
                 onKeyModeChangeRef.current("remote");
                 termRef.current?.focus();
-              }}>恢复输入</button>
+              }}>{t("resume-input")}</button>
             ) : null}
             <button
               type="button"
               className={`terminal-private-input${privateInputActive ? " active" : ""}`}
               aria-label={detectedPrivateInput
-                ? "已自动开启私密输入"
-                : privateInputRetained && !manualPrivateInput ? "本行仍为私密输入"
-                : privateInputActive ? "关闭私密输入" : "开启私密输入"}
+                ? t("private-input-enabled-automatically")
+                : privateInputRetained && !manualPrivateInput ? t("this-line-remains-private")
+                : privateInputActive ? t("disable-private-input") : t("enable-private-input")}
               aria-pressed={privateInputActive}
               disabled={detectedPrivateInput || (privateInputRetained && !manualPrivateInput)}
               title={detectedPrivateInput
-                ? "检测到凭据提示，已自动保护：仅发送到当前会话且不写入日志"
+                ? t("credential-prompt-detected-input-is-protected-sent-only-to")
                 : privateInputRetained && !manualPrivateInput
-                  ? "本行已包含私密输入，将继续保护到提交、取消或清空；不会进入补全或命令历史"
+                  ? t("this-line-contains-private-input-and-stays-protected-until")
                 : privateInputActive
-                  ? "私密输入已开启：仅发送到当前会话且不写入日志"
-                : "私密输入：仅发送到当前会话且不写入日志"}
+                  ? t("private-input-enabled-sent-only-to-the-current-session")
+                : t("private-input-sent-only-to-the-current-session-and")}
               onClick={toggleManualPrivateInput}
             >
               <Lock size={13} />
-              <span>{privateInputActive ? "私密" : "私密输入"}</span>
+              <span>{privateInputActive ? t("private") : t("private-input")}</span>
             </button>
             <TerminalByteToolbar
               sessionId={active.profile.id}
@@ -2971,10 +2974,10 @@ function TerminalCanvas({
           <div className={`terminal-workspace mode-${displayMode}`}>
             {serialContextRef.current.enabled && displayMode !== "hex" && timestampViewport.bufferType === "normal"
               && (serialColumnSuggestion || serialColumns !== configuredSerialColumns) ? (
-              <aside className="terminal-serial-columns-hint" aria-label="串口被动列宽识别">
+              <aside className="terminal-serial-columns-hint" aria-label={t("passive-serial-column-detection")}>
                 {serialColumnSuggestion ? <>
-                  <span role="status">回显推测 {serialColumnSuggestion} 列，当前 {serialColumns} 列</span>
-                  <button type="button" title="仅调整本视图，不修改设备或会话配置；不会修复已有错位内容，重连后重新识别" onClick={() => {
+                  <span role="status">{t("echo-suggests-columns-current-width-is", [serialColumnSuggestion, serialColumns])}</span>
+                  <button type="button" title={t("changes-only-this-view-not-the-device-or-session")} onClick={() => {
                     const term = termRef.current;
                     if (!focusedRef.current || !term || term.buffer.active.type !== "normal"
                       || !serialColumnSuggestion || serialSuggestion?.key !== serialContextRef.current.key
@@ -2986,27 +2989,27 @@ function TerminalCanvas({
                     }
                     setSerialColumnsOverride({ key: serialContextRef.current.key, columns: serialColumnSuggestion });
                     term.focus();
-                  }}>应用 {serialColumnSuggestion} 列</button>
-                  <button type="button" aria-label="忽略列宽建议" title="本次连接不再提示此列数" onClick={() => {
+                  }}>{t("apply-columns", [serialColumnSuggestion])}</button>
+                  <button type="button" aria-label={t("ignore-column-suggestion")} title={t("do-not-suggest-this-width-again-for-this-connection")} onClick={() => {
                     if (!focusedRef.current || modalBlocksTerminalCommand(hostRef.current)) return;
                     setDismissedSerialSuggestion({ key: serialContextRef.current.key, columns: serialColumnSuggestion });
                   }}><X size={12} /></button>
-                </> : <span>本视图已适配 {serialColumns} 列</span>}
-                {serialColumns !== configuredSerialColumns ? <button type="button" title={`恢复会话配置的 ${configuredSerialColumns} 列`} onClick={() => {
+                </> : <span>{t("this-view-uses-columns", [serialColumns])}</span>}
+                {serialColumns !== configuredSerialColumns ? <button type="button" title={t("restore-the-session-s-columns", [configuredSerialColumns])} onClick={() => {
                   const term = termRef.current;
                   if (!focusedRef.current || !term || term.buffer.active.type !== "normal"
                     || modalBlocksTerminalCommand(hostRef.current)) return;
                   setDismissedSerialSuggestion({ key: serialContextRef.current.key, columns: serialColumns });
                   setSerialColumnsOverride(null);
                   term.focus();
-                }}>恢复配置列数</button> : null}
+                }}>{t("restore-configured-columns")}</button> : null}
               </aside>
             ) : null}
             <div className={`terminal-terminal-region${focused && freeInputOpen ? " free-input-open" : ""}`} aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
               <div
                 className="terminal-timestamp-gutter"
                 role="list"
-                aria-label="终端行时间戳"
+                aria-label={t("terminal-line-timestamps")}
                 data-buffer-type={timestampViewport.bufferType}
                 data-timestamp-count={timestampViewport.entries.length}
                 style={{
@@ -3037,23 +3040,23 @@ function TerminalCanvas({
                 style={{ transform: completionShiftTransform }}
               />
           {focused && freeInputOpen ? (
-            <form className={`terminal-free-input${freeInputSubmission.error ? " has-error" : ""}`} aria-label="自由输入编辑器" aria-busy={freeInputSubmission.busy} onSubmit={(event) => {
+            <form className={`terminal-free-input${freeInputSubmission.error ? " has-error" : ""}`} aria-label={t("free-input-editor")} aria-busy={freeInputSubmission.busy} onSubmit={(event) => {
               event.preventDefault();
               submitTerminalFreeInput();
             }}>
               <header>
-                <strong>{freeInputSource === "normal" ? "Normal 本地编辑" : "自由输入"}</strong>
+                <strong>{freeInputSource === "normal" ? t("normal-local-editor") : t("free-input")}</strong>
                 <span className="terminal-free-input-session" title={active.profile.name}>{active.profile.name}</span>
                 <span className="terminal-free-input-counter">
                   {terminalFreeInputCharacterCount(freeInputValue)}/{MAX_TERMINAL_FREE_INPUT_CHARACTERS}
                 </span>
-                <button type="submit" title={freeInputSubmission.busy ? "正在等待写入确认" : "发送自由输入"} aria-label="发送自由输入" disabled={!freeInputValue || freeInputSubmission.busy}><SendHorizontal size={15} /></button>
-                <button type="button" title="取消自由输入" aria-label="取消自由输入" disabled={freeInputSubmission.busy} onClick={closeTerminalFreeInput}><X size={15} /></button>
+                <button type="submit" title={freeInputSubmission.busy ? t("waiting-for-write-acknowledgement") : t("send-free-input")} aria-label={t("send-free-input")} disabled={!freeInputValue || freeInputSubmission.busy}><SendHorizontal size={15} /></button>
+                <button type="button" title={t("cancel-free-input")} aria-label={t("cancel-free-input")} disabled={freeInputSubmission.busy} onClick={closeTerminalFreeInput}><X size={15} /></button>
               </header>
-              {freeInputSubmission.error ? <div className="utility-error" role="alert">发送失败：{freeInputSubmission.error}。草稿已保留，请检查设备后重试。</div> : null}
+              {freeInputSubmission.error ? <div className="utility-error" role="alert">{t("send-failed-draft-retained-check-the-device-before-retrying", [freeInputSubmission.error])}</div> : null}
               <textarea
                 ref={freeInputRef}
-                aria-label="自由输入内容"
+                aria-label={t("free-input-content")}
                 value={freeInputValue}
                 disabled={freeInputSubmission.busy}
                 wrap="off"
@@ -3111,19 +3114,19 @@ function TerminalCanvas({
             && oneKeyPrompt
             && selectedOneKeyCompletion
             && onOneKeyCompletion ? (
-              <form className="terminal-one-key-completion" aria-label="OneKey 终端提示补全" onSubmit={(event) => {
+              <form className="terminal-one-key-completion" aria-label={t("onekey-terminal-prompt-completion")} onSubmit={(event) => {
                 event.preventDefault();
                 void submitOneKeyCompletion();
               }}>
                 <KeyRound size={15} aria-hidden="true" />
                 <span className="terminal-one-key-prompt">
-                  <strong>{oneKeyPrompt.field === "username" ? "用户名提示" : "密码提示"}</strong>
-                  <small className={oneKeyCompletionError ? "error" : ""} title={oneKeyCompletionError || oneKeyPrompt.line}>
-                    {oneKeyCompletionError || oneKeyPrompt.line}
+                  <strong>{oneKeyPrompt.field === "username" ? t("username-prompt") : t("password-prompt")}</strong>
+                  <small className={oneKeyCompletionError ? "error" : ""} title={localizeDiagnostic(oneKeyCompletionError) || oneKeyPrompt.line}>
+                    {localizeDiagnostic(oneKeyCompletionError) || oneKeyPrompt.line}
                   </small>
                 </span>
                 <select
-                  aria-label="选择 OneKey"
+                  aria-label={t("select-onekey")}
                   value={selectedOneKeyCompletion.id}
                   disabled={oneKeyCompletionBusy}
                   onChange={(event) => setOneKeyCompletionId(event.target.value)}
@@ -3132,11 +3135,11 @@ function TerminalCanvas({
                     <option key={oneKey.id} value={oneKey.id}>{oneKey.label} · {oneKey.username}</option>
                   ))}
                 </select>
-                <button className="primary" type="submit" title="发送 OneKey 凭据" disabled={oneKeyCompletionBusy}>
+                <button className="primary" type="submit" title={t("send-onekey-credentials")} disabled={oneKeyCompletionBusy}>
                   <SendHorizontal size={14} />
-                  <span>{oneKeyCompletionBusy ? "发送中" : "发送"}</span>
+                  <span>{oneKeyCompletionBusy ? t("sending") : t("send")}</span>
                 </button>
-                <button type="button" title="忽略当前提示" aria-label="忽略当前 OneKey 提示" disabled={oneKeyCompletionBusy} onClick={dismissOneKeyPrompt}>
+                <button type="button" title={t("ignore-current-prompt")} aria-label={t("ignore-current-onekey-prompt")} disabled={oneKeyCompletionBusy} onClick={dismissOneKeyPrompt}>
                   <X size={14} />
                 </button>
               </form>
@@ -3145,7 +3148,7 @@ function TerminalCanvas({
             <div className="terminal-completion-layer">
               <section
                 className="terminal-completion"
-                aria-label="终端命令补全"
+                aria-label={t("terminal-command-completion")}
                 data-preview-mode={completionPreferences.previewMode}
                 style={{
                   "--terminal-completion-rows": completionPreferences.listRows,
@@ -3158,14 +3161,14 @@ function TerminalCanvas({
                   </div>
                 ) : null}
                 {completionUsageHint ? (
-                  <div className="terminal-completion-usage" aria-label="命令用法">
-                    <span>用法</span>
+                  <div className="terminal-completion-usage" aria-label={t("command-usage")}>
+                    <span>{t("usage-2")}</span>
                     <code title={completionUsageHint.label}>{completionUsageHint.label}</code>
                     <small>{completionUsageHint.detail}</small>
                   </div>
                 ) : null}
                 {completionCandidates.length ? (
-                  <div className="terminal-completion-list" role="listbox" aria-label="命令候选">
+                  <div className="terminal-completion-list" role="listbox" aria-label={t("command-suggestions")}>
                     {completionCandidates.map((suggestion, index) => (
                       <button
                         key={suggestion.id}
@@ -3191,18 +3194,18 @@ function TerminalCanvas({
             </div>
           ) : null}
           {focused && gotoLineContext ? (
-            <form className="terminal-goto-line" aria-label="跳转到终端行" onSubmit={(event) => {
+            <form className="terminal-goto-line" aria-label={t("go-to-terminal-line")} onSubmit={(event) => {
               event.preventDefault();
               submitTerminalGotoLine();
             }}>
               <ListOrdered size={14} aria-hidden="true" />
               <input
                 ref={gotoLineInputRef}
-                aria-label="终端行号"
+                aria-label={t("terminal-line-number")}
                 aria-invalid={gotoLineResolution.kind === "invalid" || gotoLineResolution.kind === "out-of-range"}
                 value={gotoLineQuery}
                 maxLength={MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH}
-                placeholder="行号，或 +20 / -10"
+                placeholder={t("line-number-or-20-10")}
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => previewTerminalGotoLine(event.target.value)}
@@ -3224,8 +3227,8 @@ function TerminalCanvas({
                 gotoLineContext.lineCount,
               )}</span>
               <div className="terminal-goto-line-controls">
-                <button type="submit" aria-label="确认跳转" title="确认跳转" disabled={gotoLineResolution.kind !== "valid"}><CornerDownLeft size={15} /></button>
-                <button type="button" aria-label="取消跳转" title="取消跳转" onClick={() => closeTerminalGotoLine(true)}><X size={15} /></button>
+                <button type="submit" aria-label={t("confirm-navigation")} title={t("confirm-navigation")} disabled={gotoLineResolution.kind !== "valid"}><CornerDownLeft size={15} /></button>
+                <button type="button" aria-label={t("cancel-navigation")} title={t("cancel-navigation")} onClick={() => closeTerminalGotoLine(true)}><X size={15} /></button>
               </div>
             </form>
           ) : null}
@@ -3237,10 +3240,10 @@ function TerminalCanvas({
               <Search size={14} aria-hidden="true" />
               <input
                 ref={searchInputRef}
-                aria-label="终端查找"
+                aria-label={t("terminal-search")}
                 value={searchQuery}
                 maxLength={MAX_TERMINAL_SEARCH_QUERY_LENGTH}
-                placeholder="在当前终端中查找"
+                placeholder={t("find-in-current-terminal")}
                 spellCheck={false}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -3257,12 +3260,12 @@ function TerminalCanvas({
                 {terminalSearchResultLabel(searchQuery, searchResult, searchInvalid)}
               </span>
               <div className="terminal-search-controls">
-                <button type="button" className={searchCaseSensitive ? "active" : ""} aria-label="区分大小写" aria-pressed={searchCaseSensitive} title="区分大小写" onClick={() => setSearchCaseSensitive((value) => !value)}><CaseSensitive size={15} /></button>
-                <button type="button" className={searchWholeWord ? "active" : ""} aria-label="全词匹配" aria-pressed={searchWholeWord} title="全词匹配" onClick={() => setSearchWholeWord((value) => !value)}><WholeWord size={15} /></button>
-                <button type="button" className={searchRegex ? "active" : ""} aria-label="正则表达式" aria-pressed={searchRegex} title="正则表达式" onClick={() => setSearchRegex((value) => !value)}><Regex size={15} /></button>
-                <button type="button" aria-label="上一个匹配" title="上一个匹配" disabled={!searchQuery} onClick={() => runTerminalSearch("previous")}><ChevronUp size={15} /></button>
-                <button type="button" aria-label="下一个匹配" title="下一个匹配" disabled={!searchQuery} onClick={() => runTerminalSearch("next")}><ChevronDown size={15} /></button>
-                <button type="button" aria-label="关闭查找" title="关闭查找" onClick={closeTerminalSearch}><X size={15} /></button>
+                <button type="button" className={searchCaseSensitive ? "active" : ""} aria-label={t("case-sensitive")} aria-pressed={searchCaseSensitive} title={t("case-sensitive")} onClick={() => setSearchCaseSensitive((value) => !value)}><CaseSensitive size={15} /></button>
+                <button type="button" className={searchWholeWord ? "active" : ""} aria-label={t("whole-words")} aria-pressed={searchWholeWord} title={t("whole-words")} onClick={() => setSearchWholeWord((value) => !value)}><WholeWord size={15} /></button>
+                <button type="button" className={searchRegex ? "active" : ""} aria-label={t("regular-expression")} aria-pressed={searchRegex} title={t("regular-expression")} onClick={() => setSearchRegex((value) => !value)}><Regex size={15} /></button>
+                <button type="button" aria-label={t("previous-match")} title={t("previous-match")} disabled={!searchQuery} onClick={() => runTerminalSearch("previous")}><ChevronUp size={15} /></button>
+                <button type="button" aria-label={t("next-match")} title={t("next-match")} disabled={!searchQuery} onClick={() => runTerminalSearch("next")}><ChevronDown size={15} /></button>
+                <button type="button" aria-label={t("close-search")} title={t("close-search")} onClick={closeTerminalSearch}><X size={15} /></button>
               </div>
             </form>
           ) : null}
@@ -3280,7 +3283,7 @@ function TerminalCanvas({
           </div>
         </>
       ) : (
-        <div className="terminal-empty">未打开会话</div>
+        <div className="terminal-empty">{t("no-session-open")}</div>
       )}
     </div>
   );
@@ -3306,16 +3309,17 @@ function TerminalByteToolbar({
   onFollowChange: (follow: boolean) => void;
   onClear: () => void;
 }) {
+  useLocale();
   const snapshot = useTerminalByteSnapshot(sessionId);
   const stats = useMemo(() => terminalByteBufferStats(snapshot), [snapshot]);
   return (
     <>
-      <span className="terminal-byte-summary" title={`实时窗口 ${formatBytes(snapshot.capturedBytes)} · ${snapshot.frames.length} 帧${snapshot.droppedFrames ? ` · 已淘汰 ${snapshot.droppedFrames} 帧` : ""}${stats.omittedBytes ? ` · 帧内截断 ${formatBytes(stats.omittedBytes)}` : ""}`}>
+      <span className="terminal-byte-summary" title={t("live-window-frames", [formatBytes(snapshot.capturedBytes), snapshot.frames.length, snapshot.droppedFrames ? t("evicted-frames-suffix", [snapshot.droppedFrames]) : "", stats.omittedBytes ? t("truncated-frame-bytes-suffix", [formatBytes(stats.omittedBytes)]) : ""])}>
         <span className="rx">RX {formatBytes(stats.rxBytes)}</span>
         <span className="tx">TX {formatBytes(stats.txBytes)}</span>
       </span>
-      <button type="button" className={follow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label="跟随最新字节" aria-pressed={follow} title="跟随最新字节" disabled={!snapshot.frames.length} onClick={() => onFollowChange(!follow)}><ArrowDownToLine size={13} /></button>
-      <button type="button" className="terminal-byte-tool" aria-label="清空实时字节" title="清空实时字节" disabled={!snapshot.frames.length} onClick={() => { flushTerminalByteEvents(); clearTerminalByteCache(sessionId); onClear(); }}><Trash2 size={13} /></button>
+      <button type="button" className={follow ? "terminal-byte-tool active" : "terminal-byte-tool"} aria-label={t("follow-latest-bytes")} aria-pressed={follow} title={t("follow-latest-bytes")} disabled={!snapshot.frames.length} onClick={() => onFollowChange(!follow)}><ArrowDownToLine size={13} /></button>
+      <button type="button" className="terminal-byte-tool" aria-label={t("clear-live-bytes")} title={t("clear-live-bytes")} disabled={!snapshot.frames.length} onClick={() => { flushTerminalByteEvents(); clearTerminalByteCache(sessionId); onClear(); }}><Trash2 size={13} /></button>
     </>
   );
 }
@@ -3335,9 +3339,10 @@ function TerminalByteInspectorPane({
   onFollowChange: (follow: boolean) => void;
   onSelectionChange: (selection: TerminalByteSelection | null) => void;
 }) {
+  useLocale();
   const snapshot = useTerminalByteSnapshot(sessionId);
   return (
-    <Suspense fallback={<section className="terminal-byte-inspector" aria-label="终端字节检查器" aria-busy="true" />}>
+    <Suspense fallback={<section className="terminal-byte-inspector" aria-label={t("terminal-byte-inspector")} aria-busy="true" />}>
       <LazyTerminalByteInspector
         snapshot={snapshot}
         bytesPerRow={bytesPerRow}

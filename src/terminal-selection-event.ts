@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { openIsolatedWebLink } from "./terminal-web-link";
 import type { TerminalWebLinkOpener } from "./terminal-web-link";
@@ -92,7 +93,7 @@ export function requestTerminalSelection(
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("未找到目标终端视图。"));
+      reject(new Error(t("target-terminal-view-not-found")));
     }, timeoutMs);
     const respond = (response: TerminalSelectionResponse) => {
       if (settled) return;
@@ -114,11 +115,11 @@ export async function executeTerminalSelectionAction(
 ): Promise<TerminalSelectionPayload> {
   const payload = await requestTerminalSelection(request, target);
   if (payload.sessionId !== request.sessionId || payload.viewId !== request.viewId || payload.action !== request.action) {
-    throw new Error("终端选择响应与目标视图不匹配。");
+    throw new Error(t("terminal-selection-response-does-not-match-the-target-view"));
   }
   if (request.action === "copy") {
-    if (!payload.selection) throw new Error("当前终端没有选中文本。");
-    if (!clipboard?.writeText) throw new Error("当前环境不支持写入剪贴板。");
+    if (!payload.selection) throw new Error(t("the-terminal-has-no-selected-text"));
+    if (!clipboard?.writeText) throw new Error(t("writing-to-the-clipboard-is-unavailable-in-this-environment"));
     await clipboard.writeText(payload.selection);
   }
   return payload;
@@ -131,7 +132,7 @@ export function resolveTerminalOnlineSearchQuery(
   const query = selection?.trim() || fallback?.trim() || "";
   if (!query) return null;
   if (Array.from(query).length > MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS) {
-    throw new Error(`在线搜索内容最多支持 ${MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS} 个 Unicode 字符。`);
+    throw new Error(t("online-searches-support-at-most-unicode-characters", [MAX_TERMINAL_ONLINE_SEARCH_CHARACTERS]));
   }
   return query;
 }
@@ -153,8 +154,8 @@ export async function executeTerminalOnlineSearch(
     action: "read",
   }, target);
   const query = resolveTerminalOnlineSearchQuery(payload.selection, request.fallback);
-  if (!query) throw new Error("当前终端没有可搜索的文本。");
+  if (!query) throw new Error(t("the-terminal-has-no-searchable-text"));
   const url = terminalOnlineSearchUrl(query);
-  if (!openIsolatedWebLink(url, openWindow)) throw new Error("无法打开在线搜索窗口。");
+  if (!openIsolatedWebLink(url, openWindow)) throw new Error(t("unable-to-open-online-search-window"));
   return { query, url };
 }

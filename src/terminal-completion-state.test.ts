@@ -88,9 +88,9 @@ describe("terminal completion state", () => {
     expect(terminalCompletionPreferencesFromSettings({
       completionEnabled: true,
       completionCommandNames: false,
-      completionTriggerChars: "3 字符",
-      completionListHeight: "10 行",
-      completionPreviewMode: "列表顶部",
+      completionTriggerChars: 3,
+      completionListHeight: 10,
+      completionPreviewMode: "top",
     })).toEqual({
       ...defaultTerminalCompletionPreferences,
       commandNames: false,
@@ -202,7 +202,7 @@ describe("terminal completion state", () => {
       line: "python3 -m http.server ",
       preferences: defaultTerminalCompletionPreferences,
     })).toEqual({
-      label: "python3 [选项] [-c 命令 | -m 模块 | 脚本] [参数...]",
+      label: "python3 [options] [-c command | -m module | script] [args...]",
       detail: "运行 Python 解释器",
     });
   });
@@ -241,26 +241,26 @@ describe("terminal completion state", () => {
     expect(terminalCompletionUsageHint({
       line: "winget.exe install ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "winget.exe install [选项] <查询>", detail: "安装软件包" });
+    })).toEqual({ label: "winget.exe install [options] <query>", detail: "安装软件包" });
   });
 
   it("provides non-inserting usage hints for every known command context", () => {
     expect(terminalCompletionUsageHint({
       line: "ls ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "ls [选项] [路径...]", detail: "列出目录内容" });
+    })).toEqual({ label: "ls [options] [path...]", detail: "列出目录内容" });
     expect(terminalCompletionUsageHint({
       line: "git commit -m",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "git commit [选项] [路径...]", detail: "提交暂存变更" });
+    })).toEqual({ label: "git commit [options] [path...]", detail: "提交暂存变更" });
     expect(terminalCompletionUsageHint({
       line: "docker compose up ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "docker compose up [选项] [服务...]", detail: "创建并启动服务" });
+    })).toEqual({ label: "docker compose up [options] [service...]", detail: "创建并启动服务" });
     expect(terminalCompletionUsageHint({
       line: "unknown-command ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "unknown-command [参数...]", detail: "当前环境命令" });
+    })).toEqual({ label: "unknown-command [args...]", detail: "当前环境命令" });
     expect(terminalCompletionUsageHint({
       line: "unknown-command",
       preferences: defaultTerminalCompletionPreferences,
@@ -275,7 +275,7 @@ describe("terminal completion state", () => {
     expect(terminalCompletionUsageHint({
       line: "/usr/bin/git commit ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "/usr/bin/git commit [选项] [路径...]", detail: "提交暂存变更" });
+    })).toEqual({ label: "/usr/bin/git commit [options] [path...]", detail: "提交暂存变更" });
 
     const git = terminalCompletionSuggestions({
       line: "git -C repo st",
@@ -294,11 +294,11 @@ describe("terminal completion state", () => {
     expect(terminalCompletionUsageHint({
       line: "git st",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "git [全局选项] <子命令> [参数...]", detail: "管理 Git 仓库" });
+    })).toEqual({ label: "git [global-options] <subcommand> [args...]", detail: "管理 Git 仓库" });
     expect(terminalCompletionUsageHint({
       line: "git worktree ",
       preferences: defaultTerminalCompletionPreferences,
-    })).toEqual({ label: "git worktree [参数...]", detail: "管理 Git 仓库" });
+    })).toEqual({ label: "git worktree [args...]", detail: "管理 Git 仓库" });
     expect(terminalCompletionSuggestions({
       line: "git worktree ",
       preferences: defaultTerminalCompletionPreferences,

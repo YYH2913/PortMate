@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -57,6 +58,7 @@ type DetachedTerminalInteractionPrefs = {
 };
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
+  useLocale();
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
@@ -85,7 +87,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   }
   const session = sessions.find((item) => item.profile.id === request.sessionId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
-  const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "会话不可用";
+  const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : t("session-unavailable");
   const statusText = error || runtimeHealth;
   const statusError = Boolean(error) || session?.runtime.status === "blocked" || session?.runtime.status === "error";
 
@@ -197,7 +199,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       sessionRefreshGenerationRef.current += 1;
       invalidateTerminalInput();
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
-      setError("会话 Profile 已删除");
+      setError(t("session-profile-deleted"));
       void getCurrentWebviewWindow().close().catch(() => {});
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
@@ -342,7 +344,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     try {
       if (options?.binary) {
         const bytes = terminalBinaryStringToBytes(text);
-        if (!bytes) throw new Error("终端二进制输入包含无效字节");
+        if (!bytes) throw new Error(t("terminal-binary-input-contains-invalid-bytes"));
         await invokeBackend("send_bytes", { sessionId, bytes, queued: true });
       } else {
         inputOrder = canPipelineTerminalInput(text, origin, options)
@@ -413,7 +415,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       } else if (window.opener && !window.opener.closed) {
         window.opener.postMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload: command }, window.location.origin);
       } else {
-        throw new Error("来源工作区不可用");
+        throw new Error(t("source-workspace-unavailable"));
       }
       setError("");
       if (action === "reattach") {
@@ -441,7 +443,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
-        <strong>{request.title || session?.profile.name || "会话不可用"}</strong>
+        <strong>{request.title || session?.profile.name || t("session-unavailable")}</strong>
         <span
           className={`session-status-dot status-${session?.runtime.status ?? "disconnected"}`}
           role="status"
@@ -449,19 +451,19 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           title={runtimeHealth}
         />
         <span className="detached-endpoint">{session ? describeDetachedEndpoint(session) : request.sessionId}</span>
-        <button type="button" title="刷新会话" aria-label="刷新会话" onClick={() => window.location.reload()}>
+        <button type="button" title={t("refresh-session")} aria-label={t("refresh-session")} onClick={() => window.location.reload()}>
           <RefreshCw size={14} />
         </button>
         {connectionAction === "disconnect" ? (
-          <button type="button" title="断开会话" aria-label="断开会话" disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("disconnect")}>
+          <button type="button" title={t("disconnect-session")} aria-label={t("disconnect-session")} disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("disconnect")}>
             <Square size={13} />
           </button>
         ) : (
-          <button type="button" title="连接会话" aria-label="连接会话" disabled={!session || ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("connect")}>
+          <button type="button" title={t("connect-session")} aria-label={t("connect-session")} disabled={!session || ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("connect")}>
             <Play size={14} />
           </button>
         )}
-        <button type="button" title="返回工作区" aria-label="返回工作区" disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("reattach")}>
+        <button type="button" title={t("return-to-workspace-2")} aria-label={t("return-to-workspace-2")} disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("reattach")}>
           <PanelLeftOpen size={15} />
         </button>
       </header>
@@ -501,7 +503,7 @@ async function requestTauriReattachResult(command: DetachedPaneCommand): Promise
     if (result?.windowId === command.windowId && result.requestId === command.requestId) resolveResult(result);
   });
   const timeout = window.setTimeout(() => {
-    rejectResult(new Error("主窗口未在 5 秒内确认返回结果。"));
+    rejectResult(new Error(t("the-main-window-did-not-acknowledge-the-return-within")));
   }, DETACHED_REATTACH_RESULT_TIMEOUT_MS);
   try {
     const [, result] = await Promise.all([
@@ -517,7 +519,7 @@ async function requestTauriReattachResult(command: DetachedPaneCommand): Promise
 
 async function requestBrowserReattachResult(command: DetachedPaneCommand): Promise<DetachedPaneResult> {
   const opener = window.opener;
-  if (!opener || opener.closed) throw new Error("来源工作区不可用");
+  if (!opener || opener.closed) throw new Error(t("source-workspace-unavailable"));
   let timeout = 0;
   let handleMessage: ((event: MessageEvent) => void) | null = null;
   const resultPromise = new Promise<DetachedPaneResult>((resolve, reject) => {
@@ -528,7 +530,7 @@ async function requestBrowserReattachResult(command: DetachedPaneCommand): Promi
     };
     window.addEventListener("message", handleMessage);
     timeout = window.setTimeout(() => {
-      reject(new Error("主窗口未在 5 秒内确认返回结果。"));
+      reject(new Error(t("the-main-window-did-not-acknowledge-the-return-within")));
     }, DETACHED_REATTACH_RESULT_TIMEOUT_MS);
   });
   try {

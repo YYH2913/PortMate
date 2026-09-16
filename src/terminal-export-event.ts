@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const TERMINAL_TEXT_EXPORT_REQUEST_EVENT = "portmate-terminal-text-export";
 export const TERMINAL_TEXT_EXPORT_REQUEST_TIMEOUT_MS = 1_500;
 
@@ -33,7 +34,7 @@ export function requestTerminalTextExport(
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("未找到目标终端视图。"));
+      reject(new Error(t("target-terminal-view-not-found")));
     }, timeoutMs);
     const respond = (response: TerminalTextExportResponse) => {
       if (settled) return;

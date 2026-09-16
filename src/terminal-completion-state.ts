@@ -1,6 +1,8 @@
+import { t } from "./i18n";
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import {
   terminalCommandCatalog,
+  terminalCommandDetailMessage,
   terminalCommandSchema,
   terminalCommandSubcommand,
 } from "./terminal-command-catalog";
@@ -187,7 +189,7 @@ export function terminalCompletionSuggestions({
     for (const quick of quickCommands) {
       const target = normalizeCandidateLine(quick.command);
       if (!target || !target.startsWith(line) || target === line) continue;
-      candidates.push(suggestion(`quick:${quick.id}`, "quick", quick.label, "快速命令", target, line, false));
+      candidates.push(suggestion(`quick:${quick.id}`, "quick", quick.label, t("quick-commands"), target, line, false));
     }
   }
   if (preferences.history) {
@@ -198,7 +200,7 @@ export function terminalCompletionSuggestions({
     for (const entry of historyEntries) {
       const target = entry.target;
       if (!target || !target.startsWith(line) || target === line) continue;
-      candidates.push(suggestion("history:" + entry.index + ":" + target, "history", target, "历史命令", target, line, false));
+      candidates.push(suggestion("history:" + entry.index + ":" + target, "history", target, t("command-history"), target, line, false));
     }
   }
 
@@ -207,7 +209,7 @@ export function terminalCompletionSuggestions({
     for (const entry of terminalCommandCatalog) {
       const target = `${indentation}${entry.value}`;
       if (!target.startsWith(line)) continue;
-      candidates.push(suggestion(`command:${entry.value}`, "command", entry.value, entry.detail, target, line, true));
+      candidates.push(suggestion(`command:${entry.value}`, "command", entry.value, t(terminalCommandDetailMessage(entry.detail)), target, line, true));
     }
   }
 
@@ -260,7 +262,7 @@ export function terminalCompletionUsageHint({
   const root = terminalCommandSchemaForToken(commandToken);
   if (!root) {
     return commandHasArgumentBoundary(line)
-      ? { label: `${commandToken} [参数...]`, detail: "当前环境命令" }
+      ? { label: `${commandToken} [args...]`, detail: t("command-in-current-environment") }
       : null;
   }
   const context = resolveCommandContext(root, tokens.slice(1), {
@@ -268,13 +270,13 @@ export function terminalCompletionUsageHint({
   });
   if (context.unknownSubcommandPath) {
     return {
-      label: `${[commandToken, ...context.unknownSubcommandPath].join(" ")} [参数...]`,
-      detail: context.schema.detail,
+      label: `${[commandToken, ...context.unknownSubcommandPath].join(" ")} [args...]`,
+      detail: t(terminalCommandDetailMessage(context.schema.detail)),
     };
   }
   return {
     label: usageForCommandToken(context.schema.usage, root.value, commandToken),
-    detail: context.schema.detail,
+    detail: t(terminalCommandDetailMessage(context.schema.detail)),
   };
 }
 
@@ -283,11 +285,11 @@ export function terminalCompletionSupported(value: unknown): boolean {
 }
 
 export function terminalCompletionSourceLabel(source: TerminalCompletionSource): string {
-  if (source === "command") return "命令";
-  if (source === "subcommand") return "子命令";
-  if (source === "option") return "选项";
-  if (source === "argument") return "参数";
-  if (source === "history") return "历史";
+  if (source === "command") return t("command");
+  if (source === "subcommand") return t("subcommand");
+  if (source === "option") return t("option");
+  if (source === "argument") return t("arguments");
+  if (source === "history") return t("history");
   return "Quick";
 }
 
@@ -430,7 +432,7 @@ function pushCatalogSuggestion(
     `${source}:${command}:${entry.value}`,
     source,
     entry.value,
-    entry.detail,
+    t(terminalCommandDetailMessage(entry.detail)),
     target,
     line,
     true,

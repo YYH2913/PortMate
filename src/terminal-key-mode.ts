@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const terminalKeyModes = ["remote", "local", "normal", "command"] as const;
 
 export type TerminalKeyMode = typeof terminalKeyModes[number];
@@ -49,10 +50,10 @@ export type TerminalModeKeyEvent = Pick<
 export const emptyTerminalKeySequenceState = (): TerminalKeySequenceState => ({ count: "", prefix: "" });
 
 const modeLabels: Record<TerminalKeyMode, string> = {
-  remote: "Insert 模式",
-  local: "本地模式",
-  normal: "本地编辑",
-  command: "Normal 模式",
+  remote: "insert-mode",
+  local: "local-mode",
+  normal: "local-editing",
+  command: "normal-mode",
 };
 
 export function normalizeTerminalKeyMode(value: unknown): TerminalKeyMode {
@@ -62,7 +63,7 @@ export function normalizeTerminalKeyMode(value: unknown): TerminalKeyMode {
 }
 
 export function terminalKeyModeLabel(mode: TerminalKeyMode): string {
-  return modeLabels[mode];
+  return t(modeLabels[mode]);
 }
 
 export function toggleTerminalRemoteLocalMode(mode: TerminalKeyMode): TerminalKeyMode {
@@ -81,8 +82,8 @@ export function terminalKeyModeCursorStyle(mode: TerminalKeyMode): "bar" | "bloc
 
 export function terminalKeyModeShortcutHint(serial: boolean): string {
   return serial
-    ? "切换 Insert/Normal 模式（串口：Shift+Esc 进入 Normal，i 恢复输入；Esc 发送到设备）"
-    : "切换 Insert/Normal 模式 (Esc / i)";
+    ? t("toggle-insert-normal-mode-serial-shift-esc-for-normal")
+    : t("toggle-insert-normal-mode-esc-i");
 }
 
 /** Rebase unanchored local navigation when incoming output/manual scrolling

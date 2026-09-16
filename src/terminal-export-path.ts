@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TerminalTextExportSource } from "./terminal-export-event";
 
 export const MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS = 32_768;
@@ -27,7 +28,7 @@ export function terminalTextExportFileName(
 export async function chooseTerminalExportDirectory(defaultPath: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const selected = await open({
-    title: "选择终端文本导出目录",
+    title: t("choose-terminal-text-export-directory"),
     directory: true,
     multiple: false,
     canCreateDirectories: true,
@@ -46,9 +47,9 @@ export async function chooseTerminalTextExportPath(
     : fileName;
   const { save } = await import("@tauri-apps/plugin-dialog");
   return save({
-    title: "导出终端文本到",
+    title: t("export-terminal-text-to-2"),
     defaultPath,
     canCreateDirectories: true,
-    filters: [{ name: "文本文件", extensions: ["txt"] }],
+    filters: [{ name: t("text-files"), extensions: ["txt"] }],
   });
 }

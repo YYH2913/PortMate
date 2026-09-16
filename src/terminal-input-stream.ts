@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export type TerminalInputOrder = { streamId: string; sequence: number };
 type Binding = { streamId: string };
 type Invoke = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
@@ -21,7 +22,7 @@ export class TerminalInputStreams {
         "begin_terminal_input_stream", { sessionId },
       )).then((binding) => {
         if (!binding || typeof binding.streamId !== "string" || !binding.streamId) {
-          throw new Error("终端输入通道初始化失败，请重新连接会话");
+          throw new Error(t("terminal-input-channel-initialization-failed-reconnect-the-session"));
         }
         return binding;
       });
@@ -35,7 +36,7 @@ export class TerminalInputStreams {
     const sequence = stream.next++;
     try {
       const binding = await stream.binding;
-      if (this.streams.get(sessionId) !== stream) throw new Error("终端输入已取消");
+      if (this.streams.get(sessionId) !== stream) throw new Error(t("terminal-input-cancelled"));
       return { streamId: binding.streamId, sequence };
     } catch (error) {
       if (this.streams.get(sessionId) === stream) this.reset(sessionId);

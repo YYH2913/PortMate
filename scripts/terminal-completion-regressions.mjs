@@ -104,8 +104,8 @@ export async function checkTerminalCompletionRegressions(page) {
         ...prefs, completionEnabled: true, completionCommandNames: true,
         completionCommandOptions: true, completionCommandArgs: true,
         completionHistory: false, completionQuickCommands: false,
-        completionTriggerChars: "1 字符", completionListHeight: "7 行",
-        completionPreviewMode: "输入框",
+        completionTriggerChars: 1, completionListHeight: 7,
+        completionPreviewMode: "input",
       }));
     });
     await page.setViewportSize({ width: 1440, height: 900 });

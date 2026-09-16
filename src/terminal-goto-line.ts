@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH = 16;
 
 export type TerminalGotoLineResolution =
@@ -49,8 +50,8 @@ export function terminalGotoLineStatus(
   currentLine: number,
   lineCount: number,
 ): string {
-  if (resolution.kind === "empty") return `当前 ${currentLine} / 共 ${lineCount}`;
-  if (resolution.kind === "invalid") return "请输入行号";
-  if (resolution.kind === "out-of-range") return `范围 1..${lineCount}`;
-  return `目标 ${resolution.targetLine} / 共 ${lineCount}`;
+  if (resolution.kind === "empty") return t("current-total", [currentLine, lineCount]);
+  if (resolution.kind === "invalid") return t("enter-a-line-number");
+  if (resolution.kind === "out-of-range") return t("range-1", [lineCount]);
+  return t("target-total", [resolution.targetLine, lineCount]);
 }

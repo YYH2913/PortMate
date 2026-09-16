@@ -5,10 +5,10 @@ import type { SessionProfile } from "./types";
 export const DEFAULT_TERMINAL_THEME = "portmate-dark";
 
 export const TERMINAL_THEME_OPTIONS = [
-  { value: "portmate-dark", label: "PortMate 深色" },
-  { value: "graphite", label: "石墨" },
-  { value: "solarized-dark", label: "Solarized 深色" },
-  { value: "portmate-light", label: "PortMate 浅色" },
+  { value: "portmate-dark", label: "portmate-dark" },
+  { value: "graphite", label: "graphite" },
+  { value: "solarized-dark", label: "solarized-dark" },
+  { value: "portmate-light", label: "portmate-light" },
 ] as const;
 
 export type TerminalThemeId = typeof TERMINAL_THEME_OPTIONS[number]["value"];
