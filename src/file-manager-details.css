@@ -1,0 +1,118 @@
+.file-manager .file-browser-pane {
+  grid-template-rows: 32px 30px auto minmax(0, 1fr) auto;
+}
+
+.file-browser-pane > .file-list-summary {
+  grid-row: 5;
+}
+
+.file-browser-pane > .file-pane-messages {
+  grid-row: 3;
+  min-width: 0;
+}
+
+.file-pane-messages .file-pane-status,
+.file-pane-messages .file-error {
+  overflow-wrap: anywhere;
+}
+
+.file-details-list {
+  padding-top: 0;
+  overscroll-behavior: contain;
+}
+
+.file-details-list .file-row,
+.file-list-header {
+  grid-template-columns: 16px 18px minmax(166px, 1fr) 86px 80px 152px;
+  min-width: 548px;
+  padding: 0;
+  text-align: start;
+}
+
+.file-list-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 29px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.file-list-header button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: start;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.file-list-header button span,
+.file-details-list .file-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-header button[aria-pressed="true"],
+.file-list-header button:hover:not(:disabled) {
+  color: var(--cyan);
+}
+
+.file-list-header button:focus-visible,
+.file-details-list .file-row:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: -1px;
+}
+
+.file-list-header button svg {
+  flex: 0 0 auto;
+}
+
+.file-details-list .file-entry-name,
+.file-property-raw {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+
+.file-details-list .file-entry-size {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-property-size {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+
+.file-list-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.file-list-summary > span:last-child:not(:first-child) {
+  color: var(--cyan);
+}
+
+.file-list-empty {
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 12px;
+}

@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { t, tr, useLocale, localizeDiagnostic, formatUiDate, formatUiNumber } from "./i18n";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -33,6 +36,19 @@ import {
 } from "./file-navigation-state";
 import type { FileNavigationHistory } from "./file-navigation-state";
 import { updateFileSelection } from "./file-selection";
+import {
+  defaultFileSort,
+  fileModifiedTimestamp,
+  fileNameExtension,
+  filePermissionDescription,
+  fileSortKeys,
+  knownFileSize,
+  nextFileSort,
+  sortFileEntries,
+  summarizeFileEntries,
+} from "./file-list-presentation";
+import type { FileSort, FileSortKey } from "./file-list-presentation";
+import "./file-manager-details.css";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import TransferList from "./TransferList";
 import { fileTransferProtocolsForProfile, transferProtocolLabel } from "./transfer-capabilities";
@@ -106,8 +122,12 @@ export default function FileManagerPanel({
   onDismissTransfer: (transferId: string) => void;
   onNotice: (notice: NoticeState) => void;
 }) {
+  useLocale();
   const [localPanel, setLocalPanel] = useState<FilePanelState>(() => ({ path: defaultLocalPath(), directory: null, entries: [], selected: [], busy: false, error: "" }));
   const [remotePanel, setRemotePanel] = useState<FilePanelState>(() => ({ path: ".", directory: null, entries: [], selected: [], busy: false, error: "" }));
+  const [fileSorts, setFileSorts] = useState<Record<FilePaneKey, FileSort>>(() => ({ local: defaultFileSort, remote: defaultFileSort }));
+  const localEntries = useMemo(() => sortFileEntries(localPanel.entries, fileSorts.local), [localPanel.entries, fileSorts.local]);
+  const remoteEntries = useMemo(() => sortFileEntries(remotePanel.entries, fileSorts.remote), [remotePanel.entries, fileSorts.remote]);
   const [localNavigation, setLocalNavigation] = useState<FileNavigationHistory>(() => createFileNavigationHistory(defaultLocalPath()));
   const [remoteNavigation, setRemoteNavigation] = useState<FileNavigationHistory>(() => createFileNavigationHistory("."));
   const [propertiesDialog, setPropertiesDialog] = useState<FilePropertiesDialogState>(null);
@@ -221,8 +241,8 @@ export default function FileManagerPanel({
     if (batchTasks.some((task) => task?.status === "queued" || task?.status === "running")) return;
     const failed = batchTasks.filter((task) => task?.status === "failed" || task?.status === "cancelled").length;
     const message = failed
-      ? `${batchTasks.length - failed}/${batchTasks.length} 个文件完成，${failed} 个失败或取消`
-      : `${batchTasks.length} 个文件传输完成`;
+      ? t("files-completed-failed-or-cancelled", [batchTasks.length - failed, batchTasks.length, failed])
+      : t("files-transferred", [batchTasks.length]);
     setExternalDrop((current) => current ? { ...current, message, status: failed ? "warning" : "completed" } : null);
     void loadFiles(
       externalDrop.remote,
@@ -310,7 +330,7 @@ export default function FileManagerPanel({
     const anchorKey = remote ? "remote" : "local";
     setter((current) => {
       const result = updateFileSelection(
-        current.entries,
+        sortFileEntries(current.entries, fileSorts[anchorKey]),
         current.selected,
         entry,
         selectionAnchors.current[anchorKey],
@@ -325,8 +345,13 @@ export default function FileManagerPanel({
     const setter = remote ? setRemotePanel : setLocalPanel;
     setter((current) => ({
       ...current,
-      selected: current.selected.length === current.entries.length ? [] : [...current.entries],
+      selected: current.selected.length === current.entries.length ? [] : sortFileEntries(current.entries, fileSorts[filePaneKey(remote)]),
     }));
+  }
+
+  function changeFileSort(remote: boolean, key: FileSortKey) {
+    const pane = filePaneKey(remote);
+    setFileSorts(current => ({ ...current, [pane]: nextFileSort(current[pane], key) }));
   }
 
   async function loadFiles(
@@ -397,7 +422,7 @@ export default function FileManagerPanel({
     if (panel.directory === null) return;
     const directory = panel.directory;
     await runFileMutation(remote, directory, async (sessionId) => {
-      const name = exactNonBlankPathInput(window.prompt("目录名"));
+      const name = exactNonBlankPathInput(window.prompt(t("directory-name")));
       if (name === null) return false;
       const nextPath = joinFilePath(directory, name, remote);
       await invokeBackend("create_directory", { request: { sessionId, path: nextPath, remote } });
@@ -410,7 +435,7 @@ export default function FileManagerPanel({
     if (panel.directory === null) return;
     const directory = panel.directory;
     await runFileMutation(remote, directory, async (sessionId) => {
-      const name = exactNonBlankPathInput(window.prompt("文件名"));
+      const name = exactNonBlankPathInput(window.prompt(t("file-name")));
       if (name === null) return false;
       const nextPath = joinFilePath(directory, name, remote);
       await invokeBackend("create_file", { request: { sessionId, path: nextPath, remote } });
@@ -422,7 +447,7 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (!panel.selected.length || panel.directory === null) return;
     await runFileMutation(remote, panel.directory, async (sessionId) => {
-      if (!window.confirm(`删除选中的 ${panel.selected.length} 项?`)) return false;
+      if (!window.confirm(t("delete-selected-items", [panel.selected.length]))) return false;
       await invokeBackend("delete_paths", {
         request: {
           sessionId,
@@ -439,7 +464,7 @@ export default function FileManagerPanel({
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
     await runFileMutation(remote, panel.directory, async (sessionId) => {
-      const nextName = exactNonBlankPathInput(window.prompt("新名称", selected.name));
+      const nextName = exactNonBlankPathInput(window.prompt(t("new-name"), selected.name));
       if (nextName === null) return false;
       const nextPath = joinFilePath(parentPath(selected.path, remote), nextName, remote);
       await invokeBackend("rename_path", { request: { sessionId, oldPath: selected.path, newPath: nextPath, remote } });
@@ -454,7 +479,7 @@ export default function FileManagerPanel({
     await runFileMutation(remote, directory, async (sessionId) => {
       const suggestedDestination = parentPath(directory, remote);
       const destination = exactNonBlankPathInput(window.prompt(
-        "移动到目录",
+        t("move-to-directory"),
         suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
       ));
       if (destination === null) return false;
@@ -475,7 +500,7 @@ export default function FileManagerPanel({
     if (!panel.selected.length) return;
     try {
       if (!navigator.clipboard?.writeText) {
-        throw new Error("当前环境不支持写入剪贴板。");
+        throw new Error(t("writing-to-the-clipboard-is-unavailable-in-this-environment"));
       }
       await navigator.clipboard.writeText(panel.selected.map((entry) => entry.path).join("\n"));
     } catch (error) {
@@ -488,7 +513,7 @@ export default function FileManagerPanel({
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
     await runFileMutation(remote, panel.directory, async (sessionId) => {
-      const modeText = window.prompt("八进制权限", "0644");
+      const modeText = window.prompt(t("octal-permissions"), "0644");
       if (!modeText?.trim()) return false;
       const mode = parseFilePermissionMode(modeText);
       await invokeBackend("chmod_path", { request: { sessionId, path: selected.path, mode, remote } });
@@ -496,10 +521,10 @@ export default function FileManagerPanel({
     });
   }
 
-  async function showProperties(remote: boolean) {
+  async function showProperties(remote: boolean, entry?: FileEntry) {
     const panel = remote ? remotePanel : localPanel;
-    const selected = panel.selected[0];
-    if (panel.selected.length !== 1 || !selected) return;
+    const selected = entry ?? panel.selected[0];
+    if ((!entry && panel.selected.length !== 1) || !selected) return;
     const gate = filePropertiesGate.current;
     gate.invalidate("properties");
     const token = gate.begin("properties")!;
@@ -531,7 +556,7 @@ export default function FileManagerPanel({
       selected,
       upload,
       (upload ? remotePanel.directory : localPanel.directory)!,
-      upload ? "批量上传" : "批量下载",
+      upload ? t("batch-upload") : t("batch-download"),
     );
   }
 
@@ -552,7 +577,7 @@ export default function FileManagerPanel({
     setExternalDrop({
       remote: destinationRemote,
       taskIds: [],
-      message: `正在规划 ${entries.length} 个选中项`,
+      message: t("planning-selected-items", [entries.length]),
       status: "planning",
     });
     updatePanel(destinationRemote, { error: "" });
@@ -571,11 +596,11 @@ export default function FileManagerPanel({
       if (!isFileOperationCurrent(operation)) return;
       result.tasks.forEach(onTransfer);
       const parts = [
-        `${result.tasks.length} 个文件`,
+        t("files", [result.tasks.length]),
         formatBytes(result.totalBytes),
-        `${result.directoriesPrepared} 个新目录`,
+        t("new-directories", [result.directoriesPrepared]),
       ];
-      if (result.skipped.length) parts.push(`跳过 ${result.skipped.length} 项`);
+      if (result.skipped.length) parts.push(t("skipped-items", [result.skipped.length]));
       const message = parts.join(" · ");
       setExternalDrop({
         remote: destinationRemote,
@@ -593,7 +618,7 @@ export default function FileManagerPanel({
       const message = formatError(error);
       setExternalDrop(null);
       updatePanel(destinationRemote, { error: message });
-      onNotice({ title: `${title}失败`, message });
+      onNotice({ title: t("failed", [title]), message });
     } finally {
       finishFileOperation(operation);
     }
@@ -622,7 +647,7 @@ export default function FileManagerPanel({
     setDraggedFile(null);
     if (!active || !canTransferFiles || !dropped || dropped.remote === remote) return;
     const targetPanel = remote ? remotePanel : localPanel;
-    if (targetPanel.directory !== null) await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.directory, "拖拽传输");
+    if (targetPanel.directory !== null) await queueFileBatch(dropped.remote, dropped.entries, remote, targetPanel.directory, t("drag-and-drop-transfer"));
   }
 
   async function startExternalDrop(remote: boolean, paths: string[]) {
@@ -639,7 +664,7 @@ export default function FileManagerPanel({
     setExternalDrop({
       remote,
       taskIds: [],
-      message: `正在分析 ${paths.length} 个拖放路径`,
+      message: t("analyzing-dropped-paths", [paths.length]),
       status: "planning",
     });
     updatePanel(remote, { error: "" });
@@ -657,11 +682,11 @@ export default function FileManagerPanel({
       if (!isFileOperationCurrent(operation)) return;
       result.tasks.forEach(onTransfer);
       const parts = [
-        `${result.tasks.length} 个文件`,
+        t("files", [result.tasks.length]),
         formatBytes(result.totalBytes),
-        `${result.directoriesPrepared} 个目录`,
+        t("directories", [result.directoriesPrepared]),
       ];
-      if (result.skipped.length) parts.push(`跳过 ${result.skipped.length} 项`);
+      if (result.skipped.length) parts.push(t("skipped-items", [result.skipped.length]));
       const message = parts.join(" · ");
       setExternalDrop({
         remote,
@@ -669,7 +694,7 @@ export default function FileManagerPanel({
         message,
         status: result.tasks.length ? "queued" : result.skipped.length ? "warning" : "completed",
       });
-      onNotice({ title: "外部拖放已处理", message });
+      onNotice({ title: t("external-drop-processed"), message });
       if (!releaseCurrentFileOperation(operation)) return;
       if (!result.tasks.length) {
         await loadFiles(remote, directory, "preserve");
@@ -679,7 +704,7 @@ export default function FileManagerPanel({
       const message = formatError(error);
       setExternalDrop(null);
       updatePanel(remote, { error: message });
-      onNotice({ title: "外部拖放失败", message });
+      onNotice({ title: t("external-drop-failed"), message });
     } finally {
       finishFileOperation(operation);
     }
@@ -692,10 +717,10 @@ export default function FileManagerPanel({
       const retried = await invokeBackend<TransferTask>("retry_transfer", { transferId: task.id });
       if (!transferOperationGate.current.isCurrent(task.id, token)) return;
       onTransfer(retried);
-      onNotice({ title: "重试传输", message: `${retried.protocol} ${retried.status}: ${retried.message ?? ""}` });
+      onNotice({ title: t("retry-transfer"), message: `${retried.protocol} ${retried.status}: ${retried.message ?? ""}` });
     } catch (error) {
       if (transferOperationGate.current.isCurrent(task.id, token)) {
-        onNotice({ title: "重试传输失败", message: formatError(error) });
+        onNotice({ title: t("failed-to-retry-transfer"), message: formatError(error) });
       }
     } finally {
       finishTransferOperation(task.id, token);
@@ -709,10 +734,10 @@ export default function FileManagerPanel({
       const cancelled = await invokeBackend<TransferTask>("cancel_transfer", { transferId: task.id });
       if (!transferOperationGate.current.isCurrent(task.id, token)) return;
       onTransfer(cancelled);
-      onNotice({ title: "取消传输", message: `${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}` });
+      onNotice({ title: t("cancel-transfer"), message: `${cancelled.protocol} ${cancelled.status}: ${cancelled.message ?? ""}` });
     } catch (error) {
       if (transferOperationGate.current.isCurrent(task.id, token)) {
-        onNotice({ title: "取消传输失败", message: formatError(error) });
+        onNotice({ title: t("failed-to-cancel-transfer"), message: formatError(error) });
       }
     } finally {
       finishTransferOperation(task.id, token);
@@ -738,12 +763,16 @@ export default function FileManagerPanel({
     <div className={canRemote ? "file-manager dual" : "file-manager"}>
       <div className="file-panels">
         <FileBrowserPane
-          title="本地"
+          title={t("local")}
           remote={false}
           panel={localPanel}
+          entries={localEntries}
+          sort={fileSorts.local}
+          onSort={(key) => changeFileSort(false, key)}
+          onInspect={(entry) => void showProperties(false, entry)}
           operationBusy={busyFileOperationKeys.has("local")}
           canTransfer={canTransferFiles}
-          transferLabel="上传"
+          transferLabel={t("upload")}
           onPathChange={(path) => setLocalPanel((current) => ({ ...current, path }))}
           canGoBack={fileNavigationTarget(localNavigation, -1) !== null}
           canGoForward={fileNavigationTarget(localNavigation, 1) !== null}
@@ -780,12 +809,16 @@ export default function FileManagerPanel({
         />
         {canRemote ? (
           <FileBrowserPane
-            title="远端"
+            title={t("remote")}
             remote
             panel={remotePanel}
+            entries={remoteEntries}
+            sort={fileSorts.remote}
+            onSort={(key) => changeFileSort(true, key)}
+            onInspect={(entry) => void showProperties(true, entry)}
             operationBusy={busyFileOperationKeys.has("remote")}
             canTransfer={canTransferFiles}
-            transferLabel="下载"
+            transferLabel={t("download")}
             onPathChange={(path) => setRemotePanel((current) => ({ ...current, path }))}
             canGoBack={fileNavigationTarget(remoteNavigation, -1) !== null}
             canGoForward={fileNavigationTarget(remoteNavigation, 1) !== null}
@@ -839,6 +872,10 @@ function FileBrowserPane({
   title,
   remote,
   panel,
+  entries,
+  sort,
+  onSort,
+  onInspect,
   operationBusy,
   canTransfer,
   transferLabel,
@@ -876,6 +913,10 @@ function FileBrowserPane({
   title: string;
   remote: boolean;
   panel: FilePanelState;
+  entries: FileEntry[];
+  sort: FileSort;
+  onSort: (key: FileSortKey) => void;
+  onInspect: (entry: FileEntry) => void;
   operationBusy: boolean;
   canTransfer: boolean;
   transferLabel: string;
@@ -910,7 +951,23 @@ function FileBrowserPane({
   onProperties: () => void;
   onTransfer: () => void;
 }) {
+  const { locale } = useLocale();
   const locked = panel.busy || operationBusy;
+  const selectedPaths = useMemo(() => new Set(panel.selected.map(entry => entry.path)), [panel.selected]);
+  const summary = useMemo(() => summarizeFileEntries(entries), [entries]);
+  const selectedSummary = useMemo(() => summarizeFileEntries(panel.selected), [panel.selected]);
+  // A directory can contain thousands of rows; reuse ICU formatters across the entire pane.
+  const modifiedFormatter = useMemo(() => new Intl.DateTimeFormat(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }), [locale]);
+  const byteFormatter = useMemo(() => new Intl.NumberFormat(locale), [locale]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const rightToLeft = locale === "ar";
+  useEffect(() => {
+    // Browser scroll offsets change sign in RTL; don't carry a previous direction's
+    // offset into the new layout and leave the first column partially offscreen.
+    if (listRef.current) listRef.current.scrollLeft = 0;
+  }, [rightToLeft]);
 
   function closeOverflowAndRun(event: ReactMouseEvent<HTMLButtonElement>, action: () => void) {
     event.currentTarget.closest("details")?.removeAttribute("open");
@@ -929,75 +986,99 @@ function FileBrowserPane({
     >
       <div className="file-toolbar">
         <strong>{title}</strong>
-        <input aria-label={`${title}路径`} value={panel.path} disabled={operationBusy} onChange={(event) => onPathChange(event.target.value)} onKeyDown={(event) => {
+        <input className="file-path-input" aria-label={t("path", [title])} value={panel.path} disabled={operationBusy} onChange={(event) => onPathChange(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter") {
             onNavigate(panel.path);
           }
         }} />
-        <button type="button" title={`${title}后退`} aria-label={`${title}后退`} onClick={onGoBack} disabled={!canGoBack || locked}><ChevronLeft size={13} /></button>
-        <button type="button" title={`${title}前进`} aria-label={`${title}前进`} onClick={onGoForward} disabled={!canGoForward || locked}><ChevronRight size={13} /></button>
-        <button type="button" title={`刷新${title}目录`} aria-label={`刷新${title}目录`} onClick={onRefresh} disabled={locked}><RefreshCw size={13} /></button>
+        <button type="button" title={t("back", [title])} aria-label={t("back", [title])} onClick={onGoBack} disabled={!canGoBack || locked}><ChevronLeft size={13} /></button>
+        <button type="button" title={t("forward", [title])} aria-label={t("forward", [title])} onClick={onGoForward} disabled={!canGoForward || locked}><ChevronRight size={13} /></button>
+        <button type="button" title={t("refresh-directory", [title])} aria-label={t("refresh-directory", [title])} onClick={onRefresh} disabled={locked}><RefreshCw size={13} /></button>
       </div>
-      {panel.directory !== null && panel.path !== panel.directory ? (
-        <div className="file-pane-status">当前显示：{panel.directory}；新路径按 Enter 后打开。</div>
-      ) : null}
       <div className="file-actions">
-        <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? "清除选择" : "全选"} onClick={onSelectAll} disabled={locked}><ListChecks size={13} /></button>
-        <button type="button" title="新建文件夹" aria-label="新建文件夹" onClick={onCreateDir} disabled={locked || panel.directory === null}><FolderPlus size={13} /></button>
-        <button type="button" title="新建文件" aria-label="新建文件" onClick={onCreateFile} disabled={locked || panel.directory === null}><FilePlus size={13} /></button>
-        <button type="button" title="删除" aria-label="删除" onClick={onDelete} disabled={locked || !panel.selected.length}><Trash2 size={13} /></button>
+        <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? t("clear-selection") : t("select-all-2")} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? t("clear-selection") : t("select-all-2")} onClick={onSelectAll} disabled={locked}><ListChecks size={13} /></button>
+        <button type="button" title={t("new-folder")} aria-label={t("new-folder")} onClick={onCreateDir} disabled={locked || panel.directory === null}><FolderPlus size={13} /></button>
+        <button type="button" title={t("new-file")} aria-label={t("new-file")} onClick={onCreateFile} disabled={locked || panel.directory === null}><FilePlus size={13} /></button>
+        <button type="button" title={t("delete")} aria-label={t("delete")} onClick={onDelete} disabled={locked || !panel.selected.length}><Trash2 size={13} /></button>
         <details className="file-action-overflow">
-          <summary title="更多文件操作" aria-label="更多文件操作"><MoreHorizontal size={13} /></summary>
+          <summary title={t("more-file-actions")} aria-label={t("more-file-actions")}><MoreHorizontal size={13} /></summary>
           <div className="file-action-overflow-menu">
-            <button type="button" title="复制路径" aria-label="复制路径" onClick={(event) => closeOverflowAndRun(event, onCopyPaths)} disabled={locked || !panel.selected.length}><Copy size={13} /><span>复制路径</span></button>
-            <button type="button" title="移动到..." aria-label="移动到..." onClick={(event) => closeOverflowAndRun(event, onMove)} disabled={locked || !panel.selected.length}><FolderInput size={13} /><span>移动到...</span></button>
-            <button type="button" title="重命名" aria-label="重命名" onClick={(event) => closeOverflowAndRun(event, onRename)} disabled={locked || panel.selected.length !== 1}><Pencil size={13} /><span>重命名</span></button>
-            <button type="button" title="修改权限" aria-label="修改权限" onClick={(event) => closeOverflowAndRun(event, onChmod)} disabled={locked || panel.selected.length !== 1}><ShieldCheck size={13} /><span>修改权限</span></button>
-            <button type="button" title="文件属性" aria-label="文件属性" onClick={(event) => closeOverflowAndRun(event, onProperties)} disabled={locked || panel.selected.length !== 1}><Info size={13} /><span>文件属性</span></button>
+            <button type="button" title={t("copy-path")} aria-label={t("copy-path")} onClick={(event) => closeOverflowAndRun(event, onCopyPaths)} disabled={locked || !panel.selected.length}><Copy size={13} /><span>{t("copy-path")}</span></button>
+            <button type="button" title={t("move-to")} aria-label={t("move-to")} onClick={(event) => closeOverflowAndRun(event, onMove)} disabled={locked || !panel.selected.length}><FolderInput size={13} /><span>{t("move-to")}</span></button>
+            <button type="button" title={t("rename")} aria-label={t("rename")} onClick={(event) => closeOverflowAndRun(event, onRename)} disabled={locked || panel.selected.length !== 1}><Pencil size={13} /><span>{t("rename")}</span></button>
+            <button type="button" title={t("change-permissions")} aria-label={t("change-permissions")} onClick={(event) => closeOverflowAndRun(event, onChmod)} disabled={locked || panel.selected.length !== 1}><ShieldCheck size={13} /><span>{t("change-permissions")}</span></button>
+            <button type="button" title={t("file-properties")} aria-label={t("file-properties")} onClick={(event) => closeOverflowAndRun(event, onProperties)} disabled={locked || panel.selected.length !== 1}><Info size={13} /><span>{t("file-properties")}</span></button>
           </div>
         </details>
-        <select value={conflictPolicy} disabled={locked} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label="文件冲突策略" title="文件冲突策略">
-          <option value="fail">停止</option>
-          <option value="overwrite">覆盖</option>
-          <option value="skip">跳过</option>
-          <option value="rename">重命名</option>
+        <select value={conflictPolicy} disabled={locked} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label={t("file-conflict-policy")} title={t("file-conflict-policy")}>
+          <option value="fail">{t("stop")}</option>
+          <option value="overwrite">{t("overwrite")}</option>
+          <option value="skip">{t("skip")}</option>
+          <option value="rename">{t("rename")}</option>
         </select>
         {transferProtocols.length ? (
           <select
             value={transferProtocol}
             disabled={locked}
             onChange={(event) => onTransferProtocolChange(event.target.value as FileTransferProtocol)}
-            aria-label="文件传输协议"
-            title="文件传输协议"
+            aria-label={t("file-transfer-protocol")}
+            title={t("file-transfer-protocol")}
           >
             {transferProtocols.map((protocol) => (
               <option key={protocol} value={protocol}>{transferProtocolLabel(protocol)}</option>
             ))}
           </select>
         ) : null}
-        <button type="button" title={transferLabel} aria-label={`${transferLabel}${panel.selected.length > 1 ? ` ${panel.selected.length} 项` : ""}`} onClick={onTransfer} disabled={locked || !panel.selected.length || !canTransfer}>
+        <button type="button" title={transferLabel} aria-label={`${transferLabel}${panel.selected.length > 1 ? t("items", [panel.selected.length]) : ""}`} onClick={onTransfer} disabled={locked || !panel.selected.length || !canTransfer}>
           {remote ? <Download size={13} /> : <Upload size={13} />}
         </button>
       </div>
-      {panel.error ? (
-        <div className="file-error" role="alert">{panel.error}</div>
-      ) : dropStatus ? (
-        <div className={`file-pane-status ${dropStatus.status}`}>{dropStatus.message}</div>
-      ) : null}
-      <div className="file-list" role="listbox" aria-multiselectable="true">
-        <button className="file-row up" disabled={locked || panel.directory === null} onClick={() => panel.directory !== null && onNavigate(parentPath(panel.directory, remote))}>
+      <div className="file-pane-messages">
+        {panel.directory !== null && panel.path !== panel.directory ? (
+          <div className="file-pane-status">{t("showing-press-enter-to-open-the-new-path", [panel.directory])}</div>
+        ) : null}
+        {panel.error ? (
+          <div className="file-error" role="alert">{localizeDiagnostic(panel.error)}</div>
+        ) : dropStatus ? (
+          <div className={`file-pane-status ${dropStatus.status}`}>{dropStatus.message}</div>
+        ) : null}
+      </div>
+      <div className="file-list file-details-list" ref={listRef}>
+        <div className="file-list-header">
+          <span />
+          <span />
+          {fileSortKeys.map(key => (
+            <button
+              type="button"
+              key={key}
+              data-file-sort={key}
+              data-sort-direction={sort.key === key ? sort.direction : "none"}
+              aria-pressed={sort.key === key}
+              aria-label={`${t("file-sort-by", [t(key)])} · ${t(nextFileSort(sort, key).direction === "asc" ? "file-sort-ascending" : "file-sort-descending")}`}
+              title={t("file-sort-by", [t(key)])}
+              disabled={locked}
+              onClick={() => onSort(key)}
+            >
+              <span>{t(key)}</span>
+              {sort.key === key ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : null}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="file-row up" aria-label={t("file-parent-directory")} disabled={locked || panel.directory === null} onClick={() => panel.directory !== null && onNavigate(parentPath(panel.directory, remote))}>
           <span className="file-row-check" />
           <Folder size={13} />
           <span>..</span>
-          <small />
         </button>
-        {panel.entries.map((entry) => (
+        <div className="file-list-entries" role="listbox" aria-label={`${title} · ${t("file-manager")}`} aria-multiselectable="true">
+        {entries.map((entry) => (
           <div
             key={entry.path}
-            className={panel.selected.some((item) => item.path === entry.path) ? "file-row active" : "file-row"}
+            data-file-path={entry.path}
+            className={selectedPaths.has(entry.path) ? "file-row active" : "file-row"}
             role="option"
-            aria-selected={panel.selected.some((item) => item.path === entry.path)}
+            aria-selected={selectedPaths.has(entry.path)}
             aria-disabled={locked}
+            aria-keyshortcuts="Alt+Enter"
             tabIndex={locked ? -1 : 0}
             draggable={canTransfer && !locked}
             onDragStart={(event) => {
@@ -1008,7 +1089,10 @@ function FileBrowserPane({
               if (!locked) onSelect(entry, event);
             }}
             onKeyDown={(event) => {
-              if (!locked && (event.key === "Enter" || event.key === " ")) {
+              if (!locked && event.key === "Enter" && event.altKey) {
+                event.preventDefault();
+                onInspect(entry);
+              } else if (!locked && (event.key === "Enter" || event.key === " ")) {
                 event.preventDefault();
                 onSelect(entry, event);
               }
@@ -1016,57 +1100,70 @@ function FileBrowserPane({
             onDoubleClick={() => {
               if (!locked && entry.isDir) {
                 onNavigate(entry.path);
+              } else if (!locked) {
+                onInspect(entry);
               }
             }}
           >
-            <input type="checkbox" tabIndex={-1} readOnly disabled={locked} checked={panel.selected.some((item) => item.path === entry.path)} aria-label={`选择 ${entry.name}`} />
+            <input type="checkbox" tabIndex={-1} readOnly disabled={locked} checked={selectedPaths.has(entry.path)} aria-label={t("select", [entry.name])} />
             {entry.isDir ? <Folder size={13} /> : <File size={13} />}
-            <span>{entry.name}</span>
-            <small>{entry.isDir ? "dir" : formatBytes(entry.size)}</small>
+            <span className="file-entry-name" title={entry.path}>{entry.name}</span>
+            <small className="file-entry-type" title={formatEntryType(entry)}>{formatEntryType(entry)}</small>
+            <small className="file-entry-size" title={entry.isDir ? t("file-size-summary-hint") : knownFileSize(entry.size) === null ? t("unknown") : `${byteFormatter.format(entry.size)} B`}>
+              {entry.isDir ? "—" : knownFileSize(entry.size) === null ? t("unknown") : formatBytes(entry.size)}
+            </small>
+            <small className="file-entry-modified" title={entry.modified ?? t("unknown")}>{formatDateTime(entry.modified, modifiedFormatter)}</small>
           </div>
         ))}
+        </div>
+        {!locked && panel.directory !== null && !entries.length ? <div className="file-list-empty">{t("file-empty-directory")}</div> : null}
+      </div>
+      <div className="file-list-summary" role="status" aria-live="polite" title={t("file-size-summary-hint")}>
+        <span>{t("directories", [formatUiNumber(summary.directories)])} · {t("files", [formatUiNumber(summary.files)])} · {tr("file-listed-size", [<bdi dir={summary.unknownSizes ? "auto" : "ltr"}>{summary.unknownSizes ? t("unknown") : formatBytes(summary.bytes)}</bdi>])}</span>
+        {selectedSummary.count ? <span>{t("selected", [formatUiNumber(selectedSummary.count)])} · {tr("file-selected-size", [<bdi dir={selectedSummary.unknownSizes ? "auto" : "ltr"}>{selectedSummary.unknownSizes ? t("unknown") : formatBytes(selectedSummary.bytes)}</bdi>])}</span> : null}
       </div>
     </section>
   );
 }
 
 function FilePropertiesDialog({ state, onClose }: { state: NonNullable<FilePropertiesDialogState>; onClose: () => void }) {
+  useLocale();
   const properties = state.properties;
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="wind-dialog file-properties-dialog">
+      <div className="wind-dialog file-properties-dialog" role="dialog" aria-modal="true" aria-labelledby="file-properties-title">
         <header className="dialog-title">
-          <span>文件属性</span>
-          <button onClick={onClose}><X size={20} /></button>
+          <span id="file-properties-title">{t("file-properties")}</span>
+          <button type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button>
         </header>
         <div className="file-properties-content">
-          {state.busy ? <div className="empty-pane top">读取中...</div> : null}
-          {state.error ? <div className="file-error">{state.error}</div> : null}
+          {state.busy ? <div className="empty-pane top">{t("loading-2")}</div> : null}
+          {state.error ? <div className="file-error">{localizeDiagnostic(state.error)}</div> : null}
           {properties ? (
             <dl className="property-grid">
-              <dt>名称</dt>
-              <dd>{properties.name}</dd>
-              <dt>路径</dt>
-              <dd title={properties.path}>{properties.path}</dd>
-              <dt>位置</dt>
-              <dd>{properties.remote ? "远端" : "本地"}</dd>
-              <dt>类型</dt>
+              <dt>{t("name")}</dt>
+              <dd className="file-property-raw">{properties.name}</dd>
+              <dt>{t("path-2")}</dt>
+              <dd className="file-property-raw" title={properties.path}>{properties.path}</dd>
+              <dt>{t("location")}</dt>
+              <dd>{properties.remote ? t("remote") : t("local")}</dd>
+              <dt>{t("type")}</dt>
               <dd>{formatFileKind(properties)}</dd>
-              <dt>大小</dt>
-              <dd>{properties.isFile ? `${formatBytes(properties.size)} (${properties.size} B)` : "-"}</dd>
-              <dt>权限</dt>
-              <dd>{formatFileMode(properties.permissions)}</dd>
-              <dt>修改时间</dt>
-              <dd>{formatDateTime(properties.modified)}</dd>
-              <dt>访问时间</dt>
-              <dd>{formatDateTime(properties.accessed)}</dd>
-              <dt>创建时间</dt>
-              <dd>{formatDateTime(properties.created)}</dd>
+              <dt>{t("size")}</dt>
+              <dd className="file-property-size">{properties.isFile ? knownFileSize(properties.size) === null ? t("unknown") : `${formatBytes(properties.size)} (${formatUiNumber(properties.size)} B)` : "—"}</dd>
+              <dt>{t("permissions")}</dt>
+              <dd className="file-property-raw">{filePermissionDescription(properties.permissions) ?? t("unknown")}</dd>
+              <dt>{t("modified")}</dt>
+              <dd title={properties.modified ?? undefined}>{formatDateTime(properties.modified)}</dd>
+              <dt>{t("accessed")}</dt>
+              <dd title={properties.accessed ?? undefined}>{formatDateTime(properties.accessed)}</dd>
+              <dt>{t("created")}</dt>
+              <dd title={properties.created ?? undefined}>{formatDateTime(properties.created)}</dd>
             </dl>
           ) : null}
         </div>
         <footer className="utility-actions">
-          <button type="button" onClick={onClose}>关闭</button>
+          <button type="button" onClick={onClose}>{t("close")}</button>
         </footer>
       </div>
     </div>
@@ -1094,23 +1191,23 @@ function filePaneAtPhysicalPosition(x: number, y: number): boolean | null {
   return null;
 }
 
-function formatFileMode(mode?: number | null) {
-  if (mode == null) return "-";
-  return `0${(mode & 0o7777).toString(8).padStart(3, "0")}`;
+function formatEntryType(entry: FileEntry) {
+  if (entry.isDir) return t("directory");
+  const extension = fileNameExtension(entry.name);
+  return extension ? t("file-extension-type", [extension.toUpperCase()]) : t("file-kind-file");
 }
 
 function formatFileKind(properties: FileProperties) {
-  if (properties.isSymlink) return "symlink";
-  if (properties.isDir) return "directory";
-  if (properties.isFile) return "file";
-  return properties.kind || "other";
+  if (properties.isSymlink) return t("file-kind-symlink");
+  if (properties.isDir) return t("directory");
+  if (properties.isFile) return formatEntryType(properties);
+  return t("file-kind-other");
 }
 
-function formatDateTime(value?: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+function formatDateTime(value?: string | null, formatter?: Intl.DateTimeFormat) {
+  const timestamp = fileModifiedTimestamp(value);
+  if (timestamp === null) return t("unknown");
+  return formatter ? formatter.format(timestamp) : formatUiDate(timestamp, { dateStyle: "medium", timeStyle: "long" });
 }
 
 function formatError(error: unknown) {

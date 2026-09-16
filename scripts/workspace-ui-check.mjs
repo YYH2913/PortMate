@@ -12,6 +12,7 @@ import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 import { checkI18n } from "./i18n-regressions.mjs";
+import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1958,6 +1959,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_FILE_DETAILS_ONLY === "1") {
+    await checkFileManagerDetails(context, appUrl, screenshotPrefix);
+    console.log("File manager metadata, sorting and selection browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_I18N_ONLY === "1") {
     await checkI18n(context, appUrl);
     console.log("Six-language and RTL browser regressions passed");
@@ -2020,6 +2027,7 @@ try {
     break checks;
   }
   await checkI18n(context, appUrl);
+  await checkFileManagerDetails(context, appUrl, screenshotPrefix);
   await checkHostScripts(context, appUrl, screenshotPrefix);
   await checkCommandSubmissions(context, appUrl);
   await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
