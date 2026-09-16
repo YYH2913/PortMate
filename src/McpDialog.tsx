@@ -369,7 +369,7 @@ export default function McpDialog({
   return (
     <>
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
-      <section className="wind-dialog mcp-dialog" data-tab={tab} aria-label="MCP Bridge">
+      <section className="wind-dialog mcp-dialog" data-tab={tab} aria-label={t("mcp-bridge")}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>MCP Bridge</strong>

@@ -1,10 +1,10 @@
 import type { SessionKind, SessionStatus } from "./types";
 
 export const menuGroups = [
-  { label: "session", items: ["local-terminal", "new-session", "import-sessions", "new-workspace-window", "session-settings", "start-session", "close-session-2", "duplicate-session"] },
+  { label: "session", items: ["local-terminal", "new-session", "import-sessions", "new-workspace-window", "session-settings", "start-session", "reconnect-session", "close-session-2", "duplicate-session"] },
   { label: "terminal", items: ["find", "go-to-line", "block-selection", "insert-mode", "normal-mode", "local-mode", "local-editing", "synchronized-input", "free-input", "export-terminal-text", "export-selected-text"] },
   { label: "workspace", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar", "restore-layout"] },
-  { label: "tools", items: ["transfer-tasks", "port-forwarding", "Tmux", "Sysmon", "serial-analyzer", "OneKeys", "quick-commands", "custom-scripts", "triggers", "MCP Bridge", "terminal-settings", "log-manager", "key-manager", "about-portmate"] },
+  { label: "tools", items: ["transfer-tasks", "port-forwarding", "tmux", "sysmon", "serial-analyzer", "one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge", "terminal-settings", "log-manager", "key-manager", "about-portmate"] },
 ] as const;
 
 export type MenuItem = (typeof menuGroups)[number]["items"][number];
@@ -15,8 +15,8 @@ export type MenuSection = {
 };
 
 const toolMenuSections: readonly MenuSection[] = [
-  { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "Tmux", "Sysmon", "serial-analyzer"] },
-  { label: "automation", items: ["OneKeys", "quick-commands", "custom-scripts", "triggers", "MCP Bridge"] },
+  { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "tmux", "sysmon", "serial-analyzer"] },
+  { label: "automation", items: ["one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge"] },
   { label: "management", items: ["terminal-settings", "log-manager", "key-manager", "about-portmate"] },
 ];
 
@@ -38,7 +38,7 @@ const activeSessionItems = new Set<MenuItem>([
   "export-selected-text",
   "duplicate-session",
   "transfer-tasks",
-  "Sysmon",
+  "sysmon",
   "serial-analyzer",
   "triggers",
 ]);
@@ -64,10 +64,12 @@ export function menuItemDisabled(item: MenuItem, context: MenuCapabilityContext)
   switch (item) {
     case "start-session":
       return !context.hasActiveSession || context.activeStatus === "connecting" || context.activeStatus === "connected" || context.activeStatus === "reconnecting";
+    case "reconnect-session":
+      return !context.hasActiveSession || context.activeStatus === "connecting" || context.activeStatus === "reconnecting";
     case "close-session-2":
       return !context.hasActiveSession || !["connecting", "connected", "reconnecting"].includes(context.activeStatus ?? "");
     case "port-forwarding":
-    case "Tmux":
+    case "tmux":
       return !isSshLike(context.activeKind) || context.activeStatus !== "connected";
     case "serial-analyzer":
       return context.activeKind !== "serial";

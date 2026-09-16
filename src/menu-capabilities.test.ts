@@ -38,21 +38,24 @@ describe("top menu capabilities", () => {
       activeKind: null,
       activeStatus: null,
     });
-    for (const item of ["session-settings", "start-session", "close-session-2", "find", "free-input", "transfer-tasks", "Sysmon", "triggers"] as MenuItem[]) {
+    for (const item of ["session-settings", "start-session", "reconnect-session", "close-session-2", "find", "free-input", "transfer-tasks", "sysmon", "triggers"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(true);
     }
-    for (const item of ["new-session", "import-sessions", "new-workspace-window", "explorer", "terminal-settings", "OneKeys", "custom-scripts", "log-manager", "MCP Bridge", "about-portmate"] as MenuItem[]) {
+    for (const item of ["new-session", "import-sessions", "new-workspace-window", "explorer", "terminal-settings", "one-keys", "custom-scripts", "log-manager", "mcp-bridge", "about-portmate"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(false);
     }
   });
 
   it("tracks connection and protocol requirements", () => {
     expect(menuItemDisabled("start-session", ready)).toBe(true);
+    expect(menuItemDisabled("reconnect-session", ready)).toBe(false);
     expect(menuItemDisabled("close-session-2", ready)).toBe(false);
     expect(menuItemDisabled("port-forwarding", ready)).toBe(false);
-    expect(menuItemDisabled("Tmux", context({ activeStatus: "disconnected" }))).toBe(true);
+    expect(menuItemDisabled("tmux", context({ activeStatus: "disconnected" }))).toBe(true);
     expect(menuItemDisabled("synchronized-input", context({ activeStatus: "reconnecting" }))).toBe(true);
     expect(menuItemDisabled("start-session", context({ activeStatus: "error" }))).toBe(false);
+    expect(menuItemDisabled("reconnect-session", context({ activeStatus: "error" }))).toBe(false);
+    expect(menuItemDisabled("reconnect-session", context({ activeStatus: "reconnecting" }))).toBe(true);
     expect(menuItemDisabled("serial-analyzer", context({ activeKind: "serial" }))).toBe(false);
     expect(menuItemDisabled("port-forwarding", context({ activeKind: "serial" }))).toBe(true);
   });

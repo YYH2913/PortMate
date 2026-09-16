@@ -2221,7 +2221,7 @@ try {
   const sessionMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
     buttons.map((button) => [button.textContent?.trim(), button.disabled]),
   ));
-  assert(sessionMenuState["启动会话"] && !sessionMenuState["关闭会话"] && !sessionMenuState["会话设置"]
+  assert(sessionMenuState["启动会话"] && !sessionMenuState["重新连接会话"] && !sessionMenuState["断开会话"] && !sessionMenuState["会话设置"]
     && sessionMenuState["导入会话"] === false
     && !Object.hasOwn(sessionMenuState, "导入 OpenSSH 配置")
     && !Object.hasOwn(sessionMenuState, "导入 PuTTY 配置")
@@ -8705,7 +8705,8 @@ Host staging
   `pending reconnect did not serialize or lock disconnect controls: ${JSON.stringify(pendingReconnectClose)}`);
   await connectionLifecyclePage.getByRole("button", { name: "会话", exact: true }).click();
   assert(await connectionLifecyclePage.getByRole("button", { name: "启动会话", exact: true }).isDisabled()
-    && await connectionLifecyclePage.getByRole("button", { name: "关闭会话", exact: true }).isDisabled(),
+    && await connectionLifecyclePage.getByRole("button", { name: "重新连接会话", exact: true }).isDisabled()
+    && await connectionLifecyclePage.getByRole("button", { name: "断开会话", exact: true }).isDisabled(),
   "top-level session actions remained enabled during a pending disconnect");
   await connectionLifecyclePage.getByRole("button", { name: "会话", exact: true }).click();
   await connectionLifecyclePage.locator(".menu-popover").waitFor({ state: "detached" });

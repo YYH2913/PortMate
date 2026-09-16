@@ -172,7 +172,7 @@ const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon
   explorer: { label: "explorer", icon: Folder },
   fileManager: { label: "file-manager", icon: Files },
   history: { label: "command-history", icon: Clock3 },
-  sysmon: { label: "Sysmon", icon: Activity },
+  sysmon: { label: "sysmon", icon: Activity },
   sender: { label: "send", icon: SendHorizontal },
 };
 const workspaceDockMeta: Record<WorkspaceDockId, { label: string; icon: LucideIcon }> = {
@@ -1944,13 +1944,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       "export-terminal-text",
       "export-selected-text",
       "start-session",
+      "reconnect-session",
       "close-session-2",
       "session-settings",
       "port-forwarding",
       "triggers",
-      "Sysmon",
+      "sysmon",
       "serial-analyzer",
-      "Tmux",
+      "tmux",
       "transfer-tasks",
       "duplicate-session",
     ].includes(item);
@@ -1974,11 +1975,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setUtilityDialog("custom-scripts");
       return;
     }
-    if (item === "OneKeys") {
+    if (item === "one-keys") {
       setUtilityDialog("one-keys");
       return;
     }
-    if (item === "MCP Bridge") {
+    if (item === "mcp-bridge") {
       setUtilityDialog("mcp");
       return;
     }
@@ -2055,6 +2056,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (currentActive) void connectSession(currentActive.profile.id);
       return;
     }
+    if (item === "reconnect-session") {
+      if (currentActive) void reconnectSession(currentActive.profile.id);
+      return;
+    }
     if (item === "close-session-2") {
       if (currentActive) void disconnectSession(currentActive.profile.id);
       return;
@@ -2081,9 +2086,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setUtilityDialog("keys");
       return;
     }
-    if (item === "Sysmon") {
+    if (item === "sysmon") {
       if (!currentActive) {
-        setNotice({ title: "Sysmon", message: t("select-a-session-first") });
+        setNotice({ title: t("sysmon"), message: t("select-a-session-first") });
         return;
       }
       setUtilityDialog("sysmon");
@@ -2097,9 +2102,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       void openSerialAnalyzer(currentActive);
       return;
     }
-    if (item === "Tmux") {
+    if (item === "tmux") {
       if (!currentActive || !isSshLikeProfile(currentActive.profile) || currentActive.runtime.status !== "connected") {
-        setNotice({ title: "Tmux", message: t("select-a-connected-ssh-tmux-session-before-managing-tmux") });
+        setNotice({ title: t("tmux"), message: t("select-a-connected-ssh-tmux-session-before-managing-tmux") });
         return;
       }
       setUtilityDialog("tmux");
@@ -4645,7 +4650,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                         {section.items.map((item) => {
                           const toggleState = menuToggleState(item);
                           const disabled = menuItemDisabled(item, menuCapabilityContext)
-                            || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "close-session-2"));
+                            || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "reconnect-session" || item === "close-session-2"));
                           return (
                             <button
                               type="button"
@@ -4986,7 +4991,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazyTmuxDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} onDone={(message) => {
             setUtilityDialog(null);
-            setNotice({ title: "Tmux", message });
+            setNotice({ title: t("tmux"), message });
             void refreshActiveLog(active.profile.id);
           }} />
         </Suspense>
@@ -6258,12 +6263,12 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
   }
 
   const title = error
-    ? `Sysmon: ${error}`
+    ? `${t("sysmon")}: ${error}`
     : snapshot
       ? t("cpu-memory-load-rx-kib-s-tx-kib-s", [snapshot.cpuPercent.toFixed(1), snapshot.memoryPercent.toFixed(1), snapshot.loadAverage.map((value) => value.toFixed(2)).join(" / "), snapshot.rxKbps.toFixed(1), snapshot.txKbps.toFixed(1), formatSysmonUptime(snapshot.uptimeSeconds), formatDateTime(snapshot.ts)])
       : remote && !canWatch
         ? t("sysmon-remote-session-disconnected")
-        : "Sysmon";
+        : t("sysmon");
 
   return (
     <div className={`sysmon-applet${watching ? " active" : ""}${error ? " error" : ""}`} title={title}>
@@ -6283,7 +6288,7 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
             <span>CPU <b className={sysmonPercentLevel(snapshot.cpuPercent)}>{snapshot.cpuPercent.toFixed(1)}%</b></span>
             <span>MEM <b className={sysmonPercentLevel(snapshot.memoryPercent)}>{snapshot.memoryPercent.toFixed(1)}%</b></span>
           </>
-        ) : <span>Sysmon</span>}
+        ) : <span>{t("sysmon")}</span>}
       </button>
     </div>
   );
