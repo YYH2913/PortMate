@@ -485,7 +485,7 @@ try {
   assert(await labOneSwitch.isChecked() === true, "lab:1 must initially be synchronized");
 
   await page.evaluate(() => { window.__deferTmuxAttach = true; });
-  const slowAttachInput = page.getByPlaceholder("session name");
+  const slowAttachInput = page.getByPlaceholder("会话名称");
   await slowAttachInput.fill("slow-attach");
   await page.getByRole("button", { name: "附着/新建", exact: true }).evaluate((button) => {
     button.click();
@@ -873,7 +873,7 @@ try {
     call.command === "stop_tmux_control"
   )).length);
 
-  const targetInput = page.getByPlaceholder("session name");
+  const targetInput = page.getByPlaceholder("会话名称");
   await targetInput.fill("new-lab");
   await page.getByRole("button", { name: "附着/新建", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.some((call) => call.command === "attach_tmux" && call.args.target === "new-lab"));

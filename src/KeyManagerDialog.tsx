@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -63,18 +64,18 @@ import type {
 const MAX_PRIVATE_KEY_IMPORT_BYTES = 1024 * 1024;
 
 const migrationRecoveryStateLabels: Record<ProfileSecretMigrationRecoverySummary["state"], string> = {
-  "target-write-pending": "目标写入待核对",
-  "targets-verified": "目标已验证",
-  "profiles-committed": "Profile 已提交",
-  "source-cleanup-pending": "源清理待完成",
-  "target-cleanup-pending": "目标回滚待完成",
-  "needs-resolution": "需要人工核对",
+  "target-write-pending": "target-write-pending-verification",
+  "targets-verified": "target-verified",
+  "profiles-committed": "profiles-committed",
+  "source-cleanup-pending": "source-cleanup-pending",
+  "target-cleanup-pending": "target-rollback-pending",
+  "needs-resolution": "manual-verification-required",
 };
 
 const migrationRecoveryDispositionLabels: Record<ProfileSecretMigrationRecoverySummary["disposition"], string> = {
-  "not-committed": "原引用生效",
-  committed: "目标引用生效",
-  conflict: "投影冲突",
+  "not-committed": "original-references-active",
+  committed: "target-references-active",
+  conflict: "projection-conflict",
 };
 
 type HostKeyEditDraft = HostKeyEditDraftState & {
@@ -142,6 +143,7 @@ export default function KeyManagerDialog({
   onPortableVaultStatusChange?: (status: PortableVaultStatus) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const sshSessions = sessions.filter((session) => isSshLikeProfile(session.profile));
   const credentialSessions = sessions.filter((session) => (
     session.profile.connection.kind === "ssh"
@@ -464,19 +466,19 @@ export default function KeyManagerDialog({
     setError("");
     setStatus("");
     if (portableVault?.exists) {
-      setPortableVaultFeedback({ kind: "error", message: "Stronghold 已存在，请使用解锁操作" });
+      setPortableVaultFeedback({ kind: "error", message: t("stronghold-already-exists-use-unlock") });
       return;
     }
     if (!portableVaultPassword) {
-      setPortableVaultFeedback({ kind: "error", message: "请输入新 Stronghold 主密码" });
+      setPortableVaultFeedback({ kind: "error", message: t("enter-a-new-stronghold-master-password") });
       return;
     }
     if (Array.from(portableVaultPassword).length < 8) {
-      setPortableVaultFeedback({ kind: "error", message: "新 Stronghold 主密码至少需要 8 个字符" });
+      setPortableVaultFeedback({ kind: "error", message: t("the-new-stronghold-master-password-must-contain-at-least") });
       return;
     }
     if (portableVaultPassword !== portableVaultCreateConfirmPassword) {
-      setPortableVaultFeedback({ kind: "error", message: "两次输入的 Stronghold 主密码不一致" });
+      setPortableVaultFeedback({ kind: "error", message: t("the-stronghold-master-passwords-do-not-match") });
       return;
     }
     const operationToken = onCredentialOperationStart();
@@ -491,7 +493,7 @@ export default function KeyManagerDialog({
       applyPortableVaultStatus(next);
       setPortableVaultPassword("");
       setPortableVaultCreateConfirmPassword("");
-      setPortableVaultFeedback({ kind: "status", message: "Stronghold 已创建并解锁，可以保存凭据了" });
+      setPortableVaultFeedback({ kind: "status", message: t("stronghold-created-and-unlocked-credentials-can-now-be-saved") });
     } catch (error) {
       if (mountedRef.current) {
         setPortableVaultPassword("");
@@ -507,7 +509,7 @@ export default function KeyManagerDialog({
   async function unlockPortableVault() {
     if (!portableVaultPassword) return;
     if (!portableVault?.exists) {
-      setPortableVaultFeedback({ kind: "error", message: "Stronghold 尚未创建，请使用下方的创建向导" });
+      setPortableVaultFeedback({ kind: "error", message: t("stronghold-has-not-been-created-use-the-setup-below") });
       return;
     }
     const operationToken = onCredentialOperationStart();
@@ -525,7 +527,7 @@ export default function KeyManagerDialog({
       if (!mountedRef.current) return;
       applyPortableVaultStatus(next);
       setPortableVaultPassword("");
-      setPortableVaultFeedback({ kind: "status", message: existed ? "Portable vault 已解锁" : "Portable vault 已创建并解锁" });
+      setPortableVaultFeedback({ kind: "status", message: existed ? t("portable-vault-unlocked") : t("portable-vault-created-and-unlocked") });
     } catch (error) {
       if (mountedRef.current) {
         setPortableVaultPassword("");
@@ -551,7 +553,7 @@ export default function KeyManagerDialog({
       if (!mountedRef.current) return;
       applyPortableVaultStatus(next);
       clearPortableVaultRotation();
-      setPortableVaultFeedback({ kind: "status", message: "Portable vault 已锁定" });
+      setPortableVaultFeedback({ kind: "status", message: t("portable-vault-locked") });
     } catch (error) {
       if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: formatError(error) });
     } finally {
@@ -565,19 +567,19 @@ export default function KeyManagerDialog({
     setError("");
     setStatus("");
     if (!portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword) {
-      setPortableVaultFeedback({ kind: "error", message: "请填写当前密码、新密码和确认密码" });
+      setPortableVaultFeedback({ kind: "error", message: t("enter-the-current-password-new-password-and-confirmation") });
       return;
     }
     if (Array.from(portableVaultNewPassword).length < 8) {
-      setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码至少需要 8 个字符" });
+      setPortableVaultFeedback({ kind: "error", message: t("the-new-portable-vault-master-password-must-contain-at") });
       return;
     }
     if (portableVaultNewPassword !== portableVaultConfirmPassword) {
-      setPortableVaultFeedback({ kind: "error", message: "Portable vault 两次输入的新主密码不一致" });
+      setPortableVaultFeedback({ kind: "error", message: t("the-new-portable-vault-master-passwords-do-not-match") });
       return;
     }
     if (portableVaultCurrentPassword === portableVaultNewPassword) {
-      setPortableVaultFeedback({ kind: "error", message: "Portable vault 新主密码必须与当前密码不同" });
+      setPortableVaultFeedback({ kind: "error", message: t("the-new-portable-vault-master-password-must-differ-from") });
       return;
     }
     const operationToken = onCredentialOperationStart();
@@ -594,7 +596,7 @@ export default function KeyManagerDialog({
       if (!mountedRef.current) return;
       applyPortableVaultStatus(next);
       clearPortableVaultRotation();
-      setPortableVaultFeedback({ kind: "status", message: "Portable vault 主密码已更换" });
+      setPortableVaultFeedback({ kind: "status", message: t("portable-vault-master-password-changed") });
     } catch (error) {
       if (mountedRef.current) {
         clearPortableVaultRotation();
@@ -647,7 +649,7 @@ export default function KeyManagerDialog({
     }
     if (!sameProfileSecretMigrationRequest(request, migrationPreviewState.request)) {
       setMigrationPreviewState(null);
-      setMigrationError("迁移设置已变化，请重新预检");
+      setMigrationError(t("migration-settings-changed-run-preflight-again"));
       return;
     }
     if (!canExecuteProfileSecretMigration(migrationPreviewState.preview, true, false, Boolean(migrationRecovery))) return;
@@ -685,10 +687,10 @@ export default function KeyManagerDialog({
           const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
           if (mountedRef.current) {
             applyPortableVaultStatus(next);
-            setPortableVaultFeedback({ kind: "status", message: `已迁移 ${result.migratedSecretCount} 个 Secret；请重新解锁 Stronghold` });
+            setPortableVaultFeedback({ kind: "status", message: t("migrated-secrets-unlock-stronghold-again", [result.migratedSecretCount]) });
           }
         } catch (lockError) {
-          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: `凭据迁移已提交，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
+          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: t("credential-migration-committed-but-stronghold-auto-lock-failed", [formatError(lockError)]) });
         }
       }
     } catch (error) {
@@ -722,7 +724,7 @@ export default function KeyManagerDialog({
         setMigrationRecoveryWarnings(
           result.warnings.length || !result.resolved
             ? result.warnings
-            : ["恢复记录已核对并清除"],
+            : [t("recovery-record-verified-and-cleared")],
         );
         setMigrationRequiresRestart(false);
         setMigrationPreviewState(null);
@@ -733,10 +735,10 @@ export default function KeyManagerDialog({
           const next = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
           if (mountedRef.current) {
             applyPortableVaultStatus(next);
-            setPortableVaultFeedback({ kind: "status", message: "恢复 checkpoint 待核对；Stronghold 已锁定，请重新解锁" });
+            setPortableVaultFeedback({ kind: "status", message: t("recovery-checkpoint-needs-verification-stronghold-was-locked-unlock-it") });
           }
         } catch (lockError) {
-          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: `恢复记录已保留，但 Stronghold 自动锁定失败: ${formatError(lockError)}` });
+          if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: t("recovery-record-retained-but-stronghold-auto-lock-failed", [formatError(lockError)]) });
         }
       }
     } catch (error) {
@@ -787,7 +789,7 @@ export default function KeyManagerDialog({
       const accepted = onChange(nextStore, mutationToken);
       if (!accepted || !mountedRef.current) return;
       setKnownHostsText("");
-      setStatus("known_hosts 已导入到选中的 Profile scope");
+      setStatus(t("known-hosts-imported-into-the-selected-profile-scope"));
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
     } finally {
@@ -872,7 +874,7 @@ export default function KeyManagerDialog({
       const accepted = onChange(nextStore, mutationToken);
       if (!accepted || !mountedRef.current) return;
       setHostKeyScan(null);
-      setStatus(decision === "replace-for-profile" ? "Profile Host key 已替换" : "扫描到的 Host key 已加入信任 Store");
+      setStatus(decision === "replace-for-profile" ? t("profile-host-key-replaced") : t("scanned-host-key-added-to-the-trust-store"));
     } catch (error) {
       if (mountedRef.current) setHostKeyScanError(formatError(error));
     } finally {
@@ -891,9 +893,9 @@ export default function KeyManagerDialog({
     const writeToken = beginHostKeyWrite();
     if (writeToken === null) return;
     const unsavedWarning = editingKeyId === keyId && hostKeyDraftDirty
-      ? "\n\n当前 Host Key 编辑器还有未保存的更改，也会一并丢弃。"
+      ? t("unsaved-changes-in-the-host-key-editor-will-also")
       : "";
-    if (!window.confirm(`删除 Host Key ${key.alias}:${key.port}（${key.fingerprintSha256}）？${unsavedWarning}`)) {
+    if (!window.confirm(t("delete-host-key", [key.alias, key.port, key.fingerprintSha256, unsavedWarning]))) {
       finishHostKeyWrite(writeToken);
       return;
     }
@@ -908,7 +910,7 @@ export default function KeyManagerDialog({
         setEditingKeyId("");
         setEditDraft(null);
       }
-      setStatus("Host key 已删除");
+      setStatus(t("host-key-deleted"));
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
     } finally {
@@ -923,9 +925,9 @@ export default function KeyManagerDialog({
     const writeToken = beginHostKeyWrite();
     if (writeToken === null) return;
     const unsavedWarning = editingKeyId && pendingKeyIds.includes(editingKeyId) && hostKeyDraftDirty
-      ? "\n\n当前 Host Key 编辑器还有未保存的更改，也会一并丢弃。"
+      ? t("unsaved-changes-in-the-host-key-editor-will-also")
       : "";
-    if (!window.confirm(`删除选中的 ${pendingKeyIds.length} 个 Host Key？${unsavedWarning}`)) {
+    if (!window.confirm(t("delete-selected-host-keys", [pendingKeyIds.length, unsavedWarning]))) {
       finishHostKeyWrite(writeToken);
       return;
     }
@@ -939,7 +941,7 @@ export default function KeyManagerDialog({
       setSelectedHostKeyIds([]);
       setEditingKeyId("");
       setEditDraft(null);
-      setStatus(`已删除 ${pendingKeyIds.length} 个 host key`);
+      setStatus(t("deleted-host-keys", [pendingKeyIds.length]));
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
     } finally {
@@ -961,7 +963,7 @@ export default function KeyManagerDialog({
   }
 
   function startEditKey(key: TrustedHostKey) {
-    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft("切换 Host Key")) return;
+    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft(t("switch-host-key"))) return;
     const baseline: HostKeyEditFields = {
       profileId: key.profileId ?? "",
       alias: key.alias,
@@ -1006,7 +1008,7 @@ export default function KeyManagerDialog({
       if (!accepted || !mountedRef.current) return;
       setEditingKeyId("");
       setEditDraft(null);
-      setStatus("Host key 已更新");
+      setStatus(t("host-key-updated"));
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
     } finally {
@@ -1052,7 +1054,7 @@ export default function KeyManagerDialog({
     setStatus("");
     setPrivateKeyText("");
     if (file.size > MAX_PRIVATE_KEY_IMPORT_BYTES) {
-      setError(`私钥文件不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+      setError(t("private-key-file-must-not-exceed", [formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)]));
       if (privateKeyFileReadGate.current.finish("private-key-file", token)) {
         privateKeyFileReadActive.current = false;
         setPrivateKeyFileReadBusy(false);
@@ -1066,7 +1068,7 @@ export default function KeyManagerDialog({
       if (!privateKeyLabel.trim()) {
         setPrivateKeyLabel(file.name.replace(/\.(pem|key|txt)$/i, "") || "profile key");
       }
-      setStatus(`已读取 ${file.name}`);
+      setStatus(t("read", [file.name]));
     } catch (error) {
       if (privateKeyFileReadGate.current.isCurrent("private-key-file", token)) {
         setError(formatError(error));
@@ -1085,18 +1087,18 @@ export default function KeyManagerDialog({
       || !selectedProfile
       || !isSshLikeProfile(selectedProfile)) return;
     if (!portableVault?.unlocked) {
-      setError("请先解锁 Stronghold，再导入私钥");
+      setError(t("unlock-stronghold-before-importing-a-private-key"));
       return;
     }
     const profile = selectedProfile;
     const privateKey = privateKeyText.trim();
     if (!privateKey) return;
     if (new TextEncoder().encode(privateKeyText).byteLength > MAX_PRIVATE_KEY_IMPORT_BYTES) {
-      setError(`私钥内容不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+      setError(t("private-key-content-must-not-exceed", [formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)]));
       return;
     }
     if (!privateKey.includes("PRIVATE KEY")) {
-      setError("私钥内容看起来不是 OpenSSH/PEM private key");
+      setError(t("the-content-does-not-appear-to-be-an-openssh"));
       return;
     }
     const clientMutationToken = beginClientKeyMutation();
@@ -1140,7 +1142,7 @@ export default function KeyManagerDialog({
             identitiesOnly: true,
           },
         },
-      }, profile, `已导入私钥到 ${profile.name}`, mutationToken, clientMutationToken);
+      }, profile, t("private-key-imported-into", [profile.name]), mutationToken, clientMutationToken);
       if (saveResult.persisted) {
         newSecretRef = null;
         if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
@@ -1191,7 +1193,7 @@ export default function KeyManagerDialog({
       }
     }
     if (!copiedKeys.length) {
-      setStatus("选中的 Profile 已包含这些 host key");
+      setStatus(t("the-selected-profile-already-contains-these-host-keys"));
       return;
     }
     await saveProfileFromManager({
@@ -1200,7 +1202,7 @@ export default function KeyManagerDialog({
         ...selectedProfile.connection,
         trustedHostKeys: [...copiedKeys, ...currentKeys],
       },
-    }, selectedProfile, `已复制 ${copiedKeys.length} 个 host key 到 ${selectedProfile.name}`);
+    }, selectedProfile, t("copied-host-keys-to", [copiedKeys.length, selectedProfile.name]));
   }
 
   async function copyHostKeyToProfile(key: TrustedHostKey) {
@@ -1259,7 +1261,7 @@ export default function KeyManagerDialog({
       copiedProfileKey ||= identity.source !== "agent";
     }
     if (!copied) {
-      setStatus(`${selectedProfile.name} 已包含选中的 client keys`);
+      setStatus(t("already-contains-the-selected-client-keys", [selectedProfile.name]));
       return;
     }
     const saveResult = await saveProfileFromManager({
@@ -1277,7 +1279,7 @@ export default function KeyManagerDialog({
           offerMode: selectedProfile.connection.agentPolicy.offerMode === "disabled" ? "after-profile-keys" : selectedProfile.connection.agentPolicy.offerMode,
         } : selectedProfile.connection.agentPolicy,
       },
-    }, selectedProfile, `已复制 ${copied} 个 client key 到 ${selectedProfile.name}`);
+    }, selectedProfile, t("copied-client-keys-to", [copied, selectedProfile.name]));
     if (saveResult.accepted && mountedRef.current) setSelectedClientKeyIds([]);
   }
 
@@ -1327,7 +1329,7 @@ export default function KeyManagerDialog({
       }
       if (mountedRef.current && !superseded) {
         setSelectedClientKeyIds([]);
-        setStatus(`已在 ${updatedProfiles} 个 Profile 中置顶所选 client keys`);
+        setStatus(t("moved-selected-client-keys-to-the-top-in-profiles", [updatedProfiles]));
       }
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
@@ -1355,10 +1357,10 @@ export default function KeyManagerDialog({
     const removableCount = targets.reduce((count, target) => count + target.removableItems.length, 0);
     const skipped = selectedClientIdentityItems.length - removableCount;
     if (!removableCount) {
-      setStatus("选中的 client key 均由 Jump Host 使用，未执行移除");
+      setStatus(t("all-selected-client-keys-are-used-by-jump-hosts"));
       return;
     }
-    if (!window.confirm(`从各自 Profile 移除 ${removableCount} 个 client identity 引用${skipped ? `（另有 ${skipped} 个被 Jump Host 使用，将跳过）` : ""}？`)) return;
+    if (!window.confirm(t("remove-client-identity-references-from-their-profiles", [removableCount, skipped ? t("skip-jump-identities-confirmation", [skipped]) : ""]))) return;
     const clientMutationToken = beginClientKeyMutation();
     if (clientMutationToken === null) return;
     const mutationTokens = new Map(targets.map(({ profile }) => [
@@ -1390,7 +1392,7 @@ export default function KeyManagerDialog({
       }
       if (mountedRef.current && !superseded) {
         setSelectedClientKeyIds([]);
-        setStatus(`已移除 ${removed} 个 client key 引用${skipped ? `，跳过 ${skipped} 个 Jump Host 使用中的 key` : ""}`);
+        setStatus(t("removed-client-key-references", [removed, skipped ? t("skipped-jump-identities-suffix", [skipped]) : ""]));
       }
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
@@ -1413,7 +1415,7 @@ export default function KeyManagerDialog({
   }
 
   function startEditClientIdentity(item: ClientIdentityItem) {
-    if (clientKeyControlsDisabled || !confirmDiscardClientIdentityDraft("切换 Identity")) return;
+    if (clientKeyControlsDisabled || !confirmDiscardClientIdentityDraft(t("switch-identity"))) return;
     setEditingClientKeyId(item.selectionId);
     clientKeyEditExpectedIdentityRef.current = { ...item.identity };
     setClientKeyEditDraft({
@@ -1455,9 +1457,9 @@ export default function KeyManagerDialog({
     const suffix = response.cleanupWarning
       ? ` · ${response.cleanupWarning}`
       : response.oldSecretDeleted
-        ? " · 旧 secret 已清理"
+        ? t("old-secret-deleted")
         : response.oldSecretShared
-          ? " · 旧 secret 仍被共享，已保留"
+          ? t("shared-old-secret-retained")
           : "";
     setStatus(`${message}${suffix}`);
     return true;
@@ -1488,7 +1490,7 @@ export default function KeyManagerDialog({
         },
       });
       backendSucceeded = true;
-      applyClientIdentityMutation(response, "Client identity 已更新", mutationToken);
+      applyClientIdentityMutation(response, t("client-identity-updated"), mutationToken);
     } catch (error) {
       if (mountedRef.current) setError(formatError(error));
     } finally {
@@ -1500,7 +1502,7 @@ export default function KeyManagerDialog({
   async function rotateClientIdentity() {
     if (!clientKeyEditDraft || !clientKeyPrivateKey.trim() || clientKeyControlsDisabled) return;
     if (!portableVault?.unlocked) {
-      setError("请先解锁 Stronghold，再轮换 Vault 私钥");
+      setError(t("unlock-stronghold-before-rotating-a-vault-private-key"));
       return;
     }
     const clientMutationToken = beginClientKeyMutation();
@@ -1521,7 +1523,7 @@ export default function KeyManagerDialog({
         },
       });
       backendSucceeded = true;
-      if (applyClientIdentityMutation(response, "Vault 私钥已轮换", mutationToken)) {
+      if (applyClientIdentityMutation(response, t("vault-private-key-rotated"), mutationToken)) {
         setClientKeyPrivateKey("");
         setClientKeyPassphrase("");
       }
@@ -1535,9 +1537,9 @@ export default function KeyManagerDialog({
 
   async function deleteEditedClientIdentity(deleteSecret: boolean) {
     if (!clientKeyEditDraft || !editingClientIdentityItem || editingClientIdentityItem.jumpInUse || clientKeyControlsDisabled) return;
-    const action = deleteSecret ? "移除该引用并清理未共享 secret" : "移除该 identity 引用";
+    const action = deleteSecret ? t("remove-this-reference-and-delete-the-unshared-secret") : t("remove-this-identity-reference");
     const unsavedWarning = clientIdentityDraftDirty
-      ? "\n\n当前 Identity 编辑器还有未保存的更改，也会一并丢弃。"
+      ? t("unsaved-changes-in-the-identity-editor-will-also-be")
       : "";
     if (!window.confirm(`${action}“${editingClientIdentityItem.identity.label}”（${editingClientIdentityItem.profileName}）？${unsavedWarning}`)) return;
     const clientMutationToken = beginClientKeyMutation();
@@ -1556,7 +1558,7 @@ export default function KeyManagerDialog({
         },
       });
       backendSucceeded = true;
-      if (applyClientIdentityMutation(response, "Client identity 引用已移除", mutationToken)) {
+      if (applyClientIdentityMutation(response, t("client-identity-reference-removed"), mutationToken)) {
         setEditingClientKeyId("");
         setClientKeyEditDraft(null);
         clientKeyEditExpectedIdentityRef.current = null;
@@ -1579,21 +1581,21 @@ export default function KeyManagerDialog({
   }
 
   function confirmDiscardHostKeyDraft(action: string): boolean {
-    return !hostKeyDraftDirty || window.confirm(`当前 Host Key 编辑器有未保存的更改，${action}将放弃这些内容。是否继续？`);
+    return !hostKeyDraftDirty || window.confirm(t("the-host-key-editor-has-unsaved-changes-will-discard", [action]));
   }
 
   function closeHostKeyEditor() {
-    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft("关闭编辑器")) return;
+    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft(t("close-editor"))) return;
     setEditingKeyId("");
     setEditDraft(null);
   }
 
   function confirmDiscardClientIdentityDraft(action: string): boolean {
-    return !clientIdentityDraftDirty || window.confirm(`当前 Identity 编辑器有未保存的更改，${action}将放弃这些内容。是否继续？`);
+    return !clientIdentityDraftDirty || window.confirm(t("the-identity-editor-has-unsaved-changes-will-discard-them", [action]));
   }
 
   function closeClientIdentityEditor() {
-    if (clientKeyMutationBusy || !confirmDiscardClientIdentityDraft("关闭检查器")) return;
+    if (clientKeyMutationBusy || !confirmDiscardClientIdentityDraft(t("close-inspector"))) return;
     setEditingClientKeyId("");
     setClientKeyEditDraft(null);
     clientKeyEditExpectedIdentityRef.current = null;
@@ -1603,13 +1605,13 @@ export default function KeyManagerDialog({
 
   function closeDialog() {
     const dirtySections = [
-      hostKeyDraftDirty ? "Host Key 草稿" : "",
-      clientIdentityDraftDirty ? "Identity 草稿" : "",
-      knownHostsText ? "known_hosts 导入内容" : "",
-      privateKeyText ? "私钥导入内容" : "",
+      hostKeyDraftDirty ? t("host-key-draft") : "",
+      clientIdentityDraftDirty ? t("identity-draft") : "",
+      knownHostsText ? t("known-hosts-import-content") : "",
+      privateKeyText ? t("private-key-import-content") : "",
     ].filter(Boolean);
     if (dirtySections.length
-      && !window.confirm(`密钥管理器中的${dirtySections.join("、")}尚未保存，关闭窗口将放弃这些内容。是否继续？`)) return;
+      && !window.confirm(t("in-the-key-manager-has-unsaved-changes-closing-will", [dirtySections.join("、")]))) return;
     onClose();
   }
 
@@ -1618,31 +1620,31 @@ export default function KeyManagerDialog({
       <section className="wind-dialog key-dialog">
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong>密钥管理器</strong>
-          <button type="button" title="关闭" aria-label="关闭密钥管理器" onClick={closeDialog}><X size={20} /></button>
+          <strong>{t("key-manager")}</strong>
+          <button type="button" title={t("close")} aria-label={t("close-key-manager")} onClick={closeDialog}><X size={20} /></button>
         </header>
         <div className="key-content">
           <section className="key-list">
             <div className="key-list-toolbar">
               <select value={keyScopeFilter} disabled={hostKeyMutationBusy} onChange={(event) => setKeyScopeFilter(event.target.value as TrustedHostKey["scope"] | "all")}>
-                <option value="all">全部 scope</option>
-                <option value="profile">profile</option>
-                <option value="project">project</option>
-                <option value="user">user</option>
+                <option value="all">{t("all-scopes")}</option>
+                <option value="profile">{t("ui-profile")}</option>
+                <option value="project">{t("ui-project")}</option>
+                <option value="user">{t("ui-user")}</option>
               </select>
               <select value={keyProfileFilter} disabled={hostKeyMutationBusy} onChange={(event) => setKeyProfileFilter(event.target.value)}>
-                <option value="all">全部 profile</option>
+                <option value="all">{t("all-profiles")}</option>
                 {sshSessions.map((session) => (
                   <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
                 ))}
               </select>
-              <button type="button" onClick={selectVisibleHostKeys} disabled={hostKeyMutationBusy || !visibleHostKeys.length}>全选</button>
-              <button type="button" onClick={() => setSelectedHostKeyIds([])} disabled={hostKeyMutationBusy || !selectedHostKeyIds.length}>清除</button>
+              <button type="button" onClick={selectVisibleHostKeys} disabled={hostKeyMutationBusy || !visibleHostKeys.length}>{t("select-all-2")}</button>
+              <button type="button" onClick={() => setSelectedHostKeyIds([])} disabled={hostKeyMutationBusy || !selectedHostKeyIds.length}>{t("clear")}</button>
             </div>
             <div className="key-batch-actions">
-              <span>{selectedHostKeyIds.length} selected</span>
-              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedVisibleHostKeys.length || !selectedProfile}>复制到 Profile</button>
-              <button type="button" onClick={() => void deleteSelectedHostKeys()} disabled={hostKeyMutationBusy || !selectedHostKeyIds.length}>删除</button>
+              <span>{selectedHostKeyIds.length}{" "}{t("ui-selected")}</span>
+              <button type="button" onClick={() => void copySelectedHostKeysToProfile()} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedVisibleHostKeys.length || !selectedProfile}>{t("copy-to-profile")}</button>
+              <button type="button" onClick={() => void deleteSelectedHostKeys()} disabled={hostKeyMutationBusy || !selectedHostKeyIds.length}>{t("delete")}</button>
             </div>
             {visibleHostKeys.map((key) => (
               <div key={key.id} className="key-row">
@@ -1651,19 +1653,19 @@ export default function KeyManagerDialog({
                 </label>
                 <strong>{key.alias}:{key.port}</strong>
                 <span>{key.algorithm} · {key.fingerprintSha256}</span>
-                <small>{key.scope} · {key.label ?? key.host} · 最近验证 {formatHostKeyDate(key.lastSeen)}</small>
+                <small>{key.scope} · {key.label ?? key.host}{t("last-verified")}{formatHostKeyDate(key.lastSeen)}</small>
                 <div className="key-row-actions">
-                  <button onClick={() => startEditKey(key)} disabled={hostKeyMutationBusy}>编辑</button>
-                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedProfile}>复制到 Profile</button>
-                  <button onClick={() => void deleteKey(key.id)} disabled={hostKeyMutationBusy}>删除</button>
+                  <button onClick={() => startEditKey(key)} disabled={hostKeyMutationBusy}>{t("edit")}</button>
+                  <button onClick={() => void copyHostKeyToProfile(key)} disabled={hostKeyMutationBusy || clientKeyControlsDisabled || !selectedProfile}>{t("copy-to-profile")}</button>
+                  <button onClick={() => void deleteKey(key.id)} disabled={hostKeyMutationBusy}>{t("delete")}</button>
                 </div>
               </div>
             ))}
-            {!hostKeys.keys.length ? <div className="empty-pane top">没有保存的 host key</div> : null}
-            {hostKeys.keys.length && !visibleHostKeys.length ? <div className="empty-pane top">当前分组没有 host key</div> : null}
+            {!hostKeys.keys.length ? <div className="empty-pane top">{t("no-saved-host-keys")}</div> : null}
+            {hostKeys.keys.length && !visibleHostKeys.length ? <div className="empty-pane top">{t("no-host-keys-in-this-group")}</div> : null}
           </section>
           <section className="key-editor">
-            <DialogField label="Profile:">
+            <DialogField label={t("ui-profile-2")}>
               <select value={profileId} disabled={hostKeyMutationBusy || clientKeyMutationBusy} onChange={(event) => setProfileId(event.target.value)}>
                 {sshSessions.map((session) => (
                   <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
@@ -1672,9 +1674,9 @@ export default function KeyManagerDialog({
             </DialogField>
             <section className="host-key-scan-panel" aria-live="polite">
               <header>
-                <div><strong>当前 Host Key</strong><small>{selectedProfile ? describeSshProfileTarget(selectedProfile) : "未选择 Profile"}</small></div>
+                <div><strong>{t("current-host-key")}</strong><small>{selectedProfile ? describeSshProfileTarget(selectedProfile) : t("no-profile-selected")}</small></div>
                 <button type="button" onClick={() => void scanSelectedProfileHostKey()} disabled={hostKeyMutationBusy || !selectedProfile || hostKeyScanBusy}>
-                  <RefreshCw size={14} className={hostKeyScanBusy ? "loading" : ""} />{hostKeyScanBusy ? "扫描中" : "扫描"}
+                  <RefreshCw size={14} className={hostKeyScanBusy ? "loading" : ""} />{hostKeyScanBusy ? t("scanning-2") : t("scan")}
                 </button>
               </header>
               {hostKeyScan ? (
@@ -1684,73 +1686,73 @@ export default function KeyManagerDialog({
                     <strong>{hostKeyScanStatus(hostKeyScan)}</strong>
                   </div>
                   <dl>
-                    <div><dt>目标</dt><dd>{hostKeyScan.observation.alias || hostKeyScan.observation.host}:{hostKeyScan.observation.port}</dd></div>
-                    <div><dt>算法</dt><dd>{hostKeyScan.observation.algorithm}</dd></div>
-                    <div><dt>指纹</dt><dd>{hostKeyScanFingerprint(hostKeyScan)}</dd></div>
-                    {hostKeyScan.evaluation.status === "mismatch" ? <div><dt>已保存</dt><dd>{hostKeyScan.evaluation.expected.map((key) => key.fingerprintSha256).join(" · ")}</dd></div> : null}
+                    <div><dt>{t("target")}</dt><dd>{hostKeyScan.observation.alias || hostKeyScan.observation.host}:{hostKeyScan.observation.port}</dd></div>
+                    <div><dt>{t("algorithm")}</dt><dd>{hostKeyScan.observation.algorithm}</dd></div>
+                    <div><dt>{t("fingerprint")}</dt><dd>{hostKeyScanFingerprint(hostKeyScan)}</dd></div>
+                    {hostKeyScan.evaluation.status === "mismatch" ? <div><dt>{t("saved-2")}</dt><dd>{hostKeyScan.evaluation.expected.map((key) => key.fingerprintSha256).join(" · ")}</dd></div> : null}
                   </dl>
                   {hostKeyScan.evaluation.status !== "trusted" ? (
                     <div className="host-key-scan-actions">
-                      <button type="button" onClick={() => void trustHostKeyScan("append-to-profile")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>加入 Profile</button>
-                      <button type="button" onClick={() => void trustHostKeyScan("append-to-project")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>加入 Project</button>
-                      {hostKeyScan.evaluation.status === "mismatch" ? <button type="button" className="danger" onClick={() => void trustHostKeyScan("replace-for-profile")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>替换 Profile</button> : null}
+                      <button type="button" onClick={() => void trustHostKeyScan("append-to-profile")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>{t("add-to-profile")}</button>
+                      <button type="button" onClick={() => void trustHostKeyScan("append-to-project")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>{t("add-to-project")}</button>
+                      {hostKeyScan.evaluation.status === "mismatch" ? <button type="button" className="danger" onClick={() => void trustHostKeyScan("replace-for-profile")} disabled={hostKeyMutationBusy || hostKeyScanBusy}>{t("replace-profile")}</button> : null}
                     </div>
                   ) : null}
                 </div>
               ) : null}
-              {hostKeyScanError ? <div className="host-key-scan-error">{hostKeyScanError}</div> : null}
+              {hostKeyScanError ? <div className="host-key-scan-error">{localizeDiagnostic(hostKeyScanError)}</div> : null}
             </section>
             {editDraft ? (
               <section className="key-edit-panel">
                 <div className="key-edit-heading">
-                  <strong>Host Key</strong>
-                  <button type="button" disabled={hostKeyMutationBusy} onClick={closeHostKeyEditor}>关闭</button>
+                  <strong>{t("ui-host-key")}</strong>
+                  <button type="button" disabled={hostKeyMutationBusy} onClick={closeHostKeyEditor}>{t("close")}</button>
                 </div>
-                <DialogField label="Alias:">
+                <DialogField label={t("ui-alias")}>
                   <input value={editDraft.alias} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, alias: event.target.value })} />
                 </DialogField>
-                <DialogField label="Host:">
+                <DialogField label={t("ui-host")}>
                   <input value={editDraft.host} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, host: event.target.value })} />
                 </DialogField>
-                <DialogField label="Port:">
+                <DialogField label={t("port-3")}>
                   <input type="number" min={1} max={65535} value={editDraft.port} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, port: Number(event.target.value) || 22 })} />
                 </DialogField>
-                <DialogField label="Scope:">
+                <DialogField label={t("ui-scope")}>
                   <select value={editDraft.scope} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, scope: event.target.value as TrustedHostKey["scope"] })}>
-                    <option value="profile">profile</option>
-                    <option value="project">project</option>
-                    <option value="user">user</option>
+                    <option value="profile">{t("ui-profile")}</option>
+                    <option value="project">{t("ui-project")}</option>
+                    <option value="user">{t("ui-user")}</option>
                   </select>
                 </DialogField>
-                <DialogField label="Profile:">
+                <DialogField label={t("ui-profile-2")}>
                   <select value={editDraft.profileId} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, profileId: event.target.value })}>
-                    <option value="">无</option>
+                    <option value="">{t("none")}</option>
                     {sshSessions.map((session) => (
                       <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
                     ))}
                   </select>
                 </DialogField>
-                <DialogField label="Label:">
+                <DialogField label={t("ui-label")}>
                   <input value={editDraft.label} disabled={hostKeyMutationBusy} onChange={(event) => setEditDraft({ ...editDraft, label: event.target.value })} />
                 </DialogField>
                 <div className="key-edit-meta">
                   <span>{editingKey?.algorithm ?? ""}</span>
                   <span>{editingKey?.fingerprintSha256 ?? ""}</span>
-                  <span>首次 {formatHostKeyDate(editingKey?.firstSeen)} · 最近 {formatHostKeyDate(editingKey?.lastSeen)}</span>
+                  <span>{t("first-last", [formatHostKeyDate(editingKey?.firstSeen), formatHostKeyDate(editingKey?.lastSeen)])}</span>
                 </div>
                 <div className="key-actions">
-                  <button type="button" onClick={() => void saveEditedHostKey()} disabled={hostKeyMutationBusy}>保存编辑</button>
+                  <button type="button" onClick={() => void saveEditedHostKey()} disabled={hostKeyMutationBusy}>{t("save-changes")}</button>
                 </div>
               </section>
             ) : null}
-            <DialogField label="known_hosts:">
-              <textarea value={knownHostsText} disabled={hostKeyMutationBusy} onChange={(event) => setKnownHostsText(event.target.value)} placeholder="粘贴 OpenSSH known_hosts 内容" />
+            <DialogField label={t("ui-known-hosts")}>
+              <textarea value={knownHostsText} disabled={hostKeyMutationBusy} onChange={(event) => setKnownHostsText(event.target.value)} placeholder={t("paste-openssh-known-hosts-content")} />
             </DialogField>
-            {error ? <div className="utility-error">{error}</div> : null}
+            {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
             {status ? <div className="utility-status">{status}</div> : null}
             <div className="key-actions">
-              <button onClick={() => void importKnownHostsText()} disabled={hostKeyMutationBusy || !profileId || !knownHostsText.trim()}>导入</button>
-              <button onClick={() => void exportKnownHostsText()} disabled={hostKeyMutationBusy || knownHostsExportBusy}>{knownHostsExportBusy ? "导出中" : "导出"}</button>
+              <button onClick={() => void importKnownHostsText()} disabled={hostKeyMutationBusy || !profileId || !knownHostsText.trim()}>{t("import")}</button>
+              <button onClick={() => void exportKnownHostsText()} disabled={hostKeyMutationBusy || knownHostsExportBusy}>{knownHostsExportBusy ? t("exporting") : t("export")}</button>
             </div>
             {exportText ? (
               <textarea className="key-export" value={exportText} onChange={(event) => setExportText(event.target.value)} />
@@ -1758,165 +1760,165 @@ export default function KeyManagerDialog({
           </section>
           <section className="key-agent-list">
             <div className="key-agent-header">
-              <span><KeyRound size={15} /><strong>Client Keys</strong></span>
-              <small>{clientIdentityItems.length} identities</small>
+              <span><KeyRound size={15} /><strong>{t("ui-client-keys")}</strong></span>
+              <small>{clientIdentityItems.length}{" "}{t("ui-identities")}</small>
             </div>
             <section
               className={`portable-vault-panel${portableVault?.unlocked ? " unlocked" : ""}`}
-              title={portableVault?.path ?? "Portable Stronghold vault"}
+              title={portableVault?.path ?? "Stronghold"}
               aria-labelledby="portable-vault-title"
             >
               <div className="portable-vault-bar" data-vault-state={portableVault?.unlocked ? "unlocked" : portableVault?.exists ? "locked" : "not-created"}>
                 <span className={portableVault?.unlocked ? "unlocked" : ""}>
                   {portableVault?.unlocked ? <Unlock size={14} /> : <Lock size={14} />}
                   <strong id="portable-vault-title">Stronghold</strong>
-                  <small>{portableVault?.unlocked ? "Unlocked" : portableVault?.exists ? "Locked" : portableVault ? "Not created" : "Checking"}</small>
+                  <small>{portableVault?.unlocked ? t("unlocked") : portableVault?.exists ? t("locked") : portableVault ? t("not-created") : t("checking")}</small>
                 </span>
                 {portableVault?.unlocked ? (
-                  <button className="key-icon-button" type="button" title="锁定 portable vault" aria-label="锁定 portable vault" onClick={() => void lockPortableVault()} disabled={vaultOperationBusy}><Lock size={14} /></button>
+                  <button className="key-icon-button" type="button" title={t("lock-portable-vault")} aria-label={t("lock-portable-vault")} onClick={() => void lockPortableVault()} disabled={vaultOperationBusy}><Lock size={14} /></button>
                 ) : portableVault?.exists ? (
                   <div className="portable-vault-unlock-actions">
-                    <input type="password" aria-label="Stronghold 主密码" autoComplete="current-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder="输入主密码以解锁" disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
-                    <button className="key-icon-button" type="button" title="解锁 portable vault" aria-label="解锁 portable vault" onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword}><Unlock size={14} /></button>
+                    <input type="password" aria-label={t("stronghold-master-password")} autoComplete="current-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder={t("enter-the-master-password-to-unlock")} disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
+                    <button className="key-icon-button" type="button" title={t("unlock-portable-vault")} aria-label={t("unlock-portable-vault")} onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword}><Unlock size={14} /></button>
                   </div>
                 ) : null}
               </div>
               {!portableVault ? (
-                <div className="portable-vault-loading" role="status">正在读取 Stronghold 状态...</div>
+                <div className="portable-vault-loading" role="status">{t("reading-stronghold-status")}</div>
               ) : !portableVault.exists ? (
                 <div className="portable-vault-create" aria-live="polite">
                   <div className="portable-vault-create-copy">
-                    <strong>创建 Stronghold 密钥库</strong>
-                    <span>用于安全保存 SSH 密码、私钥口令和 OneKey。主密码只在本机使用，PortMate 不会保存明文。</span>
+                    <strong>{t("create-stronghold-vault")}</strong>
+                    <span>{t("securely-stores-ssh-passwords-private-key-passphrases-and-onekeys")}</span>
                   </div>
                   <label>
-                    <span>新主密码</span>
-                    <input type="password" aria-label="新建 Stronghold 主密码" autoComplete="new-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder="至少 8 个字符" disabled={vaultOperationBusy} />
+                    <span>{t("new-master-password")}</span>
+                    <input type="password" aria-label={t("new-stronghold-master-password")} autoComplete="new-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder={t("at-least-8-characters")} disabled={vaultOperationBusy} />
                   </label>
                   <label>
-                    <span>确认主密码</span>
-                    <input type="password" aria-label="确认 Stronghold 主密码" autoComplete="new-password" value={portableVaultCreateConfirmPassword} onChange={(event) => setPortableVaultCreateConfirmPassword(event.target.value)} placeholder="再次输入主密码" disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void createPortableVault(); }} />
+                    <span>{t("confirm-master-password")}</span>
+                    <input type="password" aria-label={t("confirm-stronghold-master-password")} autoComplete="new-password" value={portableVaultCreateConfirmPassword} onChange={(event) => setPortableVaultCreateConfirmPassword(event.target.value)} placeholder={t("re-enter-the-master-password")} disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void createPortableVault(); }} />
                   </label>
                   <button type="button" className="portable-vault-create-button" onClick={() => void createPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword || !portableVaultCreateConfirmPassword}>
-                    <KeyRound size={14} />{portableVaultBusy ? "创建中" : "创建 Stronghold"}
+                    <KeyRound size={14} />{portableVaultBusy ? t("creating") : t("create-stronghold")}
                   </button>
-                  <small className="portable-vault-create-note">创建后状态会变为 Unlocked，可立即保存凭据。</small>
+                  <small className="portable-vault-create-note">{t("after-creation-the-vault-is-unlocked-and-ready-to")}</small>
                 </div>
               ) : null}
             </section>
             {portableVaultFeedback ? <div className={`portable-vault-feedback ${portableVaultFeedback.kind}`} role={portableVaultFeedback.kind === "error" ? "alert" : "status"} aria-live="polite">{portableVaultFeedback.message}</div> : null}
             {portableVault?.unlocked ? (
               <details className="portable-vault-rotation" onToggle={(event) => { if (!event.currentTarget.open) { clearPortableVaultRotation(); setPortableVaultFeedback(null); } }}>
-                <summary><RefreshCw size={14} /><span>更换主密码</span></summary>
+                <summary><RefreshCw size={14} /><span>{t("change-master-password")}</span></summary>
                 <div className="portable-vault-rotation-fields">
-                  <label><span>当前主密码</span><input type="password" autoComplete="current-password" value={portableVaultCurrentPassword} onChange={(event) => setPortableVaultCurrentPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
-                  <label><span>新主密码</span><input type="password" autoComplete="new-password" value={portableVaultNewPassword} onChange={(event) => setPortableVaultNewPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
-                  <label><span>确认新主密码</span><input type="password" autoComplete="new-password" value={portableVaultConfirmPassword} onChange={(event) => setPortableVaultConfirmPassword(event.target.value)} disabled={credentialMutationControlsDisabled} onKeyDown={(event) => { if (event.key === "Enter") void rotatePortableVaultPassword(); }} /></label>
-                  <button type="button" onClick={() => void rotatePortableVaultPassword()} disabled={credentialMutationControlsDisabled || !portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword}><RefreshCw size={14} />更换主密码</button>
+                  <label><span>{t("current-master-password")}</span><input type="password" autoComplete="current-password" value={portableVaultCurrentPassword} onChange={(event) => setPortableVaultCurrentPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
+                  <label><span>{t("new-master-password")}</span><input type="password" autoComplete="new-password" value={portableVaultNewPassword} onChange={(event) => setPortableVaultNewPassword(event.target.value)} disabled={credentialMutationControlsDisabled} /></label>
+                  <label><span>{t("confirm-new-master-password")}</span><input type="password" autoComplete="new-password" value={portableVaultConfirmPassword} onChange={(event) => setPortableVaultConfirmPassword(event.target.value)} disabled={credentialMutationControlsDisabled} onKeyDown={(event) => { if (event.key === "Enter") void rotatePortableVaultPassword(); }} /></label>
+                  <button type="button" onClick={() => void rotatePortableVaultPassword()} disabled={credentialMutationControlsDisabled || !portableVaultCurrentPassword || !portableVaultNewPassword || !portableVaultConfirmPassword}><RefreshCw size={14} />{t("change-master-password")}</button>
                 </div>
               </details>
             ) : null}
             {migrationRecovery || migrationRecoveryStatusError || migrationRecoveryError || migrationRecoveryWarnings.length ? (
               <section className={`portable-vault-migration-recovery${migrationRecovery?.disposition === "conflict" ? " conflict" : ""}`} aria-live="polite">
                 <header>
-                  <span>{migrationRecovery || migrationRecoveryStatusError ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}<strong>{migrationRecovery ? "待恢复的凭据迁移" : migrationRecoveryStatusError ? "无法核对凭据迁移状态" : "凭据迁移恢复完成"}</strong></span>
-                  {migrationRecovery ? <small>{migrationRecoveryDispositionLabels[migrationRecovery.disposition]}</small> : null}
+                  <span>{migrationRecovery || migrationRecoveryStatusError ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}<strong>{migrationRecovery ? t("credential-migration-awaiting-recovery") : migrationRecoveryStatusError ? t("unable-to-verify-credential-migration-status") : t("credential-migration-recovery-completed")}</strong></span>
+                  {migrationRecovery ? <small>{t(migrationRecoveryDispositionLabels[migrationRecovery.disposition])}</small> : null}
                 </header>
                 {migrationRecovery ? (
                   <>
                     <dl>
-                      <div><dt>阶段</dt><dd>{migrationRecoveryStateLabels[migrationRecovery.state]}</dd></div>
-                      <div><dt>Profile</dt><dd>{migrationRecovery.profileCount}</dd></div>
-                      <div><dt>Secret</dt><dd>{migrationRecovery.secretCount}</dd></div>
+                      <div><dt>{t("stage")}</dt><dd>{t(migrationRecoveryStateLabels[migrationRecovery.state])}</dd></div>
+                      <div><dt>{t("ui-profile")}</dt><dd>{migrationRecovery.profileCount}</dd></div>
+                      <div><dt>{t("ui-secret")}</dt><dd>{migrationRecovery.secretCount}</dd></div>
                     </dl>
                     <p>{migrationRecovery.message}</p>
-                    {migrationRecovery.requiresPortableVaultUnlock ? <p className="portable-vault-migration-recovery-unlock"><Lock size={13} />请先锁定并重新解锁 Stronghold</p> : null}
+                    {migrationRecovery.requiresPortableVaultUnlock ? <p className="portable-vault-migration-recovery-unlock"><Lock size={13} />{t("lock-and-unlock-stronghold-again-first")}</p> : null}
                     {migrationRecovery.disposition === "conflict" || migrationRecovery.state === "needs-resolution"
-                      ? <p className="portable-vault-migration-recovery-manual">自动恢复已停止；请人工核对 Profile 引用与两侧 provider，PortMate 不会自动改写 Profile。</p>
+                      ? <p className="portable-vault-migration-recovery-manual">{t("automatic-recovery-stopped-verify-profile-references-and-both-providers")}</p>
                       : migrationRecoveryStatusError
                         ? null
-                        : <button type="button" onClick={() => void recoverPendingProfileSecretMigration()} disabled={migrationRecoveryChecking || !canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy || migrationRequiresRestart)}><RefreshCw size={14} />{migrationRecoveryBusy ? "核对中" : "核对并恢复"}</button>}
+                        : <button type="button" onClick={() => void recoverPendingProfileSecretMigration()} disabled={migrationRecoveryChecking || !canRecoverProfileSecretMigration(migrationRecovery, portableVault?.unlocked ?? false, vaultOperationBusy || migrationRequiresRestart)}><RefreshCw size={14} />{migrationRecoveryBusy ? t("verifying-2") : t("verify-and-recover")}</button>}
                   </>
                 ) : null}
-                {migrationRecovery || migrationRecoveryStatusError ? <button className="portable-vault-migration-diagnostic-button" type="button" onClick={() => void exportPendingProfileSecretMigrationDiagnostics()} disabled={migrationRecoveryChecking || vaultOperationBusy}><FileText size={14} />{migrationDiagnosticBusy ? "导出中" : "导出诊断"}</button> : null}
-                {migrationDiagnosticResult ? <p className="portable-vault-migration-diagnostic-result" title={migrationDiagnosticResult.path}>诊断已导出：{migrationDiagnosticResult.path} · {formatBytes(migrationDiagnosticResult.size)} · SHA-256 {migrationDiagnosticResult.sha256.slice(0, 16)}...</p> : null}
-                {migrationDiagnosticResult ? <button type="button" onClick={() => void navigator.clipboard?.writeText(`${migrationDiagnosticResult.path}\n${migrationDiagnosticResult.checksumPath}\nSHA-256 ${migrationDiagnosticResult.sha256}`).catch(() => {})}><Copy size={14} />复制导出信息</button> : null}
+                {migrationRecovery || migrationRecoveryStatusError ? <button className="portable-vault-migration-diagnostic-button" type="button" onClick={() => void exportPendingProfileSecretMigrationDiagnostics()} disabled={migrationRecoveryChecking || vaultOperationBusy}><FileText size={14} />{migrationDiagnosticBusy ? t("exporting") : t("export-diagnostics")}</button> : null}
+                {migrationDiagnosticResult ? <p className="portable-vault-migration-diagnostic-result" title={migrationDiagnosticResult.path}>{t("diagnostics-exported-sha-256", [migrationDiagnosticResult.path, formatBytes(migrationDiagnosticResult.size), migrationDiagnosticResult.sha256.slice(0, 16)])}</p> : null}
+                {migrationDiagnosticResult ? <button type="button" onClick={() => void navigator.clipboard?.writeText(`${migrationDiagnosticResult.path}\n${migrationDiagnosticResult.checksumPath}\nSHA-256 ${migrationDiagnosticResult.sha256}`).catch(() => {})}><Copy size={14} />{t("copy-export-details")}</button> : null}
                 {migrationRecoveryWarnings.map((warning) => <p className="portable-vault-migration-recovery-warning" key={warning}>{warning}</p>)}
-                {migrationRecoveryStatusError ? <p className="portable-vault-migration-recovery-error" role="alert">状态读取失败：{migrationRecoveryStatusError}</p> : null}
-                {migrationRecoveryStatusError ? <button type="button" onClick={() => void refreshMigrationRecovery()} disabled={migrationRecoveryChecking || vaultOperationBusy}><RefreshCw size={14} />{migrationRecoveryChecking ? "读取中" : "重新读取"}</button> : null}
-                {migrationRecoveryError ? <p className="portable-vault-migration-recovery-error" role="alert">{migrationRecoveryError}</p> : null}
+                {migrationRecoveryStatusError ? <p className="portable-vault-migration-recovery-error" role="alert">{t("failed-to-read-status", [migrationRecoveryStatusError])}</p> : null}
+                {migrationRecoveryStatusError ? <button type="button" onClick={() => void refreshMigrationRecovery()} disabled={migrationRecoveryChecking || vaultOperationBusy}><RefreshCw size={14} />{migrationRecoveryChecking ? t("loading") : t("reload")}</button> : null}
+                {migrationRecoveryError ? <p className="portable-vault-migration-recovery-error" role="alert">{localizeDiagnostic(migrationRecoveryError)}</p> : null}
               </section>
             ) : null}
             {portableVault?.unlocked || migrationResult || migrationError || migrationRecovery ? (
               <details className="portable-vault-migration">
-                <summary><ArrowRightLeft size={14} /><span>迁移 Profile 凭据</span></summary>
+                <summary><ArrowRightLeft size={14} /><span>{t("migrate-profile-credentials")}</span></summary>
                 {portableVault?.unlocked && !migrationRecovery ? (
                   <>
                     <div className="portable-vault-migration-config">
-                      <div className="portable-vault-migration-direction" role="group" aria-label="凭据迁移方向">
-                        <span>系统密钥库 → Stronghold</span>
+                      <div className="portable-vault-migration-direction" role="group" aria-label={t("credential-migration-direction")}>
+                        <span>{t("system-keyring-stronghold")}</span>
                       </div>
-                      <label><span>Profile 范围</span><select value={migrationScopeProfileId} onChange={(event) => { setMigrationScopeProfileId(event.target.value); invalidateMigrationState(); }} disabled={migrationControlsDisabled}><option value="all">全部凭据 Profile</option>{credentialSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}</select></label>
-                      <label className="portable-vault-migration-cleanup"><input type="checkbox" checked={migrationCleanupSource} onChange={(event) => { setMigrationCleanupSource(event.target.checked); invalidateMigrationState(); }} disabled={migrationControlsDisabled} /><span>清理未共享的源 Secret</span></label>
-                      <button className="portable-vault-migration-preview-button" type="button" onClick={() => void previewProfileSecretMigration()} disabled={migrationControlsDisabled || !credentialSessions.length}><RefreshCw size={14} />{migrationBusy === "preview" ? "预检中" : "预检"}</button>
+                      <label><span>{t("profile-scope")}</span><select value={migrationScopeProfileId} onChange={(event) => { setMigrationScopeProfileId(event.target.value); invalidateMigrationState(); }} disabled={migrationControlsDisabled}><option value="all">{t("all-credential-profiles")}</option>{credentialSessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}</select></label>
+                      <label className="portable-vault-migration-cleanup"><input type="checkbox" checked={migrationCleanupSource} onChange={(event) => { setMigrationCleanupSource(event.target.checked); invalidateMigrationState(); }} disabled={migrationControlsDisabled} /><span>{t("delete-unshared-source-secrets")}</span></label>
+                      <button className="portable-vault-migration-preview-button" type="button" onClick={() => void previewProfileSecretMigration()} disabled={migrationControlsDisabled || !credentialSessions.length}><RefreshCw size={14} />{migrationBusy === "preview" ? t("running-preflight") : t("preflight")}</button>
                     </div>
                     {migrationPreviewState ? (
                       <div className="portable-vault-migration-preview" role="status" aria-live="polite">
                         <dl>
-                          <div><dt>Profile</dt><dd>{migrationPreviewState.preview.affectedProfileCount}/{migrationPreviewState.preview.selectedProfileCount}</dd></div>
-                          <div><dt>引用</dt><dd>{migrationPreviewState.preview.eligibleReferenceCount}</dd></div>
-                          <div><dt>Secret</dt><dd>{migrationPreviewState.preview.eligibleSecretCount}</dd></div>
-                          <div><dt>共享保留</dt><dd>{migrationPreviewState.preview.retainedSharedSecretCount}</dd></div>
+                          <div><dt>{t("ui-profile")}</dt><dd>{migrationPreviewState.preview.affectedProfileCount}/{migrationPreviewState.preview.selectedProfileCount}</dd></div>
+                          <div><dt>{t("references")}</dt><dd>{migrationPreviewState.preview.eligibleReferenceCount}</dd></div>
+                          <div><dt>{t("ui-secret")}</dt><dd>{migrationPreviewState.preview.eligibleSecretCount}</dd></div>
+                          <div><dt>{t("shared-and-retained")}</dt><dd>{migrationPreviewState.preview.retainedSharedSecretCount}</dd></div>
                         </dl>
-                        {migrationPreviewState.preview.alreadyTargetReferenceCount ? <p>{migrationPreviewState.preview.alreadyTargetReferenceCount} 个引用已位于目标存储</p> : null}
-                        {migrationPreviewState.preview.retainedInFlightSecretCount ? <p>{migrationPreviewState.preview.retainedInFlightSecretCount} 个源 Secret 因建连中而保留</p> : null}
-                        {migrationPreviewState.preview.excludedReservedReferenceCount ? <p>{migrationPreviewState.preview.excludedReservedReferenceCount} 个 MCP token 保留引用已排除</p> : null}
-                        <button type="button" onClick={() => void migrateProfileSecrets()} disabled={!canExecuteProfileSecretMigration(migrationPreviewState.preview, portableVault.unlocked, migrationControlsDisabled, Boolean(migrationRecovery))}><ArrowRightLeft size={14} />{migrationBusy === "migrate" ? "迁移中" : migrationPreviewState.preview.eligibleSecretCount ? "确认迁移" : "无需迁移"}</button>
+                        {migrationPreviewState.preview.alreadyTargetReferenceCount ? <p>{t("references-are-already-in-the-target-store", [migrationPreviewState.preview.alreadyTargetReferenceCount])}</p> : null}
+                        {migrationPreviewState.preview.retainedInFlightSecretCount ? <p>{t("source-secrets-retained-for-in-progress-connections", [migrationPreviewState.preview.retainedInFlightSecretCount])}</p> : null}
+                        {migrationPreviewState.preview.excludedReservedReferenceCount ? <p>{t("reserved-mcp-token-references-excluded", [migrationPreviewState.preview.excludedReservedReferenceCount])}</p> : null}
+                        <button type="button" onClick={() => void migrateProfileSecrets()} disabled={!canExecuteProfileSecretMigration(migrationPreviewState.preview, portableVault.unlocked, migrationControlsDisabled, Boolean(migrationRecovery))}><ArrowRightLeft size={14} />{migrationBusy === "migrate" ? t("migrating") : migrationPreviewState.preview.eligibleSecretCount ? t("confirm-migration") : t("no-migration-needed")}</button>
                       </div>
                     ) : null}
                   </>
                 ) : null}
                 {migrationResult && migrationCleanupSummary ? (
                   <div className="portable-vault-migration-result" role="status" aria-live="polite">
-                    <strong>{migrationResult.migratedProfileCount} 个 Profile · {migrationResult.migratedReferenceCount} 个引用 · {migrationResult.migratedSecretCount} 个 Secret</strong>
-                    <span>源清理：{migrationCleanupSummary.deleted} 删除 · {migrationCleanupSummary["retained-shared"]} 共享保留 · {migrationCleanupSummary["retained-in-use"]} 建连保留 · {migrationCleanupSummary["retained-by-request"]} 按设置保留 · {migrationCleanupSummary.failed} 失败</span>
+                    <strong>{t("profiles-references-secrets", [migrationResult.migratedProfileCount, migrationResult.migratedReferenceCount, migrationResult.migratedSecretCount])}</strong>
+                    <span>{t("source-cleanup-deleted-shared-connecting-retained-by-settings-failed", [migrationCleanupSummary.deleted, migrationCleanupSummary["retained-shared"], migrationCleanupSummary["retained-in-use"], migrationCleanupSummary["retained-by-request"], migrationCleanupSummary.failed])}</span>
                     {migrationResult.warnings.map((warning) => <p key={warning}>{warning}</p>)}
                   </div>
                 ) : null}
-                {migrationError ? <div className="portable-vault-migration-error" role="alert">{migrationError}</div> : null}
+                {migrationError ? <div className="portable-vault-migration-error" role="alert">{localizeDiagnostic(migrationError)}</div> : null}
               </details>
             ) : null}
             <div className="client-key-filters">
               <label className="client-key-search">
                 <Search size={14} />
-                <input value={clientKeyQuery} onChange={(event) => setClientKeyQuery(event.target.value)} placeholder="搜索 label、指纹或路径" />
+                <input value={clientKeyQuery} onChange={(event) => setClientKeyQuery(event.target.value)} placeholder={t("search-label-fingerprint-or-path")} />
               </label>
-              <select value={clientKeySourceFilter} onChange={(event) => setClientKeySourceFilter(event.target.value as IdentityRef["source"] | "all")} aria-label="Client key 来源">
-                <option value="all">全部来源</option>
-                <option value="profile-vault">Profile Vault</option>
-                <option value="system-file">System File</option>
-                <option value="agent">SSH Agent</option>
-                <option value="public-key-only">Public Key</option>
+              <select value={clientKeySourceFilter} onChange={(event) => setClientKeySourceFilter(event.target.value as IdentityRef["source"] | "all")} aria-label={t("client-key-source")}>
+                <option value="all">{t("all-sources")}</option>
+                <option value="profile-vault">{t("ui-profile-vault")}</option>
+                <option value="system-file">{t("ui-system-file")}</option>
+                <option value="agent">{t("ssh-agent")}</option>
+                <option value="public-key-only">{t("public-key")}</option>
               </select>
-              <select value={clientKeyProfileFilter} onChange={(event) => setClientKeyProfileFilter(event.target.value)} aria-label="Client key Profile">
-                <option value="all">全部 Profile</option>
+              <select value={clientKeyProfileFilter} onChange={(event) => setClientKeyProfileFilter(event.target.value)} aria-label={t("ui-client-key-profile")}>
+                <option value="all">{t("all-profiles-2")}</option>
                 {sshSessions.map((session) => (
                   <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>
                 ))}
               </select>
-              <select value={clientKeyGroupBy} onChange={(event) => setClientKeyGroupBy(event.target.value as ClientIdentityGroupBy)} aria-label="Client key 分组">
-                <option value="profile">按 Profile 分组</option>
-                <option value="source">按来源分组</option>
+              <select value={clientKeyGroupBy} onChange={(event) => setClientKeyGroupBy(event.target.value as ClientIdentityGroupBy)} aria-label={t("client-key-grouping")}>
+                <option value="profile">{t("group-by-profile")}</option>
+                <option value="source">{t("group-by-source")}</option>
               </select>
             </div>
             <div className="client-key-batch">
-              <span>{selectedClientIdentityItems.length} selected</span>
-              <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={clientKeyControlsDisabled || !visibleClientIdentityItems.length}>全选结果</button>
-              <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={clientKeyControlsDisabled || !selectedClientKeyIds.length}>清除</button>
+              <span>{selectedClientIdentityItems.length}{" "}{t("ui-selected")}</span>
+              <button type="button" onClick={() => setSelectedClientKeyIds((current) => Array.from(new Set([...current, ...visibleClientIdentityItems.map((item) => item.selectionId)])))} disabled={clientKeyControlsDisabled || !visibleClientIdentityItems.length}>{t("select-all-results")}</button>
+              <button type="button" onClick={() => setSelectedClientKeyIds([])} disabled={clientKeyControlsDisabled || !selectedClientKeyIds.length}>{t("clear")}</button>
               <div className="client-key-command-group">
-                <button className="key-icon-button" type="button" title={`复制到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`复制到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
-                <button className="key-icon-button" type="button" title="在各自 Profile 中置顶" aria-label="在各自 Profile 中置顶" onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
-                <button className="key-icon-button danger" type="button" title="从各自 Profile 移除引用" aria-label="从各自 Profile 移除引用" onClick={() => void removeSelectedClientIdentities()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><Trash2 size={15} /></button>
+                <button className="key-icon-button" type="button" title={t("copy-to", [selectedProfile?.name ?? "Profile"])} aria-label={t("copy-to", [selectedProfile?.name ?? "Profile"])} onClick={() => void copyClientIdentitiesToProfile(selectedClientIdentityItems)} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length || !selectedProfile}><Copy size={15} /></button>
+                <button className="key-icon-button" type="button" title={t("move-to-top-in-each-profile")} aria-label={t("move-to-top-in-each-profile")} onClick={() => void moveSelectedClientIdentitiesFirst()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><ArrowUp size={15} /></button>
+                <button className="key-icon-button danger" type="button" title={t("remove-references-from-their-profiles")} aria-label={t("remove-references-from-their-profiles")} onClick={() => void removeSelectedClientIdentities()} disabled={clientKeyControlsDisabled || !selectedClientIdentityItems.length}><Trash2 size={15} /></button>
               </div>
             </div>
             <div className="client-key-groups">
@@ -1928,82 +1930,82 @@ export default function KeyManagerDialog({
                       <input type="checkbox" disabled={clientKeyControlsDisabled} checked={selectedClientKeyIds.includes(item.selectionId)} onChange={(event) => toggleClientIdentitySelection(item.selectionId, event.target.checked)} />
                       <span className="client-key-main">
                         <strong title={item.identity.label}>{item.identity.label}</strong>
-                        <code title={item.identity.fingerprintSha256 ?? item.identity.path ?? item.identity.id}>{item.identity.fingerprintSha256 ?? item.identity.path ?? "No fingerprint"}</code>
+                        <code title={item.identity.fingerprintSha256 ?? item.identity.path ?? item.identity.id}>{item.identity.fingerprintSha256 ?? item.identity.path ?? t("unknown-fingerprint")}</code>
                       </span>
                       <span className="client-key-meta">
                         <span>{identitySourceLabel(item.identity.source)}</span>
                         {clientKeyGroupBy === "source" ? <span>{item.profileName}</span> : null}
-                        {item.jumpInUse ? <span className="client-key-in-use">Jump Host 使用中</span> : null}
+                        {item.jumpInUse ? <span className="client-key-in-use">{t("used-by-jump-host")}</span> : null}
                       </span>
-                      <button className="key-icon-button client-key-edit-button" type="button" title="编辑 client identity" aria-label={`编辑 ${item.identity.label}`} disabled={clientKeyControlsDisabled} onClick={() => startEditClientIdentity(item)}><Pencil size={14} /></button>
+                      <button className="key-icon-button client-key-edit-button" type="button" title={t("edit-client-identity")} aria-label={t("edit-2", [item.identity.label])} disabled={clientKeyControlsDisabled} onClick={() => startEditClientIdentity(item)}><Pencil size={14} /></button>
                     </div>
                   ))}
                 </section>
               ))}
-              {!clientIdentityItems.length ? <div className="empty-pane top">Profile 中还没有 client identity</div> : null}
-              {clientIdentityItems.length && !visibleClientIdentityItems.length ? <div className="empty-pane top">当前筛选没有 client identity</div> : null}
+              {!clientIdentityItems.length ? <div className="empty-pane top">{t("this-profile-has-no-client-identities")}</div> : null}
+              {clientIdentityItems.length && !visibleClientIdentityItems.length ? <div className="empty-pane top">{t("no-client-identities-match-the-current-filter")}</div> : null}
             </div>
             {clientKeyEditDraft && editingClientIdentityItem ? (
               <section className="client-key-inspector">
                 <header>
-                  <span><Pencil size={14} /><strong>Identity Inspector</strong></span>
-                  <button className="key-icon-button" type="button" title="关闭检查器" aria-label="关闭 identity 检查器" disabled={clientKeyMutationBusy} onClick={closeClientIdentityEditor}><X size={14} /></button>
+                  <span><Pencil size={14} /><strong>{t("ui-identity-inspector")}</strong></span>
+                  <button className="key-icon-button" type="button" title={t("close-inspector")} aria-label={t("close-identity-inspector")} disabled={clientKeyMutationBusy} onClick={closeClientIdentityEditor}><X size={14} /></button>
                 </header>
                 <div className="client-key-inspector-grid">
-                  <label><span>Label</span><input value={clientKeyEditDraft.label} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, label: event.target.value })} /></label>
-                  <label><span>Source</span><select value={clientKeyEditDraft.source} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, source: event.target.value as IdentityRef["source"] })}><option value="profile-vault">Profile Vault</option><option value="system-file">System File</option><option value="agent">SSH Agent</option><option value="public-key-only">Public Key</option></select></label>
-                  <label><span>Fingerprint</span><input value={clientKeyEditDraft.fingerprintSha256} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, fingerprintSha256: event.target.value })} placeholder="SHA256:..." /></label>
-                  <label><span>Path / Agent comment</span><input value={clientKeyEditDraft.path} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, path: event.target.value })} disabled={clientKeyControlsDisabled || clientKeyEditDraft.source === "profile-vault"} /></label>
-                  <label><span>Identity ID</span><input value={clientKeyEditDraft.identityId} readOnly /></label>
-                  <label><span>Profile</span><input value={editingClientIdentityItem.profileName} readOnly /></label>
-                  {clientKeyEditDraft.source === "profile-vault" ? <label><span>Rotation storage</span><input value="Stronghold" readOnly /></label> : null}
-                  {clientKeyEditDraft.source === "profile-vault" ? <label className="client-key-secret-ref"><span>Secret ref</span><input value={clientKeyEditDraft.secretRef} readOnly /></label> : null}
+                  <label><span>{t("ui-label-2")}</span><input value={clientKeyEditDraft.label} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, label: event.target.value })} /></label>
+                  <label><span>{t("ui-source")}</span><select value={clientKeyEditDraft.source} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, source: event.target.value as IdentityRef["source"] })}><option value="profile-vault">{t("ui-profile-vault")}</option><option value="system-file">{t("ui-system-file")}</option><option value="agent">{t("ssh-agent")}</option><option value="public-key-only">{t("public-key")}</option></select></label>
+                  <label><span>{t("fingerprint")}</span><input value={clientKeyEditDraft.fingerprintSha256} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, fingerprintSha256: event.target.value })} placeholder="SHA256:..." /></label>
+                  <label><span>{t("ui-path-agent-comment")}</span><input value={clientKeyEditDraft.path} onChange={(event) => setClientKeyEditDraft({ ...clientKeyEditDraft, path: event.target.value })} disabled={clientKeyControlsDisabled || clientKeyEditDraft.source === "profile-vault"} /></label>
+                  <label><span>{t("ui-identity-id")}</span><input value={clientKeyEditDraft.identityId} readOnly /></label>
+                  <label><span>{t("ui-profile")}</span><input value={editingClientIdentityItem.profileName} readOnly /></label>
+                  {clientKeyEditDraft.source === "profile-vault" ? <label><span>{t("ui-rotation-storage")}</span><input value="Stronghold" readOnly /></label> : null}
+                  {clientKeyEditDraft.source === "profile-vault" ? <label className="client-key-secret-ref"><span>{t("ui-secret-ref")}</span><input value={clientKeyEditDraft.secretRef} readOnly /></label> : null}
                 </div>
                 <div className="client-key-impact">
-                  <span>{editingClientIdentityItem.jumpInUse ? "Jump Host 使用中" : "未被 Jump Host 使用"}</span>
-                  {editingClientSecretUsage > 1 ? <span>{editingClientSecretUsage} 个 identity 共享此 secret</span> : <span>{editingClientSecretUsage ? "Secret 未共享" : "无 secret"}</span>}
+                  <span>{editingClientIdentityItem.jumpInUse ? t("used-by-jump-host") : t("not-used-by-a-jump-host")}</span>
+                  {editingClientSecretUsage > 1 ? <span>{t("identities-share-this-secret", [editingClientSecretUsage])}</span> : <span>{editingClientSecretUsage ? t("secret-is-not-shared") : t("no-secret")}</span>}
                 </div>
                 <div className="client-key-inspector-actions">
-                  <button type="button" onClick={() => void saveClientIdentity()} disabled={clientKeyControlsDisabled}>保存字段</button>
-                  <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(false)} disabled={clientKeyControlsDisabled || editingClientIdentityItem.jumpInUse}>移除引用</button>
-                  {editingClientIdentityItem.identity.secretRef ? <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(true)} disabled={clientKeyControlsDisabled || editingClientIdentityItem.jumpInUse}>移除并清理 Secret</button> : null}
+                  <button type="button" onClick={() => void saveClientIdentity()} disabled={clientKeyControlsDisabled}>{t("save-fields")}</button>
+                  <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(false)} disabled={clientKeyControlsDisabled || editingClientIdentityItem.jumpInUse}>{t("remove-reference")}</button>
+                  {editingClientIdentityItem.identity.secretRef ? <button className="danger" type="button" onClick={() => void deleteEditedClientIdentity(true)} disabled={clientKeyControlsDisabled || editingClientIdentityItem.jumpInUse}>{t("remove-and-delete-secret")}</button> : null}
                 </div>
                 {clientKeyEditDraft.source === "profile-vault" ? (
                   <div className="client-key-rotation">
-                    <textarea value={clientKeyPrivateKey} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyPrivateKey(event.target.value)} placeholder="新的 OpenSSH private key" />
-                    <input type="password" value={clientKeyPassphrase} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyPassphrase(event.target.value)} placeholder="新私钥口令（可选）" />
-                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyControlsDisabled || !portableVault?.unlocked || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />轮换 Vault 私钥</button>
+                    <textarea value={clientKeyPrivateKey} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyPrivateKey(event.target.value)} placeholder={t("new-openssh-private-key")} />
+                    <input type="password" value={clientKeyPassphrase} disabled={clientKeyControlsDisabled} onChange={(event) => setClientKeyPassphrase(event.target.value)} placeholder={t("new-private-key-passphrase-optional")} />
+                    <button type="button" onClick={() => void rotateClientIdentity()} disabled={clientKeyControlsDisabled || !portableVault?.unlocked || !clientKeyPrivateKey.trim()}><RefreshCw size={14} />{t("rotate-vault-private-key")}</button>
                   </div>
                 ) : null}
               </section>
             ) : null}
             <details className="key-import-panel" aria-busy={privateKeyFileReadBusy}>
-              <summary><Plus size={14} />导入私钥到 {selectedProfile?.name ?? "Profile"}</summary>
-              <input value={privateKeyLabel} disabled={privateKeyImportControlsDisabled} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder="Key label" />
+              <summary><Plus size={14} />{t("import-private-key-into")}{selectedProfile?.name ?? "Profile"}</summary>
+              <input value={privateKeyLabel} disabled={privateKeyImportControlsDisabled} onChange={(event) => setPrivateKeyLabel(event.target.value)} placeholder={t("ui-key-label")} />
               <input type="file" accept=".pem,.key,.txt" disabled={clientKeyControlsDisabled} onChange={(event) => {
                 void readPrivateKeyFile(event.currentTarget.files?.[0] ?? null);
                 event.currentTarget.value = "";
               }} />
-              <input value="存储：Stronghold（需先解锁）" aria-label="私钥存储" readOnly />
+              <input value="storage-stronghold-unlock-first" aria-label={t("private-key-storage")} readOnly />
               <textarea value={privateKeyText} maxLength={MAX_PRIVATE_KEY_IMPORT_BYTES} disabled={privateKeyImportControlsDisabled} onChange={(event) => {
                 const value = event.target.value;
                 if (new TextEncoder().encode(value).byteLength > MAX_PRIVATE_KEY_IMPORT_BYTES) {
-                  setError(`私钥内容不能超过 ${formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)}`);
+                  setError(t("private-key-content-must-not-exceed", [formatBytes(MAX_PRIVATE_KEY_IMPORT_BYTES)]));
                   return;
                 }
                 setPrivateKeyText(value);
-              }} placeholder="粘贴 OpenSSH private key" />
-              <button onClick={() => void importPrivateKeyToProfile()} disabled={privateKeyImportControlsDisabled || !portableVault?.unlocked || !selectedProfile || !privateKeyText.trim()}>导入到 Profile</button>
+              }} placeholder={t("paste-openssh-private-key")} />
+              <button onClick={() => void importPrivateKeyToProfile()} disabled={privateKeyImportControlsDisabled || !portableVault?.unlocked || !selectedProfile || !privateKeyText.trim()}>{t("import-into-profile")}</button>
             </details>
             <div className="key-agent-header agent-section-header">
-              <span><strong>Agent Keys</strong><small>{agentKeys.length} visible</small></span>
-              <button onClick={() => void refreshAgentKeys()}>刷新</button>
+              <span><strong>{t("ui-agent-keys")}</strong><small>{agentKeys.length}{" "}{t("ui-visible")}</small></span>
+              <button onClick={() => void refreshAgentKeys()}>{t("refresh")}</button>
             </div>
             <div className="client-key-batch agent-key-batch">
-              <span>{selectedAgentKeys.length} selected</span>
-              <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={clientKeyControlsDisabled || !agentKeys.length}>全选</button>
-              <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={clientKeyControlsDisabled || !selectedAgentKeyIds.length}>清除</button>
-              <button className="key-icon-button" type="button" title={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`批量添加到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={clientKeyControlsDisabled || !selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
+              <span>{selectedAgentKeys.length}{" "}{t("ui-selected")}</span>
+              <button type="button" onClick={() => setSelectedAgentKeyIds(agentKeys.map(identityStableKey))} disabled={clientKeyControlsDisabled || !agentKeys.length}>{t("select-all-2")}</button>
+              <button type="button" onClick={() => setSelectedAgentKeyIds([])} disabled={clientKeyControlsDisabled || !selectedAgentKeyIds.length}>{t("clear")}</button>
+              <button className="key-icon-button" type="button" title={t("batch-add-to", [selectedProfile?.name ?? "Profile"])} aria-label={t("batch-add-to", [selectedProfile?.name ?? "Profile"])} onClick={() => void copyAgentIdentitiesToProfile(selectedAgentKeys)} disabled={clientKeyControlsDisabled || !selectedAgentKeys.length || !selectedProfile}><UserPlus size={15} /></button>
             </div>
             <div className="agent-key-list">
               {agentKeys.map((identity, index) => (
@@ -2011,13 +2013,13 @@ export default function KeyManagerDialog({
                   <input type="checkbox" disabled={clientKeyControlsDisabled} checked={selectedAgentKeyIds.includes(identityStableKey(identity))} onChange={(event) => toggleAgentIdentitySelection(identity, event.target.checked)} />
                   <span className="client-key-main">
                     <strong title={identity.label}>{identity.label}</strong>
-                    <code title={identity.fingerprintSha256 ?? ""}>{identity.fingerprintSha256 ?? "未识别指纹"}</code>
+                    <code title={identity.fingerprintSha256 ?? ""}>{identity.fingerprintSha256 ?? t("unknown-fingerprint")}</code>
                   </span>
                   <span className="client-key-meta"><span>{identity.path ?? "ssh-agent"}</span></span>
-                  <button className="key-icon-button" type="button" title={`添加到 ${selectedProfile?.name ?? "Profile"}`} aria-label={`添加 ${identity.label} 到 ${selectedProfile?.name ?? "Profile"}`} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={clientKeyControlsDisabled || !selectedProfile}><UserPlus size={15} /></button>
+                  <button className="key-icon-button" type="button" title={t("add-to", [selectedProfile?.name ?? "Profile"])} aria-label={t("add-to-2", [identity.label, selectedProfile?.name ?? "Profile"])} onClick={() => void copyAgentIdentityToProfile(identity)} disabled={clientKeyControlsDisabled || !selectedProfile}><UserPlus size={15} /></button>
                 </div>
               ))}
-              {!agentKeys.length ? <div className="empty-pane top">没有可见的 ssh-agent 身份</div> : null}
+              {!agentKeys.length ? <div className="empty-pane top">{t("no-visible-ssh-agent-identities")}</div> : null}
             </div>
           </section>
         </div>
@@ -2027,6 +2029,7 @@ export default function KeyManagerDialog({
 }
 
 function DialogField({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return (
     <label className="dialog-field">
       <span>{label}</span>
@@ -2049,11 +2052,11 @@ function describeSshProfileTarget(profile: SessionProfile) {
 function hostKeyScanStatus(scan: HostKeyScanResult) {
   switch (scan.evaluation.status) {
     case "trusted":
-      return "与已信任 Host Key 一致";
+      return t("matches-a-trusted-host-key");
     case "unknown":
-      return "尚未信任此 Host Key";
+      return t("this-host-key-is-not-yet-trusted");
     case "mismatch":
-      return "Host Key 与已保存记录不一致";
+      return t("host-key-does-not-match-the-saved-record");
   }
 }
 
@@ -2076,13 +2079,13 @@ function clientIdentitySelectionId(profileId: string, identity: IdentityRef, ind
 function identitySourceLabel(source: IdentityRef["source"]) {
   switch (source) {
     case "profile-vault":
-      return "Profile Vault";
+      return t("ui-profile-vault");
     case "system-file":
-      return "System File";
+      return t("ui-system-file");
     case "agent":
-      return "SSH Agent";
+      return t("ssh-agent");
     case "public-key-only":
-      return "Public Key";
+      return t("public-key");
   }
 }
 

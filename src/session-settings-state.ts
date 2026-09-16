@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SessionProfile } from "./types";
 
 export const protocolTabs = ["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"] as const;
@@ -13,19 +14,19 @@ export type QuickConnectField = "target" | "port" | "baudRate";
 export type QuickConnectIssue = { field: QuickConnectField; message: string };
 
 const sharedSessionTree: readonly SessionTreeNode[] = [
-  { label: "会话" },
-  { label: "终端", children: ["日志"] },
-  { label: "触发器" },
-  { label: "传输" },
+  { label: "session" },
+  { label: "terminal", children: ["logs"] },
+  { label: "triggers" },
+  { label: "transfers" },
 ];
 
 export const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]> = {
   Shell: [...sharedSessionTree, { label: "Shell" }],
-  SSH: [...sharedSessionTree, { label: "SSH", children: ["代理", "验证", "代理人", "密码", "公钥"] }],
-  Tmux: [...sharedSessionTree, { label: "Tmux", children: ["代理", "验证", "代理人", "密码", "公钥"] }],
-  Telnet: [...sharedSessionTree, { label: "Telnet", children: ["代理"] }],
-  Tcp: [...sharedSessionTree, { label: "Tcp", children: ["代理"] }],
-  Serial: [...sharedSessionTree, { label: "串口" }],
+  SSH: [...sharedSessionTree, { label: "SSH", children: ["proxy", "verification", "ssh-agent", "password", "public-key"] }],
+  Tmux: [...sharedSessionTree, { label: "Tmux", children: ["proxy", "verification", "ssh-agent", "password", "public-key"] }],
+  Telnet: [...sharedSessionTree, { label: "Telnet", children: ["proxy"] }],
+  Tcp: [...sharedSessionTree, { label: "Tcp", children: ["proxy"] }],
+  Serial: [...sharedSessionTree, { label: "serial" }],
 };
 
 export function flattenSessionTree(tree: readonly SessionTreeNode[]): string[] {
@@ -40,24 +41,24 @@ export function validateQuickConnectProfile(
 
   if (connection.kind === "ssh" || connection.kind === "tmux") {
     if (!connection.endpoint.host.trim()) {
-      issues.push({ field: "target", message: "请输入主机" });
+      issues.push({ field: "target", message: t("enter-a-host") });
     }
     if (!validNetworkPort(connection.endpoint.port)) {
-      issues.push({ field: "port", message: "端口必须在 1 到 65535 之间" });
+      issues.push({ field: "port", message: t("port-must-be-between-1-and-65535") });
     }
   } else if (connection.kind === "telnet" || connection.kind === "tcp") {
     if (!connection.host.trim()) {
-      issues.push({ field: "target", message: "请输入主机" });
+      issues.push({ field: "target", message: t("enter-a-host") });
     }
     if (!validNetworkPort(connection.port)) {
-      issues.push({ field: "port", message: "端口必须在 1 到 65535 之间" });
+      issues.push({ field: "port", message: t("port-must-be-between-1-and-65535") });
     }
   } else if (connection.kind === "serial") {
     if (!connection.port.trim()) {
-      issues.push({ field: "target", message: "请选择串口" });
+      issues.push({ field: "target", message: t("select-a-serial-port") });
     }
     if (!Number.isInteger(connection.baudRate) || connection.baudRate < 1 || connection.baudRate > 4_294_967_295) {
-      issues.push({ field: "baudRate", message: "波特率必须是有效的正整数" });
+      issues.push({ field: "baudRate", message: t("baud-rate-must-be-a-valid-positive-integer") });
     }
   }
 
@@ -74,11 +75,11 @@ export function normalizeSessionMetadataText(value: unknown, maxCharacters: numb
 
 export function normalizeSessionProfileMetadata(
   value: Pick<SessionProfile, "name" | "group" | "tags">,
-  fallbackName = "未命名会话",
+  fallbackName = t("unnamed-session"),
 ): Pick<SessionProfile, "name" | "group" | "tags"> {
   const name = boundedTrimmedSessionMetadata(value.name, MAX_SESSION_PROFILE_NAME_CHARACTERS)
     || boundedTrimmedSessionMetadata(fallbackName, MAX_SESSION_PROFILE_NAME_CHARACTERS)
-    || "未命名会话";
+    || t("unnamed-session");
   const group = boundedTrimmedSessionMetadata(value.group, MAX_SESSION_PROFILE_GROUP_CHARACTERS);
   const tags: string[] = [];
   const seen = new Set<string>();

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SessionEvent, SessionProfile, SessionSummary } from "./types";
 
 export type SessionSearchMode = "sessions" | "logs";
@@ -53,7 +54,7 @@ export function buildSessionSearchResults(
     .map((event) => {
       const session = sessionsById.get(event.sessionId);
       const commandId = event.annotations.commandId;
-      const commandLabel = commandId ? `[命令 ${commandId.slice(0, 8)}] ` : "";
+      const commandLabel = commandId ? t("command-2", [commandId.slice(0, 8)]) : "";
       return {
         key: `log-${event.sessionId}-${event.id}`,
         sessionId: event.sessionId,

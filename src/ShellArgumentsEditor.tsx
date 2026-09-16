@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import {
@@ -15,6 +16,7 @@ export default function ShellArgumentsEditor({
   args: string[];
   onChange: (args: string[]) => void;
 }) {
+  useLocale();
   const inputs = useRef<Array<HTMLInputElement | null>>([]);
   const pendingFocus = useRef<number | null>(null);
 
@@ -43,7 +45,7 @@ export default function ShellArgumentsEditor({
   }
 
   return (
-    <div className="shell-arguments-editor" role="group" aria-label="Shell 参数列表">
+    <div className="shell-arguments-editor" role="group" aria-label={t("shell-argument-list")}>
       {args.length ? (
         <div className="shell-argument-list">
           {args.map((argument, index) => (
@@ -51,7 +53,7 @@ export default function ShellArgumentsEditor({
               <span className="shell-argument-index" aria-hidden="true">{index + 1}</span>
               <input
                 ref={(node) => { inputs.current[index] = node; }}
-                aria-label={`Shell 参数 ${index + 1}`}
+                aria-label={t("shell-argument", [index + 1])}
                 autoComplete="off"
                 value={argument}
                 onChange={(event) => onChange(updateShellArgument(args, index, event.target.value))}
@@ -59,8 +61,8 @@ export default function ShellArgumentsEditor({
               <button
                 type="button"
                 className="icon-button"
-                title={`上移参数 ${index + 1}`}
-                aria-label={`上移 Shell 参数 ${index + 1}`}
+                title={t("move-argument-up", [index + 1])}
+                aria-label={t("move-shell-argument-up", [index + 1])}
                 disabled={index === 0}
                 onClick={() => moveArgument(index, -1)}
               >
@@ -69,8 +71,8 @@ export default function ShellArgumentsEditor({
               <button
                 type="button"
                 className="icon-button"
-                title={`下移参数 ${index + 1}`}
-                aria-label={`下移 Shell 参数 ${index + 1}`}
+                title={t("move-argument-down", [index + 1])}
+                aria-label={t("move-shell-argument-down", [index + 1])}
                 disabled={index === args.length - 1}
                 onClick={() => moveArgument(index, 1)}
               >
@@ -79,8 +81,8 @@ export default function ShellArgumentsEditor({
               <button
                 type="button"
                 className="icon-button"
-                title={`删除参数 ${index + 1}`}
-                aria-label={`删除 Shell 参数 ${index + 1}`}
+                title={t("delete-parameter", [index + 1])}
+                aria-label={t("delete-shell-argument", [index + 1])}
                 onClick={() => removeArgument(index)}
               >
                 <Trash2 size={14} />
@@ -91,9 +93,7 @@ export default function ShellArgumentsEditor({
       ) : null}
       <div className="shell-argument-toolbar">
         <button type="button" onClick={addArgument} disabled={args.length >= MAX_SHELL_ARGUMENTS}>
-          <Plus size={14} />
-          添加参数
-        </button>
+          <Plus size={14} />{t("add-parameter")}</button>
         <span>{args.length}/{MAX_SHELL_ARGUMENTS}</span>
       </div>
     </div>

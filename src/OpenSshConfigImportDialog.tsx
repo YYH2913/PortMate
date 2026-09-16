@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import SessionConfigImportDialog from "./SessionConfigImportDialog";
 import {
   OPENSSH_CONFIG_IMPORT_MAX_SOURCE_CHARS,
@@ -25,20 +26,21 @@ export default function OpenSshConfigImportDialog({
   operationGate: KeyedRequestGate<"operation">;
   onDraftDirtyChange: (dirty: boolean) => void;
 }) {
+  useLocale();
   return <SessionConfigImportDialog
-    title="导入 OpenSSH 会话"
+    title={t("import-openssh-sessions")}
     sourceLabel="OpenSSH config"
-    sourceAriaLabel="OpenSSH 配置内容"
+    sourceAriaLabel={t("openssh-configuration")}
     sourcePlaceholder="Host name"
-    emptyMessage="没有可导入的字面 Host 条目"
+    emptyMessage={t("no-literal-host-entries-available-to-import")}
     maxSourceChars={OPENSSH_CONFIG_IMPORT_MAX_SOURCE_CHARS}
     parse={parseConfig}
     candidateName={(candidate) => candidate.hostAlias}
     candidateTarget={formatEndpoint}
     candidateDetails={(candidate) => [
-      candidate.identityFiles.length ? `${candidate.identityFiles.length} 个密钥` : "",
-      candidate.jumps.length ? `${candidate.jumps.length} 个跳板` : "",
-      candidate.forwards.length ? `${candidate.forwards.length} 个转发` : "",
+      candidate.identityFiles.length ? t("key-count", [candidate.identityFiles.length]) : "",
+      candidate.jumps.length ? t("jump-count", [candidate.jumps.length]) : "",
+      candidate.forwards.length ? t("forward-count", [candidate.forwards.length]) : "",
     ].filter(Boolean).join(" ")}
     headerAddon={headerAddon}
     operationGate={operationGate}

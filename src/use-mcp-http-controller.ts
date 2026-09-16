@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
@@ -113,7 +114,7 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
     if (!available || loading || runtime === null || gate.isActive("copy")) return;
     if (action !== "stop" && (locked || !settingsValid)) return;
     if (action === "rotate" && (dirty || !savedGrant)) return;
-    if (action === "rotate" && token && !window.confirm("轮换 Token 后，旧的 HTTP 接入配置将失效。确认继续？")) return;
+    if (action === "rotate" && token && !window.confirm(t("rotating-the-token-invalidates-the-old-http-access-configuration"))) return;
     const request = gate.begin("mutation");
     if (request === null) return;
     const current = () => gate.isCurrent("mutation", request);
@@ -128,7 +129,7 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
         if (current()) setRuntime(next);
       } else if (action === "rotate") {
         const access = await invokeBackend<McpHttpTokenResponse>("rotate_mcp_http_token", { expectedSettings: mcpHttpSettingsFromConfig(savedConfig!) });
-        if (current()) { applyAccess(access); setNotice("新 Token 已生成，请重新复制客户端接入配置。"); }
+        if (current()) { applyAccess(access); setNotice(t("new-token-generated-copy-the-client-access-configuration-again")); }
       } else {
         const access = await prepareMcpHttpAccess(invokeBackend,
           { ...settings, allowedOrigins: parseMcpHttpOrigins(originsText) }, dirty,
@@ -137,8 +138,8 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
         applyAccess(access);
         if (action === "start") {
           const next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", { expectedSettings: mcpHttpSettingsFromConfig(access.config) });
-          if (current()) { setRuntime(next); setNotice("服务已启动，可以复制接入 JSON。"); }
-        } else setNotice(identityChanged ? "绑定已更新，旧 Token 已失效。启动时将生成新 Token。" : "配置已保存。");
+          if (current()) { setRuntime(next); setNotice(t("service-started-access-json-is-ready-to-copy")); }
+        } else setNotice(identityChanged ? t("binding-updated-the-old-token-is-invalid-a-new") : t("settings-saved-2"));
       }
     } catch (cause) {
       if (current()) {
@@ -163,12 +164,12 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
     const current = () => gate.isCurrent("copy", request);
     setCopying(true);
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
+      if (!navigator.clipboard?.writeText) throw new Error(t("writing-to-the-system-clipboard-is-unavailable-in-this"));
       const access = await prepareMcpHttpAccess(invokeBackend, mcpHttpSettingsFromConfig(savedConfig), false, false, current);
       if (!access || !current()) return;
-      if (kind === "json" && !access.token) throw new Error("当前 HTTP 授权或 Token 已失效，请刷新接入配置。");
+      if (kind === "json" && !access.token) throw new Error(t("the-http-grant-or-token-is-invalid-refresh-the"));
       const value = kind === "json" ? formatCcSwitchMcpJson(access.config, { serverId, token: access.token ?? undefined, toolTimeoutSeconds: toolTimeout }) : access.config.startCommand;
-      if (!value) throw new Error("接入配置无效，请检查 Server ID 和工具超时。");
+      if (!value) throw new Error(t("invalid-access-configuration-check-server-id-and-tool-timeout"));
       applyAccess(access, true);
       await navigator.clipboard.writeText(value);
       if (!current()) return;
@@ -182,7 +183,7 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   async function refreshAfterGrantChange(invalidated: boolean) {
     if (invalidated) {
       setToken("");
-      setNotice("当前 HTTP 授权已失效。请选择新的授权并保存，旧身份不会自动替换。");
+      setNotice(t("the-http-grant-is-no-longer-valid-select-and"));
       gate.invalidate("status");
       setRuntime(null);
     }

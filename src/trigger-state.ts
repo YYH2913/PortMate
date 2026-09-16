@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TriggerAction } from "./types";
 
 export const MAX_TRIGGERS_PER_PROFILE = 64;
@@ -18,7 +19,7 @@ export function canAddTriggerAction(count: number): boolean {
 export function defaultTriggerAction(type: TriggerAction["type"]): TriggerAction {
   switch (type) {
     case "notification":
-      return { type, message: "触发器命中" };
+      return { type, message: t("trigger-matched") };
     case "highlight":
       return { type, color: "#f4b860" };
     case "send-text":

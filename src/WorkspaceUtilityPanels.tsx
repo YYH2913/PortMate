@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useCallback, useMemo, useState } from "react";
 import type { ComponentType, MouseEvent as ReactMouseEvent, SVGProps } from "react";
 import type { CommandHistoryEntry } from "./command-history-state";
@@ -43,18 +44,19 @@ export function SessionExplorerPanel({
   onSelect: (id: string) => void;
   onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
 }) {
+  useLocale();
   const [query, setQuery] = useUtilityPanelFilter("explorer");
   const visible = useMemo(() => filterWorkspaceSessions(sessions, query), [query, sessions]);
   const groups = useMemo(() => groupSessions(visible, (session) => session.profile.group || "Sessions"), [visible]);
   return (
     <>
-      <PanelFilter label="筛选资源管理器会话" value={query} icons={icons} onChange={setQuery} />
+      <PanelFilter label={t("filter-explorer-sessions")} value={query} icons={icons} onChange={setQuery} />
       <SessionTree
         groups={groups}
         activeId={activeId}
         colors={colors}
         icons={icons}
-        emptyLabel={sessions.length ? "没有匹配的会话" : "没有可用的会话"}
+        emptyLabel={sessions.length ? t("no-matching-sessions") : t("no-sessions-available-2")}
         onSelect={onSelect}
         onOpenContextMenu={onOpenContextMenu}
       />
@@ -75,6 +77,7 @@ export function CommandHistoryList({
   icons: UtilityPanelIcons;
   onPick: (entry: CommandHistoryEntry) => void;
 }) {
+  useLocale();
   const [query, setQuery] = useUtilityPanelFilter("history");
   const [scope, setScope] = useState<"session" | "all">("session");
   const sessionLabels = useMemo(() => new Map(
@@ -89,13 +92,13 @@ export function CommandHistoryList({
     () => filterCommandHistory(scoped, query, sessionLabels),
     [query, scoped, sessionLabels],
   );
-  const activeSessionName = sessionLabels.get(activeId) ?? "当前会话";
+  const activeSessionName = sessionLabels.get(activeId) ?? t("current-session");
   return (
     <>
-      <PanelFilter label="筛选历史命令" value={query} icons={icons} onChange={setQuery} />
-      <div className="history-scope-switch" role="group" aria-label="历史命令范围">
-        <button type="button" className={scope === "session" ? "active" : ""} aria-pressed={scope === "session"} onClick={() => setScope("session")}>当前会话</button>
-        <button type="button" className={scope === "all" ? "active" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>全部</button>
+      <PanelFilter label={t("filter-command-history")} value={query} icons={icons} onChange={setQuery} />
+      <div className="history-scope-switch" role="group" aria-label={t("command-history-scope")}>
+        <button type="button" className={scope === "session" ? "active" : ""} aria-pressed={scope === "session"} onClick={() => setScope("session")}>{t("current-session")}</button>
+        <button type="button" className={scope === "all" ? "active" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>{t("all")}</button>
       </div>
       <div className="right-tools-list">
         {visible.length ? (
@@ -117,10 +120,10 @@ export function CommandHistoryList({
           </div>
         ) : <div className="empty-pane top">{
           scoped.length
-            ? "没有匹配的历史命令"
+            ? t("no-matching-commands-in-history")
             : scope === "session" && activeId
-              ? `${activeSessionName} 尚无历史命令`
-              : "没有可用的历史命令"
+              ? t("no-command-history-for", [activeSessionName])
+              : t("no-command-history-available")
         }</div>}
       </div>
     </>
@@ -151,13 +154,14 @@ function PanelFilter({
   icons: UtilityPanelIcons;
   onChange: (value: string) => void;
 }) {
+  useLocale();
   const { Search, X } = icons;
   return (
     <div className="panel-filter">
       <Search size={13} aria-hidden="true" />
-      <input aria-label={label} value={value} placeholder="筛选" onChange={(event) => onChange(event.target.value)} />
+      <input aria-label={label} value={value} placeholder={t("filter")} onChange={(event) => onChange(event.target.value)} />
       {value ? (
-        <button type="button" title="清除筛选" aria-label={`清除${label}`} onClick={() => onChange("")}>
+        <button type="button" title={t("clear-filter")} aria-label={t("clear-2", [label])} onClick={() => onChange("")}>
           <X size={13} />
         </button>
       ) : null}
@@ -182,6 +186,7 @@ function SessionTree({
   onSelect: (id: string) => void;
   onOpenContextMenu: (event: ReactMouseEvent, id: string) => void;
 }) {
+  useLocale();
   const { Folder } = icons;
   if (!Object.keys(groups).length) return <div className="empty-pane top">{emptyLabel}</div>;
   return (
@@ -236,13 +241,13 @@ function commandHistorySessionLabel(
   entry: CommandHistoryEntry,
   sessionLabels: ReadonlyMap<string, string>,
 ): string {
-  if (!entry.sessionId) return "未关联会话";
-  return sessionLabels.get(entry.sessionId) ?? `已删除会话 · ${entry.sessionId}`;
+  if (!entry.sessionId) return t("no-associated-session");
+  return sessionLabels.get(entry.sessionId) ?? t("deleted-session", [entry.sessionId]);
 }
 
 function formatCommandHistoryTime(value: number): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? t("unknown-time") : date.toLocaleString();
 }
 
 function normalizeFilter(value: string): string {

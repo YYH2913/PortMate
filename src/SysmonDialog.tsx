@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw, X } from "lucide-react";
 import { formatBytes, formatEventClock } from "./display-formatters";
@@ -14,6 +15,7 @@ export default function SysmonDialog({
   session: SessionSummary;
   onClose: () => void;
 }) {
+  useLocale();
   const [tab, setTab] = useState<"processes" | "disks" | "network" | "trends">("processes");
   const [trendMode, setTrendMode] = useState<SysmonTrendMode>("usage");
   const remote = isSshLikeSession(session);
@@ -30,7 +32,7 @@ export default function SysmonDialog({
   const interfaces = snapshot?.networkInterfaces ?? [];
   const loadAverage = snapshot?.loadAverage ?? [0, 0, 0];
   const memoryUsed = snapshot ? Math.max(0, snapshot.memoryTotalBytes - snapshot.memoryAvailableBytes) : 0;
-  const scope = remote ? "远端主机" : "本机";
+  const scope = remote ? t("remote-host") : t("local-host");
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -41,27 +43,27 @@ export default function SysmonDialog({
             <strong>Sysmon</strong>
             <small>{session.profile.name} · {scope}</small>
           </div>
-          <button title="关闭 Sysmon" aria-label="关闭 Sysmon" onClick={onClose}><X size={20} /></button>
+          <button title={t("close-sysmon")} aria-label={t("close-sysmon")} onClick={onClose}><X size={20} /></button>
         </header>
         <div className="sysmon-content">
           <dl className="sysmon-summary">
             <div><dt>CPU</dt><dd>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : "-"}</dd></div>
             <div>
-              <dt>内存</dt>
+              <dt>{t("memory")}</dt>
               <dd>{snapshot ? `${snapshot.memoryPercent.toFixed(1)}%` : "-"}</dd>
               <small>{snapshot?.memoryTotalBytes ? `${formatBytes(memoryUsed)} / ${formatBytes(snapshot.memoryTotalBytes)}` : "-"}</small>
             </div>
-            <div><dt>负载</dt><dd>{snapshot ? loadAverage.map((value) => value.toFixed(2)).join(" · ") : "-"}</dd></div>
-            <div><dt>接收</dt><dd>{snapshot ? `${snapshot.rxKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
-            <div><dt>发送</dt><dd>{snapshot ? `${snapshot.txKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
-            <div><dt>运行时间</dt><dd>{snapshot ? formatSysmonUptime(snapshot.uptimeSeconds) : "-"}</dd></div>
+            <div><dt>{t("load")}</dt><dd>{snapshot ? loadAverage.map((value) => value.toFixed(2)).join(" · ") : "-"}</dd></div>
+            <div><dt>{t("receive")}</dt><dd>{snapshot ? `${snapshot.rxKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>{t("send")}</dt><dd>{snapshot ? `${snapshot.txKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>{t("uptime")}</dt><dd>{snapshot ? formatSysmonUptime(snapshot.uptimeSeconds) : "-"}</dd></div>
           </dl>
 
-          <nav className="sysmon-tabs" aria-label="Sysmon 详情">
-            <button className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>进程 <span>{processes.length}</span></button>
-            <button className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>磁盘 <span>{disks.length}</span></button>
-            <button className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>网络 <span>{interfaces.length}</span></button>
-            <button className={tab === "trends" ? "active" : ""} onClick={() => setTab("trends")}>趋势 <span>{history.length}</span></button>
+          <nav className="sysmon-tabs" aria-label={t("sysmon-details")}>
+            <button className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>{t("processes")}<span>{processes.length}</span></button>
+            <button className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>{t("disks")}<span>{disks.length}</span></button>
+            <button className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>{t("network")}<span>{interfaces.length}</span></button>
+            <button className={tab === "trends" ? "active" : ""} onClick={() => setTab("trends")}>{t("trends")}<span>{history.length}</span></button>
           </nav>
 
           <div className="sysmon-table-wrap">
@@ -70,7 +72,7 @@ export default function SysmonDialog({
             ) : null}
             {tab === "processes" ? (
               <table className="sysmon-table sysmon-process-table">
-                <thead><tr><th>PID</th><th>进程</th><th>CPU</th><th>内存</th><th>RSS</th></tr></thead>
+                <thead><tr><th>PID</th><th>{t("processes")}</th><th>CPU</th><th>{t("memory")}</th><th>RSS</th></tr></thead>
                 <tbody>
                   {processes.map((process) => (
                     <tr key={process.pid}>
@@ -82,7 +84,7 @@ export default function SysmonDialog({
             ) : null}
             {tab === "disks" ? (
               <table className="sysmon-table sysmon-disk-table">
-                <thead><tr><th>挂载点</th><th>文件系统</th><th>使用率</th><th>可用</th><th>总计</th></tr></thead>
+                <thead><tr><th>{t("mount-point")}</th><th>{t("filesystem")}</th><th>{t("usage")}</th><th>{t("available")}</th><th>{t("total")}</th></tr></thead>
                 <tbody>
                   {disks.map((disk) => (
                     <tr key={`${disk.filesystem}-${disk.mountPoint}`}>
@@ -97,7 +99,7 @@ export default function SysmonDialog({
             ) : null}
             {tab === "network" ? (
               <table className="sysmon-table sysmon-network-table">
-                <thead><tr><th>接口</th><th>IP 地址</th><th>接收速率</th><th>发送速率</th><th>已接收</th><th>已发送</th></tr></thead>
+                <thead><tr><th>{t("interface")}</th><th>{t("ip-address")}</th><th>{t("receive-rate")}</th><th>{t("send-rate")}</th><th>{t("received")}</th><th>{t("sent-2")}</th></tr></thead>
                 <tbody>
                   {interfaces.map((item) => (
                     <tr key={item.name}>
@@ -108,19 +110,18 @@ export default function SysmonDialog({
               </table>
             ) : null}
             {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
-              <div className="sysmon-empty">当前采样没有可显示的{tab === "processes" ? "进程" : tab === "disks" ? "磁盘" : "网络接口"}明细</div>
+              <div className="sysmon-empty">{t("the-current-sample-has-no-available")}{tab === "processes" ? t("processes") : tab === "disks" ? t("disks") : t("network-interfaces")}{t("details")}</div>
             ) : null}
-            {!snapshot && canSample && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />正在采样</div> : null}
-            {!snapshot && !canSample && tab !== "trends" ? <div className="sysmon-empty">远端会话未连接</div> : null}
+            {!snapshot && canSample && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />{t("sampling")}</div> : null}
+            {!snapshot && !canSample && tab !== "trends" ? <div className="sysmon-empty">{t("remote-session-disconnected")}</div> : null}
           </div>
-          {error ? <div className="utility-error">{error}</div> : null}
+          {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
         </div>
         <footer className="sysmon-actions">
-          <span>{snapshot ? `采样时间 ${formatDateTime(snapshot.ts)}` : scope}</span>
+          <span>{snapshot ? t("sampled-at", [formatDateTime(snapshot.ts)]) : scope}</span>
           <button type="button" onClick={() => void refreshSysmonLive(session.profile.id)} disabled={busy || !canSample}>
-            <RefreshCw size={14} className={busy ? "sysmon-refresh-icon loading" : "sysmon-refresh-icon"} />刷新
-          </button>
-          <button type="button" onClick={onClose}>关闭</button>
+            <RefreshCw size={14} className={busy ? "sysmon-refresh-icon loading" : "sysmon-refresh-icon"} />{t("refresh")}</button>
+          <button type="button" onClick={onClose}>{t("close")}</button>
         </footer>
       </section>
     </div>
@@ -140,6 +141,7 @@ function SysmonTrendView({
   error: string;
   loading: boolean;
 }) {
+  useLocale();
   const latest = history[history.length - 1];
   const first = history[0];
   const usageMode = mode === "usage";
@@ -147,30 +149,31 @@ function SysmonTrendView({
   return (
     <section className="sysmon-trend-view">
       <header className="sysmon-trend-toolbar">
-        <div className="sysmon-trend-modes" role="group" aria-label="趋势指标">
-          <button type="button" className={usageMode ? "active" : ""} onClick={() => onModeChange("usage")}>利用率</button>
-          <button type="button" className={!usageMode ? "active" : ""} onClick={() => onModeChange("network")}>网络</button>
+        <div className="sysmon-trend-modes" role="group" aria-label={t("trend-metric")}>
+          <button type="button" className={usageMode ? "active" : ""} onClick={() => onModeChange("usage")}>{t("utilization")}</button>
+          <button type="button" className={!usageMode ? "active" : ""} onClick={() => onModeChange("network")}>{t("network")}</button>
         </div>
         <div className="sysmon-trend-legend">
           <span className={usageMode ? "cpu" : "rx"}>{usageMode ? "CPU" : "RX"} <b>{latest ? formatSysmonTrendValue(latest, mode, 0) : "-"}</b></span>
-          <span className={usageMode ? "memory" : "tx"}>{usageMode ? "内存" : "TX"} <b>{latest ? formatSysmonTrendValue(latest, mode, 1) : "-"}</b></span>
+          <span className={usageMode ? "memory" : "tx"}>{usageMode ? t("memory") : "TX"} <b>{latest ? formatSysmonTrendValue(latest, mode, 1) : "-"}</b></span>
         </div>
       </header>
       <div className="sysmon-trend-stage">
         <SysmonTrendCanvas history={history} mode={mode} />
-        {!history.length ? <div className="sysmon-trend-empty">{loading ? "正在加载历史样本" : "暂无历史样本"}</div> : null}
+        {!history.length ? <div className="sysmon-trend-empty">{loading ? t("loading-historical-samples") : t("no-historical-samples")}</div> : null}
       </div>
       <footer className="sysmon-trend-range">
         <span>{first ? formatEventClock(first.ts) : "--:--:--"}</span>
-        <b>{history.length} 个样本</b>
+        <b>{t("samples", [history.length])}</b>
         <span>{latest ? formatEventClock(latest.ts) : "--:--:--"}</span>
       </footer>
-      {error ? <div className="utility-error">{error}</div> : null}
+      {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
     </section>
   );
 }
 
 function SysmonTrendCanvas({ history, mode }: { history: SysmonSnapshot[]; mode: SysmonTrendMode }) {
+  useLocale();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -257,7 +260,7 @@ function SysmonTrendCanvas({ history, mode }: { history: SysmonSnapshot[]; mode:
       ref={canvasRef}
       className="sysmon-trend-canvas"
       role="img"
-      aria-label={`${mode === "usage" ? "CPU 和内存利用率" : "网络接收和发送速率"}趋势，${history.length} 个样本`}
+      aria-label={t("trend-samples", [mode === "usage" ? t("cpu-and-memory-utilization") : t("network-receive-and-send-rates"), history.length])}
     />
   );
 }

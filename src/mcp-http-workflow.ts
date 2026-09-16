@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { McpHttpAccessResponse, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse } from "./types";
 import { mcpHttpSettingsFromConfig } from "./mcp-http-state";
 
@@ -36,16 +37,16 @@ export function assertMcpHttpSettingsUnchanged(expected: McpHttpConfigRequest, a
     settings.trusted, settings.allowRemote, settings.allowedOrigins,
   ];
   if (JSON.stringify(values(expected)) !== JSON.stringify(values(actual))) {
-    throw new Error("HTTP 配置已被其他窗口修改，请刷新并确认绑定身份与网络配置后重试。");
+    throw new Error(t("http-settings-were-changed-by-another-window-refresh-and"));
   }
 }
 
 export function mcpHttpRuntimeLabel(status: McpHttpRuntimeStatus | null): string {
   switch (status?.phase) {
-    case "starting": return "正在启动";
-    case "running": return "运行中";
-    case "failed": return "启动失败";
-    case "stopped": return "未运行";
-    default: return "读取状态";
+    case "starting": return t("starting-2");
+    case "running": return t("running");
+    case "failed": return t("start-failed");
+    case "stopped": return t("not-running");
+    default: return t("reading-status");
   }
 }

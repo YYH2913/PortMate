@@ -1,10 +1,10 @@
 import type { SessionKind, SessionStatus } from "./types";
 
 export const menuGroups = [
-  { label: "会话", items: ["本地终端", "新建会话", "导入会话", "新建工作区窗口", "会话设置", "启动会话", "关闭会话", "复制会话"] },
-  { label: "终端", items: ["查找", "跳转到行", "块选择", "Insert 模式", "Normal 模式", "本地模式", "本地编辑", "同步输入", "自由输入", "导出终端文本", "导出选中文本"] },
-  { label: "工作区", items: ["资源管理器", "文件管理器", "历史命令", "Sysmon 侧栏", "发送", "快捷栏", "状态栏", "还原布局"] },
-  { label: "工具", items: ["传输任务", "端口转发", "Tmux", "Sysmon", "串口分析器", "OneKeys", "快速命令", "自定义脚本", "触发器", "MCP Bridge", "终端设置", "日志管理", "密钥管理器", "关于 PortMate"] },
+  { label: "session", items: ["local-terminal", "new-session", "import-sessions", "new-workspace-window", "session-settings", "start-session", "close-session-2", "duplicate-session"] },
+  { label: "terminal", items: ["find", "go-to-line", "block-selection", "insert-mode", "normal-mode", "local-mode", "local-editing", "synchronized-input", "free-input", "export-terminal-text", "export-selected-text"] },
+  { label: "workspace", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar", "restore-layout"] },
+  { label: "tools", items: ["transfer-tasks", "port-forwarding", "Tmux", "Sysmon", "serial-analyzer", "OneKeys", "quick-commands", "custom-scripts", "triggers", "MCP Bridge", "terminal-settings", "log-manager", "key-manager", "about-portmate"] },
 ] as const;
 
 export type MenuItem = (typeof menuGroups)[number]["items"][number];
@@ -15,13 +15,13 @@ export type MenuSection = {
 };
 
 const toolMenuSections: readonly MenuSection[] = [
-  { label: "连接工具", items: ["传输任务", "端口转发", "Tmux", "Sysmon", "串口分析器"] },
-  { label: "自动化", items: ["OneKeys", "快速命令", "自定义脚本", "触发器", "MCP Bridge"] },
-  { label: "管理", items: ["终端设置", "日志管理", "密钥管理器", "关于 PortMate"] },
+  { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "Tmux", "Sysmon", "serial-analyzer"] },
+  { label: "automation", items: ["OneKeys", "quick-commands", "custom-scripts", "triggers", "MCP Bridge"] },
+  { label: "management", items: ["terminal-settings", "log-manager", "key-manager", "about-portmate"] },
 ];
 
 export function menuSectionsForGroup(label: string, items: readonly MenuItem[]): readonly MenuSection[] {
-  return label === "工具" ? toolMenuSections : [{ label: "", items }];
+  return label === "tools" ? toolMenuSections : [{ label: "", items }];
 }
 
 export type MenuCapabilityContext = {
@@ -33,43 +33,43 @@ export type MenuCapabilityContext = {
 };
 
 const activeSessionItems = new Set<MenuItem>([
-  "会话设置",
-  "导出终端文本",
-  "导出选中文本",
-  "复制会话",
-  "传输任务",
+  "session-settings",
+  "export-terminal-text",
+  "export-selected-text",
+  "duplicate-session",
+  "transfer-tasks",
   "Sysmon",
-  "串口分析器",
-  "触发器",
+  "serial-analyzer",
+  "triggers",
 ]);
 
 const activeViewItems = new Set<MenuItem>([
-  "块选择",
-  "查找",
-  "跳转到行",
-  "Insert 模式",
-  "本地模式",
-  "Normal 模式",
-  "本地编辑",
+  "block-selection",
+  "find",
+  "go-to-line",
+  "insert-mode",
+  "local-mode",
+  "normal-mode",
+  "local-editing",
 ]);
 
-const connectedViewItems = new Set<MenuItem>(["同步输入", "自由输入"]);
+const connectedViewItems = new Set<MenuItem>(["synchronized-input", "free-input"]);
 
 export function menuItemDisabled(item: MenuItem, context: MenuCapabilityContext): boolean {
-  if (context.terminalExportBusy && (item === "导出终端文本" || item === "导出选中文本")) return true;
+  if (context.terminalExportBusy && (item === "export-terminal-text" || item === "export-selected-text")) return true;
   if (activeSessionItems.has(item) && !context.hasActiveSession) return true;
   if (activeViewItems.has(item) && !context.hasActiveView) return true;
   if (connectedViewItems.has(item)) return !context.hasActiveView || context.activeStatus !== "connected";
 
   switch (item) {
-    case "启动会话":
+    case "start-session":
       return !context.hasActiveSession || context.activeStatus === "connecting" || context.activeStatus === "connected" || context.activeStatus === "reconnecting";
-    case "关闭会话":
+    case "close-session-2":
       return !context.hasActiveSession || !["connecting", "connected", "reconnecting"].includes(context.activeStatus ?? "");
-    case "端口转发":
+    case "port-forwarding":
     case "Tmux":
       return !isSshLike(context.activeKind) || context.activeStatus !== "connected";
-    case "串口分析器":
+    case "serial-analyzer":
       return context.activeKind !== "serial";
     default:
       return false;

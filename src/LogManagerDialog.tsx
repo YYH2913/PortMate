@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { Archive, Copy, FileText, Package, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
@@ -26,6 +27,7 @@ export default function LogManagerDialog({
   onClose: () => void;
   onNotice: (message: string) => void;
 }) {
+  useLocale();
   const [shards, setShards] = useState<LogShardInfo[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [preview, setPreview] = useState<LogShardPreview | null>(null);
@@ -123,7 +125,7 @@ export default function LogManagerDialog({
     const bytes = shards.filter((shard) => selectedSet.has(shard.path)).reduce((sum, shard) => sum + shard.size, 0);
     const mutationToken = mutationGate.current.begin("write");
     if (mutationToken === null) return;
-    if (!window.confirm(`删除 ${selected.length} 个日志分片（${formatBytes(bytes)}）?`)) {
+    if (!window.confirm(t("delete-log-segments", [selected.length, formatBytes(bytes)]))) {
       mutationGate.current.finish("write", mutationToken);
       return;
     }
@@ -143,7 +145,7 @@ export default function LogManagerDialog({
       setPreview(null);
       setSearchResult(null);
       setActiveSearchMatch(null);
-      onNotice(`已删除 ${result.deleted} 个分片，释放 ${formatBytes(result.bytesDeleted)}`);
+      onNotice(t("deleted-segments-freed", [result.deleted, formatBytes(result.bytesDeleted)]));
       const next = await invokeBackend<LogShardInfo[]>("list_log_shards", {});
       if (isCurrentMutation(mutationToken) && requestGate.current.isCurrent("shards", token)) setShards(next);
     } catch (error) {
@@ -182,7 +184,7 @@ export default function LogManagerDialog({
       if (!isCurrentMutation(token)) return;
       setBundleResult(result);
       const warning = result.warnings.length ? ` · ${result.warnings.join(" · ")}` : "";
-      onNotice(`会话包已导出：${result.path}${warning}`);
+      onNotice(t("session-bundle-exported", [result.path, warning]));
     } catch (error) {
       if (isCurrentMutation(token)) setError(formatLogError(error));
     } finally {
@@ -203,7 +205,7 @@ export default function LogManagerDialog({
       });
       if (!isCurrentMutation(token)) return;
       setArchiveResult(result);
-      onNotice(`已归档 ${result.shards} 个日志分片：${result.path}`);
+      onNotice(t("archived-log-segments", [result.shards, result.path]));
     } catch (error) {
       if (isCurrentMutation(token)) setError(formatLogError(error));
     } finally {
@@ -256,29 +258,29 @@ export default function LogManagerDialog({
       <section className="wind-dialog log-manager-dialog">
         <header className="dialog-title">
           <FileText size={17} />
-          <strong>日志管理</strong>
+          <strong>{t("log-manager")}</strong>
           <button type="button" onClick={onClose}><X size={20} /></button>
         </header>
         <div className="log-manager-content">
           <div className="log-manager-toolbar">
-            <strong>{shards.length} 个分片 · {formatBytes(totalBytes)}</strong>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选路径" />
-            <select value={format} onChange={(event) => setFormat(event.target.value as LogShardInfo["format"] | "all")} aria-label="日志格式">
-              <option value="all">全部格式</option>
-              <option value="raw">Raw</option>
-              <option value="txt">Text</option>
+            <strong>{t("segments", [shards.length, formatBytes(totalBytes)])}</strong>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filter-paths")} />
+            <select value={format} onChange={(event) => setFormat(event.target.value as LogShardInfo["format"] | "all")} aria-label={t("log-format")}>
+              <option value="all">{t("all-formats")}</option>
+              <option value="raw">{t("ui-raw")}</option>
+              <option value="txt">{t("text")}</option>
               <option value="jsonl">JSONL</option>
             </select>
             <div className="log-manager-toolbar-actions">
-              <button type="button" title="刷新日志分片" aria-label="刷新日志分片" onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
-              <button type="button" title="归档选中分片" aria-label="归档选中分片" onClick={() => void archiveSelected()} disabled={operationBusy || !selected.length}><Archive size={15} /></button>
-              <button className="danger" type="button" title="删除选中分片" aria-label="删除选中分片" onClick={() => void deleteSelected()} disabled={operationBusy || !selected.length}><Trash2 size={15} /></button>
+              <button type="button" title={t("refresh-log-segments")} aria-label={t("refresh-log-segments")} onClick={() => void refreshShards()} disabled={busy}><RefreshCw size={15} /></button>
+              <button type="button" title={t("archive-selected-segments")} aria-label={t("archive-selected-segments")} onClick={() => void archiveSelected()} disabled={operationBusy || !selected.length}><Archive size={15} /></button>
+              <button className="danger" type="button" title={t("delete-selected-segments")} aria-label={t("delete-selected-segments")} onClick={() => void deleteSelected()} disabled={operationBusy || !selected.length}><Trash2 size={15} /></button>
             </div>
           </div>
           <div className="log-manager-selection">
-            <span>{searchResult ? `${searchResult.matches.length} 条命中 · ${searchResult.filesScanned} 文件 · ${formatBytes(searchResult.bytesScanned)}${searchResult.truncated ? " · 已截断" : ""}` : `${filtered.length} 项 · 已选 ${selected.length}`}</span>
-            {!searchResult ? <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>全选结果</button> : null}
-            {!searchResult ? <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>清除</button> : null}
+            <span>{searchResult ? t("matches-files", [searchResult.matches.length, searchResult.filesScanned, formatBytes(searchResult.bytesScanned), searchResult.truncated ? t("truncated-2") : ""]) : t("items-selected", [filtered.length, selected.length])}</span>
+            {!searchResult ? <button type="button" onClick={() => setSelected(selectVisibleLogShards(selected, filtered))} disabled={!filtered.length}>{t("select-all-results")}</button> : null}
+            {!searchResult ? <button type="button" onClick={() => setSelected([])} disabled={!selected.length}>{t("clear")}</button> : null}
           </div>
           <div className="log-content-search">
             <Search size={14} />
@@ -287,20 +289,20 @@ export default function LogManagerDialog({
                 event.preventDefault();
                 void searchShardContent();
               }
-            }} placeholder="搜索 Text / JSONL 内容" />
-            <button type="button" onClick={() => void searchShardContent()} disabled={searchBusy || !contentQuery.trim()}>{searchBusy ? "搜索中" : selected.length ? "搜索选中" : "搜索全部"}</button>
-            <button type="button" onClick={clearContentSearch} disabled={!searchResult}>返回分片</button>
+            }} placeholder={t("search-text-jsonl-content")} />
+            <button type="button" onClick={() => void searchShardContent()} disabled={searchBusy || !contentQuery.trim()}>{searchBusy ? t("searching") : selected.length ? t("search-selected") : t("search-all")}</button>
+            <button type="button" onClick={clearContentSearch} disabled={!searchResult}>{t("back-to-segments")}</button>
           </div>
           <div className="log-bundle-panel">
             {archiveResult ? (
               <div className="log-bundle-result log-archive-result">
                 <code title={archiveResult.path}>{archiveResult.path}</code>
-                <span>{archiveResult.shards} 分片 · 源 {formatBytes(archiveResult.sourceBytes)} · 包 {formatBytes(archiveResult.size)} · SHA-256 {archiveResult.sha256.slice(0, 16)}...</span>
-                <button type="button" title="复制归档信息" aria-label="复制归档信息" onClick={() => void navigator.clipboard?.writeText(`${archiveResult.path}\n${archiveResult.checksumPath}\nSHA-256 ${archiveResult.sha256}`).catch(() => {})}><Copy size={14} /></button>
+                <span>{t("segments-source-bundle-sha-256", [archiveResult.shards, formatBytes(archiveResult.sourceBytes), formatBytes(archiveResult.size), archiveResult.sha256.slice(0, 16)])}</span>
+                <button type="button" title={t("copy-archive-details")} aria-label={t("copy-archive-details")} onClick={() => void navigator.clipboard?.writeText(`${archiveResult.path}\n${archiveResult.checksumPath}\nSHA-256 ${archiveResult.sha256}`).catch(() => {})}><Copy size={14} /></button>
               </div>
             ) : null}
             <div className="log-bundle-controls">
-              <select value={bundleSessionId} onChange={(event) => setBundleSessionId(event.target.value)} aria-label="导出会话">
+              <select value={bundleSessionId} onChange={(event) => setBundleSessionId(event.target.value)} aria-label={t("export-session")}>
                 {sessions.map((session) => <option key={session.profile.id} value={session.profile.id}>{session.profile.name}</option>)}
               </select>
               <label><input type="checkbox" checked={bundleRedacted} onChange={(event) => {
@@ -309,24 +311,24 @@ export default function LogManagerDialog({
                   setBundleRawLogs(false);
                   setBundleAttachments(false);
                 }
-              }} />脱敏</label>
-              <label className={bundleRedacted ? "disabled" : ""}><input type="checkbox" checked={bundleRawLogs} disabled={bundleRedacted} onChange={(event) => setBundleRawLogs(event.target.checked)} />Raw 片段</label>
+              }} />{t("redact")}</label>
+              <label className={bundleRedacted ? "disabled" : ""}><input type="checkbox" checked={bundleRawLogs} disabled={bundleRedacted} onChange={(event) => setBundleRawLogs(event.target.checked)} />{t("raw-segments")}</label>
               <label
                 className={bundleRedacted || !bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits ? "disabled" : ""}
-                title={bundleRedacted ? "附件不会自动脱敏" : bundleAttachmentSelection.withinLimits ? "" : "附件最多 32 项，单项不超过 16 MiB，且合计不超过 32 MiB"}
+                title={bundleRedacted ? t("attachments-are-not-automatically-redacted") : bundleAttachmentSelection.withinLimits ? "" : t("up-to-32-attachments-16-mib-per-attachment-and")}
               ><input
                 type="checkbox"
                 checked={bundleAttachments}
                 disabled={bundleRedacted || !bundleAttachmentSelection.count || !bundleAttachmentSelection.withinLimits}
                 onChange={(event) => setBundleAttachments(event.target.checked)}
-              />附件 {bundleAttachmentSelection.count} · {formatBytes(bundleAttachmentSelection.bytes)}</label>
-              <button type="button" onClick={() => void exportBundle()} disabled={operationBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? "导出中" : "导出会话包"}</button>
+              />{t("attachments")}{bundleAttachmentSelection.count} · {formatBytes(bundleAttachmentSelection.bytes)}</label>
+              <button type="button" onClick={() => void exportBundle()} disabled={operationBusy || !bundleSessionId}><Package size={15} />{bundleBusy ? t("exporting") : t("export-session-bundle")}</button>
             </div>
             {bundleResult ? (
               <div className="log-bundle-result">
                 <code title={bundleResult.path}>{bundleResult.path}</code>
-                <span>{formatBytes(bundleResult.size)} · {bundleResult.files} 文件 · 附件 {bundleResult.attachments} · Raw {bundleResult.rawLogSegments} · {bundleResult.signatureAlgorithm}</span>
-                <button type="button" title="复制会话包信息" aria-label="复制会话包信息" onClick={() => void navigator.clipboard?.writeText(`${bundleResult.path}\n${bundleResult.checksumPath}\n${bundleResult.signaturePath}\nSHA-256 ${bundleResult.sha256}\nEd25519 ${bundleResult.signingPublicKey}`).catch(() => {})}><Copy size={14} /></button>
+                <span>{t("files-attachments-raw", [formatBytes(bundleResult.size), bundleResult.files, bundleResult.attachments, bundleResult.rawLogSegments, bundleResult.signatureAlgorithm])}</span>
+                <button type="button" title={t("copy-session-bundle-details")} aria-label={t("copy-session-bundle-details")} onClick={() => void navigator.clipboard?.writeText(`${bundleResult.path}\n${bundleResult.checksumPath}\n${bundleResult.signaturePath}\nSHA-256 ${bundleResult.sha256}\nEd25519 ${bundleResult.signingPublicKey}`).catch(() => {})}><Copy size={14} /></button>
               </div>
             ) : null}
           </div>
@@ -342,29 +344,29 @@ export default function LogManagerDialog({
                 </button>
               )) : filtered.map((shard) => (
                 <div key={shard.path} className={`log-shard-row ${preview?.path === shard.path ? "active" : ""}`}>
-                  <input type="checkbox" checked={selectedPaths.has(shard.path)} onChange={() => toggleSelected(shard.path)} aria-label={`选择 ${shard.path}`} />
+                  <input type="checkbox" checked={selectedPaths.has(shard.path)} onChange={() => toggleSelected(shard.path)} aria-label={t("select", [shard.path])} />
                   <button type="button" onClick={() => void openPreview(shard.path)} title={shard.path}>
                     <strong>{shard.path}</strong>
                     <span>{shard.format.toUpperCase()} · {formatBytes(shard.size)}{shard.modifiedAt ? ` · ${new Date(shard.modifiedAt).toLocaleString()}` : ""}</span>
                   </button>
                 </div>
               ))}
-              {searchResult && !searchResult.matches.length ? <div className="empty-pane top">没有内容命中</div> : null}
-              {!searchResult && !filtered.length ? <div className="empty-pane top">没有日志分片</div> : null}
+              {searchResult && !searchResult.matches.length ? <div className="empty-pane top">{t("no-content-matches")}</div> : null}
+              {!searchResult && !filtered.length ? <div className="empty-pane top">{t("no-log-segments")}</div> : null}
             </div>
             <div className="log-preview">
               <header>
-                <strong>{activeSearchMatch ? `${activeSearchMatch.path}:${activeSearchMatch.line}` : preview?.path ?? "预览"}</strong>
-                {activeSearchMatch ? <span>{activeSearchMatch.format.toUpperCase()} · offset {activeSearchMatch.byteOffset}</span> : preview ? <span>{preview.encoding.toUpperCase()} · {formatBytes(preview.bytesRead)}{preview.truncated ? " · 尾部" : ""}</span> : null}
+                <strong>{activeSearchMatch ? `${activeSearchMatch.path}:${activeSearchMatch.line}` : preview?.path ?? t("preview")}</strong>
+                {activeSearchMatch ? <span>{activeSearchMatch.format.toUpperCase()}{" "}{t("ui-offset")}{" "}{activeSearchMatch.byteOffset}</span> : preview ? <span>{preview.encoding.toUpperCase()} · {formatBytes(preview.bytesRead)}{preview.truncated ? t("tail") : ""}</span> : null}
               </header>
-              <pre>{activeSearchMatch?.text ?? preview?.content ?? "选择日志分片查看内容"}</pre>
+              <pre>{activeSearchMatch?.text ?? preview?.content ?? t("select-a-log-segment-to-view-its-content")}</pre>
             </div>
           </div>
           {searchResult?.warnings.length ? <div className="utility-status">{searchResult.warnings.join(" · ")}</div> : null}
-          {error ? <div className="utility-error">{error}</div> : null}
+          {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
         </div>
         <footer className="utility-actions">
-          <button type="button" onClick={onClose}>关闭</button>
+          <button type="button" onClick={onClose}>{t("close")}</button>
         </footer>
       </section>
     </div>

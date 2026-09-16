@@ -17,17 +17,17 @@ describe("top menu capabilities", () => {
     for (const item of items) {
       expect(typeof menuItemDisabled(item, ready)).toBe("boolean");
     }
-    expect(menuGroups.map((group) => group.label)).toEqual(["会话", "终端", "工作区", "工具"]);
-    expect(items).not.toContain("会话搜索");
-    expect(items).not.toContain("复制");
-    expect(items).not.toContain("关闭窗格");
+    expect(menuGroups.map((group) => group.label)).toEqual(["session", "terminal", "workspace", "tools"]);
+    expect(items).not.toContain("session-search");
+    expect(items).not.toContain("copy");
+    expect(items).not.toContain("close-pane-3");
   });
 
   it("separates connection, automation, and management tools without duplicating commands", () => {
-    const tools = menuGroups.find((group) => group.label === "工具");
+    const tools = menuGroups.find((group) => group.label === "tools");
     expect(tools).toBeDefined();
-    const sections = menuSectionsForGroup("工具", tools?.items ?? []);
-    expect(sections.map((section) => section.label)).toEqual(["连接工具", "自动化", "管理"]);
+    const sections = menuSectionsForGroup("tools", tools?.items ?? []);
+    expect(sections.map((section) => section.label)).toEqual(["connection-tools", "automation", "management"]);
     expect(sections.flatMap((section) => section.items)).toEqual(tools?.items);
   });
 
@@ -38,30 +38,30 @@ describe("top menu capabilities", () => {
       activeKind: null,
       activeStatus: null,
     });
-    for (const item of ["会话设置", "启动会话", "关闭会话", "查找", "自由输入", "传输任务", "Sysmon", "触发器"] as MenuItem[]) {
+    for (const item of ["session-settings", "start-session", "close-session-2", "find", "free-input", "transfer-tasks", "Sysmon", "triggers"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(true);
     }
-    for (const item of ["新建会话", "导入会话", "新建工作区窗口", "资源管理器", "终端设置", "OneKeys", "自定义脚本", "日志管理", "MCP Bridge", "关于 PortMate"] as MenuItem[]) {
+    for (const item of ["new-session", "import-sessions", "new-workspace-window", "explorer", "terminal-settings", "OneKeys", "custom-scripts", "log-manager", "MCP Bridge", "about-portmate"] as MenuItem[]) {
       expect(menuItemDisabled(item, empty), item).toBe(false);
     }
   });
 
   it("tracks connection and protocol requirements", () => {
-    expect(menuItemDisabled("启动会话", ready)).toBe(true);
-    expect(menuItemDisabled("关闭会话", ready)).toBe(false);
-    expect(menuItemDisabled("端口转发", ready)).toBe(false);
+    expect(menuItemDisabled("start-session", ready)).toBe(true);
+    expect(menuItemDisabled("close-session-2", ready)).toBe(false);
+    expect(menuItemDisabled("port-forwarding", ready)).toBe(false);
     expect(menuItemDisabled("Tmux", context({ activeStatus: "disconnected" }))).toBe(true);
-    expect(menuItemDisabled("同步输入", context({ activeStatus: "reconnecting" }))).toBe(true);
-    expect(menuItemDisabled("启动会话", context({ activeStatus: "error" }))).toBe(false);
-    expect(menuItemDisabled("串口分析器", context({ activeKind: "serial" }))).toBe(false);
-    expect(menuItemDisabled("端口转发", context({ activeKind: "serial" }))).toBe(true);
+    expect(menuItemDisabled("synchronized-input", context({ activeStatus: "reconnecting" }))).toBe(true);
+    expect(menuItemDisabled("start-session", context({ activeStatus: "error" }))).toBe(false);
+    expect(menuItemDisabled("serial-analyzer", context({ activeKind: "serial" }))).toBe(false);
+    expect(menuItemDisabled("port-forwarding", context({ activeKind: "serial" }))).toBe(true);
   });
 
   it("locks terminal exports while the active view is exporting", () => {
     const exporting = context({ terminalExportBusy: true });
-    expect(menuItemDisabled("导出终端文本", exporting)).toBe(true);
-    expect(menuItemDisabled("导出选中文本", exporting)).toBe(true);
-    expect(menuItemDisabled("查找", exporting)).toBe(false);
+    expect(menuItemDisabled("export-terminal-text", exporting)).toBe(true);
+    expect(menuItemDisabled("export-selected-text", exporting)).toBe(true);
+    expect(menuItemDisabled("find", exporting)).toBe(false);
   });
 });
 

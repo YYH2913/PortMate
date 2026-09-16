@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
@@ -72,6 +73,7 @@ import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
 import type { QuickCommand } from "./quick-command-state";
+import LanguageSelector from "./LanguageSelector";
 import { normalizeSerialConnectionSettings } from "./serial-connection-settings";
 import type { SerialAnalyzerRequest } from "./serial-analyzer-route";
 import type { SearchDialogState } from "./SearchDialog";
@@ -167,25 +169,25 @@ const COMMAND_HISTORY_UPDATED_EVENT = "portmate-command-history-updated";
 type StartupHydrationDomain = "transfers" | "audit" | "grants" | "host-keys" | "one-keys" | "serial-ports";
 const workspaceUtilityIcons = { Folder, Search, X };
 const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon: LucideIcon }> = {
-  explorer: { label: "资源管理器", icon: Folder },
-  fileManager: { label: "文件管理器", icon: Files },
-  history: { label: "历史命令", icon: Clock3 },
+  explorer: { label: "explorer", icon: Folder },
+  fileManager: { label: "file-manager", icon: Files },
+  history: { label: "command-history", icon: Clock3 },
   sysmon: { label: "Sysmon", icon: Activity },
-  sender: { label: "发送", icon: SendHorizontal },
+  sender: { label: "send", icon: SendHorizontal },
 };
 const workspaceDockMeta: Record<WorkspaceDockId, { label: string; icon: LucideIcon }> = {
-  left: { label: "左侧", icon: PanelLeft },
-  right: { label: "右侧", icon: PanelRight },
-  bottom: { label: "底部", icon: PanelBottom },
+  left: { label: "left", icon: PanelLeft },
+  right: { label: "right", icon: PanelRight },
+  bottom: { label: "bottom", icon: PanelBottom },
 };
 
 const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
-  资源管理器: "explorer",
-  文件管理器: "fileManager",
-  历史命令: "history",
-  "Sysmon 侧栏": "sysmon",
-  发送: "sender",
-  状态栏: "statusBar",
+  explorer: "explorer",
+  "file-manager": "fileManager",
+  "command-history": "history",
+  "sysmon-sidebar": "sysmon",
+  send: "sender",
+  "status-bar": "statusBar",
 };
 
 function rememberResolvedMcpApproval(resolved: Set<string>, approvalId: string) {
@@ -198,10 +200,10 @@ function rememberResolvedMcpApproval(resolved: Set<string>, approvalId: string) 
 }
 
 const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
-  "Insert 模式": "remote",
-  本地模式: "local",
-  本地编辑: "normal",
-  "Normal 模式": "command",
+  "insert-mode": "remote",
+  "local-mode": "local",
+  "local-editing": "normal",
+  "normal-mode": "command",
 };
 
 type SettingsDialog = "terminal" | "session" | null;
@@ -209,7 +211,7 @@ type SessionSettingsMode = "create" | "edit";
 type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "about" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
 type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
-type NoticeState = { title: string; message: string; link?: string } | null;
+type NoticeState = { title: string; message: string; link?: string; diagnostic?: boolean } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
 type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
@@ -254,18 +256,18 @@ type ContextMenuState = {
   hasSelection: boolean;
 } | null;
 const tabColorChoices = [
-  { label: "深青", value: "#008B8B" },
-  { label: "深粉", value: "#FF1493" },
-  { label: "森林绿", value: "#228B22" },
-  { label: "金菊", value: "#DAA520" },
-  { label: "印度红", value: "#CD5C5C" },
-  { label: "兰紫", value: "#BA55D3" },
-  { label: "板岩蓝", value: "#7B68EE" },
-  { label: "橄榄", value: "#808000" },
-  { label: "红色", value: "#FF0000" },
-  { label: "皇家蓝", value: "#4169E1" },
-  { label: "钢蓝", value: "#4682B4" },
-  { label: "水鸭", value: "#008080" },
+  { label: "dark-cyan", value: "#008B8B" },
+  { label: "deep-pink", value: "#FF1493" },
+  { label: "forest-green", value: "#228B22" },
+  { label: "goldenrod", value: "#DAA520" },
+  { label: "indian-red", value: "#CD5C5C" },
+  { label: "orchid", value: "#BA55D3" },
+  { label: "slate-blue", value: "#7B68EE" },
+  { label: "olive", value: "#808000" },
+  { label: "red", value: "#FF0000" },
+  { label: "royal-blue", value: "#4169E1" },
+  { label: "steel-blue", value: "#4682B4" },
+  { label: "teal", value: "#008080" },
 ];
 
 /**
@@ -280,6 +282,7 @@ function useStableEvent<T extends (...args: never[]) => unknown>(handler: T): T 
 }
 
 export default function App({ workspaceWindowId }: { workspaceWindowId?: string }) {
+  useLocale();
   const workspaceStorageKey = workspaceWindowId ? null : WORKSPACE_STORAGE_KEY;
   const workspacePanelStorageKey = workspaceWindowId ? null : WORKSPACE_PANEL_STORAGE_KEY;
   const ownerWindowId = workspaceWindowId ?? "main";
@@ -380,7 +383,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPromptState] = useState<HostKeyPromptState | null>(null);
   const hostKeyPromptRef = useRef<HostKeyPromptState | null>(hostKeyPrompt);
-  const [sessionSettingsSection, setSessionSettingsSection] = useState("会话");
+  const [sessionSettingsSection, setSessionSettingsSection] = useState("session");
   const [sessionSettingsMode, setSessionSettingsMode] = useState<SessionSettingsMode>("create");
   const [credentialPrompt, setCredentialPrompt] = useState<CredentialPromptState | null>(null);
   const [workspaceRoot, setWorkspaceRootState] = useState<WorkspaceNode | null>(initialWorkspace.root);
@@ -630,8 +633,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     void refresh();
     if (pending) {
       setNotice({
-        title: "会话已删除",
-        message: `已删除 ${pending.profileName}；磁盘日志仍可在日志管理器中查看或清理。`,
+        title: t("session-deleted"),
+        message: t("deleted-disk-logs-remain-available-in-the-log-manager", [pending.profileName]),
       });
     }
   };
@@ -995,7 +998,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           commitScreenLock({
             ...preparing,
             mode: "confirm",
-            message: "浏览器预览未连接桌面凭据库",
+            message: t("browser-preview-is-not-connected-to-the-desktop-credential"),
           });
         }
         return;
@@ -1009,7 +1012,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           commitScreenLock({
             ...preparing,
             mode: "confirm",
-            message: "尚未配置 Portable Vault 主密码",
+            message: t("a-portable-vault-master-password-has-not-been-configured"),
           });
           return;
         }
@@ -1024,7 +1027,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           ...preparing,
           mode: "vault",
           restoreVaultLocked,
-          message: "Portable Vault 已锁定",
+          message: t("portable-vault-is-locked"),
         });
       } catch {
         if (!isCurrent()) return;
@@ -1032,7 +1035,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           ...preparing,
           mode: "error",
           restoreVaultLocked,
-          message: "无法确认 Portable Vault 状态",
+          message: t("unable-to-verify-portable-vault-status"),
         });
       }
     } finally {
@@ -1077,7 +1080,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       }
       if (current.mode !== "vault" || !password) {
-        throw new Error("请输入 Portable Vault 主密码");
+        throw new Error(t("enter-the-portable-vault-master-password"));
       }
       let unlocked: PortableVaultStatus;
       try {
@@ -1086,9 +1089,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         });
         setPortableVaultStatus(unlocked);
       } catch {
-        throw new Error("主密码验证失败");
+        throw new Error(t("master-password-verification-failed"));
       }
-      if (!unlocked.unlocked) throw new Error("Portable Vault 未解锁");
+      if (!unlocked.unlocked) throw new Error(t("portable-vault-is-not-unlocked"));
       if (!gate.isCurrent("unlock", token) || screenLockRef.current?.lockedAt !== current.lockedAt) {
         if (screenLockRef.current) {
           try {
@@ -1105,7 +1108,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           const locked = await invokeBackend<PortableVaultStatus>("lock_portable_vault", {});
           setPortableVaultStatus(locked);
         } catch {
-          throw new Error("凭据锁定状态恢复失败，请重试");
+          throw new Error(t("unable-to-restore-credential-lock-state-please-retry"));
         }
       }
       if (gate.isCurrent("unlock", token) && screenLockRef.current?.lockedAt === current.lockedAt) {
@@ -1690,7 +1693,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         return;
       }
       setNotice({
-        title: effect.kind === "custom-link" ? `触发链接 · ${effect.triggerLabel}` : effect.triggerLabel,
+        title: effect.kind === "custom-link" ? t("trigger-link", [effect.triggerLabel]) : effect.triggerLabel,
         message: effect.value,
         link: effect.kind === "custom-link" ? effect.value : undefined,
       });
@@ -1927,7 +1930,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     syncInputSettings,
   ).length, [activeId, syncInputCandidates, syncInputSettings]);
 
-  function handleMenuAction(item: MenuItem | "会话搜索") {
+  function handleMenuAction(item: MenuItem | "session-search") {
     const renderedActiveId = active?.profile.id ?? "";
     const activeSnapshotStale = renderedActiveId !== activeIdRef.current;
     const currentActive = active?.profile.id === activeIdRef.current
@@ -1935,21 +1938,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       : undefined;
     const terminalKeyMode = terminalKeyModeMenuItems[item];
     const sessionBoundItem = terminalKeyMode || [
-      "查找",
-      "自由输入",
-      "跳转到行",
-      "导出终端文本",
-      "导出选中文本",
-      "启动会话",
-      "关闭会话",
-      "会话设置",
-      "端口转发",
-      "触发器",
+      "find",
+      "free-input",
+      "go-to-line",
+      "export-terminal-text",
+      "export-selected-text",
+      "start-session",
+      "close-session-2",
+      "session-settings",
+      "port-forwarding",
+      "triggers",
       "Sysmon",
-      "串口分析器",
+      "serial-analyzer",
       "Tmux",
-      "传输任务",
-      "复制会话",
+      "transfer-tasks",
+      "duplicate-session",
     ].includes(item);
     if (activeSnapshotStale && sessionBoundItem) return;
     const workspacePanel = workspacePanelMenuItems[item];
@@ -1959,15 +1962,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setWorkspacePanelVisible(workspacePanel, visible);
       return;
     }
-    if (item === "终端设置") {
+    if (item === "terminal-settings") {
       setDialog("terminal");
       return;
     }
-    if (item === "快速命令") {
+    if (item === "quick-commands") {
       setUtilityDialog("quick-commands");
       return;
     }
-    if (item === "自定义脚本") {
+    if (item === "custom-scripts") {
       setUtilityDialog("custom-scripts");
       return;
     }
@@ -1979,25 +1982,25 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setUtilityDialog("mcp");
       return;
     }
-    if (item === "关于 PortMate") {
+    if (item === "about-portmate") {
       setUtilityDialog("about");
       return;
     }
-    if (item === "日志管理") {
+    if (item === "log-manager") {
       setUtilityDialog("logs");
       return;
     }
-    if (item === "查找") {
+    if (item === "find") {
       if (currentActive) requestTerminalSearch();
-      else setNotice({ title: "查找", message: "请先打开一个终端会话。" });
+      else setNotice({ title: t("find"), message: t("open-a-terminal-session-first") });
       return;
     }
-    if (item === "自由输入") {
+    if (item === "free-input") {
       if (currentActive) requestTerminalFreeInput();
-      else setNotice({ title: "自由输入", message: "请先打开一个终端会话。" });
+      else setNotice({ title: t("free-input"), message: t("open-a-terminal-session-first") });
       return;
     }
-    if (item === "快捷栏") {
+    if (item === "quick-bar") {
       if (focusMode) {
         setFocusMode(false);
         setQuickBarVisible(true);
@@ -2006,73 +2009,73 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
       return;
     }
-    if (item === "会话搜索") {
+    if (item === "session-search") {
       setSearchDialog({ mode: "sessions", query: "" });
       setUtilityDialog("search");
       return;
     }
-    if (item === "跳转到行") {
+    if (item === "go-to-line") {
       if (currentActive) requestTerminalGotoLine();
-      else setNotice({ title: "跳转到行", message: "请先打开一个终端会话。" });
+      else setNotice({ title: t("go-to-line"), message: t("open-a-terminal-session-first") });
       return;
     }
-    if (item === "导出终端文本" || item === "导出选中文本") {
-      void exportTerminalText(item === "导出终端文本" ? "buffer" : "selection");
+    if (item === "export-terminal-text" || item === "export-selected-text") {
+      void exportTerminalText(item === "export-terminal-text" ? "buffer" : "selection");
       return;
     }
     if (terminalKeyMode) {
       setActiveWorkspaceViewKeyMode(terminalKeyMode);
       return;
     }
-    if (item === "同步输入") {
+    if (item === "synchronized-input") {
       updateSyncInput(!syncInputRef.current);
       return;
     }
-    if (item === "块选择") {
+    if (item === "block-selection") {
       setBlockSelection((current) => !current);
       return;
     }
-    if (item === "本地终端") {
+    if (item === "local-terminal") {
       void openLocalTerminal();
       return;
     }
-    if (item === "新建会话") {
-      openSessionProfileDialog(createSessionDraft(), null, "会话");
+    if (item === "new-session") {
+      openSessionProfileDialog(createSessionDraft(), null, "session");
       return;
     }
-    if (item === "导入会话") {
+    if (item === "import-sessions") {
       setUtilityDialog("session-import");
       return;
     }
-    if (item === "新建工作区窗口") {
+    if (item === "new-workspace-window") {
       void openNewWorkspaceWindow();
       return;
     }
-    if (item === "启动会话") {
+    if (item === "start-session") {
       if (currentActive) void connectSession(currentActive.profile.id);
       return;
     }
-    if (item === "关闭会话") {
+    if (item === "close-session-2") {
       if (currentActive) void disconnectSession(currentActive.profile.id);
       return;
     }
-    if (item === "会话设置") {
+    if (item === "session-settings") {
       if (!currentActive) return;
-      openSessionProfileDialog(currentActive.profile, currentActive.profile, "会话");
+      openSessionProfileDialog(currentActive.profile, currentActive.profile, "session");
       return;
     }
-    if (["端口转发", "触发器", "密钥管理器"].includes(item)) {
-      if (item === "端口转发") {
+    if (["port-forwarding", "triggers", "key-manager"].includes(item)) {
+      if (item === "port-forwarding") {
         if (!currentActive || !isSshLikeProfile(currentActive.profile) || currentActive.runtime.status !== "connected") {
-          setNotice({ title: "端口转发", message: "请选择一个已保存并已连接的 SSH/Tmux 会话后再创建 tunnel。" });
+          setNotice({ title: t("port-forwarding"), message: t("select-a-saved-connected-ssh-tmux-session-before-creating") });
           return;
         }
         setUtilityDialog("tunnel");
         return;
       }
-      if (item === "触发器") {
+      if (item === "triggers") {
         if (!currentActive) return;
-        openSessionProfileDialog(currentActive.profile, currentActive.profile, "触发器");
+        openSessionProfileDialog(currentActive.profile, currentActive.profile, "triggers");
         return;
       }
       setUtilityDialog("keys");
@@ -2080,15 +2083,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "Sysmon") {
       if (!currentActive) {
-        setNotice({ title: "Sysmon", message: "请先选择一个会话。" });
+        setNotice({ title: "Sysmon", message: t("select-a-session-first") });
         return;
       }
       setUtilityDialog("sysmon");
       return;
     }
-    if (item === "串口分析器") {
+    if (item === "serial-analyzer") {
       if (!currentActive || currentActive.profile.connection.kind !== "serial") {
-        setNotice({ title: "串口分析器", message: "请先选择一个串口会话。" });
+        setNotice({ title: t("serial-analyzer"), message: t("select-a-serial-session-first") });
         return;
       }
       void openSerialAnalyzer(currentActive);
@@ -2096,30 +2099,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "Tmux") {
       if (!currentActive || !isSshLikeProfile(currentActive.profile) || currentActive.runtime.status !== "connected") {
-        setNotice({ title: "Tmux", message: "请选择一个已连接的 SSH/Tmux 会话后再管理 tmux。" });
+        setNotice({ title: "Tmux", message: t("select-a-connected-ssh-tmux-session-before-managing-tmux") });
         return;
       }
       setUtilityDialog("tmux");
       return;
     }
-    if (item === "传输任务") {
+    if (item === "transfer-tasks") {
       if (!currentActive) {
-        setNotice({ title: item, message: "请先选择一个会话。" });
+        setNotice({ title: t(item), message: t("select-a-session-first") });
         return;
       }
       setUtilityDialog("transfer");
       return;
     }
-    if (item === "复制会话") {
+    if (item === "duplicate-session") {
       if (currentActive) duplicateSessionFromContext(currentActive.profile.id);
       return;
     }
-    if (item === "还原布局") {
+    if (item === "restore-layout") {
       restoreWorkspaceLayout();
       return;
     }
 
-    setNotice({ title: item, message: "未识别的菜单项。" });
+    setNotice({ title: t(item), message: t("unknown-menu-item") });
   }
 
   function openAppContextMenu(event: ReactMouseEvent, sessionId?: string) {
@@ -2203,7 +2206,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (successMessage) setNotice({ title, message: successMessage(saved) });
     } catch (error) {
       if (gate.isCurrent(profileId, token)) {
-        setNotice({ title: `${title}失败`, message: formatError(error) });
+        setNotice({ diagnostic: true, title: t("failed", [title]), message: formatError(error) });
       }
     } finally {
       finishProfileShortcutOperation(profileId, token);
@@ -2211,15 +2214,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function renameSessionFromContext(sessionId?: string | null) {
-    await mutateSessionProfileFromContext(sessionId, "重命名会话", (profile) => {
-      const nextName = window.prompt("标签名称", profile.name);
+    await mutateSessionProfileFromContext(sessionId, t("rename-session"), (profile) => {
+      const nextName = window.prompt(t("tab-name"), profile.name);
       return nextName?.trim() ? { ...profile, name: nextName.trim() } : null;
     });
   }
 
   async function moveSessionToGroupFromContext(sessionId?: string | null) {
-    await mutateSessionProfileFromContext(sessionId, "移动会话分组", (profile) => {
-      const nextGroup = window.prompt("移动到分组", profile.group || "Sessions");
+    await mutateSessionProfileFromContext(sessionId, t("move-session-group"), (profile) => {
+      const nextGroup = window.prompt(t("move-to-group"), profile.group || "Sessions");
       return nextGroup === null
         ? null
         : { ...profile, group: nextGroup.trim() || "Sessions" };
@@ -2229,10 +2232,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function saveSessionFromContext(sessionId?: string | null, activateWorkspace = true) {
     await mutateSessionProfileFromContext(
       sessionId,
-      "保存会话",
+      t("save-session"),
       prepareSessionProfile,
       activateWorkspace,
-      (saved) => `已保存 ${saved.profile.name}`,
+      (saved) => t("saved", [saved.profile.name]),
     );
   }
 
@@ -2246,7 +2249,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     duplicate.id = createSessionId();
     duplicate.name = `${session.profile.name} copy`;
     duplicate.connection = isolateDuplicatedConnection(duplicate.id, duplicate.connection);
-    openSessionProfileDialog(duplicate, null, "会话");
+    openSessionProfileDialog(duplicate, null, "session");
   }
 
   function openSessionSettingsFromContext(sessionId?: string | null) {
@@ -2254,30 +2257,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     openSessionProfileDialog(
       session?.profile ?? createSessionDraft(),
       session?.profile ?? null,
-      "会话",
+      "session",
     );
   }
 
   async function writeSessionClipboardText(title: string, text: string) {
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写入系统剪贴板。");
+      if (!navigator.clipboard?.writeText) throw new Error(t("writing-to-the-system-clipboard-is-unavailable-in-this"));
       await navigator.clipboard.writeText(text);
     } catch (error) {
-      setNotice({ title: `${title}失败`, message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("failed", [title]), message: formatError(error) });
     }
   }
 
   function copySessionNameFromContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
     if (!session) return;
-    void writeSessionClipboardText("复制会话名称", session.profile.name);
+    void writeSessionClipboardText(t("copy-session-name"), session.profile.name);
   }
 
   function copySessionUrlFromContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
     if (!session) return;
     const url = `portmate://sessions/${encodeURIComponent(session.profile.id)}?kind=${encodeURIComponent(session.profile.kind)}&endpoint=${encodeURIComponent(describeProfileEndpoint(session.profile))}`;
-    void writeSessionClipboardText("复制会话 URL", url);
+    void writeSessionClipboardText(t("copy-session-url"), url);
   }
 
   async function exportTerminalText(
@@ -2287,10 +2290,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ) {
     const current = currentWorkspaceTarget(target);
     const title = destination === "choose"
-      ? "导出终端文本到..."
-      : source === "selection" ? "导出选中文本" : "导出终端文本";
+      ? t("export-terminal-text-to")
+      : source === "selection" ? t("export-selected-text") : t("export-terminal-text");
     if (!current) {
-      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
+      if (!target) setNotice({ title, message: t("open-a-terminal-view-first") });
       return;
     }
     const { session, view: { id: viewId } } = current;
@@ -2309,7 +2312,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId, source });
       if (!gate.isCurrent(viewId, token)) return;
       if (payload.sessionId !== session.profile.id || payload.viewId !== viewId || payload.source !== source) {
-        throw new Error("终端导出响应与目标视图不匹配。");
+        throw new Error(t("terminal-export-response-does-not-match-the-target-view"));
       }
       if (isBackendAvailable()) {
         const result = await invokeBackend<ExportTerminalTextResult>("export_terminal_text", {
@@ -2328,16 +2331,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (!gate.isCurrent(viewId, token)) return;
         setNotice({
           title,
-          message: `${formatBytes(result.size)} · ${payload.lineCount} 行 · SHA-256 ${result.sha256.slice(0, 16)}...\n${result.path}`,
+          message: t("lines-sha-256", [formatBytes(result.size), payload.lineCount, result.sha256.slice(0, 16), result.path]),
         });
       } else {
         const { downloadTerminalText } = await import("./terminal-export-download");
         if (!gate.isCurrent(viewId, token)) return;
         const fileName = downloadTerminalText(payload.text, session.profile.name, source);
-        setNotice({ title, message: `已下载 ${fileName} · ${formatBytes(payload.bytes)} · ${payload.lineCount} 行` });
+        setNotice({ title, message: t("downloaded-lines", [fileName, formatBytes(payload.bytes), payload.lineCount]) });
       }
     } catch (error) {
-      if (gate.isCurrent(viewId, token)) setNotice({ title, message: formatError(error) });
+      if (gate.isCurrent(viewId, token)) setNotice({ diagnostic: true, title, message: formatError(error) });
     } finally {
       finishTerminalExportOperation(viewId, token);
     }
@@ -2350,7 +2353,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ) {
     const current = currentWorkspaceTarget(target);
     if (!current) {
-      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
+      if (!target) setNotice({ title, message: t("open-a-terminal-view-first") });
       return;
     }
     const commandTarget = {
@@ -2363,14 +2366,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!currentWorkspaceTarget(commandTarget)) return;
       await executeTerminalSelectionAction({ sessionId: commandTarget.sessionId, viewId: commandTarget.viewId, action });
     } catch (error) {
-      if (currentWorkspaceTarget(commandTarget)) setNotice({ title, message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ diagnostic: true, title, message: formatError(error) });
     }
   }
 
   async function searchTerminalOnline(target?: { sessionId: string; viewId: string }) {
     const current = currentWorkspaceTarget(target);
     if (!current) {
-      if (!target) setNotice({ title: "在线搜索", message: "请先打开一个终端视图。" });
+      if (!target) setNotice({ title: t("search-online"), message: t("open-a-terminal-view-first") });
       return;
     }
     const commandTarget = {
@@ -2387,7 +2390,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         fallback: current.session.lastLine,
       });
     } catch (error) {
-      if (currentWorkspaceTarget(commandTarget)) setNotice({ title: "在线搜索", message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ diagnostic: true, title: t("search-online"), message: formatError(error) });
     }
   }
 
@@ -2398,7 +2401,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ) {
     const current = currentWorkspaceTarget(target);
     if (!current) {
-      if (!target) setNotice({ title, message: "请先打开一个终端视图。" });
+      if (!target) setNotice({ title, message: t("open-a-terminal-view-first") });
       return;
     }
     const commandTarget = {
@@ -2411,7 +2414,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!currentWorkspaceTarget(commandTarget)) return;
       await executeTerminalBufferAction({ sessionId: commandTarget.sessionId, viewId: commandTarget.viewId, action });
     } catch (error) {
-      if (currentWorkspaceTarget(commandTarget)) setNotice({ title, message: formatError(error) });
+      if (currentWorkspaceTarget(commandTarget)) setNotice({ diagnostic: true, title, message: formatError(error) });
     }
   }
 
@@ -2435,7 +2438,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!disconnected) failed.push(id);
     }
     if (failed.length) {
-      setNotice({ title: "断开会话", message: `${failed.length} 个会话断开失败，其余已断开。` });
+      setNotice({ title: t("disconnect-session"), message: t("failed-to-disconnect-sessions-the-others-were-disconnected", [failed.length]) });
     }
   }
 
@@ -2547,7 +2550,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const token = beginProfileShortcutOperation(profileId);
     if (token === null) return;
     const confirmed = window.confirm(
-      `删除会话 Profile “${target.profile.name}”？\n\n活动连接会先断开；内存历史、传输记录、Profile 级 Host Key 和会话绑定会删除。磁盘日志分片与安全审计保留。`,
+      t("delete-session-profile-active-connections-will-be-disconnected-first", [target.profile.name]),
     );
     if (!confirmed) {
       finishProfileShortcutOperation(profileId, token);
@@ -2563,11 +2566,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!gate.isCurrent(profileId, token)) return;
       pendingProfileDeletionRef.current.delete(profileId);
       applyDeletedSessionProfile(response);
-      setNotice({ title: "会话已删除", message: `已删除 ${target.profile.name}；磁盘日志仍可在日志管理器中查看或清理。` });
+      setNotice({ title: t("session-deleted"), message: t("deleted-disk-logs-remain-available-in-the-log-manager", [target.profile.name]) });
     } catch (error) {
       if (gate.isCurrent(profileId, token)) {
         pendingProfileDeletionRef.current.delete(profileId);
-        setNotice({ title: "删除会话失败", message: formatError(error) });
+        setNotice({ diagnostic: true, title: t("failed-to-delete-session"), message: formatError(error) });
       }
     } finally {
       if (pendingProfileDeletionRef.current.get(profileId)?.token === token) {
@@ -2675,7 +2678,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const target = { sessionId: current.session.profile.id, viewId: current.view.id };
     switch (action) {
       case "copy":
-        void runTerminalSelectionAction("copy", "复制", target);
+        void runTerminalSelectionAction("copy", t("copy"), target);
         return;
       case "paste":
         void navigator.clipboard?.readText().then((text) => {
@@ -2684,7 +2687,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           }
         }).catch((error) => {
           if (currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
-            setNotice({ title: "粘贴", message: formatError(error) });
+            setNotice({ title: t("paste"), message: formatError(error) });
           }
         });
         return;
@@ -2697,19 +2700,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void searchTerminalOnline(target);
         return;
       case "clear-scrollback":
-        void runTerminalBufferAction(action, "清除回滚", target);
+        void runTerminalBufferAction(action, t("clear-scrollback"), target);
         return;
       case "clear-screen":
-        void runTerminalBufferAction(action, "清除屏幕", target);
+        void runTerminalBufferAction(action, t("clear-screen"), target);
         return;
       case "clear-all":
-        void runTerminalBufferAction(action, "清除屏幕和回滚", target);
+        void runTerminalBufferAction(action, t("clear-screen-and-scrollback"), target);
         return;
       case "select-all":
-        void runTerminalSelectionAction("select-all", "选择全部", target);
+        void runTerminalSelectionAction("select-all", t("select-all"), target);
         return;
       case "clear-selection":
-        void runTerminalSelectionAction("clear", "清除选择", target);
+        void runTerminalSelectionAction("clear", t("clear-selection"), target);
         return;
       case "export-buffer":
         void exportTerminalText("buffer", target);
@@ -2724,7 +2727,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         openSessionProfileDialog(
           current.session.profile,
           current.session.profile,
-          "触发器",
+          "triggers",
         );
         return;
       }
@@ -2732,11 +2735,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function openNewSessionDialog() {
-    openSessionProfileDialog(createSessionDraft(), null, "会话");
+    openSessionProfileDialog(createSessionDraft(), null, "session");
   }
 
   async function openLocalTerminal() {
-    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell" && session.profile.name === "本地终端");
+    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell" && session.profile.name === "local-terminal");
     if (existing) {
       activateSession(existing.profile.id);
       if (!["connected", "connecting", "reconnecting"].includes(existing.runtime.status)) {
@@ -2746,7 +2749,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     const profile = prepareSessionProfile({
       ...createSessionDraft(),
-      name: "本地终端",
+      name: t("local-terminal"),
       kind: "shell",
       connection: createShellConnection(),
     });
@@ -2755,7 +2758,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       applySavedSession(saved);
       await connectSession(saved.profile.id, saved);
     } catch (error) {
-      setNotice({ title: "打开本地终端失败", message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("failed-to-open-local-terminal"), message: formatError(error) });
     }
   }
 
@@ -2796,7 +2799,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (targetPane) {
         const nextRoot = addWorkspacePaneSession(currentRoot, targetPane.id, sessionId);
         if (nextRoot === currentRoot && !targetPane.sessionIds.includes(sessionId)) {
-          setNotice({ title: "打开视图失败", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+          setNotice({ title: t("failed-to-open-view"), message: t("each-group-supports-at-most-views", [MAX_WORKSPACE_GROUP_TABS]) });
           return;
         }
         setWorkspaceRoot(nextRoot);
@@ -2890,7 +2893,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const root = currentRoot ?? createWorkspacePane(primaryId, targetPaneId || createWorkspaceNodeId("pane"));
     const panes = workspacePaneLeaves(root);
     if (panes.length >= MAX_WORKSPACE_PANES) {
-      setNotice({ title: "分屏", message: `最多同时打开 ${MAX_WORKSPACE_PANES} 个窗格。` });
+      setNotice({ title: t("split-pane"), message: t("at-most-panes-can-be-open-at-once", [MAX_WORKSPACE_PANES]) });
       return;
     }
     const targetPane = findWorkspacePane(root, targetPaneId)
@@ -2909,7 +2912,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       placement,
     );
     if (nextRoot === root) {
-      setNotice({ title: "分屏", message: `嵌套分屏最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      setNotice({ title: t("split-pane"), message: t("nested-panes-support-at-most-levels", [MAX_WORKSPACE_DEPTH]) });
       return;
     }
     setWorkspaceRoot(nextRoot);
@@ -2930,19 +2933,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!current) return;
     const { pane, view: source } = current;
     if (pane.views.length >= MAX_WORKSPACE_GROUP_TABS) {
-      setNotice({ title: "复制视图", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+      setNotice({ title: t("duplicate-view"), message: t("each-group-supports-at-most-views", [MAX_WORKSPACE_GROUP_TABS]) });
       return;
     }
     const currentSessions = sessionsRef.current;
     const sessionName = current.session.profile.name;
     const baseTitle = source.title || sessionName;
     const labels = new Set(pane.views.map((view) => (
-      view.title || currentSessions.find((session) => session.profile.id === view.sessionId)?.profile.name || "会话"
+      view.title || currentSessions.find((session) => session.profile.id === view.sessionId)?.profile.name || t("session")
     )));
-    let duplicateTitle = `${baseTitle} 副本`;
+    let duplicateTitle = t("copy-2", [baseTitle]);
     let suffix = 2;
     while (labels.has(duplicateTitle)) {
-      duplicateTitle = `${baseTitle} 副本 ${suffix}`;
+      duplicateTitle = t("copy-3", [baseTitle, suffix]);
       suffix += 1;
     }
     const duplicateId = createWorkspaceNodeId("view");
@@ -3018,7 +3021,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!closedViews.length) return;
     const totalViewCount = panes.reduce((count, pane) => count + pane.views.length, 0);
     if (closedViews.length >= totalViewCount) {
-      setNotice({ title: "关闭视图", message: "工作区中至少需要保留一个视图。" });
+      setNotice({ title: t("close-view"), message: t("the-workspace-must-retain-at-least-one-view") });
       return;
     }
 
@@ -3056,7 +3059,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const activeViewId = viewId ?? pane.activeViewId;
     const viewIds = pane.views.filter((view) => view.id !== activeViewId).map((view) => view.id);
     if (!viewIds.length) {
-      setNotice({ title: "关闭其他视图", message: "当前分组没有其他视图。" });
+      setNotice({ title: t("close-other-views"), message: t("there-are-no-other-views-in-this-group") });
       return;
     }
     closeWorkspaceViews(pane.id, viewIds);
@@ -3069,7 +3072,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (activeIndex < 0) return;
     const viewIds = pane.views.slice(activeIndex + 1).map((view) => view.id);
     if (!viewIds.length) {
-      setNotice({ title: "关闭右侧视图", message: "活动视图右侧没有其他视图。" });
+      setNotice({ title: t("close-views-to-the-right"), message: t("there-are-no-views-to-the-right-of-the") });
       return;
     }
     closeWorkspaceViews(pane.id, viewIds);
@@ -3084,7 +3087,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (historyIndex < 0) {
       setClosedWorkspaceViews([]);
-      setNotice({ title: "重新打开已关闭视图", message: "没有可重新打开的视图。" });
+      setNotice({ title: t("reopen-closed-view"), message: t("there-are-no-closed-views-to-reopen") });
       return;
     }
     const closedView = history[historyIndex];
@@ -3098,7 +3101,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         pane.views.length < MAX_WORKSPACE_GROUP_TABS
       ));
     if (!target || !currentRoot) {
-      setNotice({ title: "重新打开已关闭视图", message: `所有分组均已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+      setNotice({ title: t("reopen-closed-view"), message: t("all-groups-have-reached-the-limit-of-views", [MAX_WORKSPACE_GROUP_TABS]) });
       return;
     }
     const insertionIndex = target.id === closedView.paneId
@@ -3247,11 +3250,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const source = findWorkspacePane(currentRoot, sourcePaneId);
     if (!currentRoot || !source) return;
     if (source.views.length <= 1) {
-      setNotice({ title: "视图拆分到新分组", message: "当前分组至少需要保留一个其他视图。" });
+      setNotice({ title: t("split-view-into-a-new-group"), message: t("this-group-must-retain-at-least-one-other-view") });
       return;
     }
     if (panes.length >= MAX_WORKSPACE_PANES) {
-      setNotice({ title: "视图拆分到新分组", message: `工作区最多支持 ${MAX_WORKSPACE_PANES} 个分组。` });
+      setNotice({ title: t("split-view-into-a-new-group"), message: t("the-workspace-supports-at-most-groups", [MAX_WORKSPACE_PANES]) });
       return;
     }
     const newPaneId = createWorkspaceNodeId("pane");
@@ -3266,7 +3269,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       placement,
     );
     if (nextRoot === currentRoot) {
-      setNotice({ title: "视图拆分到新分组", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      setNotice({ title: t("split-view-into-a-new-group"), message: t("nested-groups-support-at-most-levels", [MAX_WORKSPACE_DEPTH]) });
       return;
     }
     setWorkspaceRoot(nextRoot);
@@ -3288,12 +3291,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const view = source?.views.find((candidate) => candidate.id === viewId);
     if (!currentRoot || !source || !target || !view) return;
     if (sourcePaneId === targetPaneId && source.views.length <= 1) {
-      setNotice({ title: "拖放视图", message: "最终视图不能拆成空分组。" });
+      setNotice({ title: t("drag-and-drop-view"), message: t("the-last-view-cannot-be-split-into-an-empty") });
       return;
     }
     const paneDelta = source.views.length > 1 ? 1 : 0;
     if (workspacePaneLeaves(currentRoot).length + paneDelta > MAX_WORKSPACE_PANES) {
-      setNotice({ title: "拖放视图", message: `工作区最多支持 ${MAX_WORKSPACE_PANES} 个分组。` });
+      setNotice({ title: t("drag-and-drop-view"), message: t("the-workspace-supports-at-most-groups", [MAX_WORKSPACE_PANES]) });
       return;
     }
     const direction: WorkspaceSplitDirection = edge === "left" || edge === "right" ? "vertical" : "horizontal";
@@ -3310,7 +3313,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       placement,
     );
     if (nextRoot === currentRoot) {
-      setNotice({ title: "拖放视图", message: `嵌套分组最多支持 ${MAX_WORKSPACE_DEPTH} 层。` });
+      setNotice({ title: t("drag-and-drop-view"), message: t("nested-groups-support-at-most-levels", [MAX_WORKSPACE_DEPTH]) });
       return;
     }
     setWorkspaceRoot(nextRoot);
@@ -3339,7 +3342,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const view = source?.views.find((candidate) => candidate.id === viewId);
     if (!source || !target || !view) return;
     if (sourcePaneId !== targetPaneId && target.views.length >= MAX_WORKSPACE_GROUP_TABS) {
-      setNotice({ title: "移动视图到分组", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+      setNotice({ title: t("move-view-to-group"), message: t("each-group-supports-at-most-views", [MAX_WORKSPACE_GROUP_TABS]) });
       return;
     }
     const nextRoot = moveWorkspacePaneView(currentRoot, sourcePaneId, targetPaneId, view.id, targetIndex);
@@ -3358,7 +3361,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const target = findWorkspacePane(currentRoot, targetPaneId);
     if (!source || !target || sourcePaneId === targetPaneId) return;
     if (target.views.length + source.views.length > MAX_WORKSPACE_GROUP_TABS) {
-      setNotice({ title: "合并当前分组", message: `每个分组最多包含 ${MAX_WORKSPACE_GROUP_TABS} 个视图。` });
+      setNotice({ title: t("merge-current-group"), message: t("each-group-supports-at-most-views", [MAX_WORKSPACE_GROUP_TABS]) });
       return;
     }
     const nextRoot = mergeWorkspacePaneGroups(currentRoot, sourcePaneId, targetPaneId);
@@ -3378,7 +3381,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     try {
       await openWorkspaceWindow(windowId);
     } catch (error) {
-      setNotice({ title: "新建工作区窗口失败", message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("failed-to-create-workspace-window"), message: formatError(error) });
     }
   }
 
@@ -3389,7 +3392,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const session = activeView ? sessionsRef.current.find((item) => item.profile.id === activeView.sessionId) : undefined;
     if (!pane || !activeView || !session) return;
     if (panes.length <= 1 && pane.views.length <= 1) {
-      setNotice({ title: "移到新窗口", message: "主窗口中至少需要保留一个窗格或视图。" });
+      setNotice({ title: t("move-to-new-window"), message: t("the-main-window-must-retain-at-least-one-pane") });
       return;
     }
     const gate = detachedWindowOperationGateRef.current;
@@ -3421,8 +3424,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (committed.status === "last-view") {
         await controller.close();
         setNotice({
-          title: "移到新窗口",
-          message: "窗口创建期间工作区布局已变化；主窗口必须保留一个视图，请重试。",
+          title: t("move-to-new-window"),
+          message: t("the-workspace-layout-changed-while-creating-the-window-the"),
         });
         return;
       }
@@ -3437,7 +3440,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     } catch (error) {
       if (gate.isCurrent(activeView.id, token)) {
-        setNotice({ title: "移到新窗口失败", message: formatError(error) });
+        setNotice({ diagnostic: true, title: t("failed-to-move-to-new-window"), message: formatError(error) });
       }
     } finally {
       if (gate.finish(activeView.id, token)) {
@@ -3476,11 +3479,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         try {
           await controller.close();
         } catch (error) {
-          setNotice({ title: "关闭失效的串口分析器失败", message: formatError(error) });
+          setNotice({ diagnostic: true, title: t("failed-to-close-stale-serial-analyzer"), message: formatError(error) });
         }
       }
     } catch (error) {
-      if (isCurrent()) setNotice({ title: "打开串口分析器失败", message: formatError(error) });
+      if (isCurrent()) setNotice({ diagnostic: true, title: t("failed-to-open-serial-analyzer"), message: formatError(error) });
     } finally {
       gate.finish(sessionId, token);
     }
@@ -3489,8 +3492,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function reattachDetachedPane(command: DetachedPaneCommand): DetachedPaneResult {
     const session = sessionsRef.current.find((item) => item.profile.id === command.sessionId);
     if (!session) {
-      const error = "原会话已不存在。";
-      setNotice({ title: "返回主窗口失败", message: error });
+      const error = t("the-original-session-no-longer-exists");
+      setNotice({ title: t("failed-to-return-to-the-main-window"), message: error });
       return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: false, error };
     }
     const returnedView: WorkspaceView = { id: command.viewId, sessionId: command.sessionId, title: command.title, color: command.color, keyMode: command.keyMode };
@@ -3501,8 +3504,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       returnedView,
     );
     if (committed.status === "conflict") {
-      const error = "返回的视图标识与当前工作区冲突。";
-      setNotice({ title: "返回主窗口失败", message: error });
+      const error = t("the-returned-view-identifier-conflicts-with-the-current-workspace");
+      setNotice({ title: t("failed-to-return-to-the-main-window"), message: error });
       return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: false, error };
     }
     setWorkspaceRoot(committed.root);
@@ -3514,11 +3517,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     focusWorkspacePaneInput(committed.activePaneId);
     if (committed.placement === "original-pane" && committed.replaced) {
-      setNotice({ title: "窗格已返回", message: `原分组已达到 ${MAX_WORKSPACE_GROUP_TABS} 个视图，已替换该分组的活动视图。` });
+      setNotice({ title: t("pane-returned"), message: t("the-original-group-reached-views-its-active-view-has", [MAX_WORKSPACE_GROUP_TABS]) });
     } else if (committed.placement === "max-panes") {
-      setNotice({ title: "窗格已返回", message: `工作区已达到 ${MAX_WORKSPACE_PANES} 个窗格，已在当前窗格打开返回的会话。` });
+      setNotice({ title: t("pane-returned"), message: t("the-workspace-reached-panes-the-returned-session-was-opened", [MAX_WORKSPACE_PANES]) });
     } else if (committed.placement === "max-depth") {
-      setNotice({ title: "窗格已返回", message: `所有窗格均已达到 ${MAX_WORKSPACE_DEPTH} 层深度，已在当前窗格打开返回的会话。` });
+      setNotice({ title: t("pane-returned"), message: t("all-panes-reached-nesting-levels-the-returned-session-was", [MAX_WORKSPACE_DEPTH]) });
     }
     return { windowId: command.windowId, requestId: command.requestId, action: "reattach", ok: true, error: "" };
   }
@@ -3527,7 +3530,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentRoot = workspaceRootRef.current;
     const nextPane = findWorkspacePaneInDirection(currentRoot, sourcePaneId, direction);
     if (!nextPane) {
-      setNotice({ title: "交换窗格", message: "该方向没有可交换的窗格。" });
+      setNotice({ title: t("swap-panes"), message: t("there-is-no-pane-to-swap-in-that-direction") });
       return;
     }
     setWorkspaceRoot(swapWorkspacePanes(currentRoot, sourcePaneId, nextPane.id));
@@ -3559,7 +3562,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return saved;
     } catch (error) {
       if (gate.isCurrent(profile.id, token)) {
-        setNotice({ title: "保存会话失败", message: formatError(error) });
+        setNotice({ diagnostic: true, title: t("failed-to-save-session"), message: formatError(error) });
       }
       return null;
     } finally {
@@ -3681,9 +3684,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
         if (!attemptIsCurrent()) return;
         const message = cleanupErrors.length
-          ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
+          ? t("failed-to-clean-up-new-credentials", [formatError(error), cleanupErrors.join("；")])
           : formatError(error);
-        if (interaction === "interactive") setNotice({ title: "保存凭据失败", message });
+        if (interaction === "interactive") setNotice({ diagnostic: true, title: t("failed-to-save-credentials"), message });
         return;
       }
 
@@ -3726,7 +3729,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         const cleanupErrors = await deleteUnreferencedSecrets(createdConnectionSecretRefs);
         if (!attemptIsCurrent()) return;
         const message = cleanupErrors.length
-          ? `${formatError(error)}；新凭据清理失败: ${cleanupErrors.join("；")}`
+          ? t("failed-to-clean-up-new-credentials", [formatError(error), cleanupErrors.join("；")])
           : formatError(error);
         const failureProfile = persistedProfileForConnect ?? session.profile;
         const failed = setSessionStatus({ ...session, profile: failureProfile }, "error", message);
@@ -3743,7 +3746,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
           void openHostKeyPrompt(failureProfile, message, credentials);
         } else {
-          setNotice({ title: "连接失败", message });
+          setNotice({ diagnostic: true, title: t("connection-failed"), message });
         }
       }
     } finally {
@@ -3828,7 +3831,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (!gate.isCurrent("decision", token)) return;
       setDraft(profile);
       setHostKeyPrompt(null);
-      setNotice({ title: "Host key 已确认", message: reconnect ? "已保存信任决策，正在重新连接。" : "已保存信任决策。" });
+      setNotice({ title: t("host-key-confirmed"), message: reconnect ? t("trust-decision-saved-reconnecting") : t("trust-decision-saved") });
       if (reconnect) {
         void connectSession(profile.id);
       }
@@ -3854,7 +3857,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     closeHostKeyPrompt();
     if (!current
       || !hostKeyProfileSnapshotMatches(prompt.profile, prepareSessionProfile(current.profile))) return;
-    openSessionProfileDialog(current.profile, current.profile, "验证");
+    openSessionProfileDialog(current.profile, current.profile, "verification");
   }
 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
@@ -3896,7 +3899,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return saved;
     } catch (error) {
       if (!closeIsCurrent()) return null;
-      if (reportError) setNotice({ title: "断开会话失败", message: formatError(error) });
+      if (reportError) setNotice({ diagnostic: true, title: t("failed-to-disconnect-session"), message: formatError(error) });
       void refreshSessionSummaries();
       return null;
     } finally {
@@ -3981,15 +3984,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         sessionsRef.current.find((session) => session.profile.id === targetId)?.profile.name ?? targetId
       ));
       const details = [
-        failedNames.length ? `${failedNames.length} 个目标发送失败：${failedNames.join(", ")}` : "",
-        result.skipped.length ? `${result.skipped.length} 个剩余目标已取消` : "",
+        failedNames.length ? t("failed-to-send-to-targets", [failedNames.length, failedNames.join(", ")]) : "",
+        result.skipped.length ? t("cancelled-remaining-targets", [result.skipped.length]) : "",
       ].filter(Boolean).join("；");
       setNotice({
-        title: failedNames.length ? "同步输入失败" : "同步输入已停止",
+        title: failedNames.length ? t("synchronized-input-failed") : t("synchronized-input-stopped"),
         message: details,
       });
       if (options?.awaitWrite && !result.succeeded.includes(sessionId)) {
-        throw new Error("源会话未成功接收输入；其他同步目标可能已收到，请检查后重试。");
+        throw new Error(t("the-source-session-did-not-successfully-receive-the-input"));
       }
     });
   }
@@ -4009,7 +4012,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (isBackendAvailable()) {
         if (options?.binary) {
           const bytes = terminalBinaryStringToBytes(text);
-          if (!bytes) throw new Error("终端二进制输入包含无效字节");
+          if (!bytes) throw new Error(t("terminal-binary-input-contains-invalid-bytes"));
           await sendTerminalBytes(sessionId, bytes, inputEpoch, true);
         } else if (origin === "command") {
           await invokeBackend<SessionEvent>("run_command", { sessionId, command: text });
@@ -4120,10 +4123,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     try {
       bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(sendText) : [];
       if ((sendModeSnapshot === "hex" ? bytePayload.length : new TextEncoder().encode(textPayload).length) > 4 * 1024 * 1024) {
-        throw new Error("单次发送内容不能超过 4 MiB。");
+        throw new Error(t("a-single-payload-cannot-exceed-4-mib"));
       }
     } catch (error) {
-      setNotice({ title: "发送失败", message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("send-failed"), message: formatError(error) });
       return;
     }
     if (sendModeSnapshot === "text" ? !textPayload : !bytePayload.length) return;
@@ -4136,7 +4139,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       .filter((session): session is SessionSummary => Boolean(session));
     const targets = resolveSendTargets(sendTarget, activeIdRef.current, currentSessions, currentPaneSessions);
     if (!targets.length) {
-      setNotice({ title: "发送", message: "没有可发送的目标会话。" });
+      setNotice({ title: t("send"), message: t("there-are-no-target-sessions-available") });
       return;
     }
     const inputEpochs = new Map(targets.map((target) => [target, captureTerminalInputEpoch(target)]));
@@ -4156,7 +4159,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const intervalSnapshot = normalizeSendInterval(sendIntervalMs);
       if (isBackendAvailable()) {
         jobId = await invokeBackend<string>("begin_paced_send", { sessionIds: targets });
-        if (!jobId) throw new Error("无法建立间隔发送任务");
+        if (!jobId) throw new Error(t("unable-to-create-a-paced-sending-task"));
       }
       // Only individual writes enter the per-session lane. Interval timers
       // must not occupy the broadcast queue and delay keyboard input/Ctrl+C.
@@ -4167,7 +4170,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             const validate = () => {
               cancellation.signal.throwIfAborted();
               if (inputEpoch === null || inputEpoch === undefined || !terminalInputIsCurrent(target, inputEpoch)) {
-                throw new Error("连接已变化，间隔发送已停止");
+                throw new Error(t("the-connection-changed-paced-sending-stopped"));
               }
             };
             validate();
@@ -4206,8 +4209,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     } catch (error) {
       if (sendOperationGateRef.current.isCurrent("send", sendToken)) setNotice(cancellation.signal.aborted && cancellation.signal.reason?.name === "AbortError"
-        ? { title: "发送已停止", message: "未开始的重复发送已取消；正在写入的批次按传输结果结束。" }
-        : { title: "发送失败", message: formatError(error) });
+        ? { diagnostic: true, title: t("sending-stopped"), message: t("unstarted-repetitions-were-cancelled-the-current-batch-will-finish") }
+        : { diagnostic: true, title: t("send-failed"), message: formatError(error) });
     } finally {
       cancellation.signal.removeEventListener("abort", cancelNative);
       cancelNative();
@@ -4223,7 +4226,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function runQuickCommand(command: QuickCommand) {
     if (!active) {
-      setNotice({ title: "快速命令", message: "请先打开一个终端会话。" });
+      setNotice({ title: t("quick-commands"), message: t("open-a-terminal-session-first") });
       return;
     }
     if (command.appendEnter && command.command.trim()) {
@@ -4333,12 +4336,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function menuToggleState(item: string): boolean | undefined {
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) return visibleWorkspacePanels[workspacePanel];
-    if (item === "快捷栏") return visibleQuickBar;
+    if (item === "quick-bar") return visibleQuickBar;
     const terminalKeyMode = terminalKeyModeMenuItems[item];
     if (terminalKeyMode) return activeTerminalKeyMode === terminalKeyMode;
-    if (item === "同步输入") return syncInput;
-    if (item === "块选择") return blockSelection;
-    if (item === "专注模式") return focusMode;
+    if (item === "synchronized-input") return syncInput;
+    if (item === "block-selection") return blockSelection;
+    if (item === "focus-mode") return focusMode;
     return undefined;
   }
 
@@ -4395,7 +4398,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setSessions((current) => mergeSessionSummaries(current, saved));
     } catch (error) {
       if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
-      setNotice({ title: "串口控制失败", message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("serial-control-failed"), message: formatError(error) });
       void refreshSessionSummaries();
     } finally {
       finishSerialControl(sessionId, controlToken);
@@ -4413,7 +4416,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       await refreshActiveLog(sessionId);
     } catch (error) {
       if (!serialControlOperationGateRef.current.isCurrent(sessionId, controlToken)) return;
-      setNotice({ title: "Break 失败", message: formatError(error) });
+      setNotice({ diagnostic: true, title: t("break-failed"), message: formatError(error) });
       void refreshActiveLog(sessionId);
     } finally {
       finishSerialControl(sessionId, controlToken);
@@ -4496,47 +4499,46 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           <div className="send-toolbar-primary">
             <button
               className="send-icon-button"
-              title={sendBusy ? "停止重复发送" : "发送"}
-              aria-label={sendBusy ? "停止重复发送" : "发送"}
+              title={sendBusy ? t("stop-repeated-sending") : t("send")}
+              aria-label={sendBusy ? t("stop-repeated-sending") : t("send")}
               onClick={() => sendBusy ? cancelSendPanel() : void runSendPanel()}
             >
               {sendBusy ? <Square size={13} /> : <Play size={14} className="green" />}
             </button>
             <label className="send-mode-label">
-              <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} /> 文本(T)
-            </label>
+              <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} />{t("text-t")}</label>
             <label className="send-mode-label">
               <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
             </label>
             <button
               type="button"
               className="send-icon-button send-advanced-toggle"
-              title={sendAdvancedActive ? "高级发送选项（已配置）" : "高级发送选项"}
-              aria-label="高级发送选项"
+              title={sendAdvancedActive ? t("advanced-send-options-configured") : t("advanced-send-options")}
+              aria-label={t("advanced-send-options")}
               aria-expanded={sendAdvancedOpen}
               data-active={sendAdvancedActive ? "true" : "false"}
               onClick={() => setSendAdvancedOpen((current) => !current)}
             >
               <SlidersHorizontal size={14} />
             </button>
-            {syncInput ? <span className="sync-badge">同步输入 · {syncInputTargetCount} 目标</span> : null}
+            {syncInput ? <span className="sync-badge">{t("synchronized-input-targets", [syncInputTargetCount])}</span> : null}
           </div>
           {sendAdvancedOpen ? (
-            <div className="send-advanced-controls" role="group" aria-label="高级发送选项">
+            <div className="send-advanced-controls" role="group" aria-label={t("advanced-send-options")}>
               <label>
-                <span>计数</span>
-                <input type="number" min={1} max={MAX_SEND_COUNT} className="number-input" aria-label="发送次数" value={sendCount} onChange={(event) => setSendCount(normalizeSendCount(Number(event.target.value)))} />
+                <span>{t("count")}</span>
+                <input type="number" min={1} max={MAX_SEND_COUNT} className="number-input" aria-label={t("number-of-sends")} value={sendCount} onChange={(event) => setSendCount(normalizeSendCount(Number(event.target.value)))} />
               </label>
               <label>
-                <span title="上一批写入确认后，再等待指定时间">写入后间隔</span>
-                <input type="number" min={0} max={MAX_SEND_INTERVAL_MS} className="number-input" aria-label="发送间隔（毫秒）" value={sendIntervalMs} onChange={(event) => setSendIntervalMs(normalizeSendInterval(Number(event.target.value)))} />
+                <span title={t("wait-for-the-specified-interval-after-the-previous-write")}>{t("interval-after-write")}</span>
+                <input type="number" min={0} max={MAX_SEND_INTERVAL_MS} className="number-input" aria-label={t("send-interval-milliseconds")} value={sendIntervalMs} onChange={(event) => setSendIntervalMs(normalizeSendInterval(Number(event.target.value)))} />
               </label>
               <label>
-                <span>目标</span>
-                <select className="target-input" aria-label="发送目标" value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
-                  <option value="active">当前会话</option>
-                  <option value="panes">打开窗格</option>
-                  <option value="connected">全部已连接</option>
+                <span>{t("target")}</span>
+                <select className="target-input" aria-label={t("send-target")} value={sendTarget} onChange={(event) => setSendTarget(event.target.value as SendTarget)}>
+                  <option value="active">{t("current-session")}</option>
+                  <option value="panes">{t("open-panes")}</option>
+                  <option value="connected">{t("all-connected")}</option>
                 </select>
               </label>
             </div>
@@ -4544,7 +4546,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         </div>
         <textarea
           className="send-textarea"
-          aria-label="send text"
+          aria-label={t("send-text")}
           value={sendText}
           onChange={(event) => setSendText(event.target.value)}
           onKeyDown={(event) => {
@@ -4591,6 +4593,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <SquareTerminal size={14} />
             <strong>PortMate</strong>
           </div>
+          <LanguageSelector compact />
           <div className="menu-row">
             {menuGroups.map((group) => (
               <div key={group.label} className="menu-item" onMouseLeave={() => setOpenMenu(null)}>
@@ -4617,10 +4620,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                     });
                   }}
                 >
-                  {group.label}
+                  {t(group.label)}
                 </button>
                 {openMenu === group.label && (
-                  <div className="menu-popover" id={`menu-${group.label}`} aria-label={`${group.label}菜单`} onKeyDown={(event) => {
+                  <div className="menu-popover" id={`menu-${group.label}`} aria-label={t("menu", [t(group.label)])} onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       event.preventDefault();
                       const trigger = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".menu-trigger");
@@ -4638,11 +4641,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                   }}>
                     {menuSectionsForGroup(group.label, group.items).map((section) => (
                       <div className="menu-popover-section" key={section.label || group.label}>
-                        {section.label ? <span className="menu-popover-heading">{section.label}</span> : null}
+                        {section.label ? <span className="menu-popover-heading">{t(section.label)}</span> : null}
                         {section.items.map((item) => {
                           const toggleState = menuToggleState(item);
                           const disabled = menuItemDisabled(item, menuCapabilityContext)
-                            || (disconnectingSessionIds.has(activeId) && (item === "启动会话" || item === "关闭会话"));
+                            || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "close-session-2"));
                           return (
                             <button
                               type="button"
@@ -4656,7 +4659,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                                 setOpenMenu(null);
                               }}
                             >
-                              <span>{item}</span>
+                              <span>{t(item)}</span>
                               {toggleState ? <Check size={13} /> : null}
                             </button>
                           );
@@ -4673,13 +4676,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           <McpBridgeQuickStart
             paused={Boolean(utilityDialog || dialog || screenLock)}
             onOpen={() => { setOpenMenu(null); setMcpInitialTab("http"); setUtilityDialog("mcp"); }}
-            onError={(message) => setNotice({ title: "MCP Bridge 启动失败", message })}
+            onError={(message) => setNotice({ diagnostic: true, title: t("failed-to-start-mcp-bridge"), message })}
           />
           <button
             type="button"
             className={`menu-vault-status${portableVaultStatus?.unlocked ? " unlocked" : ""}`}
-            title={`Stronghold 密钥库：${portableVaultStatusLabel(portableVaultStatus)}。点击打开管理器`}
-            aria-label={`打开 Stronghold 密钥库（${portableVaultStatusLabel(portableVaultStatus)}）`}
+            title={t("stronghold-vault-click-to-open-the-manager", [portableVaultStatusLabel(portableVaultStatus)])}
+            aria-label={t("open-stronghold-vault", [portableVaultStatusLabel(portableVaultStatus)])}
             onClick={() => {
               setOpenMenu(null);
               setDialog(null);
@@ -4690,8 +4693,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <span>Stronghold</span>
             <small>{portableVaultStatusLabel(portableVaultStatus)}</small>
           </button>
-          <button type="button" title="搜索会话" aria-label="搜索会话" onClick={() => handleMenuAction("会话搜索")}><Search size={13} /></button>
-          <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? "退出专注模式" : "进入专注模式"} title="专注模式 (Alt+Enter)" onClick={() => setFocusMode((current) => !current)}>
+          <button type="button" title={t("search-sessions")} aria-label={t("search-sessions")} onClick={() => handleMenuAction("session-search")}><Search size={13} /></button>
+          <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? t("exit-focus-mode") : t("enter-focus-mode")} title={t("focus-mode-alt-enter")} onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
         </div>
@@ -4742,8 +4745,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               key={dock}
               className={`workspace-dock-drop-target target-${dock}`}
               data-dock-target={dock}
-              title={`停靠到${workspaceDockMeta[dock].label}`}
-              aria-label={`停靠到${workspaceDockMeta[dock].label}`}
+              title={t("dock-to", [t(workspaceDockMeta[dock].label)])}
+              aria-label={t("dock-to", [t(workspaceDockMeta[dock].label)])}
               onDragOver={allowWorkspacePanelDrop}
               onDrop={(event) => dropWorkspacePanel(event, dock)}
             >
@@ -4797,13 +4800,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           className={`sync-status terminal-key-mode-status ${syncInput ? "active" : ""}`}
           data-key-mode={activeTerminalKeyMode}
           title={terminalKeyModeShortcutHint(active?.profile.connection.kind === "serial")}
-          aria-label={`当前${terminalKeyModeLabel(activeTerminalKeyMode)}，切换 Insert/Normal 模式`}
+          aria-label={t("current-mode-switch-insert-normal-mode", [terminalKeyModeLabel(activeTerminalKeyMode)])}
           onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalInsertNormalMode(activeTerminalKeyMode))}
         >
-          {syncInput ? `同步 ${syncInputTargetCount} · ` : ""}{terminalKeyModeLabel(activeTerminalKeyMode)}
+          {syncInput ? t("sync", [syncInputTargetCount]) : ""}{terminalKeyModeLabel(activeTerminalKeyMode)}
         </button>
-        {blockSelection ? <span>块选择</span> : null}
-        <button type="button" className="status-lock-button" title="锁屏 (Ctrl+Alt+L)" aria-label="锁屏" onClick={() => lockScreen("manual")}>
+        {blockSelection ? <span>{t("block-selection")}</span> : null}
+        <button type="button" className="status-lock-button" title={t("lock-screen-ctrl-alt-l")} aria-label={t("lock-screen")} onClick={() => lockScreen("manual")}>
           <Lock size={12} />
         </button>
       </footer> : null}
@@ -4933,7 +4936,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               anchor.download = (draft.name || "portmate-profile").replace(/[^A-Za-z0-9._-]+/g, "_") + ".portmate.json";
               anchor.click();
               URL.revokeObjectURL(url);
-              setNotice({ title: "Profile 已导出", message: "导出文件不包含明文密码或私钥；迁移到新设备后请重新保存凭据。" });
+              setNotice({ title: t("profile-exported"), message: t("the-exported-file-contains-no-plaintext-passwords-or-private") });
             }}
             onClose={() => {
               draftExpectedProfileRef.current = null;
@@ -4966,7 +4969,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             }}
             onDismissTransfer={dismissTransfer}
             onNotice={(message) => {
-              setNotice({ title: "传输任务", message });
+              setNotice({ title: t("transfer-tasks"), message });
             }}
           />
         </Suspense>
@@ -4975,7 +4978,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazyTunnelDialog key={active.profile.id} session={active} onClose={() => setUtilityDialog(null)} onDone={(label) => {
             setUtilityDialog(null);
-            setNotice({ title: "端口转发", message: label });
+            setNotice({ title: t("port-forwarding"), message: label });
           }} />
         </Suspense>
       )}
@@ -5003,7 +5006,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {utilityDialog === "logs" && (
         <Suspense fallback={null}>
-          <LazyLogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: "日志管理", message })} />
+          <LazyLogManagerDialog sessions={sessions} activeId={activeId} onClose={() => setUtilityDialog(null)} onNotice={(message) => setNotice({ title: t("log-manager"), message })} />
         </Suspense>
       )}
       {utilityDialog === "keys" && (
@@ -5077,7 +5080,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "custom-scripts" && (
         <Suspense fallback={null}>
           <LazyCustomScriptDialog
-            onNotice={(message) => setNotice({ title: "自定义脚本", message })}
+            onNotice={(message) => setNotice({ title: t("custom-scripts"), message })}
             onClose={() => setUtilityDialog(null)}
           />
         </Suspense>
@@ -5106,7 +5109,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       )}
       {notice && (
         <Suspense fallback={null}>
-          <LazyNoticeDialog title={notice.title} message={notice.message} link={notice.link} onClose={() => setNotice(null)} />
+          <LazyNoticeDialog title={notice.title} message={notice.message} diagnostic={notice.diagnostic} link={notice.link} onClose={() => setNotice(null)} />
         </Suspense>
       )}
       {!screenLock && activeMcpApproval && (
@@ -5141,6 +5144,7 @@ function ScreenLockOverlay({
   onUnlock: (password?: string) => Promise<void>;
   onRetry: () => void;
 }) {
+  useLocale();
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -5193,8 +5197,8 @@ function ScreenLockOverlay({
   }
 
   const reasonLabel = state.reason === "idle"
-    ? "空闲超时"
-    : state.reason === "startup" ? "启动保护" : state.reason === "restored" ? "刷新后恢复" : "手动锁定";
+    ? t("idle-timeout")
+    : state.reason === "startup" ? t("startup-protection") : state.reason === "restored" ? t("restored-after-refresh") : t("manually-locked");
 
   return (
     <div
@@ -5211,20 +5215,20 @@ function ScreenLockOverlay({
           <span>PortMate</span>
         </div>
         <div className="screen-lock-heading">
-          <h1 id="screen-lock-title">屏幕已锁定</h1>
+          <h1 id="screen-lock-title">{t("screen-locked")}</h1>
           <span>{reasonLabel} · {new Date(state.lockedAt).toLocaleTimeString()}</span>
         </div>
         <div className="screen-lock-rule" />
         {state.mode === "preparing" ? (
           <div className="screen-lock-progress" role="status">
             <LoaderCircle size={17} />
-            <span>正在保护凭据</span>
+            <span>{t("protecting-credentials")}</span>
           </div>
         ) : null}
         {state.mode === "vault" ? (
           <>
             <label className="screen-lock-field">
-              <span>Portable Vault 主密码</span>
+              <span>{t("portable-vault-master-password")}</span>
               <input
                 ref={(element) => { primaryRef.current = element; }}
                 type="password"
@@ -5236,7 +5240,7 @@ function ScreenLockOverlay({
             </label>
             <button className={busy ? "screen-lock-primary busy" : "screen-lock-primary"} type="submit" disabled={busy || !password}>
               {busy ? <LoaderCircle size={15} /> : <Unlock size={15} />}
-              <span>{busy ? "验证中" : "解锁"}</span>
+              <span>{busy ? t("verifying") : t("unlock")}</span>
             </button>
           </>
         ) : null}
@@ -5251,7 +5255,7 @@ function ScreenLockOverlay({
               onClick={() => void submit()}
             >
               <Unlock size={15} />
-              <span>返回工作台</span>
+              <span>{t("return-to-workspace")}</span>
             </button>
           </>
         ) : null}
@@ -5265,11 +5269,11 @@ function ScreenLockOverlay({
               onClick={onRetry}
             >
               <RefreshCw size={15} />
-              <span>重试凭据检查</span>
+              <span>{t("retry-credential-check")}</span>
             </button>
           </>
         ) : null}
-        {error ? <p className="screen-lock-error" role="alert">{error}</p> : null}
+        {error ? <p className="screen-lock-error" role="alert">{localizeDiagnostic(error)}</p> : null}
       </form>
     </div>
   );
@@ -5302,8 +5306,9 @@ function WorkspaceDock({
   onDrop: (event: ReactDragEvent<HTMLElement>, dock: WorkspaceDockId, index?: number) => void;
   renderPanel: (panel: WorkspaceDockPanelId) => React.ReactNode;
 }) {
+  useLocale();
   const limits = workspaceDockSizeLimits[dock];
-  const resizeLabel = dock === "bottom" ? "调整底部停靠区高度" : `调整${dock === "left" ? "左侧" : "右侧"}停靠区宽度`;
+  const resizeLabel = dock === "bottom" ? t("resize-bottom-dock-height") : t("resize-dock-width", [dock === "left" ? t("left") : t("right")]);
 
   function updateDockSizeFromPointer(event: ReactPointerEvent<HTMLButtonElement>) {
     const layout = event.currentTarget.closest(".wind-layout")?.getBoundingClientRect();
@@ -5355,7 +5360,7 @@ function WorkspaceDock({
       <div
         className="workspace-dock-tabs"
         role="tablist"
-        aria-label={`${workspaceDockMeta[dock].label}停靠区工具`}
+        aria-label={t("dock-tools", [t(workspaceDockMeta[dock].label)])}
         data-panel-count={panels.length}
         onDragOver={(event) => {
           if (event.target === event.currentTarget) onDragOver(event);
@@ -5407,18 +5412,18 @@ function WorkspaceDock({
                 aria-selected={active}
                 aria-controls={panelId}
                 tabIndex={active ? 0 : -1}
-                title={`聚焦${metadata.label}`}
+                title={t("focus", [t(metadata.label)])}
                 onClick={() => onActivate(panel)}
                 onKeyDown={(event) => handleDockTabKey(event, index)}
               >
                 <PanelIcon size={13} />
-                <span>{metadata.label}</span>
+                <span>{t(metadata.label)}</span>
               </button>
               <button
                 type="button"
                 className="workspace-dock-tab-close"
-                title={`隐藏${metadata.label}`}
-                aria-label={`隐藏${metadata.label}`}
+                title={t("hide", [t(metadata.label)])}
+                aria-label={t("hide", [t(metadata.label)])}
                 onClick={(event) => {
                   event.stopPropagation();
                   onClose(panel);
@@ -5467,7 +5472,7 @@ function WorkspaceDock({
         aria-valuemin={limits.min}
         aria-valuemax={limits.max}
         aria-valuenow={effectiveSize}
-        title={`${resizeLabel}，双击复位`}
+        title={t("double-click-to-reset", [resizeLabel])}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
@@ -5504,17 +5509,18 @@ function QuickCommandBar({
   onManage: () => void;
   onClose: () => void;
 }) {
+  useLocale();
   return (
-    <nav className="quick-command-bar" aria-label="快速命令栏">
-      <strong>快速命令</strong>
+    <nav className="quick-command-bar" aria-label={t("quick-command-bar")}>
+      <strong>{t("quick-commands")}</strong>
       <div className="quick-command-strip">
         {commands.length ? commands.map((command) => (
           <button
             key={command.id}
             type="button"
             className="quick-command-run"
-            title={`${command.label} · ${command.appendEnter ? "执行" : "插入"}\n${command.command}`}
-            aria-label={`${command.appendEnter ? "执行" : "插入"}快速命令 ${command.label}`}
+            title={`${command.label} · ${command.appendEnter ? t("run") : t("insert")}\n${command.command}`}
+            aria-label={t("quick-command", [command.appendEnter ? t("run") : t("insert"), command.label])}
             disabled={!activeSessionName}
             onClick={() => onRun(command)}
           >
@@ -5522,12 +5528,12 @@ function QuickCommandBar({
             <span>{command.label}</span>
           </button>
         )) : (
-          <button type="button" className="quick-command-empty" onClick={onManage}><Plus size={12} /><span>添加命令</span></button>
+          <button type="button" className="quick-command-empty" onClick={onManage}><Plus size={12} /><span>{t("add-command")}</span></button>
         )}
       </div>
-      <span className="quick-command-target" title={activeSessionName || "未打开会话"}>{activeSessionName || "未打开会话"}</span>
-      <button type="button" className="quick-command-tool" title="管理快速命令" aria-label="管理快速命令" onClick={onManage}><Settings size={14} /></button>
-      <button type="button" className="quick-command-tool" title="隐藏快捷栏" aria-label="隐藏快捷栏" onClick={onClose}><X size={14} /></button>
+      <span className="quick-command-target" title={activeSessionName || t("no-session-open")}>{activeSessionName || t("no-session-open")}</span>
+      <button type="button" className="quick-command-tool" title={t("manage-quick-commands")} aria-label={t("manage-quick-commands")} onClick={onManage}><Settings size={14} /></button>
+      <button type="button" className="quick-command-tool" title={t("hide-quick-bar")} aria-label={t("hide-quick-bar")} onClick={onClose}><X size={14} /></button>
     </nav>
   );
 }
@@ -5547,20 +5553,21 @@ function WorkspaceGroupMoveDialog({
   onMove: (sourcePaneId: string, targetPaneId: string) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const groups = workspacePaneLeaves(root);
   const source = groups.find((pane) => pane.id === sourcePaneId);
   const sourceView = source ? workspacePaneActiveView(source) : undefined;
   const sourceSession = sessions.find((session) => session.profile.id === sourceView?.sessionId);
   const targets = groups.filter((pane) => pane.id !== sourcePaneId);
   const title = mode === "group"
-    ? `合并分组 · ${source?.views.length ?? 0} 个视图`
-    : `移动视图 · ${sourceView?.title || sourceSession?.profile.name || "会话不可用"}`;
+    ? t("merge-group-views", [source?.views.length ?? 0])
+    : t("move-view", [sourceView?.title || sourceSession?.profile.name || t("session-unavailable")]);
   return (
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="wind-dialog workspace-group-move-dialog">
         <header className="dialog-title">
           <span>{title}</span>
-          <button type="button" title="关闭" aria-label="关闭" onClick={onClose}><X size={18} /></button>
+          <button type="button" title={t("close")} aria-label={t("close")} onClick={onClose}><X size={18} /></button>
         </header>
         <div className="workspace-group-targets">
           {targets.map((pane) => {
@@ -5576,17 +5583,17 @@ function WorkspaceGroupMoveDialog({
                 type="button"
                 key={pane.id}
                 disabled={isFull}
-                aria-label={`${mode === "group" ? "合并分组到" : "移动视图到"}分组 ${index + 1}`}
+                aria-label={t("group", [mode === "group" ? t("merge-group-into") : t("move-view-into"), index + 1])}
                 onClick={() => onMove(sourcePaneId, pane.id)}
               >
                 <span className="workspace-group-index">{index + 1}</span>
-                <strong>{activeView.title || activeSession?.profile.name || "会话不可用"}</strong>
-                <small>{pane.views.length} 个视图{isFull ? " · 超出上限" : mode === "group" ? ` · 合并后 ${mergedCount}` : ""}</small>
+                <strong>{activeView.title || activeSession?.profile.name || t("session-unavailable")}</strong>
+                <small>{pane.views.length}{t("views")}{isFull ? t("limit-exceeded") : mode === "group" ? t("after-merging", [mergedCount]) : ""}</small>
                 <ArrowRightLeft size={14} />
               </button>
             );
           })}
-          {!targets.length ? <div className="empty-pane top">当前没有其他可用分组</div> : null}
+          {!targets.length ? <div className="empty-pane top">{t("no-other-groups-available")}</div> : null}
         </div>
       </div>
     </div>
@@ -5673,6 +5680,7 @@ function TerminalPaneGrid({
   ) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
 }) {
+  useLocale();
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
     return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={active ? completionHistoryBySession[active.profile.id] ?? [] : []} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onCommandSubmit={onCommandSubmit} onOneKeyCompletion={onOneKeyCompletion} />;
@@ -5771,6 +5779,7 @@ type TerminalWorkspaceNodeProps = {
 };
 
 function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
+  useLocale();
   const { node } = props;
   if (node.kind === "split") return <TerminalSplitNode {...props} node={node} />;
   const activeView = workspacePaneActiveView(node);
@@ -5779,7 +5788,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : null;
   const connectionBusy = Boolean(session && props.connectionBusyIds.has(session.profile.id));
   const serialControlBusy = Boolean(session && props.serialControlBusyIds.has(session.profile.id));
-  const connectionActionLabel = connectionBusy ? "正在断开" : connectionAction === "disconnect" ? "断开" : "连接";
+  const connectionActionLabel = connectionBusy ? t("disconnecting") : connectionAction === "disconnect" ? t("disconnect") : t("connect");
   const connectionHealth = session ? sessionRuntimeHealthDescription(session.runtime) : "";
   const groupViews = node.views.map((view) => ({
     view,
@@ -5829,7 +5838,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
         <div
           className="workspace-pane-tabs"
           role="tablist"
-          aria-label="分组视图"
+          aria-label={t("group-views")}
           onDragOver={(event) => {
             if (!isWorkspaceViewDrag(event.dataTransfer) || event.target !== event.currentTarget) return;
             event.preventDefault();
@@ -5925,8 +5934,8 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                 <button
                   type="button"
                   className="workspace-pane-tab-close"
-                  title={`关闭视图 ${label}`}
-                  aria-label={`关闭视图 ${label}`}
+                  title={t("close-view-2", [label])}
+                  aria-label={t("close-view-2", [label])}
                   disabled={!props.canCloseView}
                   onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
@@ -5939,17 +5948,17 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
               </div>
             );
           })}
-          {!groupViews.length ? <strong>会话不可用</strong> : null}
+          {!groupViews.length ? <strong>{t("session-unavailable")}</strong> : null}
         </div>
         {session && serialConnection && session.runtime.status === "connected" ? (
-          <div className="pane-serial-tools" aria-label="串口线路控制" aria-busy={serialControlBusy}>
+          <div className="pane-serial-tools" aria-label={t("serial-line-controls")} aria-busy={serialControlBusy}>
             <button
               type="button"
               className={serialConnection.dtr ? "active" : ""}
               aria-pressed={serialConnection.dtr}
               aria-busy={serialControlBusy}
               disabled={serialControlBusy}
-              title="切换 DTR"
+              title={t("toggle-dtr")}
               onClick={(event) => {
                 event.stopPropagation();
                 props.onSetSerialLine(session.profile.id, "dtr", !serialConnection.dtr);
@@ -5961,7 +5970,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
               aria-pressed={serialConnection.rts}
               aria-busy={serialControlBusy}
               disabled={serialControlBusy}
-              title="切换 RTS"
+              title={t("toggle-rts")}
               onClick={(event) => {
                 event.stopPropagation();
                 props.onSetSerialLine(session.profile.id, "rts", !serialConnection.rts);
@@ -5969,7 +5978,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
             >RTS</button>
             <button
               type="button"
-              title="发送 Break"
+              title={t("send-break")}
               aria-busy={serialControlBusy}
               disabled={serialControlBusy}
               onClick={(event) => {
@@ -6022,6 +6031,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
 }
 
 function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { node: WorkspaceSplitNode }) {
+  useLocale();
   const { node } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const firstTrack = `${node.ratio}fr`;
@@ -6069,12 +6079,12 @@ function TerminalSplitNode(props: Omit<TerminalWorkspaceNodeProps, "node"> & { n
         className="terminal-splitter"
         hidden={zoomed}
         role="separator"
-        aria-label={node.direction === "horizontal" ? "调整上下窗格" : "调整左右窗格"}
+        aria-label={node.direction === "horizontal" ? t("resize-upper-lower-panes") : t("resize-left-right-panes")}
         aria-orientation={node.direction === "horizontal" ? "horizontal" : "vertical"}
         aria-valuemin={Math.round(MIN_WORKSPACE_SPLIT_RATIO * 100)}
         aria-valuemax={Math.round(MAX_WORKSPACE_SPLIT_RATIO * 100)}
         aria-valuenow={Math.round(node.ratio * 100)}
-        title={node.direction === "horizontal" ? "拖动调整上下窗格，双击复位" : "拖动调整左右窗格，双击复位"}
+        title={node.direction === "horizontal" ? t("drag-to-resize-upper-lower-panes-double-click-to") : t("drag-to-resize-left-right-panes-double-click-to")}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           updateFromPointer(event);
@@ -6133,8 +6143,9 @@ type TerminalCanvasProps = {
 };
 
 function TerminalCanvas(props: TerminalCanvasProps) {
+  useLocale();
   return (
-    <Suspense fallback={<div className="terminal-canvas"><div className="terminal-empty">正在加载终端...</div></div>}>
+    <Suspense fallback={<div className="terminal-canvas"><div className="terminal-empty">{t("loading-terminal")}</div></div>}>
       <LazyTerminalCanvas {...props} />
     </Suspense>
   );
@@ -6228,6 +6239,7 @@ function clearWorkspaceDropIndicators() {
 }
 
 function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: () => void }) {
+  useLocale();
   const [watching, setWatching] = useState(false);
   const remote = isSshLikeProfile(session.profile);
   const canWatch = !remote || session.runtime.status === "connected";
@@ -6248,9 +6260,9 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
   const title = error
     ? `Sysmon: ${error}`
     : snapshot
-      ? `CPU ${snapshot.cpuPercent.toFixed(1)}% · 内存 ${snapshot.memoryPercent.toFixed(1)}% · 负载 ${snapshot.loadAverage.map((value) => value.toFixed(2)).join(" / ")} · RX ${snapshot.rxKbps.toFixed(1)} KiB/s · TX ${snapshot.txKbps.toFixed(1)} KiB/s · 运行 ${formatSysmonUptime(snapshot.uptimeSeconds)} · ${formatDateTime(snapshot.ts)}`
+      ? t("cpu-memory-load-rx-kib-s-tx-kib-s", [snapshot.cpuPercent.toFixed(1), snapshot.memoryPercent.toFixed(1), snapshot.loadAverage.map((value) => value.toFixed(2)).join(" / "), snapshot.rxKbps.toFixed(1), snapshot.txKbps.toFixed(1), formatSysmonUptime(snapshot.uptimeSeconds), formatDateTime(snapshot.ts)])
       : remote && !canWatch
-        ? "Sysmon: 远端会话未连接"
+        ? t("sysmon-remote-session-disconnected")
         : "Sysmon";
 
   return (
@@ -6258,14 +6270,14 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
       <button
         type="button"
         className="sysmon-applet-toggle"
-        aria-label={watching ? "停止 Sysmon 监控" : "启动 Sysmon 监控"}
+        aria-label={watching ? t("stop-sysmon-monitoring") : t("start-sysmon-monitoring")}
         aria-pressed={watching}
         disabled={!canWatch}
         onClick={toggleWatching}
       >
         <Activity size={14} className={busy ? "loading" : ""} />
       </button>
-      <button type="button" className="sysmon-applet-summary" aria-label="打开 Sysmon 详情" onClick={onOpen}>
+      <button type="button" className="sysmon-applet-summary" aria-label={t("open-sysmon-details")} onClick={onOpen}>
         {snapshot ? (
           <>
             <span>CPU <b className={sysmonPercentLevel(snapshot.cpuPercent)}>{snapshot.cpuPercent.toFixed(1)}%</b></span>
@@ -6289,12 +6301,13 @@ function HostKeyConfirmDialog({
   onOpenSettings: () => void;
   onClose: () => void;
 }) {
+  useLocale();
   const evaluation = state.scan?.evaluation;
   const observation = state.scan?.observation;
   const fingerprint = evaluation?.status === "mismatch" ? evaluation.observedFingerprintSha256 : evaluation?.status === "unknown" ? evaluation.fingerprintSha256 : evaluation?.status === "trusted" ? evaluation.fingerprintSha256 : "";
-  const statusLabel = evaluation?.status === "mismatch" ? "Host key 已变化" : evaluation?.status === "unknown" ? "未知 Host key" : evaluation?.status === "trusted" ? "已信任 Host key" : "正在扫描 Host key";
+  const statusLabel = evaluation?.status === "mismatch" ? t("host-key-changed") : evaluation?.status === "unknown" ? t("unknown-host-key") : evaluation?.status === "trusted" ? t("trusted-host-key") : t("scanning-host-key");
   const expected = evaluation?.status === "mismatch" ? evaluation.expected.map((key) => key.fingerprintSha256).join(", ") : "";
-  const scanLabel = state.scan?.label ?? "目标 SSH";
+  const scanLabel = state.scan?.label ?? t("ssh-target");
 
   return (
     <div className="dialog-backdrop hostkey-backdrop" onMouseDown={(event) => {
@@ -6313,30 +6326,30 @@ function HostKeyConfirmDialog({
         </header>
         <section className="hostkey-content">
           <div className="hostkey-warning">{state.message}</div>
-          {state.busy && !state.scan ? <div className="hostkey-row"><span>状态</span><strong>扫描中...</strong></div> : null}
+          {state.busy && !state.scan ? <div className="hostkey-row"><span>{t("status")}</span><strong>{t("scanning")}</strong></div> : null}
           {observation ? (
             <>
-              <div className="hostkey-row"><span>目标</span><strong>{observation.alias ?? observation.host}:{observation.port}</strong></div>
-              <div className="hostkey-row"><span>链路</span><strong>{scanLabel}</strong></div>
-              <div className="hostkey-row"><span>算法</span><strong>{observation.algorithm}</strong></div>
+              <div className="hostkey-row"><span>{t("target")}</span><strong>{observation.alias ?? observation.host}:{observation.port}</strong></div>
+              <div className="hostkey-row"><span>{t("route")}</span><strong>{scanLabel}</strong></div>
+              <div className="hostkey-row"><span>{t("algorithm")}</span><strong>{observation.algorithm}</strong></div>
               <div className="hostkey-fingerprint"><span>SHA-256</span><code>{fingerprint}</code></div>
-              {expected ? <div className="hostkey-fingerprint expected"><span>已保存</span><code>{expected}</code></div> : null}
+              {expected ? <div className="hostkey-fingerprint expected"><span>{t("saved-2")}</span><code>{expected}</code></div> : null}
             </>
           ) : null}
-          {state.scanError ? <div className="utility-error">{state.scanError}</div> : null}
+          {state.scanError ? <div className="utility-error">{localizeDiagnostic(state.scanError)}</div> : null}
         </section>
         <footer className="hostkey-actions">
           {state.scan ? (
             <>
-              <button type="button" onClick={() => onDecision("trust-once", true)} disabled={state.busy}>仅本次并重连</button>
-              <button type="button" onClick={() => onDecision("append-to-profile", true)} disabled={state.busy}>加入 Profile 并重连</button>
-              <button type="button" onClick={() => onDecision("append-to-project", true)} disabled={state.busy}>加入 Project 并重连</button>
-              <button type="button" onClick={() => onDecision("replace-for-profile", true)} disabled={state.busy}>替换 Profile 并重连</button>
+              <button type="button" onClick={() => onDecision("trust-once", true)} disabled={state.busy}>{t("trust-once-and-reconnect")}</button>
+              <button type="button" onClick={() => onDecision("append-to-profile", true)} disabled={state.busy}>{t("add-to-profile-and-reconnect")}</button>
+              <button type="button" onClick={() => onDecision("append-to-project", true)} disabled={state.busy}>{t("add-to-project-and-reconnect")}</button>
+              <button type="button" onClick={() => onDecision("replace-for-profile", true)} disabled={state.busy}>{t("replace-profile-key-and-reconnect")}</button>
             </>
           ) : (
-            <button type="button" onClick={onOpenSettings}>打开验证设置</button>
+            <button type="button" onClick={onOpenSettings}>{t("open-verification-settings")}</button>
           )}
-          <button type="button" onClick={onClose} disabled={state.busy}>拒绝</button>
+          <button type="button" onClick={onClose} disabled={state.busy}>{t("reject")}</button>
         </footer>
       </section>
     </div>
@@ -6648,10 +6661,10 @@ function emptyConnectionCredentials(): ConnectionCredentials {
 }
 
 function portableVaultStatusLabel(status: PortableVaultStatus | null): string {
-  if (!status) return "读取中";
-  if (status.unlocked) return "已解锁";
-  if (status.exists) return "已锁定";
-  return "未创建";
+  if (!status) return t("loading");
+  if (status.unlocked) return t("unlocked");
+  if (status.exists) return t("locked");
+  return t("not-created");
 }
 
 async function persistConnectionSecrets(
@@ -6681,7 +6694,7 @@ async function persistConnectionSecrets(
   } catch (error) {
     const cleanupErrors = await deleteUnreferencedSecrets(createdSecretRefs);
     if (cleanupErrors.length) {
-      throw new Error(`${formatError(error)}；已写入凭据清理失败: ${cleanupErrors.join("；")}`);
+      throw new Error(t("failed-to-clean-up-saved-credentials", [formatError(error), cleanupErrors.join("；")]));
     }
     throw error;
   }
@@ -6707,7 +6720,7 @@ function isSshLikeProfile(profile: SessionProfile): profile is SessionProfile & 
 
 function isHostKeyFailure(message: string) {
   const lower = message.toLowerCase();
-  return lower.includes("host key") || message.includes("指纹") || message.includes("未受信任") || message.includes("已变化");
+  return lower.includes("host key") || message.includes("fingerprint") || message.includes("untrusted") || message.includes("changed");
 }
 
 function formatError(error: unknown) {
@@ -6762,7 +6775,7 @@ async function openWorkspaceWindow(windowId: string): Promise<void> {
       windowId,
       `popup,width=${WORKSPACE_WINDOW_WIDTH},height=${WORKSPACE_WINDOW_HEIGHT},resizable=yes`,
     );
-    if (!popup) throw new Error("浏览器阻止了工作区窗口，请允许 PortMate 打开弹出窗口。");
+    if (!popup) throw new Error(t("the-browser-blocked-the-workspace-window-allow-portmate-to"));
     popup.focus();
     return;
   }
@@ -6786,7 +6799,7 @@ async function openWorkspaceWindow(windowId: string): Promise<void> {
       minHeight: WORKSPACE_WINDOW_MIN_HEIGHT,
     });
     void child.setFocus().catch(() => {});
-  }, "创建工作区窗口超时");
+  }, t("workspace-window-creation-timed-out"));
 }
 
 type DetachedPaneWindowController = {
@@ -6800,7 +6813,7 @@ async function openDetachedPaneWindow(
   const path = buildDetachedPanePath(request);
   if (!isBackendAvailable()) {
     const popup = window.open(path, request.windowId, "popup,width=960,height=680,resizable=yes");
-    if (!popup) throw new Error("浏览器阻止了独立窗口，请允许 PortMate 打开弹出窗口。");
+    if (!popup) throw new Error(t("the-browser-blocked-the-detached-window-allow-portmate-to"));
     return { close: async () => popup.close() };
   }
   const child = new WebviewWindow(request.windowId, {
@@ -6820,7 +6833,7 @@ async function openDetachedPaneWindow(
     height: 680,
     minWidth: 640,
     minHeight: 400,
-  }), "创建独立窗口超时");
+  }), t("detached-window-creation-timed-out"));
   return { close: () => child.destroy() };
 }
 

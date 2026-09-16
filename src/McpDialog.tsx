@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarClock, Copy, Dices, Download, KeyRound, ListX, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
@@ -38,6 +39,7 @@ export default function McpDialog({
   onAuditChange: (audit: AuditRecord[]) => void;
   initialTab?: McpDialogTab;
 }) {
+  useLocale();
   const [tab, setTab] = useState<McpDialogTab>(initialTab);
   const [draft, setDraft] = useState<McpGrant | null>(() => grants[0] ?? null);
   const [editingClientId, setEditingClientId] = useState<string | null>(() => grants[0]?.clientId ?? null);
@@ -126,7 +128,7 @@ export default function McpDialog({
       setEditingClientId(selected?.clientId ?? null);
       setCreatingGrant(false);
       setError(result.warnings.join("\n"));
-      setGrantNotice("授权已保存；HTTP 接入需在 HTTP 页面选择此客户端。");
+      setGrantNotice(t("grant-saved-select-this-client-on-the-http-page"));
       await http.refreshAfterGrantChange(result.httpAccessInvalidated);
       if (openHttp && requestGateRef.current.isCurrent("grants", token) && !result.warnings.length) setTab("http");
     } catch (cause) {
@@ -145,11 +147,11 @@ export default function McpDialog({
     if (grantBusy || http.isMutating()) return;
     const target = grants.find(grant => grant.clientId === clientId);
     if (!target) return;
-    const unsavedWarning = grantDirty ? "\n当前授权草稿的更改将被丢弃。" : "";
+    const unsavedWarning = grantDirty ? t("changes-to-the-current-grant-draft-will-be-discarded") : "";
     const bridgeWarning = isHttpBindingClient(clientId)
-      ? "\n此身份绑定了 HTTP Bridge，将同时停止托管服务并清除旧 Token。"
+      ? t("this-identity-is-bound-to-http-bridge-the-managed")
       : "";
-    if (!window.confirm(`撤销 MCP 授权“${target.name || clientId}”（${clientId}）？${bridgeWarning}${unsavedWarning}`)) return;
+    if (!window.confirm(t("revoke-mcp-grant", [target.name || clientId, clientId, bridgeWarning, unsavedWarning]))) return;
     setError("");
     setRevokeConfirmation({ clientId, name: target.name });
   }
@@ -174,8 +176,8 @@ export default function McpDialog({
       setCreatingGrant(false);
       setError(result.warnings.join("\n"));
       setGrantNotice(result.httpAccessInvalidated
-        ? "授权已撤销，HTTP 身份已失效。重新接入需选择有效授权。"
-        : "授权已撤销。其他客户端与 HTTP 配置保持不变。");
+        ? t("grant-revoked-and-http-identity-invalidated-select-an-active")
+        : t("grant-revoked-other-clients-and-http-settings-are-unchanged"));
       await http.refreshAfterGrantChange(result.httpAccessInvalidated);
     } catch (cause) {
       if (requestGateRef.current.isCurrent("grants", token)) setError(formatError(cause));
@@ -221,11 +223,11 @@ export default function McpDialog({
   async function deleteAudit(recordIds: string[], all = false) {
     if (auditBusy || (!all && !recordIds.length)) return;
     const targetLabel = all
-      ? "全部 MCP 审计记录"
+      ? t("all-mcp-audit-records")
       : recordIds.length === filteredAudit.length && recordIds.length === audit.length
-        ? "全部 MCP 审计记录"
-        : `${recordIds.length} 条 MCP 审计记录`;
-    if (!window.confirm(`删除${targetLabel}？此操作不可撤销。`)) return;
+        ? t("all-mcp-audit-records")
+        : t("mcp-audit-records", [recordIds.length]);
+    if (!window.confirm(t("delete-this-cannot-be-undone", [targetLabel]))) return;
     const token = requestGateRef.current.begin("audit");
     if (token === null) return;
     setError("");
@@ -247,7 +249,7 @@ export default function McpDialog({
   }
 
   function selectGrant(grant: McpGrant) {
-    if (grantBusy || !confirmDiscardGrant("切换授权")) return;
+    if (grantBusy || !confirmDiscardGrant(t("switch-grant"))) return;
     setExpiryEditor(null);
     loadedGrantRef.current = grant;
     setGrantNotice("");
@@ -258,7 +260,7 @@ export default function McpDialog({
   }
 
   function newGrant() {
-    if (grantBusy || !confirmDiscardGrant("新建授权")) return;
+    if (grantBusy || !confirmDiscardGrant(t("new-grant"))) return;
     setExpiryEditor(null);
     loadedGrantRef.current = null;
     setGrantNotice("");
@@ -354,13 +356,13 @@ export default function McpDialog({
   }
 
   function confirmDiscardGrant(action: string): boolean {
-    return !grantDirty || window.confirm(`当前 MCP 授权有未保存的更改，${action}将放弃这些内容。是否继续？`);
+    return !grantDirty || window.confirm(t("the-current-mcp-grant-has-unsaved-changes-will-discard", [action]));
   }
 
   function closeDialog() {
-    const dirtySections = [grantDirty ? "授权草稿" : "", http.dirty ? "HTTP 配置" : ""].filter(Boolean);
+    const dirtySections = [grantDirty ? t("grant-draft") : "", http.dirty ? t("http-settings") : ""].filter(Boolean);
     if (dirtySections.length
-      && !window.confirm(`MCP ${dirtySections.join("和")}尚未保存，关闭窗口将放弃这些内容。是否继续？`)) return;
+      && !window.confirm(t("mcp-has-unsaved-changes-closing-will-discard-them-continue", [dirtySections.join(t("and"))]))) return;
     onClose();
   }
 
@@ -371,16 +373,16 @@ export default function McpDialog({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>MCP Bridge</strong>
-          <button type="button" title="关闭" aria-label="关闭 MCP Bridge" onClick={closeDialog}><X size={20} /></button>
+          <button type="button" title={t("close")} aria-label={t("close-mcp-bridge")} onClick={closeDialog}><X size={20} /></button>
         </header>
-        <div className="mcp-overview" aria-label="MCP Bridge 当前状态">
+        <div className="mcp-overview" aria-label={t("mcp-bridge-current-status")}>
           <span className={`mcp-overview-service ${runtimePhase}`}><i aria-hidden="true" /><strong>{mcpHttpRuntimeLabel(http.runtime)}</strong></span>
           <code title={runtimeEndpoint}>{runtimeEndpoint}</code>
-          <span>{activeGrantCount} 个有效授权</span>
-          <span>{audit.length} 条审计</span>
+          <span>{t("active-grants", [activeGrantCount])}</span>
+          <span>{t("audit-records", [audit.length])}</span>
         </div>
-        <nav className="mcp-tabs" role="tablist" aria-label="MCP Bridge 视图">
-          {([['grants', '授权'], ['http', 'HTTP'], ['audit', '审计']] as const).map(([id, label]) => (
+        <nav className="mcp-tabs" role="tablist" aria-label={t("mcp-bridge-views")}>
+          {([['grants', t("grants")], ['http', 'HTTP'], ['audit', t("audit")]] as const).map(([id, label]) => (
             <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => { setTab(id); setError(""); }}>{label}</button>
           ))}
         </nav>
@@ -389,13 +391,13 @@ export default function McpDialog({
           <div className="mcp-content" role="tabpanel">
             <aside className="mcp-grants">
               <header className="mcp-grants-header">
-                <div><strong>客户端授权</strong><span>{activeGrantCount} 个有效</span></div>
-                <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建</button>
+                <div><strong>{t("client-grants")}</strong><span>{t("active", [activeGrantCount])}</span></div>
+                <button type="button" className="mcp-new" disabled={grantBusy} onClick={newGrant}><Plus size={14} />{t("new")}</button>
               </header>
               {draft && editingClientId === null ? (
                 <button type="button" className="active mcp-grant-draft" aria-current="true" disabled={grantBusy} onClick={() => clientIdInputRef.current?.focus()}>
-                  <strong>{draft.name.trim() || draft.clientId.trim() || "新授权"}</strong>
-                  <span>{draft.clientId.trim() || "尚未保存"}</span>
+                  <strong>{draft.name.trim() || draft.clientId.trim() || t("new-grant-2")}</strong>
+                  <span>{draft.clientId.trim() || t("not-yet-saved")}</span>
                 </button>
               ) : null}
               {grants.map((grant) => (
@@ -403,32 +405,32 @@ export default function McpDialog({
                   className={`mcp-grant-select ${grant.clientId === editingClientId ? "active" : ""}`}
                   onClick={() => selectGrant(grant)}>
                   <span className="mcp-grant-title"><strong>{grant.name || grant.clientId}</strong>{http.savedGrant?.clientId === grant.clientId ? <em>HTTP</em> : null}</span>
-                  <span>{mcpGrantIsActive(grant) ? `${grant.scopes.length} 项权限 · ${mcpSessionAccessMode(grant) === "none" ? "不授权会话" : mcpSessionAccessMode(grant) === "all" ? "全部会话" : `${grant.allowedSessions.length} 个会话`}` : "已过期或已撤销"}</span>
+                  <span>{mcpGrantIsActive(grant) ? t("permissions-2", [grant.scopes.length, mcpSessionAccessMode(grant) === "none" ? t("no-session-access") : mcpSessionAccessMode(grant) === "all" ? t("all-sessions") : t("session-count", [grant.allowedSessions.length])]) : t("expired-or-revoked")}</span>
                 </button>
               ))}
-              {!grants.length && !draft ? <div className="empty-pane top">没有授权规则</div> : null}
+              {!grants.length && !draft ? <div className="empty-pane top">{t("no-grant-rules")}</div> : null}
             </aside>
             {draft ? (
               <section className="mcp-editor-shell">
                 <div className="mcp-editor">
-                <header className="mcp-section-heading"><div><strong>{editingClientId ? "授权详情" : "新建授权"}</strong><span>{http.savedGrant?.clientId === draft.clientId ? "当前 HTTP Bridge 使用此授权；网络与 Token 在 HTTP 页面管理。" : "定义客户端身份、权限和可访问会话。"}</span></div>{grantDirty ? <em>未保存</em> : null}</header>
-                <McpFieldGroup label="Client ID:">
+                <header className="mcp-section-heading"><div><strong>{editingClientId ? t("grant-details") : t("new-grant")}</strong><span>{http.savedGrant?.clientId === draft.clientId ? t("http-bridge-currently-uses-this-grant-manage-networking-and") : t("define-client-identity-permissions-and-accessible-sessions")}</span></div>{grantDirty ? <em>{t("not-saved")}</em> : null}</header>
+                <McpFieldGroup label={t("ui-client-id")}>
                   <div className="mcp-client-id-control">
-                    <input ref={clientIdInputRef} aria-label="MCP 授权 Client ID" value={draft.clientId} readOnly={editingClientId !== null} disabled={grantBusy} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
-                    {editingClientId === null ? <button type="button" title="随机生成 Client ID" aria-label="随机生成 Client ID" disabled={grantBusy} onMouseDown={(event) => event.preventDefault()} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
+                    <input ref={clientIdInputRef} aria-label={t("mcp-grant-client-id")} value={draft.clientId} readOnly={editingClientId !== null} disabled={grantBusy} required maxLength={128} spellCheck={false} onChange={(event) => setDraft({ ...draft, clientId: event.target.value })} />
+                    {editingClientId === null ? <button type="button" title={t("generate-random-client-id")} aria-label={t("generate-random-client-id")} disabled={grantBusy} onMouseDown={(event) => event.preventDefault()} onClick={fillRandomClientId}><Dices size={15} /></button> : null}
                   </div>
                 </McpFieldGroup>
-                <McpField label="名称:"><input value={draft.name} disabled={grantBusy} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
-                <McpFieldGroup label="到期时间:">
+                <McpField label={t("name-2")}><input value={draft.name} disabled={grantBusy} maxLength={256} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></McpField>
+                <McpFieldGroup label={t("expires")}>
                   <div className="mcp-expiry-control" ref={expiryEditorRef}>
                     <div className="mcp-expiry-summary">
-                      <input type="text" readOnly disabled={grantBusy} aria-label="MCP 授权到期时间" value={formatMcpGrantExpiryInput(draft.expiresAt)} placeholder="永不过期" onClick={openExpiryEditor} onKeyDown={(event) => {
+                      <input type="text" readOnly disabled={grantBusy} aria-label={t("mcp-grant-expiration")} value={formatMcpGrantExpiryInput(draft.expiresAt)} placeholder={t("never-expires")} onClick={openExpiryEditor} onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
                           openExpiryEditor();
                         }
                       }} />
-                      <button type="button" title="编辑到期时间" aria-label="编辑 MCP 授权到期时间" aria-expanded={Boolean(expiryEditor)} disabled={grantBusy} onClick={() => expiryEditor ? setExpiryEditor(null) : openExpiryEditor()}><CalendarClock size={15} /></button>
+                      <button type="button" title={t("edit-expiration")} aria-label={t("edit-mcp-grant-expiration")} aria-expanded={Boolean(expiryEditor)} disabled={grantBusy} onClick={() => expiryEditor ? setExpiryEditor(null) : openExpiryEditor()}><CalendarClock size={15} /></button>
                     </div>
                     {expiryEditor ? (
                       <div className="mcp-expiry-editor" onKeyDown={(event) => {
@@ -441,59 +443,56 @@ export default function McpDialog({
                           applyExpiry();
                         }
                       }}>
-                        <label><span>日期</span><input ref={expiryDateInputRef} type="text" inputMode="numeric" aria-label="MCP 授权到期日期" disabled={grantBusy} maxLength={10} placeholder="YYYY-MM-DD" value={expiryEditor.date} onChange={(event) => setExpiryEditor({ ...expiryEditor, date: event.target.value })} /></label>
-                        <label><span>时间</span><input type="text" inputMode="numeric" aria-label="MCP 授权到期时刻" disabled={grantBusy} maxLength={5} placeholder="HH:mm" value={expiryEditor.time} onChange={(event) => setExpiryEditor({ ...expiryEditor, time: event.target.value })} /></label>
-                        <small className={expiryEditor.date && expiryEditor.time && !expiryCandidate ? "invalid" : ""}>{expiryEditor.date && expiryEditor.time && !expiryCandidate ? "请输入有效的本地日期和时间" : "使用本机时区"}</small>
+                        <label><span>{t("date")}</span><input ref={expiryDateInputRef} type="text" inputMode="numeric" aria-label={t("mcp-grant-expiration-date")} disabled={grantBusy} maxLength={10} placeholder="YYYY-MM-DD" value={expiryEditor.date} onChange={(event) => setExpiryEditor({ ...expiryEditor, date: event.target.value })} /></label>
+                        <label><span>{t("time")}</span><input type="text" inputMode="numeric" aria-label={t("mcp-grant-expiration-time")} disabled={grantBusy} maxLength={5} placeholder="HH:mm" value={expiryEditor.time} onChange={(event) => setExpiryEditor({ ...expiryEditor, time: event.target.value })} /></label>
+                        <small className={expiryEditor.date && expiryEditor.time && !expiryCandidate ? "invalid" : ""}>{expiryEditor.date && expiryEditor.time && !expiryCandidate ? t("enter-a-valid-local-date-and-time") : t("uses-the-local-time-zone")}</small>
                         <div className="mcp-expiry-actions">
-                          <button type="button" disabled={grantBusy} onClick={clearExpiry}>清除</button>
-                          <button type="button" disabled={grantBusy} onClick={() => setExpiryEditor(null)}>取消</button>
-                          <button type="button" className="primary" disabled={grantBusy || !expiryCandidate} onClick={applyExpiry}>确定</button>
+                          <button type="button" disabled={grantBusy} onClick={clearExpiry}>{t("clear")}</button>
+                          <button type="button" disabled={grantBusy} onClick={() => setExpiryEditor(null)}>{t("cancel")}</button>
+                          <button type="button" className="primary" disabled={grantBusy || !expiryCandidate} onClick={applyExpiry}>{t("ok")}</button>
                         </div>
                       </div>
                     ) : null}
                   </div>
                 </McpFieldGroup>
-                <McpField label="写操作:"><span className="mcp-confirm-write"><input type="checkbox" aria-label="写操作每次确认" disabled={grantBusy} checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />每次确认</span></McpField>
+                <McpField label={t("write-actions")}><span className="mcp-confirm-write"><input type="checkbox" aria-label={t("confirm-each-write-action")} disabled={grantBusy} checked={Boolean(draft.confirmWrites)} onChange={(event) => setDraft({ ...draft, confirmWrites: event.target.checked })} />{t("confirm-each-time")}</span></McpField>
                 <McpScopeEditor scopes={draft.scopes} disabled={grantBusy} onToggle={toggleScope} />
                 <p className={draft.scopes.includes("host-files") ? "mcp-scope-boundary elevated" : "mcp-scope-boundary"}>
-                  <code>transfer</code> 可使用 MCP 虚拟内容和 <code>uploadId</code>；<code>host-files</code> 会额外开放 PortMate 主机路径，仅应授予可信客户端。
-                </p>
-                <p className="mcp-scope-boundary"><code>run-scripts</code> 在 PortMate 本机执行已明确开放给此 Client 的 Python / Shell 脚本，不受下方会话范围限制。请在“自定义脚本”中逐条选择允许的客户端。</p>
+                  <code>transfer</code>{t("can-use-mcp-virtual-content-and")}<code>uploadId</code>；<code>host-files</code>{t("also-exposes-paths-on-the-portmate-host-only-grant")}</p>
+                <p className="mcp-scope-boundary"><code>run-scripts</code>{t("executes-python-shell-scripts-explicitly-exposed-to-this-client")}</p>
                 <fieldset className="mcp-session-list">
-                  <legend>允许会话</legend>
-                  <div className="mcp-session-access-mode" role="radiogroup" aria-label="MCP 会话授权范围">
-                    {([["none", "不授权会话"], ["all", "全部会话"], ["selected", "仅选中会话"]] as const).map(([mode, label]) => (
+                  <legend>{t("allowed-sessions")}</legend>
+                  <div className="mcp-session-access-mode" role="radiogroup" aria-label={t("mcp-session-access-scope")}>
+                    {([["none", t("no-session-access")], ["all", t("all-sessions")], ["selected", t("selected-sessions-only")]] as const).map(([mode, label]) => (
                       <label key={mode}><input type="radio" name="mcp-session-access-mode" value={mode} disabled={grantBusy} checked={mcpSessionAccessMode(draft) === mode} onChange={() => changeSessionAccessMode(mode)} />{label}</label>
                     ))}
                   </div>
                   {mcpSessionAccessMode(draft) === "selected" ? (
                     <div className="mcp-session-checkboxes">
                       {sessions.map((session) => <label key={session.profile.id}><input type="checkbox" disabled={grantBusy} checked={draft.allowedSessions.includes(session.profile.id)} onChange={() => toggleSession(session.profile.id)} />{session.profile.name}</label>)}
-                      {!sessions.length ? <span className="mcp-session-empty">没有可选会话</span> : null}
+                      {!sessions.length ? <span className="mcp-session-empty">{t("no-sessions-available")}</span> : null}
                     </div>
                   ) : (
-                    <small className="mcp-session-access-hint">{mcpSessionAccessMode(draft) === "none" ? "默认不允许访问任何会话。" : "允许访问当前 PortMate 中的全部会话。"}</small>
+                    <small className="mcp-session-access-hint">{mcpSessionAccessMode(draft) === "none" ? t("no-session-access-is-granted-by-default") : t("allows-access-to-all-sessions-currently-in-portmate")}</small>
                   )}
                 </fieldset>
                 {grantNotice ? <p className="mcp-inline-notice" role="status">{grantNotice}</p> : null}
-                {error ? <div className="utility-error">{error}</div> : null}
-                <p className="mcp-bridge-binding-note">
-                  权限修改保存后生效。接入地址、Token 和服务启停在 HTTP 页面管理。
-                </p>
+                {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
+                <p className="mcp-bridge-binding-note">{t("permission-changes-take-effect-after-saving-manage-the-address")}</p>
                 </div>
                 <div className="mcp-actions mcp-grant-actions">
-                  <button type="button" className="danger" onClick={() => requestGrantRevocation(draft.clientId)} disabled={grantBusy || http.busy || http.loading || !editingClientId}>撤销</button>
-                  <button type="button" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => void saveGrant()}>保存</button>
-                  <button type="button" className="primary" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => grantDirty ? void saveGrant(true) : setTab("http")}>{grantDirty ? "保存并前往 HTTP" : "前往 HTTP 接入"}</button>
+                  <button type="button" className="danger" onClick={() => requestGrantRevocation(draft.clientId)} disabled={grantBusy || http.busy || http.loading || !editingClientId}>{t("revoke")}</button>
+                  <button type="button" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => void saveGrant()}>{t("save")}</button>
+                  <button type="button" className="primary" disabled={grantBusy || http.busy || http.loading || !draft.clientId.trim()} onClick={() => grantDirty ? void saveGrant(true) : setTab("http")}>{grantDirty ? t("save-and-open-http") : t("open-http-access")}</button>
                 </div>
               </section>
             ) : (
               <section className="mcp-editor mcp-editor-empty">
                 <KeyRound size={22} aria-hidden="true" />
-                <strong>尚未选择授权</strong>
+                <strong>{t("no-grant-selected")}</strong>
                 {grantNotice ? <p className="mcp-inline-notice" role="status">{grantNotice}</p> : null}
-                {error ? <div className="utility-error" role="alert">{error}</div> : null}
-                <button type="button" disabled={grantBusy} onClick={newGrant}><Plus size={14} />新建授权</button>
+                {error ? <div className="utility-error" role="alert">{localizeDiagnostic(error)}</div> : null}
+                <button type="button" disabled={grantBusy} onClick={newGrant}><Plus size={14} />{t("new-grant")}</button>
               </section>
             )}
           </div>
@@ -504,31 +503,31 @@ export default function McpDialog({
         {tab === "audit" ? (
           <section className="mcp-audit-view" role="tabpanel">
             <div className="mcp-audit-toolbar">
-              <label className="mcp-audit-search"><Search size={14} /><input aria-label="筛选 MCP 审计" value={auditQuery} onChange={(event) => setAuditQuery(event.target.value)} placeholder="client、动作或详情" /></label>
-              <select aria-label="筛选审计决策" value={auditDecision} onChange={(event) => setAuditDecision(event.target.value)}><option value="">全部决策</option>{decisionOptions.map((decision) => <option key={decision} value={decision}>{decision}</option>)}</select>
-              <select aria-label="筛选审计会话" value={auditSessionId} onChange={(event) => setAuditSessionId(event.target.value)}><option value="">全部会话</option><option value={MCP_AUDIT_GLOBAL_SESSION}>全局</option>{auditSessionOptions.map((id) => <option key={id} value={id}>{sessionNames.get(id) ?? id}</option>)}</select>
-              <select aria-label="筛选审计权限" value={auditScope} onChange={(event) => setAuditScope(event.target.value as "" | McpScope)}><option value="">全部 scope</option>{allMcpScopes.map((scope) => <option key={scope} value={scope}>{scope}</option>)}</select>
+              <label className="mcp-audit-search"><Search size={14} /><input aria-label={t("filter-mcp-audit")} value={auditQuery} onChange={(event) => setAuditQuery(event.target.value)} placeholder={t("client-action-or-details")} /></label>
+              <select aria-label={t("filter-audit-decisions")} value={auditDecision} onChange={(event) => setAuditDecision(event.target.value)}><option value="">{t("all-decisions")}</option>{decisionOptions.map((decision) => <option key={decision} value={decision}>{decision}</option>)}</select>
+              <select aria-label={t("filter-audit-sessions")} value={auditSessionId} onChange={(event) => setAuditSessionId(event.target.value)}><option value="">{t("all-sessions")}</option><option value={MCP_AUDIT_GLOBAL_SESSION}>{t("global")}</option>{auditSessionOptions.map((id) => <option key={id} value={id}>{sessionNames.get(id) ?? id}</option>)}</select>
+              <select aria-label={t("filter-audit-permissions")} value={auditScope} onChange={(event) => setAuditScope(event.target.value as "" | McpScope)}><option value="">{t("all-scopes")}</option>{allMcpScopes.map((scope) => <option key={scope} value={scope}>{scope}</option>)}</select>
               <span className="mcp-audit-count">{filteredAudit.length} / {audit.length}</span>
-              <button type="button" className="icon-button" title="刷新审计" aria-label="刷新 MCP 审计" disabled={auditBusy || !isBackendAvailable()} onClick={() => void refreshAudit()}><RefreshCw size={14} /></button>
-              <button type="button" className="icon-button" title="导出筛选结果" aria-label="导出 MCP 审计" disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void exportAudit()}><Download size={14} /></button>
-              <button type="button" className="icon-button danger" title="删除当前审计记录" aria-label="删除当前 MCP 审计" disabled={auditBusy || !selectedAudit || !isBackendAvailable()} onClick={() => void deleteAudit(selectedAudit ? [selectedAudit.id] : [])}><Trash2 size={14} /></button>
-              <button type="button" className="icon-button danger" title={filteredAudit.length === audit.length ? "清空全部审计" : "删除筛选结果"} aria-label={filteredAudit.length === audit.length ? "清空全部 MCP 审计" : "删除筛选结果"} disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void deleteAudit(filteredAudit.map((record) => record.id), filteredAudit.length === audit.length)}><ListX size={14} /></button>
+              <button type="button" className="icon-button" title={t("refresh-audit")} aria-label={t("refresh-mcp-audit")} disabled={auditBusy || !isBackendAvailable()} onClick={() => void refreshAudit()}><RefreshCw size={14} /></button>
+              <button type="button" className="icon-button" title={t("export-filtered-results")} aria-label={t("export-mcp-audit")} disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void exportAudit()}><Download size={14} /></button>
+              <button type="button" className="icon-button danger" title={t("delete-current-audit-records")} aria-label={t("delete-current-mcp-audit")} disabled={auditBusy || !selectedAudit || !isBackendAvailable()} onClick={() => void deleteAudit(selectedAudit ? [selectedAudit.id] : [])}><Trash2 size={14} /></button>
+              <button type="button" className="icon-button danger" title={filteredAudit.length === audit.length ? t("clear-all-audit-records") : t("delete-filtered-results")} aria-label={filteredAudit.length === audit.length ? t("clear-all-mcp-audit-records") : t("delete-filtered-results")} disabled={auditBusy || !filteredAudit.length || !isBackendAvailable()} onClick={() => void deleteAudit(filteredAudit.map((record) => record.id), filteredAudit.length === audit.length)}><ListX size={14} /></button>
             </div>
-            {auditExport ? <div className="mcp-audit-export"><span>已导出 {auditExport.records} 条 · SHA-256 {auditExport.sha256.slice(0, 12)}...</span><button type="button" title="复制导出信息" aria-label="复制 MCP 审计导出信息" onClick={() => void navigator.clipboard?.writeText(`${auditExport.path}\n${auditExport.checksumPath}\nSHA-256 ${auditExport.sha256}`).catch(() => {})}><Copy size={14} /></button></div> : null}
-            {error ? <div className="utility-error">{error}</div> : null}
+            {auditExport ? <div className="mcp-audit-export"><span>{t("exported-records-sha-256", [auditExport.records, auditExport.sha256.slice(0, 12)])}</span><button type="button" title={t("copy-export-details")} aria-label={t("copy-mcp-audit-export-details")} onClick={() => void navigator.clipboard?.writeText(`${auditExport.path}\n${auditExport.checksumPath}\nSHA-256 ${auditExport.sha256}`).catch(() => {})}><Copy size={14} /></button></div> : null}
+            {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
             <div className="mcp-audit-workspace">
-              <div className="mcp-audit-list" role="listbox" aria-label="MCP 审计记录">
+              <div className="mcp-audit-list" role="listbox" aria-label={t("mcp-audit-records-2")}>
                 {filteredAudit.map((record) => (
                   <button key={record.id} type="button" role="option" aria-selected={record.id === selectedAudit?.id} className={record.id === selectedAudit?.id ? "active" : ""} onClick={() => setSelectedAuditId(record.id)}>
                     <span><strong>{record.action}</strong><time>{formatDateTime(record.ts)}</time></span>
                     <span><code>{record.actor}</code><em className={`decision-${record.decision}`}>{record.decision}</em></span>
-                    <small>{record.sessionId ? sessionNames.get(record.sessionId) ?? record.sessionId : "全局"} · {record.details.scope ?? "scope unknown"}</small>
+                    <small>{record.sessionId ? sessionNames.get(record.sessionId) ?? record.sessionId : t("global")} · {record.details.scope ?? "scope unknown"}</small>
                   </button>
                 ))}
-                {!filteredAudit.length ? <div className="empty-pane top">没有匹配的审计记录</div> : null}
+                {!filteredAudit.length ? <div className="empty-pane top">{t("no-matching-audit-records")}</div> : null}
               </div>
               <div className="mcp-audit-inspector">
-                {selectedAudit ? <AuditInspector record={selectedAudit} sessionName={selectedAudit.sessionId ? sessionNames.get(selectedAudit.sessionId) : undefined} /> : <div className="empty-pane top">选择一条审计记录</div>}
+                {selectedAudit ? <AuditInspector record={selectedAudit} sessionName={selectedAudit.sessionId ? sessionNames.get(selectedAudit.sessionId) : undefined} /> : <div className="empty-pane top">{t("select-an-audit-record")}</div>}
               </div>
             </div>
           </section>
@@ -544,14 +543,15 @@ export default function McpDialog({
 }
 
 function AuditInspector({ record, sessionName }: { record: AuditRecord; sessionName?: string }) {
+  useLocale();
   return (
     <>
       <header><strong>{record.action}</strong><span>{record.decision}</span></header>
       <dl>
-        <div><dt>时间</dt><dd>{formatDateTime(record.ts)}</dd></div>
-        <div><dt>Client</dt><dd><code>{record.actor}</code></dd></div>
-        <div><dt>会话</dt><dd>{record.sessionId ? <><span>{sessionName ?? record.sessionId}</span><code>{record.sessionId}</code></> : "全局"}</dd></div>
-        <div><dt>记录 ID</dt><dd><code>{record.id}</code></dd></div>
+        <div><dt>{t("time")}</dt><dd>{formatDateTime(record.ts)}</dd></div>
+        <div><dt>{t("ui-client")}</dt><dd><code>{record.actor}</code></dd></div>
+        <div><dt>{t("session")}</dt><dd>{record.sessionId ? <><span>{sessionName ?? record.sessionId}</span><code>{record.sessionId}</code></> : t("global")}</dd></div>
+        <div><dt>{t("record-id")}</dt><dd><code>{record.id}</code></dd></div>
         {Object.entries(record.details).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => <div key={key}><dt>{key}</dt><dd><code>{value}</code></dd></div>)}
       </dl>
     </>
@@ -559,10 +559,12 @@ function AuditInspector({ record, sessionName }: { record: AuditRecord; sessionN
 }
 
 function McpField({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return <label className="dialog-field"><span>{label}</span>{children}</label>;
 }
 
 function McpFieldGroup({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return <div className="dialog-field"><span>{label}</span>{children}</div>;
 }
 

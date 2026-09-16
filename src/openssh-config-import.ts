@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const OPENSSH_CONFIG_IMPORT_MAX_SOURCE_CHARS = 1_000_000;
 export const OPENSSH_CONFIG_IMPORT_MAX_CANDIDATES = 256;
 
@@ -61,7 +62,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
     return {
       candidates: [],
       warnings: [],
-      error: `OpenSSH 配置超过 ${OPENSSH_CONFIG_IMPORT_MAX_SOURCE_CHARS.toLocaleString()} 字符限制`,
+      error: t("openssh-configuration-exceeds-the-character-limit", [OPENSSH_CONFIG_IMPORT_MAX_SOURCE_CHARS.toLocaleString()]),
     };
   }
 
@@ -96,18 +97,18 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       && !candidate.warnings.includes(message)) {
       candidate.warnings.push(message);
     }
-    addWarning(`${hostLabel}，第 ${lineNumber} 行：${message}`);
+    addWarning(t("line", [hostLabel, lineNumber, message]));
   };
   const addForward = (
     candidate: MutableCandidate,
     forward: OpenSshImportForward,
     lineNumber: number | null,
-    source = "转发",
+    source = t("forwards-2"),
   ) => {
     if (candidate.forwards.some((existing) => forwardKey(existing) === forwardKey(forward))) return;
     if (candidate.forwards.length >= MAX_FORWARDS) {
       if (lineNumber !== null) {
-        addCandidateWarning(candidate, lineNumber, `${source}超过 ${MAX_FORWARDS} 条，后续未导入`);
+        addCandidateWarning(candidate, lineNumber, t("exceeds-entries-remaining-entries-were-not-imported", [source, MAX_FORWARDS]));
       }
       return;
     }
@@ -146,14 +147,14 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       if (candidate.identityFiles.includes(path)) continue;
       if (candidate.identityFiles.length >= MAX_IDENTITY_FILES) {
         if (lineNumber !== null) {
-          addCandidateWarning(candidate, lineNumber, `继承 Host * 的 IdentityFile 超过 ${MAX_IDENTITY_FILES} 个，后续未导入`);
+          addCandidateWarning(candidate, lineNumber, t("inherited-host-identityfile-entries-exceed-remaining-entries-were-not", [MAX_IDENTITY_FILES]));
         }
         break;
       }
       candidate.identityFiles.push(path);
     }
     for (const forward of globalDefaults.forwards) {
-      addForward(candidate, forward, lineNumber, "继承 Host * 的转发");
+      addForward(candidate, forward, lineNumber, t("inherited-host-forwards"));
     }
   };
   const applyGlobalDefaultsToExistingCandidates = (lineNumber: number) => {
@@ -163,7 +164,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
     const existing = candidates.get(alias);
     if (existing) return existing;
     if (candidates.size >= OPENSSH_CONFIG_IMPORT_MAX_CANDIDATES) {
-      addWarning(`最多导入 ${OPENSSH_CONFIG_IMPORT_MAX_CANDIDATES} 个字面 Host 条目，后续条目已跳过`);
+      addWarning(t("at-most-literal-host-entries-can-be-imported-remaining", [OPENSSH_CONFIG_IMPORT_MAX_CANDIDATES]));
       return null;
     }
     const candidate: MutableCandidate = {
@@ -197,7 +198,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     if (lineNumber > MAX_CONFIG_LINES) {
-      addWarning(`最多解析 ${MAX_CONFIG_LINES} 行，后续内容已跳过`);
+      addWarning(t("at-most-lines-can-be-parsed-remaining-content-was", [MAX_CONFIG_LINES]));
       break;
     }
     const directive = parseDirective(lines[index]);
@@ -208,7 +209,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       activeGlobalDefaults = false;
       inactiveConditionalBlock = false;
       if (!directive.values.length) {
-        addWarning(`第 ${lineNumber} 行：Host 缺少名称，已跳过`);
+        addWarning(t("line-host-name-is-missing-skipped", [lineNumber]));
         continue;
       }
       if (directive.values.length === 1 && directive.values[0] === GLOBAL_DEFAULT_HOST_ALIAS) {
@@ -217,7 +218,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       }
       for (const alias of directive.values) {
         if (!isLiteralHost(alias)) {
-          addWarning(`第 ${lineNumber} 行：Host ${alias} 不是字面条目，已跳过`);
+          addWarning(t("line-host-is-not-a-literal-entry-skipped", [lineNumber, alias]));
           continue;
         }
         activeAliases.push(alias);
@@ -231,16 +232,16 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       activeAliases = [];
       activeGlobalDefaults = false;
       inactiveConditionalBlock = true;
-      addWarning(`第 ${lineNumber} 行：Match 条件块未导入`);
+      addWarning(t("line-conditional-match-block-not-imported", [lineNumber]));
       continue;
     }
     if (directive.keyword === "include") {
-      addWarning(`第 ${lineNumber} 行：Include 未读取外部文件`);
+      addWarning(t("line-external-include-file-not-read", [lineNumber]));
       continue;
     }
     if (!activeAliases.length && !activeGlobalDefaults) {
       if (!inactiveConditionalBlock) {
-        addWarning(`第 ${lineNumber} 行：${directive.keyword} 不在字面 Host 条目中，未导入`);
+        addWarning(t("line-is-outside-a-literal-host-entry-not-imported", [lineNumber, directive.keyword]));
       }
       continue;
     }
@@ -250,7 +251,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const host = normalizeEndpointHost(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (!host) {
-            addCandidateWarning(candidate, lineNumber, "HostName 不是可直接导入的字面地址");
+            addCandidateWarning(candidate, lineNumber, t("hostname-is-not-a-directly-importable-literal-address"));
             return;
           }
           setFirst(candidate, "host", host);
@@ -261,7 +262,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const username = normalizeValue(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (!username) {
-            addCandidateWarning(candidate, lineNumber, "User 为空或包含动态标记");
+            addCandidateWarning(candidate, lineNumber, t("user-is-empty-or-contains-dynamic-tokens"));
             return;
           }
           setFirst(candidate, "username", username);
@@ -272,7 +273,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const port = parsePort(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (port === null) {
-            addCandidateWarning(candidate, lineNumber, "Port 必须是 1 到 65535 的整数");
+            addCandidateWarning(candidate, lineNumber, t("port-must-be-an-integer-from-1-to-65535"));
             return;
           }
           setFirst(candidate, "port", port);
@@ -283,7 +284,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const alias = normalizeValue(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (!alias) {
-            addCandidateWarning(candidate, lineNumber, "HostKeyAlias 为空或包含动态标记");
+            addCandidateWarning(candidate, lineNumber, t("hostkeyalias-is-empty-or-contains-dynamic-tokens"));
             return;
           }
           setFirst(candidate, "hostKeyAlias", alias);
@@ -294,12 +295,12 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const path = normalizeIdentityPath(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (!path) {
-            addCandidateWarning(candidate, lineNumber, "IdentityFile 不是可直接导入的本地路径");
+            addCandidateWarning(candidate, lineNumber, t("identityfile-is-not-a-directly-importable-local-path"));
             return;
           }
           if (candidate.identityFiles.includes(path)) return;
           if (candidate.identityFiles.length >= MAX_IDENTITY_FILES) {
-            addCandidateWarning(candidate, lineNumber, `最多保留 ${MAX_IDENTITY_FILES} 个 IdentityFile`);
+            addCandidateWarning(candidate, lineNumber, t("at-most-identityfile-entries-are-retained", [MAX_IDENTITY_FILES]));
             return;
           }
           candidate.identityFiles.push(path);
@@ -310,7 +311,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const interval = parseInteger(directive.values[0], 0, 3_600);
         withActiveCandidates(lineNumber, (candidate) => {
           if (interval === null) {
-            addCandidateWarning(candidate, lineNumber, "ServerAliveInterval 必须是 0 到 3600 的整数");
+            addCandidateWarning(candidate, lineNumber, t("serveraliveinterval-must-be-an-integer-from-0-to-3600"));
             return;
           }
           if (candidate.defined.has("keepaliveEnabled") || candidate.defined.has("keepaliveIntervalSeconds")) return;
@@ -327,11 +328,11 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const maxMissed = parseInteger(directive.values[0], 0, 20);
         withActiveCandidates(lineNumber, (candidate) => {
           if (maxMissed === null) {
-            addCandidateWarning(candidate, lineNumber, "ServerAliveCountMax 必须是 0 到 20 的整数");
+            addCandidateWarning(candidate, lineNumber, t("serveralivecountmax-must-be-an-integer-from-0-to-20"));
             return;
           }
           if (maxMissed === 0) {
-            addCandidateWarning(candidate, lineNumber, "ServerAliveCountMax=0 会在首个保活探测前断开，PortMate 未导入该值");
+            addCandidateWarning(candidate, lineNumber, t("serveralivecountmax-0-disconnects-before-the-first-keepalive-probe-portmate"));
             return;
           }
           setFirst(candidate, "keepaliveMaxMissed", maxMissed);
@@ -342,7 +343,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const value = parseBoolean(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (value === null) {
-            addCandidateWarning(candidate, lineNumber, "TCPKeepAlive 仅支持 yes 或 no");
+            addCandidateWarning(candidate, lineNumber, t("tcpkeepalive-supports-only-yes-or-no"));
             return;
           }
           setFirst(candidate, "tcpKeepaliveEnabled", value);
@@ -353,7 +354,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const value = parseBoolean(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (value === null) {
-            addCandidateWarning(candidate, lineNumber, "IdentitiesOnly 仅支持 yes 或 no");
+            addCandidateWarning(candidate, lineNumber, t("identitiesonly-supports-only-yes-or-no"));
             return;
           }
           setFirst(candidate, "identitiesOnly", value);
@@ -364,7 +365,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const value = parseBoolean(directive.values[0]);
         withActiveCandidates(lineNumber, (candidate) => {
           if (value === null) {
-            addCandidateWarning(candidate, lineNumber, "ForwardAgent 仅支持 yes 或 no");
+            addCandidateWarning(candidate, lineNumber, t("forwardagent-supports-only-yes-or-no"));
             return;
           }
           setFirst(candidate, "forwardAgent", value);
@@ -375,7 +376,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const jumps = parseProxyJump(directive.values);
         withActiveCandidates(lineNumber, (candidate) => {
           if (jumps === null) {
-            addCandidateWarning(candidate, lineNumber, "ProxyJump 仅支持逗号分隔的 [user@]host[:port] 字面地址");
+            addCandidateWarning(candidate, lineNumber, t("proxyjump-supports-only-comma-separated-literal-user-host-port"));
             return;
           }
           if (candidate.defined.has("jumps")) return;
@@ -390,7 +391,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
         const forward = parseOpenSshForward(directive.keyword, directive.values);
         withActiveCandidates(lineNumber, (candidate) => {
           if (!forward) {
-            addCandidateWarning(candidate, lineNumber, `${directive.keyword} 仅支持安全的 TCP [bind_host:]port 和 host:port 字面地址`);
+            addCandidateWarning(candidate, lineNumber, t("supports-only-safe-literal-tcp-bind-host-port-and", [directive.keyword]));
             return;
           }
           addForward(candidate, forward, lineNumber);
@@ -399,7 +400,7 @@ export function parseOpenSshConfig(source: string): OpenSshConfigImportResult {
       }
       default:
         withActiveCandidates(lineNumber, (candidate) => {
-          addCandidateWarning(candidate, lineNumber, `${directive.keyword} 未导入`);
+          addCandidateWarning(candidate, lineNumber, t("not-imported", [directive.keyword]));
         });
     }
   }

@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { Ban } from "lucide-react";
 import type { ReactNode } from "react";
 import type { WorkspaceView } from "./workspace-state";
@@ -83,12 +84,13 @@ export default function WorkspaceViewContextMenu({
   onRename: () => void;
   onAction: (action: WorkspaceViewContextAction) => void;
 }) {
+  useLocale();
   const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
   const top = Math.max(8, Math.min(state.y, window.innerHeight - 560));
   return (
     <div
       className="portmate-context-menu workspace-view-context-menu"
-      aria-label="视图菜单"
+      aria-label={t("view-menu")}
       tabIndex={-1}
       style={{ left, top }}
       onClick={(event) => event.stopPropagation()}
@@ -101,15 +103,15 @@ export default function WorkspaceViewContextMenu({
         <span className={view.color ? "tab-mark colored" : "tab-mark"} style={view.color ? { background: view.color } : undefined} />
         <strong>{label}</strong>
       </div>
-      <span className="context-section-label">标签颜色</span>
-      <div className="workspace-view-color-grid" role="group" aria-label="标签颜色">
+      <span className="context-section-label">{t("tab-color")}</span>
+      <div className="workspace-view-color-grid" role="group" aria-label={t("tab-color")}>
         {colors.map((color) => (
           <button
             key={color.value}
             type="button"
             className={view.color === color.value ? "active" : ""}
-            title={color.label}
-            aria-label={color.label}
+            title={t(color.label)}
+            aria-label={t(color.label)}
             aria-pressed={view.color === color.value}
             onClick={() => onColor(color.value)}
           >
@@ -119,8 +121,8 @@ export default function WorkspaceViewContextMenu({
         <button
           type="button"
           className={!view.color ? "active clear" : "clear"}
-          title="清除颜色"
-          aria-label="清除颜色"
+          title={t("clear-color")}
+          aria-label={t("clear-color")}
           aria-pressed={!view.color}
           onClick={() => onColor("")}
         >
@@ -128,50 +130,51 @@ export default function WorkspaceViewContextMenu({
         </button>
       </div>
       <Divider />
-      <MenuButton label="复制视图" disabled={!canDuplicate} onClick={onDuplicate} />
-      <MenuButton label="重命名视图" onClick={onRename} />
+      <MenuButton label={t("duplicate-view")} disabled={!canDuplicate} onClick={onDuplicate} />
+      <MenuButton label={t("rename-view")} onClick={onRename} />
       <Divider />
-      <MenuButton label="复制会话名称" onClick={() => onAction("copy-name")} />
-      <MenuButton label="复制会话 URL" onClick={() => onAction("copy-url")} />
+      <MenuButton label={t("copy-session-name")} onClick={() => onAction("copy-name")} />
+      <MenuButton label={t("copy-session-url")} onClick={() => onAction("copy-url")} />
       <Divider />
-      <MenuButton label="重新连接会话" disabled={connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
-      <MenuButton label="保存会话配置" disabled={profileBusy} onClick={() => onAction("save")} />
-      <MenuButton label="导出终端文本" disabled={exportBusy} onClick={() => onAction("export-buffer")} />
-      <MenuButton label="导出终端文本到..." disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
-      <MenuButton label="导出选中文本" disabled={exportBusy} onClick={() => onAction("export-selection")} />
+      <MenuButton label={t("reconnect-session")} disabled={connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
+      <MenuButton label={t("save-session-settings")} disabled={profileBusy} onClick={() => onAction("save")} />
+      <MenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <MenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <MenuButton label={t("export-selected-text")} disabled={exportBusy} onClick={() => onAction("export-selection")} />
       <Divider />
-      <MenuButton label="水平拆分视图" onClick={() => onAction("split-horizontal")} />
-      <MenuButton label="垂直拆分视图" onClick={() => onAction("split-vertical")} />
-      <MenuButton label="移动视图到分组" disabled={!canMove} onClick={() => onAction("move-group")} />
-      <ContextSubmenu label="移到新分组" disabled={!canMoveToNewGroup}>
-        <MenuButton label="左侧" onClick={() => onAction("move-new-left")} />
-        <MenuButton label="右侧" onClick={() => onAction("move-new-right")} />
-        <MenuButton label="上方" onClick={() => onAction("move-new-up")} />
-        <MenuButton label="下方" onClick={() => onAction("move-new-down")} />
+      <MenuButton label={t("split-view-horizontally")} onClick={() => onAction("split-horizontal")} />
+      <MenuButton label={t("split-view-vertically")} onClick={() => onAction("split-vertical")} />
+      <MenuButton label={t("move-view-to-group")} disabled={!canMove} onClick={() => onAction("move-group")} />
+      <ContextSubmenu label={t("move-to-new-group")} disabled={!canMoveToNewGroup}>
+        <MenuButton label={t("left")} onClick={() => onAction("move-new-left")} />
+        <MenuButton label={t("right")} onClick={() => onAction("move-new-right")} />
+        <MenuButton label={t("above")} onClick={() => onAction("move-new-up")} />
+        <MenuButton label={t("below")} onClick={() => onAction("move-new-down")} />
       </ContextSubmenu>
-      <MenuButton label="移到新窗口" disabled={!canDetach} onClick={() => onAction("detach-pane")} />
+      <MenuButton label={t("move-to-new-window")} disabled={!canDetach} onClick={() => onAction("detach-pane")} />
       <Divider />
-      <MenuButton label="关闭视图" disabled={!canClose} onClick={() => onAction("close")} />
-      <MenuButton label="关闭其他视图" disabled={!canCloseOther} onClick={() => onAction("close-other")} />
-      <MenuButton label="关闭右侧视图" disabled={!canCloseRight} onClick={() => onAction("close-right")} />
-      <MenuButton label="重新打开已关闭视图" disabled={!canReopen} onClick={() => onAction("reopen")} />
-      <MenuButton label="关闭窗格" disabled={!canClosePane} onClick={() => onAction("close-pane")} />
+      <MenuButton label={t("close-view")} disabled={!canClose} onClick={() => onAction("close")} />
+      <MenuButton label={t("close-other-views")} disabled={!canCloseOther} onClick={() => onAction("close-other")} />
+      <MenuButton label={t("close-views-to-the-right")} disabled={!canCloseRight} onClick={() => onAction("close-right")} />
+      <MenuButton label={t("reopen-closed-view")} disabled={!canReopen} onClick={() => onAction("reopen")} />
+      <MenuButton label={t("close-pane-3")} disabled={!canClosePane} onClick={() => onAction("close-pane")} />
       <Divider />
-      <MenuButton label="合并当前分组" disabled={!canMerge} onClick={() => onAction("merge-group")} />
-      <ContextSubmenu label="交换窗格" disabled={!Object.values(canSwap).some(Boolean)}>
-        <MenuButton label="向上" disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
-        <MenuButton label="向下" disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
-        <MenuButton label="向左" disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
-        <MenuButton label="向右" disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
+      <MenuButton label={t("merge-current-group")} disabled={!canMerge} onClick={() => onAction("merge-group")} />
+      <ContextSubmenu label={t("swap-panes")} disabled={!Object.values(canSwap).some(Boolean)}>
+        <MenuButton label={t("up")} disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
+        <MenuButton label={t("down")} disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
+        <MenuButton label={t("left-2")} disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
+        <MenuButton label={t("right-2")} disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
       </ContextSubmenu>
-      <MenuButton label="切换窗格缩放" disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
+      <MenuButton label={t("toggle-pane-zoom")} disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
       <Divider />
-      <MenuButton label="会话设置..." disabled={profileBusy} onClick={() => onAction("settings")} />
+      <MenuButton label={t("session-settings-2")} disabled={profileBusy} onClick={() => onAction("settings")} />
     </div>
   );
 }
 
 function MenuButton({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void }) {
+  useLocale();
   return (
     <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
       <span className="context-check" />
@@ -189,6 +192,7 @@ function ContextSubmenu({
   disabled?: boolean;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
       <button type="button" className="context-menu-row" aria-label={label} disabled={disabled}>
@@ -202,5 +206,6 @@ function ContextSubmenu({
 }
 
 function Divider() {
+  useLocale();
   return <div className="context-divider" />;
 }

@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { Plus, RefreshCw, Square, Trash2, X } from "lucide-react";
@@ -24,6 +25,7 @@ export default function TunnelDialog({
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
+  useLocale();
   const [mode, setMode] = useState<TunnelSpec["mode"]>("local");
   const [bindHost, setBindHost] = useState("127.0.0.1");
   const [bindPort, setBindPort] = useState("10022");
@@ -81,7 +83,7 @@ export default function TunnelDialog({
     const normalizedBindPort = parseTunnelPort(bindPort, true);
     const normalizedTargetPort = mode === "dynamic" ? 0 : parseTunnelPort(targetPort, false);
     if (normalizedBindPort === null || normalizedTargetPort === null) {
-      setError("端口必须是 0 到 65535 之间的整数，目标端口不能为 0。");
+      setError(t("ports-must-be-integers-from-0-to-65535-the"));
       return;
     }
     const gate = createGate.current;
@@ -104,7 +106,7 @@ export default function TunnelDialog({
       if (!gate.isCurrent("create", token)) return;
       refreshGate.current.invalidate("tunnels");
       setTunnels((current) => mergeTunnels(current, emptyTunnelStatus(tunnel)));
-      onDone(`已创建 ${mode} tunnel：${tunnel.label}`);
+      onDone(t("created-tunnel", [mode, tunnel.label]));
     } catch (error) {
       if (gate.isCurrent("create", token)) setError(formatTunnelError(error));
     } finally {
@@ -123,7 +125,7 @@ export default function TunnelDialog({
       if (!stopGate.current.isCurrent(tunnelId, token)) return;
       refreshGate.current.invalidate("tunnels");
       setTunnels((current) => current.filter((item) => item.spec.id !== tunnelId));
-      onDone(`已停止 tunnel：${tunnel.spec.label}`);
+      onDone(t("stopped-tunnel", [tunnel.spec.label]));
     } catch (error) {
       if (stopGate.current.isCurrent(tunnelId, token)) setError(formatTunnelError(error));
     } finally {
@@ -170,48 +172,48 @@ export default function TunnelDialog({
       <form className="wind-dialog utility-dialog" onSubmit={submit}>
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong>端口转发</strong>
+          <strong>{t("port-forwarding")}</strong>
           <button type="button" onClick={onClose}><X size={20} /></button>
         </header>
         <section className="utility-content">
-          <DialogField label="会话:">
+          <DialogField label={t("session-3")}>
             <input value={session.profile.name} readOnly />
           </DialogField>
-          <DialogField label="模式:">
+          <DialogField label={t("mode")}>
             <select value={mode} onChange={(event) => setMode(event.target.value as TunnelSpec["mode"])}>
-              <option value="local">local</option>
-              <option value="dynamic">dynamic SOCKS5</option>
-              <option value="remote">remote</option>
+              <option value="local">{t("local")}</option>
+              <option value="dynamic">{t("ui-dynamic-socks5")}</option>
+              <option value="remote">{t("remote")}</option>
             </select>
           </DialogField>
-          <DialogField label="监听:">
+          <DialogField label={t("listen")}>
             <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
           </DialogField>
-          <DialogField label="端口:">
+          <DialogField label={t("port-3")}>
             <input type="number" min={0} max={65_535} step={1} inputMode="numeric" value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
           </DialogField>
           {mode !== "dynamic" ? (
             <>
-              <DialogField label="目标:">
+              <DialogField label={t("target-2")}>
                 <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
               </DialogField>
-              <DialogField label="目标端口:">
+              <DialogField label={t("target-port")}>
                 <input type="number" min={1} max={65_535} step={1} inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
               </DialogField>
             </>
           ) : (
-            <div className="tunnel-routes" aria-label="指定目标路由">
+            <div className="tunnel-routes" aria-label={t("specified-target-routes")}>
               <header>
                 <div>
-                  <strong>目标路由</strong>
-                  <small>{routeRules.length ? `仅允许 ${routeRules.length} 条规则` : "允许全部 SOCKS5 目标"}</small>
+                  <strong>{t("target-routes")}</strong>
+                  <small>{routeRules.length ? t("allow-only-rules", [routeRules.length]) : t("allow-all-socks5-targets")}</small>
                 </div>
                 <button
                   type="button"
                   onClick={addRouteRule}
                   disabled={routeRules.length >= MAX_TUNNEL_ROUTE_RULES}
-                  title="添加目标路由"
-                  aria-label="添加目标路由"
+                  title={t("add-target-route")}
+                  aria-label={t("add-target-route")}
                 >
                   <Plus size={14} />
                 </button>
@@ -221,21 +223,21 @@ export default function TunnelDialog({
                   {routeRules.map((rule, index) => (
                     <div className="tunnel-route-row" key={index}>
                       <input
-                        aria-label={`路由目标 ${index + 1}`}
+                        aria-label={t("route-target", [index + 1])}
                         maxLength={MAX_TUNNEL_HOST_CHARACTERS}
-                        placeholder="host / *.domain / CIDR"
+                        placeholder={t("ui-host-domain-cidr")}
                         value={rule.host}
                         onChange={(event) => updateRouteRule(index, { host: event.target.value })}
                         onBlur={() => updateRouteRule(index, { host: normalizeTunnelRouteHost(rule.host) })}
                       />
                       <input
-                        aria-label={`路由端口 ${index + 1}`}
+                        aria-label={t("route-port", [index + 1])}
                         type="number"
                         min={1}
                         max={65_535}
                         step={1}
                         inputMode="numeric"
-                        placeholder="全部"
+                        placeholder={t("all")}
                         value={rule.port ?? ""}
                         onChange={(event) => updateRouteRule(index, {
                           port: event.target.value === "" ? null : Number(event.target.value),
@@ -244,8 +246,8 @@ export default function TunnelDialog({
                       <button
                         type="button"
                         onClick={() => removeRouteRule(index)}
-                        title="删除目标路由"
-                        aria-label={`删除目标路由 ${index + 1}`}
+                        title={t("delete-target-route")}
+                        aria-label={t("delete-target-route-2", [index + 1])}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -257,8 +259,8 @@ export default function TunnelDialog({
           )}
           <div className="tunnel-panel">
             <header>
-              <strong>运行中</strong>
-              <button type="button" onClick={() => void refreshTunnels()} disabled={loading} title="刷新 tunnel 列表">
+              <strong>{t("running")}</strong>
+              <button type="button" onClick={() => void refreshTunnels()} disabled={loading} title={t("refresh-tunnel-list")}>
                 <RefreshCw size={14} />
               </button>
             </header>
@@ -269,26 +271,25 @@ export default function TunnelDialog({
                     <div>
                       <strong>{tunnel.spec.label}</strong>
                       <small>{tunnel.spec.egress === "portmate-host" ? "PortMate host" : "SSH"} · {tunnel.spec.mode} · {tunnel.spec.bindHost}:{tunnel.spec.bindPort}{tunnel.spec.mode === "dynamic" ? dynamicRouteSummary(tunnel.spec.routeRules) : ` -> ${tunnel.spec.targetHost}:${tunnel.spec.targetPort}`}</small>
-                      <small>
-                        active {tunnel.activeConnections} · total {tunnel.totalConnections} · {tunnel.spec.egress === "portmate-host" ? "client→target" : "TCP→SSH"} {formatBytes(tunnel.tcpToSshBytes)} · {tunnel.spec.egress === "portmate-host" ? "target→client" : "SSH→TCP"} {formatBytes(tunnel.sshToTcpBytes)}
+                      <small>{t("ui-active")}{tunnel.activeConnections}{" "}{t("ui-total")}{" "}{tunnel.totalConnections} · {tunnel.spec.egress === "portmate-host" ? "client→target" : "TCP→SSH"} {formatBytes(tunnel.tcpToSshBytes)} · {tunnel.spec.egress === "portmate-host" ? "target→client" : "SSH→TCP"} {formatBytes(tunnel.sshToTcpBytes)}
                       </small>
-                      {tunnel.lastError ? <small className="tunnel-error">{tunnel.lastError}</small> : null}
+                      {tunnel.lastError ? <small className="tunnel-error">{localizeDiagnostic(tunnel.lastError)}</small> : null}
                     </div>
-                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingIds.has(tunnel.spec.id)} title="停止 tunnel">
+                    <button type="button" onClick={() => void stopTunnel(tunnel)} disabled={stoppingIds.has(tunnel.spec.id)} title={t("stop-tunnel")}>
                       <Square size={13} />
                     </button>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="empty-pane top">{loading ? "正在读取 tunnel" : "没有运行中的 tunnel"}</div>
+              <div className="empty-pane top">{loading ? t("loading-tunnels") : t("no-running-tunnels")}</div>
             )}
           </div>
-          {error ? <div className="utility-error">{error}</div> : null}
+          {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
         </section>
         <footer className="utility-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || tunnelLimitReached || !formValid} title={tunnelLimitReached ? "已达到 64 条 tunnel 上限" : "创建 tunnel"}>{busy ? "创建中" : "创建"}</button>
+          <button type="button" onClick={onClose}>{t("cancel")}</button>
+          <button type="submit" disabled={busy || tunnelLimitReached || !formValid} title={tunnelLimitReached ? t("the-limit-of-64-tunnels-has-been-reached") : t("create-tunnel")}>{busy ? t("creating") : t("create")}</button>
         </footer>
       </form>
     </div>
@@ -305,6 +306,7 @@ function dynamicRouteSummary(rules: TunnelRouteRule[]): string {
 }
 
 function DialogField({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return (
     <label className="dialog-field">
       <span>{label}</span>

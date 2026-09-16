@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Lock, PanelLeftOpen } from "lucide-react";
@@ -11,6 +12,7 @@ export default function ChildWindowScreenLockOverlay({
   marker: ScreenLockMarker;
   ownerWindowId: string;
 }) {
+  useLocale();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -31,7 +33,7 @@ export default function ChildWindowScreenLockOverlay({
     }
   }
 
-  const reason = marker.reason === "idle" ? "空闲超时" : marker.reason === "startup" ? "启动保护" : "手动锁定";
+  const reason = marker.reason === "idle" ? t("idle-timeout") : marker.reason === "startup" ? t("startup-protection") : t("manually-locked");
   return (
     <div
       className="screen-lock-overlay"
@@ -52,14 +54,14 @@ export default function ChildWindowScreenLockOverlay({
           <span>PortMate</span>
         </div>
         <div className="screen-lock-heading">
-          <h1 id="child-window-screen-lock-title">屏幕已锁定</h1>
+          <h1 id="child-window-screen-lock-title">{t("screen-locked")}</h1>
           <span>{reason} · {new Date(marker.lockedAt).toLocaleTimeString()}</span>
         </div>
         <div className="screen-lock-rule" />
-        <p className="screen-lock-message">请在来源工作区完成解锁</p>
+        <p className="screen-lock-message">{t("unlock-in-the-source-workspace")}</p>
         <button ref={buttonRef} className="screen-lock-primary" type="button" onClick={() => void focusOwnerWorkspace()}>
           <PanelLeftOpen size={15} />
-          <span>切换到来源工作区</span>
+          <span>{t("switch-to-source-workspace")}</span>
         </button>
       </section>
     </div>

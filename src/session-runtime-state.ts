@@ -1,12 +1,13 @@
+import { t } from "./i18n";
 import type { SessionRuntime, SessionStatus } from "./types";
 
 const statusLabels: Record<SessionStatus, string> = {
-  disconnected: "已断开",
-  connecting: "正在连接",
-  connected: "已连接",
-  reconnecting: "正在重连",
-  blocked: "连接已阻止",
-  error: "连接错误",
+  disconnected: "disconnected",
+  connecting: "connecting",
+  connected: "connected",
+  reconnecting: "reconnecting",
+  blocked: "connection-blocked",
+  error: "connection-error",
 };
 
 const MAX_DISCONNECT_REASON_CHARS = 256;
@@ -23,7 +24,7 @@ export function sessionConnectionAction(status: SessionStatus): "connect" | "dis
 }
 
 export function sessionRuntimeStatusLabel(status: SessionStatus): string {
-  return statusLabels[status];
+  return t(statusLabels[status]);
 }
 
 export function transitionSessionRuntimeStatus(
@@ -63,10 +64,10 @@ export function sessionRuntimeDisconnectDescription(
   const parts: string[] = [];
   if (runtime.lastDisconnect && Number.isFinite(Date.parse(runtime.lastDisconnect))) {
     const timestamp = formatTimestamp(runtime.lastDisconnect).trim();
-    if (timestamp) parts.push(`上次断开 ${timestamp}`);
+    if (timestamp) parts.push(t("last-disconnected", [timestamp]));
   }
   const reason = normalizeSessionDisconnectReason(runtime.lastDisconnectReason);
-  if (reason) parts.push(`原因: ${reason}`);
+  if (reason) parts.push(t("reason", [reason]));
   return parts.join(" · ");
 }
 

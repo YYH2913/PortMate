@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { proxyDefaults } from "./proxy-settings";
 import { serialConnectionDefaults } from "./serial-connection-settings";
 import type { ProtocolTab } from "./session-settings-state";
@@ -241,7 +242,7 @@ export function createIdentityRef(): IdentityRef {
 export async function chooseSshPrivateKeyPath(defaultPath = ""): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const selected = await open({
-    title: "选择 SSH 私钥文件",
+    title: t("select-ssh-private-key-file"),
     directory: false,
     multiple: false,
     defaultPath: defaultPath.trim() || undefined,
@@ -314,7 +315,7 @@ export function createJumpHostKeyPolicy(jump?: JumpHop): HostKeyPolicy {
 export function createDefaultTrigger(): TriggerSpec {
   return {
     id: `trigger-${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`,
-    label: "关键输出",
+    label: t("important-output"),
     matcher: { type: "contains", text: "error", case_sensitive: false },
     actions: [{ type: "timeline-mark", label: "error" }],
     enabled: true,
@@ -346,10 +347,10 @@ export function describeHostKeyEvaluation(result: HostKeyScanResult) {
   const evaluation = result.evaluation;
   const prefix = result.label ? `${result.label}: ` : "";
   if (evaluation.status === "trusted") {
-    return `${prefix}已信任 ${evaluation.fingerprintSha256}`;
+    return t("trusted", [prefix, evaluation.fingerprintSha256]);
   }
   if (evaluation.status === "mismatch") {
-    return `${prefix}不匹配 ${evaluation.algorithm} ${evaluation.observedFingerprintSha256}`;
+    return t("mismatch", [prefix, evaluation.algorithm, evaluation.observedFingerprintSha256]);
   }
-  return `${prefix}未知 ${evaluation.algorithm} ${evaluation.fingerprintSha256}`;
+  return t("unknown-2", [prefix, evaluation.algorithm, evaluation.fingerprintSha256]);
 }

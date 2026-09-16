@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { ProxyKind } from "./types";
 import { normalizeTerminalName, TERMINAL_PROFILE_BOUNDS } from "./terminal-settings-state";
 
@@ -88,7 +89,7 @@ export function parsePuttySessions(source: string, sourceName = ""): PuttySessio
     return {
       candidates: [],
       warnings: [],
-      error: `PuTTY 配置超过 ${PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS.toLocaleString()} 字符限制`,
+      error: t("putty-configuration-exceeds-the-character-limit", [PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS.toLocaleString()]),
     };
   }
 
@@ -104,7 +105,7 @@ export function parsePuttySessions(source: string, sourceName = ""): PuttySessio
 
   for (const rawSession of rawSessions) {
     if (candidates.length >= PUTTY_SESSION_IMPORT_MAX_CANDIDATES) {
-      addWarning(`最多导入 ${PUTTY_SESSION_IMPORT_MAX_CANDIDATES} 个 PuTTY 会话，后续条目已跳过`);
+      addWarning(t("at-most-putty-sessions-can-be-imported-remaining-entries", [PUTTY_SESSION_IMPORT_MAX_CANDIDATES]));
       break;
     }
     const candidate = buildCandidate(rawSession, candidates.length + 1, addWarning);
@@ -112,7 +113,7 @@ export function parsePuttySessions(source: string, sourceName = ""): PuttySessio
   }
 
   if (!rawSessions.length && source.trim()) {
-    addWarning("没有找到可解析的 PuTTY 会话配置");
+    addWarning(t("no-parseable-putty-session-configuration-found"));
   }
 
   return { candidates, warnings, error: null };
@@ -129,7 +130,7 @@ function parseRegistrySessions(lines: string[], addWarning: (message: string) =>
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     if (lineNumber > MAX_CONFIG_LINES) {
-      addWarning(`最多解析 ${MAX_CONFIG_LINES} 行，后续内容已跳过`);
+      addWarning(t("at-most-lines-can-be-parsed-remaining-content-was", [MAX_CONFIG_LINES]));
       break;
     }
     const line = lines[index].trim();
@@ -156,20 +157,20 @@ function createRegistrySession(
   if (!lower.startsWith(PUTTY_REGISTRY_SESSION_PREFIX)) return null;
   const encodedName = section.slice(PUTTY_REGISTRY_SESSION_PREFIX.length);
   if (!encodedName || encodedName.includes("\\")) {
-    addWarning(`第 ${lineNumber} 行：PuTTY 注册表会话名称无效，已跳过`);
+    addWarning(t("line-invalid-putty-registry-session-name-skipped", [lineNumber]));
     return null;
   }
   const name = decodeSessionName(encodedName);
   if (!name) {
-    addWarning(`第 ${lineNumber} 行：PuTTY 注册表会话名称无效，已跳过`);
+    addWarning(t("line-invalid-putty-registry-session-name-skipped", [lineNumber]));
     return null;
   }
   if (isDefaultSessionName(name)) {
-    addWarning(`第 ${lineNumber} 行：PuTTY Default Settings 未作为独立会话导入`);
+    addWarning(t("line-putty-default-settings-were-not-imported-as-a", [lineNumber]));
     return null;
   }
   if (sessions.length >= PUTTY_SESSION_IMPORT_MAX_CANDIDATES) {
-    addWarning(`最多解析 ${PUTTY_SESSION_IMPORT_MAX_CANDIDATES} 个 PuTTY 会话，后续条目已跳过`);
+    addWarning(t("at-most-putty-sessions-can-be-parsed-remaining-entries", [PUTTY_SESSION_IMPORT_MAX_CANDIDATES]));
     return null;
   }
   const session = { name, settings: new Map<string, string>(), lineNumber };
@@ -219,14 +220,14 @@ function parseUnixSession(
 ): RawPuttySession[] {
   const name = sessionNameFromSource(sourceName);
   if (isDefaultSessionName(name)) {
-    addWarning("PuTTY Default Settings 未作为独立会话导入");
+    addWarning(t("putty-default-settings-were-not-imported-as-a-separate"));
     return [];
   }
   const session: RawPuttySession = { name, settings: new Map<string, string>(), lineNumber: 1 };
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     if (lineNumber > MAX_CONFIG_LINES) {
-      addWarning(`最多解析 ${MAX_CONFIG_LINES} 行，后续内容已跳过`);
+      addWarning(t("at-most-lines-can-be-parsed-remaining-content-was", [MAX_CONFIG_LINES]));
       break;
     }
     const line = lines[index].trim();
@@ -248,7 +249,7 @@ function addSetting(
   const normalizedKey = key.trim().toLowerCase();
   if (!normalizedKey) return;
   if (!session.settings.has(normalizedKey) && session.settings.size >= MAX_SESSION_SETTINGS) {
-    addWarning(`会话 ${session.name}，第 ${lineNumber} 行：配置项过多，后续项已跳过`);
+    addWarning(t("session-line-too-many-settings-remaining-entries-were-skipped", [session.name, lineNumber]));
     return;
   }
   session.settings.set(normalizedKey, value);
@@ -262,25 +263,25 @@ function buildCandidate(
   const warnings: string[] = [];
   const addCandidateWarning = (message: string) => {
     if (warnings.length < MAX_CANDIDATE_WARNINGS && !warnings.includes(message)) warnings.push(message);
-    addWarning(`会话 ${raw.name}，第 ${raw.lineNumber} 行：${message}`);
+    addWarning(t("session-line", [raw.name, raw.lineNumber, message]));
   };
   const protocol = raw.settings.get("protocol")?.trim().toLowerCase() || "ssh";
   const kind = protocol === "raw" ? "tcp" : protocol;
 
   if (kind !== "ssh" && kind !== "telnet" && kind !== "tcp" && kind !== "serial") {
-    addCandidateWarning(`Protocol=${protocol} 不受支持，已跳过`);
+    addCandidateWarning(t("protocol-is-unsupported-skipped", [protocol]));
     return null;
   }
 
   const publicKeyFile = raw.settings.get("publickeyfile")?.trim();
   if (publicKeyFile) {
-    addCandidateWarning("PublicKeyFile 未导入；PortMate 不会直接读取 PuTTY .ppk 私钥文件");
+    addCandidateWarning(t("publickeyfile-not-imported-portmate-does-not-directly-read-putty"));
   }
 
   if (kind === "serial") {
     const port = normalizeSerialPort(raw.settings.get("serialline"));
     if (!port) {
-      addCandidateWarning("SerialLine 为空或无效，已跳过");
+      addCandidateWarning(t("serialline-is-empty-or-invalid-skipped"));
       return null;
     }
     const candidate: PuttySerialImportCandidate = {
@@ -297,7 +298,7 @@ function buildCandidate(
 
   const host = normalizeHost(raw.settings.get("hostname"));
   if (!host) {
-    addCandidateWarning("HostName 为空或无效，已跳过");
+    addCandidateWarning(t("hostname-is-empty-or-invalid-skipped"));
     return null;
   }
   const port = readNetworkPort(raw.settings.get("portnumber"), kind, addCandidateWarning);
@@ -327,7 +328,7 @@ function applyTcpKeepaliveSettings(
   if (!settings.has("tcpkeepalives")) return;
   const enabled = readBoolean(settings.get("tcpkeepalives"));
   if (enabled === null) {
-    addWarning("TCPKeepalives 仅支持 0 或 1");
+    addWarning(t("tcpkeepalives-supports-only-0-or-1"));
     return;
   }
   candidate.tcpKeepaliveEnabled = enabled;
@@ -342,7 +343,7 @@ function applyTerminalSettings(
   const rawTerm = settings.get("terminaltype");
   if (rawTerm !== undefined) {
     const term = normalizeTerminalName(rawTerm);
-    if (!term) addWarning("TerminalType 必须是 64 字节以内的标准终端名称，未导入");
+    if (!term) addWarning(t("terminaltype-must-be-a-standard-terminal-name-within-64"));
     else terminal.term = term;
   }
 
@@ -360,7 +361,7 @@ function applyTerminalSettings(
       min: TERMINAL_PROFILE_BOUNDS.rows.min,
       max: TERMINAL_PROFILE_BOUNDS.rows.max,
       label: "TermHeight",
-      description: "终端行数",
+      description: t("terminal-rows"),
     },
     {
       key: "termwidth",
@@ -368,7 +369,7 @@ function applyTerminalSettings(
       min: TERMINAL_PROFILE_BOUNDS.cols.min,
       max: TERMINAL_PROFILE_BOUNDS.cols.max,
       label: "TermWidth",
-      description: "终端列数",
+      description: t("terminal-columns"),
     },
     {
       key: "scrollbacklines",
@@ -376,7 +377,7 @@ function applyTerminalSettings(
       min: TERMINAL_PROFILE_BOUNDS.scrollback.min,
       max: TERMINAL_PROFILE_BOUNDS.scrollback.max,
       label: "ScrollbackLines",
-      description: "终端滚屏",
+      description: t("terminal-scrollback"),
     },
   ];
   for (const setting of numericSettings) {
@@ -384,7 +385,7 @@ function applyTerminalSettings(
     if (rawValue === undefined) continue;
     const value = parseIntegerInRange(rawValue, setting.min, setting.max);
     if (value === null) {
-      addWarning(`${setting.label} 必须是 ${setting.min} 到 ${setting.max} 的整数，未导入${setting.description}`);
+      addWarning(t("must-be-an-integer-from-to-not-imported", [setting.label, setting.min, setting.max, setting.description]));
       continue;
     }
     terminal[setting.field] = value;
@@ -399,12 +400,12 @@ function applySshSettings(
 ) {
   const tryAgent = readBoolean(settings.get("tryagent"));
   if (settings.has("tryagent")) {
-    if (tryAgent === null) addWarning("TryAgent 仅支持 0 或 1");
+    if (tryAgent === null) addWarning(t("tryagent-supports-only-0-or-1"));
     else candidate.tryAgent = tryAgent;
   }
   const forwardAgent = readBoolean(settings.get("agentfwd"));
   if (settings.has("agentfwd")) {
-    if (forwardAgent === null) addWarning("AgentFwd 仅支持 0 或 1");
+    if (forwardAgent === null) addWarning(t("agentfwd-supports-only-0-or-1"));
     else candidate.forwardAgent = forwardAgent;
   }
   applyKeepaliveSettings(candidate, settings, addWarning);
@@ -423,12 +424,12 @@ function applyKeepaliveSettings(
   const parsedMinutes = parsePuttyInteger(minutes ?? "0");
   const parsedSeconds = parsePuttyInteger(seconds ?? "0");
   if (parsedMinutes === null || parsedSeconds === null) {
-    addWarning("PingInterval 与 PingIntervalSecs 必须是非负整数，未导入 SSH 保活");
+    addWarning(t("pinginterval-and-pingintervalsecs-must-be-non-negative-integers-ssh"));
     return;
   }
   const intervalSeconds = parsedMinutes * 60 + parsedSeconds;
   if (!Number.isSafeInteger(intervalSeconds) || intervalSeconds > 3_600) {
-    addWarning("PingInterval 总间隔必须是 0 到 3600 秒，未导入 SSH 保活");
+    addWarning(t("total-pinginterval-must-be-0-3600-seconds-ssh-keepalive"));
     return;
   }
   candidate.keepaliveEnabled = intervalSeconds > 0;
@@ -449,11 +450,11 @@ function applyForwardingSettings(
 
   const forwardingMap = parsePuttyForwardingMap(rawForwardings);
   if (!forwardingMap) {
-    addWarning("PortForwardings 格式无效，未导入端口转发");
+    addWarning(t("invalid-portforwardings-format-port-forwarding-not-imported"));
     return;
   }
   if (forwardingMap.truncated) {
-    addWarning(`PortForwardings 项目过多，最多检查 ${MAX_FORWARDING_ENTRIES} 条`);
+    addWarning(t("too-many-portforwardings-entries-checking-at-most", [MAX_FORWARDING_ENTRIES]));
   }
 
   const localPortAcceptAll = readForwardingBoolean(
@@ -473,7 +474,7 @@ function applyForwardingSettings(
   for (let index = 0; index < forwardingMap.entries.length; index += 1) {
     if (forwards.length >= MAX_FORWARDS) {
       if (!warnedLimit) {
-        addWarning(`PortForwardings 最多导入 ${MAX_FORWARDS} 条，后续项已跳过`);
+        addWarning(t("at-most-portforwardings-entries-can-be-imported-remaining-entries", [MAX_FORWARDS]));
         warnedLimit = true;
       }
       break;
@@ -484,7 +485,7 @@ function applyForwardingSettings(
       remotePortAcceptAll,
     );
     if ("error" in parsed) {
-      addWarning(`PortForwardings 第 ${index + 1} 条：${parsed.error}`);
+      addWarning(t("portforwardings-entry", [index + 1, parsed.error]));
       continue;
     }
     if (forwards.some((existing) => puttyForwardKey(existing) === puttyForwardKey(parsed.forward))) {
@@ -492,7 +493,7 @@ function applyForwardingSettings(
     }
     forwards.push(parsed.forward);
     if (parsed.localAcceptAllMapped && !warnedLocalAcceptAllMapping) {
-      addWarning("LocalPortAcceptAll=1 已映射为 0.0.0.0；IPv6 公网监听请在会话设置中另行添加");
+      addWarning(t("localportacceptall-1-mapped-to-0-0-0-0-add"));
       warnedLocalAcceptAllMapping = true;
     }
   }
@@ -508,7 +509,7 @@ function readForwardingBoolean(
   if (value === undefined) return false;
   const parsed = readBoolean(value);
   if (parsed !== null) return parsed;
-  addWarning(`${setting} 仅支持布尔值，已按关闭处理`);
+  addWarning(t("supports-only-boolean-values-treated-as-disabled", [setting]));
   return false;
 }
 
@@ -585,19 +586,19 @@ function parsePuttyForwarding(
     key = key.slice(1);
   }
   if (addressFamily !== "A") {
-    return { error: "IPv4/IPv6 强制地址族未导入" };
+    return { error: t("forced-ipv4-ipv6-address-family-not-imported") };
   }
 
   const type = key[0];
   const source = key.slice(1);
   if (type !== "L" && type !== "R" && type !== "D") {
-    return { error: "转发类型仅支持 L、R 或 D" };
+    return { error: t("forwarding-type-must-be-l-r-or-d") };
   }
-  if (!source) return { error: "缺少源端口" };
+  if (!source) return { error: t("missing-source-port") };
 
   const dynamic = type === "D" || (type === "L" && entry.value === "D");
   if (type === "D" && entry.value) {
-    return { error: "动态转发不能包含目标地址" };
+    return { error: t("dynamic-forwarding-cannot-contain-a-target-address") };
   }
   const mode = dynamic ? "dynamic" : type === "L" ? "local" : "remote";
   const defaultBindHost = mode === "remote"
@@ -605,7 +606,7 @@ function parsePuttyForwarding(
     : (localPortAcceptAll ? "0.0.0.0" : "127.0.0.1");
   const bind = parsePuttyForwardEndpoint(source, defaultBindHost);
   if (!bind) {
-    return { error: "仅支持字面 TCP 监听地址与端口" };
+    return { error: t("only-literal-tcp-listen-addresses-and-ports-are-supported") };
   }
 
   if (mode === "dynamic") {
@@ -623,7 +624,7 @@ function parsePuttyForwarding(
 
   const target = parsePuttyForwardEndpoint(entry.value, null);
   if (!target) {
-    return { error: "仅支持字面 TCP 目标 host:port" };
+    return { error: t("only-literal-tcp-target-host-port-is-supported") };
   }
   return {
     forward: {
@@ -683,24 +684,24 @@ function applyProxySettings(
   addWarning: (message: string) => void,
 ) {
   const password = settings.get("proxypassword")?.trim();
-  if (password) addWarning("ProxyPassword 未导入；请在会话设置中重新录入代理密码");
+  if (password) addWarning(t("proxypassword-not-imported-enter-the-proxy-password-again-in"));
   const rawMethod = settings.get("proxymethod");
   if (rawMethod === undefined) return;
   const method = parsePuttyInteger(rawMethod);
   if (method === null || method < 0) {
-    addWarning("ProxyMethod 必须是有效整数，未导入代理");
+    addWarning(t("proxymethod-must-be-a-valid-integer-proxy-not-imported"));
     return;
   }
   if (method === 0) return;
   const kind = method === 2 ? "socks5" : method === 3 ? "http-connect" : null;
   if (!kind) {
-    addWarning(`ProxyMethod=${method} 不受支持，未导入代理`);
+    addWarning(t("proxymethod-is-unsupported-proxy-not-imported", [method]));
     return;
   }
   const host = normalizeHost(settings.get("proxyhost"));
   const port = parsePort(settings.get("proxyport"));
   if (!host || port === null) {
-    addWarning("ProxyHost 或 ProxyPort 无效，未导入代理");
+    addWarning(t("invalid-proxyhost-or-proxyport-proxy-not-imported"));
     return;
   }
   candidate.proxy = {
@@ -718,12 +719,12 @@ function applySerialSettings(
 ) {
   const speed = parseIntegerInRange(settings.get("serialspeed"), 1, 4_000_000);
   if (settings.has("serialspeed")) {
-    if (speed === null) addWarning("SerialSpeed 必须是 1 到 4000000 的整数");
+    if (speed === null) addWarning(t("serialspeed-must-be-an-integer-from-1-to-4000000"));
     else candidate.serial.baudRate = speed;
   }
   const dataBits = parseIntegerInRange(settings.get("serialdatabits"), 5, 8);
   if (settings.has("serialdatabits")) {
-    if (dataBits === null) addWarning("SerialDataBits 仅支持 5 到 8");
+    if (dataBits === null) addWarning(t("serialdatabits-supports-only-5-8"));
     else candidate.serial.dataBits = dataBits;
   }
 
@@ -731,8 +732,8 @@ function applySerialSettings(
   if (settings.has("serialstophalfbits")) {
     if (stopHalfbits === 2) candidate.serial.stopBits = 1;
     else if (stopHalfbits === 4) candidate.serial.stopBits = 2;
-    else if (stopHalfbits === 3) addWarning("SerialStopHalfbits=3 表示 1.5 停止位，未导入");
-    else addWarning("SerialStopHalfbits 仅支持 2 或 4");
+    else if (stopHalfbits === 3) addWarning(t("serialstophalfbits-3-means-1-5-stop-bits-not-imported"));
+    else addWarning(t("serialstophalfbits-supports-only-2-or-4"));
   }
 
   const parity = parsePuttyInteger(settings.get("serialparity"));
@@ -740,7 +741,7 @@ function applySerialSettings(
     if (parity === 0) candidate.serial.parity = "none";
     else if (parity === 1) candidate.serial.parity = "odd";
     else if (parity === 2) candidate.serial.parity = "even";
-    else addWarning("SerialParity 的 mark 或 space 模式未导入");
+    else addWarning(t("serialparity-mark-and-space-modes-not-imported"));
   }
 
   const flowControl = parsePuttyInteger(settings.get("serialflowcontrol"));
@@ -748,7 +749,7 @@ function applySerialSettings(
     if (flowControl === 0) candidate.serial.flowControl = "none";
     else if (flowControl === 1) candidate.serial.flowControl = "software";
     else if (flowControl === 2) candidate.serial.flowControl = "hardware";
-    else addWarning("SerialFlowControl 的 DSR/DTR 模式未导入");
+    else addWarning(t("serialflowcontrol-dsr-dtr-mode-not-imported"));
   }
 }
 
@@ -760,12 +761,12 @@ function readNetworkPort(
   const defaultPort = kind === "ssh" ? 22 : kind === "telnet" ? 23 : null;
   if (value === undefined || !value.trim()) {
     if (defaultPort !== null) return defaultPort;
-    addWarning("raw 会话缺少 PortNumber，已跳过");
+    addWarning(t("raw-session-is-missing-portnumber-skipped"));
     return null;
   }
   const port = parsePort(value);
   if (port === null) {
-    addWarning("PortNumber 必须是 1 到 65535 的整数，已跳过");
+    addWarning(t("portnumber-must-be-an-integer-from-1-to-65535"));
     return null;
   }
   return port;
@@ -791,7 +792,7 @@ function normalizeUsername(
   if (value === undefined || !value.trim()) return "";
   const normalized = normalizeText(value);
   if (!normalized || /\s/.test(normalized)) {
-    addWarning(`${label} 为空或无效，未导入`);
+    addWarning(t("is-empty-or-invalid-not-imported", [label]));
     return "";
   }
   return normalized;
@@ -840,7 +841,7 @@ function readBoolean(value: string | undefined): boolean | null {
 function sessionNameFromSource(sourceName: string): string {
   const base = sourceName.trim().split(/[\\/]/).pop() ?? "";
   const withoutExtension = base.replace(/\.(?:ini|reg|session|txt)$/i, "");
-  return decodeSessionName(withoutExtension) || "PuTTY 会话";
+  return decodeSessionName(withoutExtension) || t("putty-session");
 }
 
 function decodeSessionName(value: string): string | null {

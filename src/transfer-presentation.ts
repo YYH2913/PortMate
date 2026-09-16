@@ -1,23 +1,24 @@
+import { t } from "./i18n";
 import type { TransferTask } from "./types";
 
 const genericMessages = new Set(["queued", "running", "completed", "cancelled", "cancelling"]);
 
 const statusLabels: Record<TransferTask["status"], string> = {
-  queued: "排队中",
-  running: "传输中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
+  queued: "queued",
+  running: "transferring",
+  completed: "completed",
+  failed: "failed-2",
+  cancelled: "cancelled",
 };
 
 export function transferStatusLabel(status: TransferTask["status"]) {
-  return statusLabels[status];
+  return t(statusLabels[status]);
 }
 
 export function transferDisplayMessage(task: TransferTask) {
   const message = task.message?.trim() ?? "";
   if (message && !genericMessages.has(message.toLowerCase())) return message;
-  if (task.status === "failed") return "传输失败，远端未返回详细原因";
+  if (task.status === "failed") return t("transfer-failed-the-remote-host-provided-no-details");
   return null;
 }
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createSshConnection } from "./session-profile-helpers";
+import { setLanguagePreference } from "./i18n";
 import {
   cloneImportedProfile,
   parsePortMateProfileTransfer,
   serializePortMateProfileTransfer,
+  profileTransferWarningLabel,
 } from "./portmate-profile-transfer";
 import type { SessionProfile } from "./types";
 
@@ -53,7 +55,7 @@ describe("PortMate Profile transfer", () => {
     expect(connection.identityRefs[0]).toMatchObject({ source: "public-key-only", secretRef: null });
     expect(connection.jumps[0].passwordSecretRef).toBeNull();
     expect(connection.jumps[0].identityRef).toBe(connection.identityRefs[0].id);
-    expect(parsed.warnings.join(" ")).toContain("不会导出");
+    expect(parsed.warnings.map(profileTransferWarningLabel).join(" ")).toContain("不会导出");
   });
 
   it("rejects malformed transfer documents and generates a new imported id", () => {
@@ -75,6 +77,33 @@ describe("PortMate Profile transfer", () => {
     const parsed = parsePortMateProfileTransfer(document);
     if (parsed.profiles[0].connection.kind !== "ssh") return;
     expect(parsed.profiles[0].connection.passwordSecretRef).toBeNull();
-    expect(parsed.warnings.join(" " )).toContain("不会导出");
+    expect(parsed.warnings.map(profileTransferWarningLabel).join(" ")).toContain("不会导出");
+  });
+
+  it("exports stable English warning codes without modifying user-owned names in any UI language", () => {
+    const source = profile();
+    source.name = "路由器 / العربية / Session";
+    setLanguagePreference("en");
+    const english = serializePortMateProfileTransfer([source], "2026-09-16T00:00:00Z");
+    for (const locale of ["zh", "ar", "fr", "ru", "es"] as const) {
+      setLanguagePreference(locale);
+      expect(serializePortMateProfileTransfer([source], "2026-09-16T00:00:00Z")).toBe(english);
+    }
+    const parsed = parsePortMateProfileTransfer(english);
+    expect(parsed.profiles[0].name).toBe(source.name);
+    if (parsed.profiles[0].connection.kind === "ssh") {
+      expect(parsed.profiles[0].connection.identityRefs[0].label).toBe("Production key");
+    }
+    expect(parsed.warnings).toContainEqual({ code: "private-key-omitted", profileName: source.name });
+    setLanguagePreference("en");
+    const label = profileTransferWarningLabel(parsed.warnings[0]);
+    setLanguagePreference("zh");
+    expect(profileTransferWarningLabel(parsed.warnings[0])).not.toBe(label);
+  });
+
+  it("ignores malformed warning codes instead of rendering arbitrary translated identifiers", () => {
+    const document = JSON.parse(serializePortMateProfileTransfer([profile()]));
+    document.warnings = [null, { code: "__proto__", profileName: "x" }, { code: "credentials-omitted", profileName: 7 }];
+    expect(parsePortMateProfileTransfer(document).warnings).toEqual([]);
   });
 });

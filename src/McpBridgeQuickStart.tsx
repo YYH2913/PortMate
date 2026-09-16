@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Play, Radio } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
@@ -10,6 +11,7 @@ export default function McpBridgeQuickStart({ paused, onOpen, onError }: {
   onOpen: () => void;
   onError: (message: string) => void;
 }) {
+  useLocale();
   const [status, setStatus] = useState<McpHttpRuntimeStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const pausedRef = useRef(paused);
@@ -60,7 +62,7 @@ export default function McpBridgeQuickStart({ paused, onOpen, onError }: {
       next = await invokeBackend<McpHttpRuntimeStatus>("start_mcp_http", {});
       if (!gate.isCurrent("start", token)) return;
       setStatus(next);
-      if (next.phase !== "running") throw new Error(next.message || "MCP Bridge 尚未启动，请查看服务配置。");
+      if (next.phase !== "running") throw new Error(next.message || t("mcp-bridge-has-not-started-check-the-service-settings"));
     } catch (error) {
       if (!gate.isCurrent("start", token)) return;
       setStatus({ phase: "failed" });
@@ -68,7 +70,7 @@ export default function McpBridgeQuickStart({ paused, onOpen, onError }: {
       // over a screen that the user has since locked.
       if (!pausedRef.current) {
         onOpen();
-        onError(`${error instanceof Error ? error.message : String(error)}\n请在 MCP Bridge 的 HTTP 页面检查已保存配置和 Token。`);
+        onError(t("check-the-saved-configuration-and-token-on-the-mcp", [error instanceof Error ? error.message : String(error)]));
       }
     } finally {
       if (gate.finish("start", token)) setBusy(false);
@@ -76,15 +78,15 @@ export default function McpBridgeQuickStart({ paused, onOpen, onError }: {
   }
 
   const running = status?.phase === "running";
-  const label = busy ? "启动中" : running ? "运行中" : status?.phase === "starting" ? "启动中" : status?.phase === "failed" ? "重试" : "启动";
+  const label = busy ? t("starting") : running ? t("running") : status?.phase === "starting" ? t("starting") : status?.phase === "failed" ? t("retry") : t("start");
   return (
     <button
       type="button"
       className={`menu-mcp-start${running ? " active" : ""}`}
       disabled={!available || busy || paused}
-      aria-label={busy ? "正在启动 MCP Bridge" : running ? "管理 MCP Bridge" : "快速启动 MCP Bridge"}
+      aria-label={busy ? t("starting-mcp-bridge") : running ? t("manage-mcp-bridge") : t("quick-start-mcp-bridge")}
       aria-busy={busy}
-      title={!available ? "MCP Bridge 需要桌面后端" : running ? `MCP Bridge 运行中：${status.endpoint ?? ""}，点击管理` : "使用已保存的 HTTP 配置启动 MCP Bridge"}
+      title={!available ? t("mcp-bridge-requires-the-desktop-backend") : running ? t("mcp-bridge-running-click-to-manage", [status.endpoint ?? ""]) : t("start-mcp-bridge-using-the-saved-http-settings")}
       onClick={() => void start()}
     >
       {busy ? <LoaderCircle size={13} /> : running ? <Radio size={13} /> : <Play size={13} />}

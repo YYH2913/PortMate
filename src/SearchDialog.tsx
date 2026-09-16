@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import { buildSessionSearchResults } from "./session-search-state";
@@ -20,6 +21,7 @@ export default function SearchDialog({
   onSelect: (sessionId: string) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const results = useMemo(
     () => buildSessionSearchResults(state.mode, state.query, sessions, logs),
     [logs, sessions, state.mode, state.query],
@@ -44,20 +46,20 @@ export default function SearchDialog({
       <section className="wind-dialog search-dialog">
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong>{state.mode === "sessions" ? "会话搜索" : "日志搜索"}</strong>
+          <strong>{state.mode === "sessions" ? t("session-search") : t("log-search")}</strong>
           <button onClick={onClose}><X size={20} /></button>
         </header>
         <div className="search-content">
-          <div className="search-tabs" role="tablist" aria-label="搜索范围">
-            <button role="tab" aria-selected={state.mode === "sessions"} className={state.mode === "sessions" ? "active" : ""} onClick={() => onChange({ ...state, mode: "sessions" })}>会话</button>
-            <button role="tab" aria-selected={state.mode === "logs"} className={state.mode === "logs" ? "active" : ""} onClick={() => onChange({ ...state, mode: "logs" })}>日志</button>
+          <div className="search-tabs" role="tablist" aria-label={t("search-scope")}>
+            <button role="tab" aria-selected={state.mode === "sessions"} className={state.mode === "sessions" ? "active" : ""} onClick={() => onChange({ ...state, mode: "sessions" })}>{t("session")}</button>
+            <button role="tab" aria-selected={state.mode === "logs"} className={state.mode === "logs" ? "active" : ""} onClick={() => onChange({ ...state, mode: "logs" })}>{t("logs")}</button>
           </div>
           <label className="search-query">
             <Search size={14} aria-hidden="true" />
             <input
               autoFocus
               role="combobox"
-              aria-label="搜索会话和日志"
+              aria-label={t("search-sessions-and-logs")}
               aria-controls="search-results"
               aria-expanded="true"
               aria-activedescendant={results.length ? `search-result-${selectedIndex}` : undefined}
@@ -78,10 +80,10 @@ export default function SearchDialog({
                   onClose();
                 }
               }}
-              placeholder="名称、标签、状态或端点"
+              placeholder={t("name-tag-status-or-endpoint")}
             />
           </label>
-          <div id="search-results" className="search-results" role="listbox" aria-label="搜索结果">
+          <div id="search-results" className="search-results" role="listbox" aria-label={t("search-results")}>
             {results.map((result, index) => (
               <button
                 id={`search-result-${index}`}
@@ -97,7 +99,7 @@ export default function SearchDialog({
                 <span>{result.detail}</span>
               </button>
             ))}
-            {!results.length ? <div className="empty-pane top">没有匹配结果</div> : null}
+            {!results.length ? <div className="empty-pane top">{t("no-matching-results")}</div> : null}
           </div>
         </div>
       </section>

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isBackendAvailable } from "./api";
 import { waitForChildWindowReady } from "./child-window-launch";
@@ -18,17 +19,17 @@ export async function openSerialAnalyzerWindow(
   if (!isBackendAvailable()) {
     requireCurrentLaunch(isCurrent);
     const popup = window.open(path, request.windowId, "popup,width=1180,height=760,resizable=yes");
-    if (!popup) throw new Error("浏览器阻止了串口分析窗口，请允许 PortMate 打开弹出窗口。");
+    if (!popup) throw new Error(t("the-browser-blocked-the-serial-analyzer-window-allow-portmate"));
     popup.focus();
     if (!isCurrent()) {
       popup.close();
-      throw new Error("串口分析窗口请求已失效。");
+      throw new Error(t("the-serial-analyzer-window-request-is-stale"));
     }
     return { close: async () => popup.close() };
   }
   const child = new WebviewWindow(request.windowId, {
     url: path,
-    title: `${sessionName} - PortMate 串口分析器`,
+    title: t("portmate-serial-analyzer", [sessionName]),
     center: true,
     visible: false,
     width: 1180,
@@ -48,10 +49,10 @@ export async function openSerialAnalyzerWindow(
       beforeShow: () => requireCurrentLaunch(isCurrent),
     });
     requireCurrentLaunch(isCurrent);
-  }, "创建串口分析窗口超时");
+  }, t("serial-analyzer-window-creation-timed-out"));
   return { close: () => child.destroy() };
 }
 
 function requireCurrentLaunch(isCurrent: () => boolean) {
-  if (!isCurrent()) throw new Error("串口分析窗口请求已失效。");
+  if (!isCurrent()) throw new Error(t("the-serial-analyzer-window-request-is-stale"));
 }

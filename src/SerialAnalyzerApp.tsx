@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
@@ -58,16 +59,17 @@ type SerialCaptureSource = "live" | "history";
 type SerialCaptureOperation = "refresh" | "clear" | "export";
 
 const parserModes: Array<{ value: SerialFrameParserMode; label: string }> = [
-  { value: "capture", label: "捕获" },
-  { value: "delimiter", label: "分隔符" },
-  { value: "fixed", label: "定长" },
-  { value: "gap", label: "间隔" },
+  { value: "capture", label: "capture" },
+  { value: "delimiter", label: "delimiter" },
+  { value: "fixed", label: "fixed-length" },
+  { value: "gap", label: "interval" },
   { value: "slip", label: "SLIP" },
   { value: "cobs", label: "COBS" },
   { value: "modbus", label: "Modbus" },
 ];
 
 export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzerRequest }) {
+  useLocale();
   const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
   const [frames, setFrames] = useState<SerialCaptureFrame[]>([]);
   const [source, setSource] = useState<SerialCaptureSource>("live");
@@ -87,7 +89,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   const refreshing = captureOperation === "refresh";
 
   useEffect(() => {
-    document.title = `${session?.profile.name ?? "串口"} - PortMate 串口分析器`;
+    document.title = t("portmate-serial-analyzer", [session?.profile.name ?? t("serial")]);
   }, [session?.profile.name]);
 
   useEffect(() => {
@@ -168,7 +170,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         if (disposed || captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(snapshot.frames);
         setHistory(snapshot);
-        setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
+        setMessage(snapshot.enabled ? "" : t("raw-logging-disabled"));
       } catch (error) {
         if (!disposed && captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
           setMessage(formatAnalyzerError(error));
@@ -232,7 +234,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
         storeFrames(snapshot.frames);
         setHistory(snapshot);
-        setMessage(snapshot.enabled ? "" : "Raw 日志未启用");
+        setMessage(snapshot.enabled ? "" : t("raw-logging-disabled"));
       }
       await refreshSessions();
     } catch (error) {
@@ -252,7 +254,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
     const gate = captureOperationGateRef.current;
     const token = gate.begin("capture");
     if (token === null) return;
-    if (!window.confirm("清空当前串口会话的全部内存捕获帧？")) {
+    if (!window.confirm(t("clear-all-captured-frames-from-memory-for-the-current"))) {
       gate.finish("capture", token);
       return;
     }
@@ -266,7 +268,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
       } else {
         storeFrames([]);
       }
-      setMessage("捕获已清空");
+      setMessage(t("capture-cleared"));
     } catch (error) {
       if (captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
         setMessage(formatAnalyzerError(error));
@@ -292,7 +294,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         request: { sessionId: request.sessionId, frameIds },
       });
       if (captureEpochRef.current !== epoch || !gate.isCurrent("capture", token)) return;
-      setMessage(`${result.frames} 帧 · ${formatAnalyzerBytes(result.capturedBytes)} · ${result.path}`);
+      setMessage(t("frames", [result.frames, formatAnalyzerBytes(result.capturedBytes), result.path]));
     } catch (error) {
       if (captureEpochRef.current === epoch && gate.isCurrent("capture", token)) {
         setMessage(formatAnalyzerError(error));
@@ -343,9 +345,9 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         />
       ) : (
         <section className="serial-analyzer-missing">
-          <strong>{session ? "会话不是串口类型" : "串口会话不可用"}</strong>
+          <strong>{session ? t("the-session-is-not-serial") : t("serial-session-unavailable")}</strong>
           <span>{request.sessionId}</span>
-          <button type="button" onClick={() => void closeWindow()}>关闭窗口</button>
+          <button type="button" onClick={() => void closeWindow()}>{t("close-window")}</button>
         </section>
       )}
       {screenLock ? <ChildWindowScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
@@ -382,6 +384,7 @@ function SerialAnalyzerWorkspace({
   onSourceChange: (source: SerialCaptureSource) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const [stored, setStored] = useState<SerialAnalyzerStoredState>(loadStoredAnalyzerState);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -460,7 +463,7 @@ function SerialAnalyzerWorkspace({
   }
 
   const connectionLabel = serial
-    ? `${serial.port || "未选择端口"} · ${serial.baudRate} baud · ${serial.dataBits}${serial.parity.slice(0, 1).toUpperCase()}${serial.stopBits} · ${serial.flowControl}`
+    ? `${serial.port || t("no-port-selected")} · ${serial.baudRate} baud · ${serial.dataBits}${serial.parity.slice(0, 1).toUpperCase()}${serial.stopBits} · ${serial.flowControl}`
     : "Serial";
   const runtimeStatus = sessionRuntimeStatusLabel(session.runtime.status);
   const runtimeHealth = sessionRuntimeHealthDescription(session.runtime);
@@ -470,73 +473,73 @@ function SerialAnalyzerWorkspace({
     <>
       <header className="serial-analyzer-titlebar">
         <span className="serial-analyzer-brand">PortMate</span>
-        <strong>串口分析器</strong>
+        <strong>{t("serial-analyzer")}</strong>
         <span className="serial-analyzer-session" title={session.profile.name}>{session.profile.name}</span>
         <span
           className={`serial-analyzer-connection ${session.runtime.status}`}
           title={runtimeHealth}
           aria-description={runtimeHealth}
         >{runtimeStatus}</span>
-        <button type="button" title="关闭串口分析器" aria-label="关闭串口分析器" onClick={onClose}><X size={17} /></button>
+        <button type="button" title={t("close-serial-analyzer")} aria-label={t("close-serial-analyzer")} onClick={onClose}><X size={17} /></button>
       </header>
 
-      <section className="serial-analyzer-toolbar" aria-label="串口分析设置" aria-busy={captureBusy}>
-        <div className="serial-analyzer-segmented" aria-label="帧解析方式">
+      <section className="serial-analyzer-toolbar" aria-label={t("serial-analysis-settings")} aria-busy={captureBusy}>
+        <div className="serial-analyzer-segmented" aria-label={t("frame-parser")}>
           {parserModes.map((mode) => (
-            <button key={mode.value} type="button" aria-pressed={stored.parser.mode === mode.value} onClick={() => updateParser({ mode: mode.value })}>{mode.label}</button>
+            <button key={mode.value} type="button" aria-pressed={stored.parser.mode === mode.value} onClick={() => updateParser({ mode: mode.value })}>{t(mode.label)}</button>
           ))}
         </div>
         <div className="serial-analyzer-parser-option">
           {stored.parser.mode === "delimiter" ? (
             <>
-              <label><span>Hex</span><input className={delimiterValid ? "" : "invalid"} aria-label="帧分隔符 Hex" aria-invalid={!delimiterValid} value={delimiterDraft} onChange={(event) => setDelimiterDraft(event.target.value.slice(0, 128))} onBlur={commitDelimiter} onKeyDown={(event) => event.key === "Enter" && commitDelimiter()} /></label>
-              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.includeDelimiter} onChange={(event) => updateParser({ includeDelimiter: event.target.checked })} /><span>保留</span></label>
+              <label><span>Hex</span><input className={delimiterValid ? "" : "invalid"} aria-label={t("hex-frame-delimiter")} aria-invalid={!delimiterValid} value={delimiterDraft} onChange={(event) => setDelimiterDraft(event.target.value.slice(0, 128))} onBlur={commitDelimiter} onKeyDown={(event) => event.key === "Enter" && commitDelimiter()} /></label>
+              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.includeDelimiter} onChange={(event) => updateParser({ includeDelimiter: event.target.checked })} /><span>{t("keep")}</span></label>
             </>
           ) : stored.parser.mode === "fixed" ? (
-            <label><span>字节</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
+            <label><span>{t("bytes")}</span><input type="number" min={1} max={4096} value={stored.parser.fixedLength} onChange={(event) => updateParser({ fixedLength: Number(event.target.value) })} /></label>
           ) : stored.parser.mode === "gap" ? (
             <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.gapMs} onChange={(event) => updateParser({ gapMs: Number(event.target.value) })} /></label>
           ) : stored.parser.mode === "modbus" ? (
             <>
-              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.modbusAutoGap !== false} onChange={(event) => updateParser({ modbusAutoGap: event.target.checked })} /><span>自动</span></label>
+              <label className="serial-analyzer-check"><input type="checkbox" checked={stored.parser.modbusAutoGap !== false} onChange={(event) => updateParser({ modbusAutoGap: event.target.checked })} /><span>{t("automatic")}</span></label>
               {stored.parser.modbusAutoGap !== false
                 ? <span className="serial-analyzer-parser-value">{serialModbusSilenceMs(serial?.baudRate ?? 115_200)} ms</span>
                 : <label><span>ms</span><input type="number" min={1} max={60000} value={stored.parser.modbusGapMs ?? 2} onChange={(event) => updateParser({ modbusGapMs: Number(event.target.value) })} /></label>}
             </>
           ) : <span className="serial-analyzer-parser-value">{
-            stored.parser.mode === "slip" ? "RFC 1055" : stored.parser.mode === "cobs" ? "0x00 帧界" : "读取分片"
+            stored.parser.mode === "slip" ? "RFC 1055" : stored.parser.mode === "cobs" ? t("0x00-frame-boundary") : t("read-chunks")
           }</span>}
         </div>
-        <div className="serial-analyzer-segmented source" aria-label="捕获数据源">
+        <div className="serial-analyzer-segmented source" aria-label={t("capture-source")}>
           {(["live", "history"] as const).map((value) => (
-            <button key={value} type="button" disabled={captureBusy} aria-pressed={source === value} onClick={() => onSourceChange(value)}>{value === "live" ? "实时" : "日志"}</button>
+            <button key={value} type="button" disabled={captureBusy} aria-pressed={source === value} onClick={() => onSourceChange(value)}>{value === "live" ? t("live") : t("logs")}</button>
           ))}
         </div>
-        <div className="serial-analyzer-segmented direction" aria-label="帧方向">
+        <div className="serial-analyzer-segmented direction" aria-label={t("frame-direction")}>
           {(["all", "inbound", "outbound"] as const).map((direction) => (
-            <button key={direction} type="button" aria-pressed={stored.direction === direction} onClick={() => setStored((current) => ({ ...current, direction }))}>{direction === "all" ? "全部" : direction === "inbound" ? "RX" : "TX"}</button>
+            <button key={direction} type="button" aria-pressed={stored.direction === direction} onClick={() => setStored((current) => ({ ...current, direction }))}>{direction === "all" ? t("all") : direction === "inbound" ? "RX" : "TX"}</button>
           ))}
         </div>
-        <label className="serial-analyzer-search"><Search size={13} /><input aria-label="筛选分析帧" placeholder="Hex / ASCII" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
-        <button type="button" className={stored.bookmarksOnly ? "active" : ""} aria-pressed={stored.bookmarksOnly} title="只显示书签" aria-label="只显示书签" onClick={() => setStored((current) => ({ ...current, bookmarksOnly: !current.bookmarksOnly }))}><Bookmark size={14} fill={stored.bookmarksOnly ? "currentColor" : "none"} /></button>
-        <button type="button" className={stored.follow ? "active" : ""} aria-pressed={stored.follow} title="跟随最新帧" aria-label="跟随最新帧" onClick={() => setStored((current) => ({ ...current, follow: !current.follow }))}><ArrowDownToLine size={14} /></button>
-        <button type="button" title="刷新捕获" aria-label="刷新串口捕获" onClick={onRefresh} disabled={captureBusy}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
-        <button type="button" title="导出筛选帧" aria-label="导出筛选串口帧" disabled={captureBusy || !canExport || !filtered.length || (source === "history" && !history?.enabled)} onClick={exportVisible}><Download size={14} /></button>
-        <button type="button" title={source === "live" ? "清空捕获" : "日志历史只可在日志管理器中清理"} aria-label="清空串口捕获" disabled={captureBusy || source !== "live" || !frames.length} onClick={onClear}><Trash2 size={14} /></button>
+        <label className="serial-analyzer-search"><Search size={13} /><input aria-label={t("filter-analysis-frames")} placeholder="Hex / ASCII" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
+        <button type="button" className={stored.bookmarksOnly ? "active" : ""} aria-pressed={stored.bookmarksOnly} title={t("bookmarks-only")} aria-label={t("bookmarks-only")} onClick={() => setStored((current) => ({ ...current, bookmarksOnly: !current.bookmarksOnly }))}><Bookmark size={14} fill={stored.bookmarksOnly ? "currentColor" : "none"} /></button>
+        <button type="button" className={stored.follow ? "active" : ""} aria-pressed={stored.follow} title={t("follow-latest-frame")} aria-label={t("follow-latest-frame")} onClick={() => setStored((current) => ({ ...current, follow: !current.follow }))}><ArrowDownToLine size={14} /></button>
+        <button type="button" title={t("refresh-capture")} aria-label={t("refresh-serial-capture")} onClick={onRefresh} disabled={captureBusy}><RefreshCw size={14} className={refreshing ? "spin" : ""} /></button>
+        <button type="button" title={t("export-filtered-frames")} aria-label={t("export-filtered-serial-frames")} disabled={captureBusy || !canExport || !filtered.length || (source === "history" && !history?.enabled)} onClick={exportVisible}><Download size={14} /></button>
+        <button type="button" title={source === "live" ? t("clear-capture") : t("historical-logs-can-only-be-deleted-in-the-log")} aria-label={t("clear-serial-capture")} disabled={captureBusy || source !== "live" || !frames.length} onClick={onClear}><Trash2 size={14} /></button>
       </section>
 
       <section className="serial-analyzer-status-strip">
         <span title={connectionLabel}>{connectionLabel}</span>
-        <span>{source === "live" ? "实时" : "日志"}</span>
-        <span>捕获 {frames.length}</span>
-        <span>解析 {analysis.totalFrames}</span>
+        <span>{source === "live" ? t("live") : t("logs")}</span>
+        <span>{t("captured", [frames.length])}</span>
+        <span>{t("parsed", [analysis.totalFrames])}</span>
         <span>RX {rxCount}</span>
         <span>TX {txCount}</span>
         <span>{formatAnalyzerBytes(analysis.capturedBytes)}</span>
-        {errorCount ? <span className="error">错误 {errorCount}</span> : null}
-        {analysis.droppedFrames ? <span className="warning">窗口外 {analysis.droppedFrames}</span> : null}
-        {history?.droppedFrames ? <span className="warning">日志外 {history.droppedFrames}</span> : null}
-        {history?.unavailableFrames ? <span className="error">不可用 {history.unavailableFrames}</span> : null}
+        {errorCount ? <span className="error">{t("errors", [errorCount])}</span> : null}
+        {analysis.droppedFrames ? <span className="warning">{t("outside-window", [analysis.droppedFrames])}</span> : null}
+        {history?.droppedFrames ? <span className="warning">{t("outside-logs", [history.droppedFrames])}</span> : null}
+        {history?.unavailableFrames ? <span className="error">{t("unavailable", [history.unavailableFrames])}</span> : null}
         {disconnectHealth
           ? <span className="serial-analyzer-last-disconnect" title={disconnectHealth}>{disconnectHealth}</span>
           : null}
@@ -545,7 +548,7 @@ function SerialAnalyzerWorkspace({
       <section
         className="serial-analyzer-table"
         role="grid"
-        aria-label="串口分析帧"
+        aria-label={t("serial-analysis-frames")}
         tabIndex={0}
         onKeyDown={(event) => {
           if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -558,16 +561,16 @@ function SerialAnalyzerWorkspace({
         }}
       >
         <div className="serial-analyzer-table-head" role="row">
-          <span role="columnheader" aria-label="书签" />
-          <span role="columnheader">时间</span>
-          <span role="columnheader">方向</span>
-          <span role="columnheader">长度</span>
-          <span role="columnheader">边界</span>
+          <span role="columnheader" aria-label={t("bookmark")} />
+          <span role="columnheader">{t("time")}</span>
+          <span role="columnheader">{t("direction")}</span>
+          <span role="columnheader">{t("length")}</span>
+          <span role="columnheader">{t("boundary")}</span>
           <span role="columnheader">Hex</span>
           <span role="columnheader">ASCII</span>
         </div>
         <div className="serial-analyzer-table-body">
-          {!visible.length ? <div className="serial-analyzer-empty">没有匹配的分析帧</div> : null}
+          {!visible.length ? <div className="serial-analyzer-empty">{t("no-matching-analysis-frames")}</div> : null}
           {visible.map((frame) => {
             const bookmarked = bookmarkIds.has(frame.bookmarkId);
             return (
@@ -579,7 +582,7 @@ function SerialAnalyzerWorkspace({
                 tabIndex={-1}
                 onClick={() => selectFrame(frame)}
               >
-                <button type="button" role="gridcell" title={bookmarked ? "移除书签" : "添加书签"} aria-label={bookmarked ? "移除帧书签" : "添加帧书签"} onClick={(event) => { event.stopPropagation(); toggleBookmark(frame); }}><Bookmark size={13} fill={bookmarked ? "currentColor" : "none"} /></button>
+                <button type="button" role="gridcell" title={bookmarked ? t("remove-bookmark") : t("add-bookmark")} aria-label={bookmarked ? t("remove-frame-bookmark") : t("add-frame-bookmark")} onClick={(event) => { event.stopPropagation(); toggleBookmark(frame); }}><Bookmark size={13} fill={bookmarked ? "currentColor" : "none"} /></button>
                 <span role="gridcell" title={new Date(frame.ts).toLocaleString()}>{formatAnalyzerTime(frame.ts)}</span>
                 <strong role="gridcell">{frame.direction === "inbound" ? "RX" : "TX"}</strong>
                 <span role="gridcell" title={serialAnalyzerLengthTitle(frame)}>{serialAnalyzerLengthLabel(frame)}</span>
@@ -598,34 +601,34 @@ function SerialAnalyzerWorkspace({
             <header>
               <strong>{selected.direction === "inbound" ? "RX" : "TX"} · {inspectedBytes.length} B</strong>
               <span className="serial-analyzer-inspector-time">{new Date(selected.ts).toLocaleString()}</span>
-              <span className="serial-analyzer-inspector-sources">{selected.sourceFrameIds.length} 个捕获分片</span>
+              <span className="serial-analyzer-inspector-sources">{t("capture-chunks", [selected.sourceFrameIds.length])}</span>
               {selected.protocol ? <span className="serial-analyzer-protocol">{serialAnalyzerProtocolLabel(selected)}</span> : null}
               {hasDistinctWire ? (
-                <select className="serial-analyzer-byte-view" aria-label="详情字节视图" value={inspectorView} onChange={(event) => setInspectorView(event.target.value === "wire" ? "wire" : "decoded")}>
-                  <option value="decoded">解码 {selected.bytes.length} B</option>
-                  <option value="wire">线上 {selected.wireBytes.length} B</option>
+                <select className="serial-analyzer-byte-view" aria-label={t("detailed-byte-view")} value={inspectorView} onChange={(event) => setInspectorView(event.target.value === "wire" ? "wire" : "decoded")}>
+                  <option value="decoded">{t("decoded-b", [selected.bytes.length])}</option>
+                  <option value="wire">{t("wire-b", [selected.wireBytes.length])}</option>
                 </select>
               ) : null}
               {selected.decodeError ? <span className="serial-analyzer-decode-error">{serialAnalyzerDecodeErrorLabel(selected.decodeError)}</span> : null}
-              <button type="button" title={inspectorView === "wire" && hasDistinctWire ? "复制线上 Hex" : "复制解码 Hex"} aria-label="复制完整帧 Hex" onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(inspectedBytes, inspectedBytes.length)).catch(() => {})}><Copy size={13} /></button>
-              <button type="button" className={bookmarkIds.has(selected.bookmarkId) ? "active" : ""} title="切换书签" aria-label="切换帧书签" onClick={() => toggleBookmark(selected)}><Bookmark size={13} fill={bookmarkIds.has(selected.bookmarkId) ? "currentColor" : "none"} /></button>
+              <button type="button" title={inspectorView === "wire" && hasDistinctWire ? t("copy-wire-hex") : t("copy-decoded-hex")} aria-label={t("copy-full-frame-hex")} onClick={() => void navigator.clipboard?.writeText(serialCaptureHex(inspectedBytes, inspectedBytes.length)).catch(() => {})}><Copy size={13} /></button>
+              <button type="button" className={bookmarkIds.has(selected.bookmarkId) ? "active" : ""} title={t("toggle-bookmark")} aria-label={t("toggle-frame-bookmark")} onClick={() => toggleBookmark(selected)}><Bookmark size={13} fill={bookmarkIds.has(selected.bookmarkId) ? "currentColor" : "none"} /></button>
             </header>
             <div className="serial-analyzer-dump">
               <pre>{serialAnalyzerHexDump(inspectedBytes) || "--"}</pre>
               <pre className="ascii">{serialCaptureAscii(inspectedBytes.slice(0, 4096)) || "--"}</pre>
             </div>
           </>
-        ) : <div className="serial-analyzer-empty">没有选中的帧</div>}
+        ) : <div className="serial-analyzer-empty">{t("no-frame-selected")}</div>}
       </section>
 
       <footer className="serial-analyzer-footer">
-        <span className={message ? "message" : ""}>{message || `${filtered.length}/${analysis.frames.length} 帧`}</span>
-        <label>每页<select value={stored.pageSize} onChange={(event) => { const pageSize = Number(event.target.value) as 100 | 250 | 500; setStored((current) => ({ ...current, pageSize, follow: false })); setPage(0); }}><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label>
-        <button type="button" title="第一页" aria-label="第一页" disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(0); }}><ChevronsLeft size={14} /></button>
-        <button type="button" title="上一页" aria-label="上一页" disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.max(0, activePage - 1)); }}><ChevronLeft size={14} /></button>
+        <span className={message ? "message" : ""}>{message || t("frames-2", [filtered.length, analysis.frames.length])}</span>
+        <label>{t("per-page")}<select value={stored.pageSize} onChange={(event) => { const pageSize = Number(event.target.value) as 100 | 250 | 500; setStored((current) => ({ ...current, pageSize, follow: false })); setPage(0); }}><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label>
+        <button type="button" title={t("first-page")} aria-label={t("first-page")} disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(0); }}><ChevronsLeft size={14} /></button>
+        <button type="button" title={t("previous-page")} aria-label={t("previous-page")} disabled={activePage <= 0} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.max(0, activePage - 1)); }}><ChevronLeft size={14} /></button>
         <span>{activePage + 1}/{pageCount}</span>
-        <button type="button" title="下一页" aria-label="下一页" disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.min(pageCount - 1, activePage + 1)); }}><ChevronRight size={14} /></button>
-        <button type="button" title="最后一页" aria-label="最后一页" disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(pageCount - 1); }}><ChevronsRight size={14} /></button>
+        <button type="button" title={t("next-page")} aria-label={t("next-page")} disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(Math.min(pageCount - 1, activePage + 1)); }}><ChevronRight size={14} /></button>
+        <button type="button" title={t("last-page")} aria-label={t("last-page")} disabled={activePage >= pageCount - 1} onClick={() => { setStored((current) => ({ ...current, follow: false })); setPage(pageCount - 1); }}><ChevronsRight size={14} /></button>
       </footer>
     </>
   );
@@ -710,29 +713,29 @@ function serialAnalyzerLengthLabel(frame: SerialAnalyzedFrame): string {
 
 function serialAnalyzerLengthTitle(frame: SerialAnalyzedFrame): string {
   return serialAnalyzerHasDistinctWire(frame)
-    ? `解码 ${frame.bytes.length} B · 线上 ${frame.wireBytes.length} B`
+    ? t("decoded-b-wire-b", [frame.bytes.length, frame.wireBytes.length])
     : `${frame.bytes.length} B`;
 }
 
 function serialAnalyzerFrameStatus(frame: SerialAnalyzedFrame): string {
-  if (frame.truncated) return "截断";
-  if (frame.decodeError === "invalidEscape") return "转义错";
-  if (frame.decodeError === "truncatedCobs") return "长度错";
-  if (frame.decodeError === "invalidCobs") return "编码错";
-  if (frame.decodeError === "modbusTooShort") return "帧太短";
-  if (frame.decodeError === "modbusAddress") return "地址错";
-  if (frame.decodeError === "modbusCrc") return "CRC 错";
+  if (frame.truncated) return t("truncated");
+  if (frame.decodeError === "invalidEscape") return t("escape-error");
+  if (frame.decodeError === "truncatedCobs") return t("length-error");
+  if (frame.decodeError === "invalidCobs") return t("encoding-error");
+  if (frame.decodeError === "modbusTooShort") return t("frame-too-short");
+  if (frame.decodeError === "modbusAddress") return t("address-error");
+  if (frame.decodeError === "modbusCrc") return t("crc-error");
   if (frame.protocol?.kind === "modbusRtu") return "CRC OK";
-  return frame.complete ? "完整" : "尾帧";
+  return frame.complete ? t("complete") : t("trailing-frame");
 }
 
 function serialAnalyzerDecodeErrorLabel(error: SerialAnalyzedFrame["decodeError"]): string {
-  if (error === "invalidEscape") return "无效 SLIP 转义";
-  if (error === "truncatedCobs") return "COBS 长度截断";
-  if (error === "invalidCobs") return "无效 COBS 编码";
-  if (error === "modbusTooShort") return "Modbus RTU 帧太短";
-  if (error === "modbusAddress") return "Modbus RTU 地址无效";
-  if (error === "modbusCrc") return "Modbus RTU CRC 不匹配";
+  if (error === "invalidEscape") return t("invalid-slip-escape");
+  if (error === "truncatedCobs") return t("truncated-cobs-length");
+  if (error === "invalidCobs") return t("invalid-cobs-encoding");
+  if (error === "modbusTooShort") return t("modbus-rtu-frame-too-short");
+  if (error === "modbusAddress") return t("invalid-modbus-rtu-address");
+  if (error === "modbusCrc") return t("modbus-rtu-crc-mismatch");
   return "";
 }
 
@@ -742,8 +745,8 @@ function serialAnalyzerProtocolLabel(frame: SerialAnalyzedFrame): string {
   const functionCode = protocol.functionCode.toString(16).padStart(2, "0").toUpperCase();
   const exception = protocol.exceptionCode === null
     ? ""
-    : ` · 异常 ${protocol.exceptionCode.toString(16).padStart(2, "0").toUpperCase()}`;
-  return `站 ${protocol.address} · FC ${functionCode}${exception}`;
+    : t("exception", [protocol.exceptionCode.toString(16).padStart(2, "0").toUpperCase()]);
+  return t("station-fc", [protocol.address, functionCode, exception]);
 }
 
 function formatAnalyzerError(error: unknown): string {

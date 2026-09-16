@@ -1,10 +1,13 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FileUp, Upload, X } from "lucide-react";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import {
   parsePortMateProfileTransfer,
+  profileTransferWarningLabel,
 } from "./portmate-profile-transfer";
+import type { ProfileTransferWarning } from "./portmate-profile-transfer";
 import type { SessionProfile } from "./types";
 import type { SessionConfigImportSaveResult } from "./SessionConfigImportDialog";
 
@@ -23,12 +26,13 @@ export default function PortMateProfileImportDialog({
   operationGate: KeyedRequestGate<"operation">;
   onDraftDirtyChange: (dirty: boolean) => void;
 }) {
+  useLocale();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileGate = useRef(new KeyedRequestGate<"file">());
   const [source, setSource] = useState("");
   const [fileName, setFileName] = useState("");
   const [profiles, setProfiles] = useState<SessionProfile[]>([]);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<ProfileTransferWarning[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -53,7 +57,7 @@ export default function PortMateProfileImportDialog({
   async function readFile(file: File | null) {
     if (!file) return;
     if (file.size > MAX_PROFILE_TRANSFER_BYTES) {
-      setError("Profile 文件超过 8 MiB 限制");
+      setError(t("profile-file-exceeds-the-8-mib-limit"));
       return;
     }
     const token = fileGate.current.replace("file");
@@ -93,25 +97,25 @@ export default function PortMateProfileImportDialog({
       <section className="wind-dialog session-import-dialog">
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong>导入 PortMate Profile</strong>
-          <button type="button" onClick={onClose} disabled={busy} aria-label="关闭"><X size={20} /></button>
+          <strong>{t("import-portmate-profiles")}</strong>
+          <button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X size={20} /></button>
         </header>
         {headerAddon?.(busy)}
         <section className="session-import-content">
-          <p className="session-identity-hint"><strong>可迁移配置，不包含明文凭据</strong><span>密码、私钥和代理 Secret 不会写入导出文件；导入后可在连接弹窗中一键保存到本机 Stronghold。</span></p>
+          <p className="session-identity-hint"><strong>{t("portable-configuration-without-plaintext-credentials")}</strong><span>{t("passwords-private-keys-and-proxy-secrets-are-excluded-from")}</span></p>
           <div className="session-import-file-row">
-            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={busy}><FileUp size={15} />选择 Profile 文件</button>
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={busy}><FileUp size={15} />{t("select-profile-file")}</button>
             <input ref={fileInputRef} type="file" accept=".json,.portmate.json" hidden onChange={(event) => { void readFile(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
-            <span>{fileName || "未选择文件"}</span>
+            <span>{fileName || t("no-file-selected")}</span>
           </div>
-          <textarea aria-label="PortMate Profile JSON" value={source} onChange={(event) => updateSource(event.target.value)} placeholder="也可以粘贴 PortMate Profile JSON" disabled={busy} />
-          {error ? <div className="utility-error" role="alert">{error}</div> : null}
-          {warnings.length ? <div className="session-import-warnings">{warnings.map((warning) => <div key={warning}>{warning}</div>)}</div> : null}
-          {profiles.length ? <div className="session-import-preview">将导入 {profiles.length} 个 Profile：{profiles.map((profile) => profile.name).join("、")}</div> : null}
+          <textarea aria-label={t("ui-portmate-profile-json")} value={source} onChange={(event) => updateSource(event.target.value)} placeholder={t("or-paste-portmate-profile-json")} disabled={busy} />
+          {error ? <div className="utility-error" role="alert">{localizeDiagnostic(error)}</div> : null}
+          {warnings.length ? <div className="session-import-warnings">{warnings.map((warning) => <div key={JSON.stringify([warning.code, warning.profileName])}>{profileTransferWarningLabel(warning)}</div>)}</div> : null}
+          {profiles.length ? <div className="session-import-preview">{t("importing-profiles", [profiles.length, profiles.map((profile) => profile.name).join("、")])}</div> : null}
         </section>
         <footer className="dialog-actions session-settings-actions">
-          <button type="button" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="session-connect-button" onClick={() => void importProfiles()} disabled={busy || !profiles.length}><Upload size={15} />导入 Profile</button>
+          <button type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button>
+          <button type="button" className="session-connect-button" onClick={() => void importProfiles()} disabled={busy || !profiles.length}><Upload size={15} />{t("import-profiles")}</button>
         </footer>
       </section>
     </div>

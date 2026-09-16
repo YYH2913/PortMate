@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowDown, ArrowUp, Pencil, Play, Plus, Trash2, X } from "lucide-react";
@@ -21,6 +22,7 @@ export default function QuickCommandDialog({
   onSave: (commands: QuickCommand[]) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const [items, setItems] = useState<QuickCommand[]>(() => commands.map((command) => ({ ...command })));
   const [selectedId, setSelectedId] = useState(commands[0]?.id ?? "");
   const [error, setError] = useState("");
@@ -30,12 +32,12 @@ export default function QuickCommandDialog({
 
   function addCommand() {
     if (items.length >= MAX_QUICK_COMMANDS) {
-      setError(`快速命令最多保存 ${MAX_QUICK_COMMANDS} 条。`);
+      setError(t("at-most-quick-commands-can-be-saved", [MAX_QUICK_COMMANDS]));
       return;
     }
     const command: QuickCommand = {
       id: createQuickCommandId(),
-      label: `新命令 ${items.length + 1}`,
+      label: t("new-command", [items.length + 1]),
       command: "",
       appendEnter: true,
     };
@@ -65,19 +67,19 @@ export default function QuickCommandDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     if (items.some((item) => !item.label.trim() || !item.command)) {
-      setError("每条快速命令都需要名称和命令内容。");
+      setError(t("each-quick-command-requires-a-name-and-command-content"));
       return;
     }
     const normalized = normalizeQuickCommandLibrary({ version: 1, items });
     if (normalized.items.length !== items.length) {
-      setError("快速命令包含无效内容，请检查后重试。");
+      setError(t("quick-commands-contain-invalid-content-check-and-retry"));
       return;
     }
     onSave(normalized.items);
   }
 
   function closeDialog() {
-    if (dirty && !window.confirm("快速命令有未保存的更改，关闭窗口将放弃这些内容。是否继续？")) return;
+    if (dirty && !window.confirm(t("quick-commands-have-unsaved-changes-closing-will-discard-them"))) return;
     onClose();
   }
 
@@ -92,17 +94,17 @@ export default function QuickCommandDialog({
       >
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong id="quick-command-dialog-title">快速命令</strong>
-          <button type="button" title="关闭" aria-label="关闭快速命令" onClick={closeDialog}><X size={20} /></button>
+          <strong id="quick-command-dialog-title">{t("quick-commands")}</strong>
+          <button type="button" title={t("close")} aria-label={t("close-quick-commands")} onClick={closeDialog}><X size={20} /></button>
         </header>
         <section className="quick-command-content">
           <aside className="quick-command-list">
             <header>
-              <strong>命令</strong>
+              <strong>{t("command")}</strong>
               <span>{items.length}/{MAX_QUICK_COMMANDS}</span>
-              <button type="button" title="添加快速命令" aria-label="添加快速命令" onClick={addCommand} disabled={items.length >= MAX_QUICK_COMMANDS}><Plus size={14} /></button>
+              <button type="button" title={t("add-quick-command")} aria-label={t("add-quick-command")} onClick={addCommand} disabled={items.length >= MAX_QUICK_COMMANDS}><Plus size={14} /></button>
             </header>
-            <div role="listbox" aria-label="快速命令列表">
+            <div role="listbox" aria-label={t("quick-command-list")}>
               {items.map((item) => (
                 <button
                   key={item.id}
@@ -113,45 +115,45 @@ export default function QuickCommandDialog({
                   onClick={() => setSelectedId(item.id)}
                 >
                   {item.appendEnter ? <Play size={12} /> : <Pencil size={12} />}
-                  <span>{item.label || "未命名命令"}</span>
+                  <span>{item.label || t("unnamed-command")}</span>
                 </button>
               ))}
-              {!items.length ? <div className="quick-command-list-empty">没有快速命令</div> : null}
+              {!items.length ? <div className="quick-command-list-empty">{t("no-quick-commands")}</div> : null}
             </div>
           </aside>
           <section className="quick-command-editor">
             {selected ? (
               <>
                 <label>
-                  <span>名称</span>
-                  <input aria-label="快速命令名称" value={selected.label} onChange={(event) => updateSelected({ label: limitQuickCommandLabelInput(event.target.value) })} />
+                  <span>{t("name")}</span>
+                  <input aria-label={t("quick-command-name")} value={selected.label} onChange={(event) => updateSelected({ label: limitQuickCommandLabelInput(event.target.value) })} />
                 </label>
                 <label className="quick-command-text-field">
-                  <span>命令</span>
-                  <textarea aria-label="快速命令内容" value={selected.command} spellCheck={false} onChange={(event) => updateSelected({ command: normalizeQuickCommandText(event.target.value) })} />
+                  <span>{t("command")}</span>
+                  <textarea aria-label={t("quick-command-content")} value={selected.command} spellCheck={false} onChange={(event) => updateSelected({ command: normalizeQuickCommandText(event.target.value) })} />
                 </label>
                 <label className="quick-command-enter-toggle">
                   <input type="checkbox" checked={selected.appendEnter} onChange={(event) => updateSelected({ appendEnter: event.target.checked })} />
-                  <span>追加回车并执行</span>
+                  <span>{t("append-enter-and-execute")}</span>
                 </label>
                 <div className="quick-command-editor-actions">
-                  <button type="button" title="上移" aria-label="上移快速命令" disabled={selectedIndex <= 0} onClick={() => moveSelected(-1)}><ArrowUp size={14} /></button>
-                  <button type="button" title="下移" aria-label="下移快速命令" disabled={selectedIndex < 0 || selectedIndex >= items.length - 1} onClick={() => moveSelected(1)}><ArrowDown size={14} /></button>
+                  <button type="button" title={t("move-up")} aria-label={t("move-quick-command-up")} disabled={selectedIndex <= 0} onClick={() => moveSelected(-1)}><ArrowUp size={14} /></button>
+                  <button type="button" title={t("move-down")} aria-label={t("move-quick-command-down")} disabled={selectedIndex < 0 || selectedIndex >= items.length - 1} onClick={() => moveSelected(1)}><ArrowDown size={14} /></button>
                   <span />
-                  <button type="button" className="danger" title="删除" aria-label="删除快速命令" onClick={removeSelected}><Trash2 size={14} /></button>
+                  <button type="button" className="danger" title={t("delete")} aria-label={t("delete-quick-command")} onClick={removeSelected}><Trash2 size={14} /></button>
                 </div>
               </>
             ) : (
               <div className="quick-command-editor-empty">
-                <button type="button" onClick={addCommand}><Plus size={14} /><span>添加命令</span></button>
+                <button type="button" onClick={addCommand}><Plus size={14} /><span>{t("add-command")}</span></button>
               </div>
             )}
           </section>
         </section>
         <footer className="utility-actions quick-command-dialog-actions">
-          {error ? <span role="alert">{error}</span> : <span />}
-          <button type="button" onClick={closeDialog}>取消</button>
-          <button type="submit">保存</button>
+          {error ? <span role="alert">{localizeDiagnostic(error)}</span> : <span />}
+          <button type="button" onClick={closeDialog}>{t("cancel")}</button>
+          <button type="submit">{t("save")}</button>
         </footer>
       </form>
     </div>

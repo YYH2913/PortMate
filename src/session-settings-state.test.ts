@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { t } from "./i18n";
 import {
   flattenSessionTree,
   MAX_SESSION_PROFILE_GROUP_CHARACTERS,
@@ -19,7 +20,7 @@ import {
   createTcpConnection,
 } from "./session-profile-helpers";
 
-const sharedPages = ["会话", "终端", "日志", "触发器", "传输"];
+const sharedPages = ["session", "terminal", "logs", "triggers", "transfers"];
 
 describe("session settings navigation", () => {
   it("keeps one route for each real profile capability", () => {
@@ -28,24 +29,24 @@ describe("session settings navigation", () => {
     expect(flattenSessionTree(sessionSettingTrees.SSH)).toEqual([
       ...sharedPages,
       "SSH",
-      "代理",
-      "验证",
-      "代理人",
-      "密码",
-      "公钥",
+      "proxy",
+      "verification",
+      "ssh-agent",
+      "password",
+      "public-key",
     ]);
     expect(flattenSessionTree(sessionSettingTrees.Tmux)).toEqual([
       ...sharedPages,
       "Tmux",
-      "代理",
-      "验证",
-      "代理人",
-      "密码",
-      "公钥",
+      "proxy",
+      "verification",
+      "ssh-agent",
+      "password",
+      "public-key",
     ]);
-    expect(flattenSessionTree(sessionSettingTrees.Telnet)).toEqual([...sharedPages, "Telnet", "代理"]);
-    expect(flattenSessionTree(sessionSettingTrees.Tcp)).toEqual([...sharedPages, "Tcp", "代理"]);
-    expect(flattenSessionTree(sessionSettingTrees.Serial)).toEqual([...sharedPages, "串口"]);
+    expect(flattenSessionTree(sessionSettingTrees.Telnet)).toEqual([...sharedPages, "Telnet", "proxy"]);
+    expect(flattenSessionTree(sessionSettingTrees.Tcp)).toEqual([...sharedPages, "Tcp", "proxy"]);
+    expect(flattenSessionTree(sessionSettingTrees.Serial)).toEqual([...sharedPages, "serial"]);
   });
 
   it("does not expose duplicate or non-runtime settings", () => {
@@ -53,12 +54,12 @@ describe("session settings navigation", () => {
       "Bell",
       "模式",
       "键盘",
-      "安全",
+      "security",
       "窗口",
-      "选择",
-      "自动化",
-      "进程",
-      "连接",
+      "select-2",
+      "automation",
+      "processes",
+      "connect",
       "协议",
       "密钥交换",
       "MAC 哈希",
@@ -123,11 +124,11 @@ describe("session settings navigation", () => {
     const ssh = createSshConnection();
     expect(validateQuickConnectProfile({ connection: ssh })).toEqual({
       valid: false,
-      issues: [{ field: "target", message: "请输入主机" }],
+      issues: [{ field: "target", message: t("enter-a-host") }],
     });
     expect(validateQuickConnectProfile({
       connection: { ...ssh, endpoint: { host: "router.local", port: 65_536 } },
-    }).issues).toEqual([{ field: "port", message: "端口必须在 1 到 65535 之间" }]);
+    }).issues).toEqual([{ field: "port", message: t("port-must-be-between-1-and-65535") }]);
 
     const tcp = createTcpConnection("tcp");
     expect(validateQuickConnectProfile({ connection: tcp }).issues.map((issue) => issue.field))
@@ -138,10 +139,10 @@ describe("session settings navigation", () => {
 
     const serial = createSerialConnection();
     expect(validateQuickConnectProfile({ connection: serial }).issues)
-      .toEqual([{ field: "target", message: "请选择串口" }]);
+      .toEqual([{ field: "target", message: t("select-a-serial-port") }]);
     expect(validateQuickConnectProfile({
       connection: { ...serial, port: "/dev/ttyUSB0", baudRate: Number.NaN },
-    }).issues).toEqual([{ field: "baudRate", message: "波特率必须是有效的正整数" }]);
+    }).issues).toEqual([{ field: "baudRate", message: t("baud-rate-must-be-a-valid-positive-integer") }]);
   });
 
   it("allows a local shell draft to connect through the platform default shell", () => {

@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import SessionConfigImportDialog from "./SessionConfigImportDialog";
 import { PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS, parsePuttySessions } from "./putty-session-import";
 import type { PuttySessionImportCandidate } from "./putty-session-import";
@@ -20,12 +21,13 @@ export default function PuttyConfigImportDialog({
   operationGate: KeyedRequestGate<"operation">;
   onDraftDirtyChange: (dirty: boolean) => void;
 }) {
+  useLocale();
   return <SessionConfigImportDialog
-    title="导入 PuTTY 会话"
+    title={t("import-putty-sessions")}
     sourceLabel="PuTTY session"
-    sourceAriaLabel="PuTTY 配置内容"
+    sourceAriaLabel={t("putty-configuration")}
     sourcePlaceholder="HostName=server.example.test"
-    emptyMessage="没有可导入的 PuTTY 会话"
+    emptyMessage={t("no-putty-sessions-available-to-import")}
     maxSourceChars={PUTTY_SESSION_IMPORT_MAX_SOURCE_CHARS}
     parse={parseConfig}
     candidateName={(candidate) => candidate.name}
@@ -50,9 +52,9 @@ function formatTarget(candidate: PuttySessionImportCandidate) {
 function formatDetails(candidate: PuttySessionImportCandidate) {
   const protocol = candidate.kind === "tcp" ? "Raw TCP" : candidate.kind === "serial" ? "Serial" : candidate.kind.toUpperCase();
   const details = [protocol];
-  if (candidate.kind !== "serial" && candidate.proxy) details.push("代理");
+  if (candidate.kind !== "serial" && candidate.proxy) details.push(t("proxy"));
   if (candidate.kind === "ssh" && candidate.tryAgent) details.push("Agent");
-  if (candidate.terminal) details.push("终端");
-  if (candidate.kind === "ssh" && candidate.forwards?.length) details.push(`${candidate.forwards.length} 个转发`);
+  if (candidate.terminal) details.push(t("terminal"));
+  if (candidate.kind === "ssh" && candidate.forwards?.length) details.push(t("forwards", [candidate.forwards.length]));
   return details.join(" ");
 }

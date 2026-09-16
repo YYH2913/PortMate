@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { invokeBackend } from "./api";
 import type { SessionSummary } from "./types";
 
@@ -129,7 +130,7 @@ export function buildProfileSecretMigrationRequest(
     ? Array.from(new Set(availableProfileIds.map((id) => id.trim()).filter(Boolean)))
     : [scopeProfileId.trim()].filter(Boolean);
   if (!profileIds.length) {
-    throw new Error("凭据迁移必须选择至少一个支持凭据的 Profile");
+    throw new Error(t("select-at-least-one-credential-capable-profile-for-migration"));
   }
   return { targetStorage: "portable", profileIds, cleanupSource };
 }
@@ -158,7 +159,7 @@ export function buildProfileSecretMigrationRecoveryRequest(
 ): ProfileSecretMigrationRecoveryRequest {
   const normalizedMigrationId = migrationId.trim();
   if (!normalizedMigrationId) {
-    throw new Error("凭据迁移恢复记录 ID 不能为空");
+    throw new Error(t("credential-migration-recovery-record-id-is-required"));
   }
   return { migrationId: normalizedMigrationId };
 }

@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, ReactNode } from "react";
 import {
@@ -119,10 +120,11 @@ export default function SessionSettingsDialog({
   onExportProfile?: () => Promise<void>;
   onClose: () => void;
 }) {
+  const { locale } = useLocale();
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
   const [surface, setSurface] = useState<"quick" | "advanced">(() => (
-    mode === "create" && initialSection === "会话" ? "quick" : "advanced"
+    mode === "create" && initialSection === "session" ? "quick" : "advanced"
   ));
   const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
   const [writeBusy, setWriteBusy] = useState(false);
@@ -139,13 +141,13 @@ export default function SessionSettingsDialog({
   const quickTargetRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
-  const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft]);
+  const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft, locale]);
   const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
 
   const refreshSerialPorts = useCallback(async () => {
     if (!onRefreshSerialPorts) {
-      setSerialPortsRefreshError("当前环境不支持读取设备串口列表");
+      setSerialPortsRefreshError(t("reading-the-device-serial-port-list-is-unavailable-in"));
       return;
     }
     const token = serialPortsRefreshGate.current.begin("ports");
@@ -167,7 +169,7 @@ export default function SessionSettingsDialog({
 
   useEffect(() => {
     if (!allowedSections.includes(activeSection)) {
-      setActiveSection("会话");
+      setActiveSection("session");
     }
   }, [activeSection, allowedSections]);
 
@@ -177,7 +179,7 @@ export default function SessionSettingsDialog({
     void cleanupStagedSecrets();
     setActiveProtocol(protocolFromKind(draft.kind));
     setActiveSection(initialSection);
-    setSurface(mode === "create" && initialSection === "会话" ? "quick" : "advanced");
+    setSurface(mode === "create" && initialSection === "session" ? "quick" : "advanced");
     connectionDrafts.current.clear();
     connectionDrafts.current.set(protocolFromKind(draft.kind), draft.connection);
   }, [draft.id, initialSection, mode]);
@@ -227,7 +229,7 @@ export default function SessionSettingsDialog({
       ? { ...converted, kind: cachedConnection.kind, connection: cachedConnection }
       : converted;
     setActiveProtocol(tab);
-    setActiveSection(surface === "advanced" ? protocolSettingsSection(tab) : "会话");
+    setActiveSection(surface === "advanced" ? protocolSettingsSection(tab) : "session");
     setProxyPasswordUpdate(null);
     onDraftChange(nextDraft);
   }
@@ -249,7 +251,7 @@ export default function SessionSettingsDialog({
       }
     }
     if (token === undefined || writeGate.current.isCurrent("write", token)) {
-      setSecretCleanupError(failures.length ? `暂存凭据清理失败: ${failures.join("；")}` : "");
+      setSecretCleanupError(failures.length ? t("failed-to-clean-up-staged-credentials", [failures.join("；")]) : "");
     }
     return failures.length === 0;
   }
@@ -285,15 +287,15 @@ export default function SessionSettingsDialog({
 
   return (
     <DialogFrame
-      title={mode === "create" ? "新建会话" : "会话设置"}
-      className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : activeSection === "会话" ? "compact" : activeSection === "传输" ? "medium" : "advanced"}`}
+      title={mode === "create" ? t("new-session") : t("session-settings")}
+      className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : activeSection === "session" ? "compact" : activeSection === "transfers" ? "medium" : "advanced"}`}
       onClose={() => void cancel()}
       closeDisabled={busy}
     >
       {quickSurface ? (
         <>
           <QuickProtocolTabs activeProtocol={activeProtocol} busy={busy} onChange={changeProtocol} />
-          <section className="session-quick-form" id="quick-session-fields" role="tabpanel" aria-label={`${protocolLabel(activeProtocol)} 快速设置`} inert={busy}>
+          <section className="session-quick-form" id="quick-session-fields" role="tabpanel" aria-label={t("quick-setup", [protocolLabel(activeProtocol)])} inert={busy}>
             <QuickSessionFields
               activeProtocol={activeProtocol}
               draft={draft}
@@ -313,20 +315,18 @@ export default function SessionSettingsDialog({
           <div className="session-settings-nav">
             {mode === "create" ? (
               <button type="button" className="session-quick-return" onClick={() => setSurface("quick")} disabled={busy}>
-                <SquareTerminal size={15} />
-                快速设置
-              </button>
+                <SquareTerminal size={15} />{t("quick-setup-2")}</button>
             ) : null}
             <label>
-              <span>会话类型</span>
-              <select aria-label="会话类型" value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
+              <span>{t("session-type")}</span>
+              <select aria-label={t("session-type")} value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
                 {protocolTabs.map((tab) => <option key={tab} value={tab}>{protocolLabel(tab)}</option>)}
               </select>
             </label>
             <label>
-              <span>配置项</span>
-              <select aria-label="会话配置项" value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
-                {allowedSections.map((section) => <option key={section} value={section}>{section}</option>)}
+              <span>{t("settings")}</span>
+              <select aria-label={t("session-settings-pages")} value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
+                {allowedSections.map((section) => <option key={section} value={section}>{t(section)}</option>)}
               </select>
             </label>
           </div>
@@ -357,33 +357,27 @@ export default function SessionSettingsDialog({
       <div className={`dialog-actions session-settings-actions ${mode === "create" ? "create-actions" : "edit-actions"}`}>
         {mode === "create" && quickSurface ? (
           <button type="button" className="session-advanced-button" onClick={openAdvancedSettings} disabled={busy}>
-            <SlidersHorizontal size={15} />
-            高级设置
-          </button>
+            <SlidersHorizontal size={15} />{t("advanced-settings")}</button>
         ) : null}
         <span className={`session-action-status ${secretCleanupError ? "error" : ""}`} aria-live="polite">
-          {secretCleanupError || (mode === "create" && !quickValidation.valid ? (
-            <><CircleAlert size={14} />请完善标记的连接信息</>
+          {localizeDiagnostic(secretCleanupError) || (mode === "create" && !quickValidation.valid ? (
+            <><CircleAlert size={14} />{t("complete-the-highlighted-connection-details")}</>
           ) : null)}
         </span>
         {mode === "create" ? (
           <>
-            <button type="button" className="session-cancel-button" onClick={() => void cancel()} disabled={busy}>取消</button>
+            <button type="button" className="session-cancel-button" onClick={() => void cancel()} disabled={busy}>{t("cancel")}</button>
             <button type="button" className="session-save-button" onClick={() => void submit(false)} disabled={busy}>
-              <Save size={15} />
-              仅保存
-            </button>
+              <Save size={15} />{t("save-only")}</button>
             <button type="button" className="session-connect-button" onClick={() => void submit(true)} disabled={busy || !quickValidation.valid}>
-              <PlugZap size={15} />
-              连接
-            </button>
+              <PlugZap size={15} />{t("connect")}</button>
           </>
         ) : (
           <>
-            {onExportProfile ? <button type="button" onClick={() => void onExportProfile()} disabled={busy}>导出可迁移 Profile</button> : null}
-            <button onClick={() => void submit(false)} disabled={busy}>保存</button>
-            <button onClick={() => void submit(true)} disabled={busy}>保存并连接</button>
-            <button onClick={() => void cancel()} disabled={busy}>取消</button>
+            {onExportProfile ? <button type="button" onClick={() => void onExportProfile()} disabled={busy}>{t("export-portable-profile")}</button> : null}
+            <button onClick={() => void submit(false)} disabled={busy}>{t("save")}</button>
+            <button onClick={() => void submit(true)} disabled={busy}>{t("save-and-connect")}</button>
+            <button onClick={() => void cancel()} disabled={busy}>{t("cancel")}</button>
           </>
         )}
       </div>
@@ -400,8 +394,9 @@ function QuickProtocolTabs({
   busy: boolean;
   onChange: (protocol: ProtocolTab) => void;
 }) {
+  useLocale();
   return (
-    <div className="session-protocol-tabs" role="tablist" aria-label="连接协议">
+    <div className="session-protocol-tabs" role="tablist" aria-label={t("connection-protocol")}>
       {protocolTabs.map((protocol) => (
         <button
           type="button"
@@ -422,6 +417,7 @@ function QuickProtocolTabs({
 }
 
 function ProtocolIcon({ protocol }: { protocol: ProtocolTab }) {
+  useLocale();
   const props = { size: 17, "aria-hidden": true } as const;
   switch (protocol) {
     case "Shell": return <SquareTerminal {...props} />;
@@ -438,7 +434,7 @@ function protocolLabel(protocol: ProtocolTab) {
 }
 
 function protocolSettingsSection(protocol: ProtocolTab) {
-  return protocol === "Serial" ? "串口" : protocol;
+  return protocol === "Serial" ? t("serial") : protocol;
 }
 
 function QuickField({
@@ -456,17 +452,19 @@ function QuickField({
   group?: boolean;
   children: ReactNode;
 }) {
+  useLocale();
   const Field = group ? "div" : "label";
   return (
     <Field className={`session-quick-field ${error ? "invalid" : ""} ${className}`} role={group ? "group" : undefined} aria-label={group ? label : undefined}>
       <span className="session-quick-field-label">{label}{required ? <sup aria-hidden="true">*</sup> : null}</span>
       {children}
-      <span className="session-quick-field-error" aria-hidden={!error}>{error ?? ""}</span>
+      <span className="session-quick-field-error" aria-hidden={!error}>{localizeDiagnostic(error) ?? ""}</span>
     </Field>
   );
 }
 
 function QuickToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  useLocale();
   return (
     <div className="session-quick-toggle">
       <span>{label}</span>
@@ -498,6 +496,7 @@ function QuickSessionFields({
   targetRef: MutableRefObject<HTMLInputElement | HTMLSelectElement | null>;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const errorFor = (field: QuickConnectField) => issues.find((issue) => issue.field === field)?.message;
   const setTargetRef = (node: HTMLInputElement | HTMLSelectElement | null) => {
     targetRef.current = node;
@@ -507,7 +506,7 @@ function QuickSessionFields({
     <div className="session-quick-target" key={activeProtocol}>
       <header className="session-quick-section-heading">
         <ProtocolIcon protocol={activeProtocol} />
-        <h2>连接目标</h2>
+        <h2>{t("connection-target")}</h2>
       </header>
       {activeProtocol === "SSH" || activeProtocol === "Tmux" ? (
         <QuickSshFields
@@ -564,6 +563,7 @@ function QuickSshFields({
   setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const kind: "ssh" | "tmux" = protocol === "Tmux" ? "tmux" : "ssh";
   const current = draft.connection.kind === "ssh" || draft.connection.kind === "tmux"
     ? draft.connection
@@ -572,13 +572,13 @@ function QuickSshFields({
 
   return (
     <div className="session-quick-grid ssh-quick-grid">
-      <QuickField label="主机 / IP" required error={targetError}>
+      <QuickField label={t("host-ip")} required error={targetError}>
         <input
           ref={setTargetRef}
-          aria-label={`${protocolLabel(protocol)} 主机或 IP`}
+          aria-label={t("host-or-ip", [protocolLabel(protocol)])}
           aria-invalid={Boolean(targetError)}
           autoComplete="off"
-          placeholder="router.local 或 192.168.1.10"
+          placeholder={t("router-local-or-192-168-1-10")}
           value={ssh.endpoint.host}
           onChange={(event) => onDraftChange({
             ...draft,
@@ -587,11 +587,11 @@ function QuickSshFields({
           })}
         />
       </QuickField>
-      <QuickField label="端口" required error={portError}>
+      <QuickField label={t("port")} required error={portError}>
         <input
           type="number"
           inputMode="numeric"
-          aria-label={`${protocolLabel(protocol)} 端口`}
+          aria-label={t("port-2", [protocolLabel(protocol)])}
           aria-invalid={Boolean(portError)}
           min={1}
           max={65535}
@@ -603,9 +603,9 @@ function QuickSshFields({
           })}
         />
       </QuickField>
-      <QuickField label="用户名" className="ssh-username-field">
+      <QuickField label={t("username")} className="ssh-username-field">
         <input
-          aria-label={`${protocolLabel(protocol)} 用户名`}
+          aria-label={t("username-2", [protocolLabel(protocol)])}
           autoComplete="username"
           placeholder="root"
           value={ssh.username}
@@ -635,6 +635,7 @@ function QuickTcpFields({
   setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const kind: "telnet" | "tcp" = protocol === "Telnet" ? "telnet" : "tcp";
   const current = draft.connection.kind === "telnet" || draft.connection.kind === "tcp"
     ? draft.connection
@@ -648,10 +649,10 @@ function QuickTcpFields({
 
   return (
     <div className="session-quick-grid target-port-grid">
-      <QuickField label="主机" required error={targetError}>
+      <QuickField label={t("host")} required error={targetError}>
         <input
           ref={setTargetRef}
-          aria-label={`${protocolLabel(protocol)} 主机`}
+          aria-label={t("host-2", [protocolLabel(protocol)])}
           aria-invalid={Boolean(targetError)}
           autoComplete="off"
           placeholder="192.168.1.10"
@@ -659,11 +660,11 @@ function QuickTcpFields({
           onChange={(event) => update({ host: event.target.value })}
         />
       </QuickField>
-      <QuickField label="端口" required error={portError}>
+      <QuickField label={t("port")} required error={portError}>
         <input
           type="number"
           inputMode="numeric"
-          aria-label={`${protocolLabel(protocol)} 端口`}
+          aria-label={t("port-2", [protocolLabel(protocol)])}
           aria-invalid={Boolean(portError)}
           min={1}
           max={65535}
@@ -699,6 +700,7 @@ function QuickSerialFields({
   setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
   const update = (patch: Partial<typeof serial>) => onDraftChange({
     ...draft,
@@ -708,16 +710,16 @@ function QuickSerialFields({
 
   return (
     <div className="session-quick-grid serial-quick-grid">
-      <QuickField label="串口" required error={targetError} className="serial-port-field" group>
+      <QuickField label={t("serial")} required error={targetError} className="serial-port-field" group>
         <div className="serial-port-picker">
           <select
             ref={setTargetRef}
-            aria-label="串口"
+            aria-label={t("serial")}
             aria-invalid={Boolean(targetError)}
             value={serial.port}
             onChange={(event) => update({ port: event.target.value })}
           >
-            <option value="">{serialPorts.length ? "选择串口" : "未发现串口"}</option>
+            <option value="">{serialPorts.length ? t("select-serial-port") : t("no-serial-ports-found")}</option>
             {serialPortOptions(serial.port, serialPorts).map((option) => (
               <option key={option} value={option}>{option}</option>
             ))}
@@ -725,8 +727,8 @@ function QuickSerialFields({
           <button
             type="button"
             className="serial-port-refresh-button"
-            title="刷新设备串口列表"
-            aria-label="刷新串口列表"
+            title={t("refresh-device-serial-ports")}
+            aria-label={t("refresh-serial-ports")}
             onClick={onRefreshSerialPorts}
             disabled={serialPortsRefreshing}
           >
@@ -734,12 +736,12 @@ function QuickSerialFields({
           </button>
         </div>
       </QuickField>
-      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{serialPortsRefreshError}</div> : null}
-      <QuickField label="波特率" required error={baudRateError} className="serial-baud-rate-field">
+      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{localizeDiagnostic(serialPortsRefreshError)}</div> : null}
+      <QuickField label={t("baud-rate")} required error={baudRateError} className="serial-baud-rate-field">
         <input
           type="number"
           inputMode="numeric"
-          aria-label="波特率"
+          aria-label={t("baud-rate")}
           aria-invalid={Boolean(baudRateError)}
           min={serialConnectionBounds.baudRate.min}
           max={serialConnectionBounds.baudRate.max}
@@ -751,29 +753,29 @@ function QuickSerialFields({
           {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
         </datalist>
       </QuickField>
-      <QuickField label="数据位">
-        <select aria-label="数据位" value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>
+      <QuickField label={t("data-bits")}>
+        <select aria-label={t("data-bits")} value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>
           {[5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
       </QuickField>
-      <QuickField label="停止位">
-        <select aria-label="停止位" value={serial.stopBits} onChange={(event) => update({ stopBits: Number(event.target.value) })}>
+      <QuickField label={t("stop-bits")}>
+        <select aria-label={t("stop-bits")} value={serial.stopBits} onChange={(event) => update({ stopBits: Number(event.target.value) })}>
           <option value={1}>1</option>
           <option value={2}>2</option>
         </select>
       </QuickField>
-      <QuickField label="校验">
-        <select aria-label="校验" value={serial.parity} onChange={(event) => update({ parity: event.target.value })}>
-          <option value="none">无</option>
-          <option value="odd">奇校验</option>
-          <option value="even">偶校验</option>
+      <QuickField label={t("parity")}>
+        <select aria-label={t("parity")} value={serial.parity} onChange={(event) => update({ parity: event.target.value })}>
+          <option value="none">{t("none")}</option>
+          <option value="odd">{t("odd")}</option>
+          <option value="even">{t("even")}</option>
         </select>
       </QuickField>
-      <QuickField label="流控">
-        <select aria-label="流控" value={serial.flowControl} onChange={(event) => update({ flowControl: event.target.value })}>
-          <option value="none">无</option>
-          <option value="software">软件</option>
-          <option value="hardware">硬件</option>
+      <QuickField label={t("flow-control")}>
+        <select aria-label={t("flow-control")} value={serial.flowControl} onChange={(event) => update({ flowControl: event.target.value })}>
+          <option value="none">{t("none")}</option>
+          <option value="software">{t("software")}</option>
+          <option value="hardware">{t("hardware")}</option>
         </select>
       </QuickField>
     </div>
@@ -789,6 +791,7 @@ function QuickShellFields({
   setTargetRef: (node: HTMLInputElement | HTMLSelectElement | null) => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
   const update = (patch: Partial<typeof shell>) => onDraftChange({
     ...draft,
@@ -798,21 +801,22 @@ function QuickShellFields({
 
   return (
     <div className="session-quick-grid shell-quick-grid">
-      <QuickField label="程序">
-        <input ref={setTargetRef} aria-label="Shell 程序" placeholder="系统默认 Shell" value={shell.program} onChange={(event) => update({ program: event.target.value })} />
+      <QuickField label={t("program")}>
+        <input ref={setTargetRef} aria-label={t("shell-program")} placeholder={t("system-default-shell")} value={shell.program} onChange={(event) => update({ program: event.target.value })} />
       </QuickField>
       <div className="session-quick-field shell-arguments-field">
-        <span className="session-quick-field-label">参数</span>
+        <span className="session-quick-field-label">{t("arguments")}</span>
         <ShellArgumentsEditor args={shell.args} onChange={(args) => update({ args })} />
       </div>
-      <QuickField label="目录">
-        <input aria-label="Shell 工作目录" placeholder="当前用户目录" value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
+      <QuickField label={t("directory")}>
+        <input aria-label={t("shell-working-directory")} placeholder={t("current-user-s-directory")} value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
       </QuickField>
     </div>
   );
 }
 
 function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile; onDraftChange: (draft: SessionProfile) => void }) {
+  useLocale();
   const [tagsText, setTagsText] = useState(() => draft.tags.join(", "));
   useEffect(() => setTagsText(draft.tags.join(", ")), [draft.id]);
 
@@ -820,27 +824,27 @@ function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile;
     <section className="session-quick-metadata">
       <header className="session-quick-section-heading session-metadata-heading">
         <FolderTree size={15} />
-        <h2>会话信息</h2>
+        <h2>{t("session-information")}</h2>
       </header>
       <div className="session-quick-grid metadata-quick-grid">
-        <QuickField label="名称">
+        <QuickField label={t("name")}>
           <input
-            aria-label="会话名称"
+            aria-label={t("session-name")}
             value={draft.name}
             onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })}
           />
         </QuickField>
-        <QuickField label="分组">
+        <QuickField label={t("group-2")}>
           <input
-            aria-label="会话分组"
+            aria-label={t("session-group")}
             value={draft.group}
             onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })}
           />
         </QuickField>
-        <QuickField label="标签">
+        <QuickField label={t("tags")}>
           <input
-            aria-label="会话标签"
-            placeholder="逗号分隔"
+            aria-label={t("session-tags")}
+            placeholder={t("comma-separated")}
             value={tagsText}
             onChange={(event) => {
               const nextText = normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS);
@@ -893,38 +897,39 @@ function SessionSettingsContent({
   onSelectedIdentityIdChange: (id: string) => void;
   onOpenClientKeyManager?: () => Promise<void>;
 }) {
-  if (activeSection === "会话") {
+  useLocale();
+  if (activeSection === "session") {
     return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
-  if (activeSection === "终端") {
+  if (activeSection === "terminal") {
     return (
       <>
-        <DialogField label="终端:(T)">
+        <DialogField label={t("terminal-t")}>
           <input value={draft.terminal.term} maxLength={MAX_TERMINAL_NAME_BYTES} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
         </DialogField>
-        <DialogField label="行:(R)">
+        <DialogField label={t("rows-r")}>
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.rows.min} max={TERMINAL_PROFILE_BOUNDS.rows.max} step={1} value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label="列:(C)">
+        <DialogField label={t("columns-c")}>
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
         </DialogField>
-        {draft.connection.kind === "serial" ? <p className="muted">串口使用固定列数，不随窗口或字号变化。请与设备终端列数保持一致，否则长命令跨行删除可能错位；此设置不会修改设备的 stty 配置。</p> : null}
-        <DialogField label="滚屏:(S)">
+        {draft.connection.kind === "serial" ? <p className="muted">{t("serial-uses-a-fixed-column-count-independent-of-window")}</p> : null}
+        <DialogField label={t("scrollback-s")}>
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label="字体:(F)">
+        <DialogField label={t("font-f")}>
           <input value={draft.terminal.fontFamily} maxLength={MAX_TERMINAL_FONT_FAMILY_CHARACTERS} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontFamily: event.target.value } })} />
         </DialogField>
-        <DialogField label="字号:(Z)">
+        <DialogField label={t("font-size-z")}>
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.fontSize.min} max={TERMINAL_PROFILE_BOUNDS.fontSize.max} step={1} value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label="主题:(M)">
+        <DialogField label={t("theme-m")}>
           <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
-            {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
           </select>
         </DialogField>
-        <DialogField label="背景不透明度:(O)">
+        <DialogField label={t("background-opacity-o")}>
           <div className="terminal-opacity-control">
             <input
               type="range"
@@ -941,54 +946,54 @@ function SessionSettingsContent({
     );
   }
 
-  if (activeSection === "日志") {
+  if (activeSection === "logs") {
     return (
       <>
-        <DialogField label="启用:(E)">
+        <DialogField label={t("enabled-e")}>
           <select value={draft.logging.enabled ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, enabled: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
+            <option value="on">{t("enabled")}</option>
+            <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label="Raw（不脱敏）:(R)">
+        <DialogField label={t("raw-not-redacted-r")}>
           <select value={draft.logging.raw ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, raw: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
+            <option value="on">{t("enabled")}</option>
+            <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label="Text:(T)">
+        <DialogField label={t("ui-text-t")}>
           <select value={draft.logging.text ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, text: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
+            <option value="on">{t("enabled")}</option>
+            <option value="off">{t("close")}</option>
           </select>
         </DialogField>
         <DialogField label="JSONL:(J)">
           <select value={draft.logging.jsonl ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, jsonl: event.target.value === "on" } })}>
-            <option value="on">开启</option>
-            <option value="off">关闭</option>
+            <option value="on">{t("enabled")}</option>
+            <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label="敏感字段:(S)">
+        <DialogField label={t("sensitive-fields-s")}>
           <select value={draft.logging.redactSecrets ? "redact" : "plain"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, redactSecrets: event.target.value === "redact" } })}>
-            <option value="redact">隐藏</option>
-            <option value="plain">完整记录</option>
+            <option value="redact">{t("hide-2")}</option>
+            <option value="plain">{t("record-in-full")}</option>
           </select>
         </DialogField>
-        <DialogField label="路径:(P)">
+        <DialogField label={t("path-p")}>
           <input value={draft.logging.pathTemplate} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, pathTemplate: event.target.value } })} />
         </DialogField>
-        <DialogField label="保留天数:(D)">
+        <DialogField label={t("retention-days-d")}>
           <input type="number" min={0} max={3650} value={draft.logging.retentionDays ?? 0} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, retentionDays: Math.min(3650, Math.max(0, Math.trunc(Number(event.target.value) || 0))) } })} />
         </DialogField>
       </>
     );
   }
 
-  if (activeSection === "触发器") {
+  if (activeSection === "triggers") {
     return <TriggerFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
-  if (activeSection === "传输") {
+  if (activeSection === "transfers") {
     return <SessionTransferFields activeProtocol={activeProtocol} draft={draft} onDraftChange={onDraftChange} />;
   }
 
@@ -997,26 +1002,26 @@ function SessionSettingsContent({
   }
 
   if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && (activeSection === "SSH" || activeSection === "Tmux")) {
-    return <SshAdvancedFields section="连接" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} selectedIdentityId={selectedIdentityId} onSelectedIdentityIdChange={onSelectedIdentityIdChange} onOpenClientKeyManager={onOpenClientKeyManager} />;
+    return <SshAdvancedFields section="connect" draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} selectedIdentityId={selectedIdentityId} onSelectedIdentityIdChange={onSelectedIdentityIdChange} onOpenClientKeyManager={onOpenClientKeyManager} />;
   }
 
-  if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["代理", "验证", "代理人", "密码", "公钥"].includes(activeSection)) {
+  if ((activeProtocol === "SSH" || activeProtocol === "Tmux") && ["proxy", "verification", "ssh-agent", "password", "public-key"].includes(activeSection)) {
     return <SshAdvancedFields section={activeSection} draft={draft} prepareProfile={prepareProfile} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} writeBusy={writeBusy} onWriteStart={onWriteStart} onSecretCreated={onSecretCreated} onWriteFinish={onWriteFinish} selectedIdentityId={selectedIdentityId} onSelectedIdentityIdChange={onSelectedIdentityIdChange} onOpenClientKeyManager={onOpenClientKeyManager} />;
   }
 
   if (activeProtocol === "Telnet" && activeSection === "Telnet") {
-    return <TcpLikeAdvancedFields protocol="Telnet" section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <TcpLikeAdvancedFields protocol="Telnet" section="connect" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
   if (activeProtocol === "Tcp" && activeSection === "Tcp") {
-    return <TcpLikeAdvancedFields protocol="Tcp" section="连接" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+    return <TcpLikeAdvancedFields protocol="Tcp" section="connect" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
-  if ((activeProtocol === "Telnet" || activeProtocol === "Tcp") && activeSection === "代理") {
-    return <TcpLikeAdvancedFields protocol={activeProtocol} section="代理" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
+  if ((activeProtocol === "Telnet" || activeProtocol === "Tcp") && activeSection === "proxy") {
+    return <TcpLikeAdvancedFields protocol={activeProtocol} section="proxy" draft={draft} onDraftChange={onDraftChange} proxyPasswordUpdate={proxyPasswordUpdate} onProxyPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
-  if (activeProtocol === "Serial" && activeSection === "串口") {
+  if (activeProtocol === "Serial" && activeSection === "serial") {
     return <SerialAdvancedFields draft={draft} serialPorts={serialPorts} serialPortsRefreshing={serialPortsRefreshing} serialPortsRefreshError={serialPortsRefreshError} onRefreshSerialPorts={onRefreshSerialPorts} onDraftChange={onDraftChange} />;
   }
 
@@ -1030,19 +1035,20 @@ function SessionCommonOverviewFields({
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const [tagsText, setTagsText] = useState(() => draft.tags.join(", "));
   useEffect(() => {
     setTagsText(draft.tags.join(", "));
   }, [draft.id]);
   return (
     <>
-      <DialogField label="名称:(N)">
+      <DialogField label={t("name-n")}>
         <input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })} />
       </DialogField>
-      <DialogField label="分组:(G)">
-        <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })} placeholder="[嵌套组] a>b>c" />
+      <DialogField label={t("group-g")}>
+        <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })} placeholder={t("nested-group-a-b-c")} />
       </DialogField>
-      <DialogField label="标签:(L)">
+      <DialogField label={t("tags-l")}>
         <input value={tagsText} onChange={(event) => {
           const nextText = normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS);
           setTagsText(nextText);
@@ -1062,6 +1068,7 @@ function SessionTransferFields({
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const update = (patch: Partial<SessionProfile["transfer"]>) => onDraftChange({
     ...draft,
     transfer: { ...draft.transfer, ...patch },
@@ -1076,10 +1083,10 @@ function SessionTransferFields({
       <DialogToggleField label="XModem:" checked={draft.transfer.xmodem} onChange={(xmodem) => update({ xmodem })} />
       <DialogToggleField label="YModem:" checked={draft.transfer.ymodem} onChange={(ymodem) => update({ ymodem })} />
       <DialogToggleField label="ZModem:" checked={draft.transfer.zmodem} onChange={(zmodem) => update({ zmodem })} />
-      <DialogField label="限速 B/s:">
+      <DialogField label={t("rate-limit-b-s")}>
         <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => update({ rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null })} />
       </DialogField>
-      <DialogField label="默认目录:(D)">
+      <DialogField label={t("default-directory-d")}>
         <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => update({ defaultLocalDir: event.target.value || null })} />
       </DialogField>
     </>
@@ -1093,20 +1100,21 @@ function ShellProcessFields({
   draft: SessionProfile;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
   return (
     <>
-      <DialogField label="程序:(P)">
+      <DialogField label={t("program-p")}>
         <input value={shell.program} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } })} />
       </DialogField>
       <div className="dialog-field shell-arguments-field">
-        <span>参数:(A)</span>
+        <span>{t("arguments-a")}</span>
         <ShellArgumentsEditor
           args={shell.args}
           onChange={(args) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, args } })}
         />
       </div>
-      <DialogField label="目录:(W)">
+      <DialogField label={t("directory-w")}>
         <input value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
       </DialogField>
     </>
@@ -1114,6 +1122,7 @@ function ShellProcessFields({
 }
 
 function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraftChange: (draft: SessionProfile) => void }) {
+  useLocale();
   function setTriggers(triggers: TriggerSpec[]) {
     onDraftChange({ ...draft, triggers });
   }
@@ -1140,14 +1149,14 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
             <header className="trigger-item-header">
               <label className="trigger-enabled">
                 <input type="checkbox" checked={trigger.enabled} onChange={(event) => updateTrigger(triggerIndex, { enabled: event.target.checked })} />
-                <span>启用</span>
+                <span>{t("enable")}</span>
               </label>
-              <input aria-label="触发器名称" maxLength={MAX_TRIGGER_LABEL_CHARACTERS} value={trigger.label} onChange={(event) => updateTrigger(triggerIndex, { label: event.target.value })} />
-              <button type="button" className="icon-button" title="删除触发器" aria-label="删除触发器" onClick={() => setTriggers(draft.triggers.filter((_, index) => index !== triggerIndex))}><Trash2 size={14} /></button>
+              <input aria-label={t("trigger-name")} maxLength={MAX_TRIGGER_LABEL_CHARACTERS} value={trigger.label} onChange={(event) => updateTrigger(triggerIndex, { label: event.target.value })} />
+              <button type="button" className="icon-button" title={t("delete-trigger")} aria-label={t("delete-trigger")} onClick={() => setTriggers(draft.triggers.filter((_, index) => index !== triggerIndex))}><Trash2 size={14} /></button>
             </header>
             <div className="trigger-matcher-row">
               <select
-                aria-label="匹配类型"
+                aria-label={t("match-type")}
                 value={trigger.matcher.type}
                 onChange={(event) => updateTrigger(triggerIndex, {
                   matcher: event.target.value === "regex"
@@ -1155,11 +1164,11 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
                     : { type: "contains", text: matcherValue, case_sensitive: false },
                 })}
               >
-                <option value="contains">包含文本</option>
-                <option value="regex">正则表达式</option>
+                <option value="contains">{t("contains-text")}</option>
+                <option value="regex">{t("regular-expression")}</option>
               </select>
               <input
-                aria-label="匹配内容"
+                aria-label={t("match-pattern")}
                 maxLength={MAX_TRIGGER_MATCHER_CHARACTERS}
                 value={matcherValue}
                 onChange={(event) => updateTrigger(triggerIndex, {
@@ -1179,48 +1188,48 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
                     }
                   }}
                 />
-                <span>区分大小写</span>
+                <span>{t("case-sensitive")}</span>
               </label>
             </div>
             <div className="trigger-action-list">
               {trigger.actions.map((action, actionIndex) => (
                 <div className="trigger-action-row" key={`${trigger.id}-${actionIndex}`}>
                   <select
-                    aria-label="动作类型"
+                    aria-label={t("action-type")}
                     value={action.type}
                     onChange={(event) => updateAction(triggerIndex, actionIndex, defaultTriggerAction(event.target.value as TriggerAction["type"]))}
                   >
-                    <option value="timeline-mark">时间线标记</option>
-                    <option value="notification">通知</option>
-                    <option value="highlight">高亮</option>
-                    <option value="send-text">发送文本</option>
-                    <option value="local-command">本地命令</option>
-                    <option value="custom-link">自定义链接</option>
-                    <option value="sound">声音</option>
+                    <option value="timeline-mark">{t("timeline-marker")}</option>
+                    <option value="notification">{t("notification")}</option>
+                    <option value="highlight">{t("highlight")}</option>
+                    <option value="send-text">{t("send-text")}</option>
+                    <option value="local-command">{t("local-command")}</option>
+                    <option value="custom-link">{t("custom-link")}</option>
+                    <option value="sound">{t("sound")}</option>
                   </select>
                   {action.type === "sound" ? (
-                    <select aria-label="声音" value={action.name} onChange={(event) => updateAction(triggerIndex, actionIndex, { type: "sound", name: event.target.value })}>
-                      <option value="bell">Bell</option>
-                      <option value="chime">Chime</option>
-                      <option value="alert">Alert</option>
+                    <select aria-label={t("sound")} value={action.name} onChange={(event) => updateAction(triggerIndex, actionIndex, { type: "sound", name: event.target.value })}>
+                      <option value="bell">{t("ui-bell")}</option>
+                      <option value="chime">{t("ui-chime")}</option>
+                      <option value="alert">{t("ui-alert")}</option>
                     </select>
                   ) : (
                     <input
-                      aria-label="动作参数"
+                      aria-label={t("action-parameters")}
                       maxLength={MAX_TRIGGER_ACTION_VALUE_CHARACTERS}
                       value={triggerActionValue(action)}
                       onChange={(event) => updateAction(triggerIndex, actionIndex, patchTriggerAction(action.type, event.target.value))}
                     />
                   )}
-                  <button type="button" className="icon-button" title="删除动作" aria-label="删除动作" onClick={() => updateTrigger(triggerIndex, { actions: trigger.actions.filter((_, index) => index !== actionIndex) })}><Trash2 size={14} /></button>
+                  <button type="button" className="icon-button" title={t("delete-action")} aria-label={t("delete-action")} onClick={() => updateTrigger(triggerIndex, { actions: trigger.actions.filter((_, index) => index !== actionIndex) })}><Trash2 size={14} /></button>
                 </div>
               ))}
-              <button type="button" className="trigger-add-action" disabled={!canAddTriggerAction(trigger.actions.length)} title={canAddTriggerAction(trigger.actions.length) ? "添加动作" : "每条触发器最多 16 个动作"} onClick={() => updateTrigger(triggerIndex, { actions: [...trigger.actions, defaultTriggerAction("timeline-mark")] })}><Plus size={14} />添加动作</button>
+              <button type="button" className="trigger-add-action" disabled={!canAddTriggerAction(trigger.actions.length)} title={canAddTriggerAction(trigger.actions.length) ? t("add-action") : t("at-most-16-actions-per-trigger")} onClick={() => updateTrigger(triggerIndex, { actions: [...trigger.actions, defaultTriggerAction("timeline-mark")] })}><Plus size={14} />{t("add-action")}</button>
             </div>
           </section>
         );
       })}
-      <button type="button" className="trigger-add" disabled={!canAddTrigger(draft.triggers.length)} title={canAddTrigger(draft.triggers.length) ? "添加触发器" : "每个会话最多 64 条触发器"} onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />添加触发器</button>
+      <button type="button" className="trigger-add" disabled={!canAddTrigger(draft.triggers.length)} title={canAddTrigger(draft.triggers.length) ? t("add-trigger") : t("at-most-64-triggers-per-session")} onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />{t("add-trigger")}</button>
     </div>
   );
 }
@@ -1254,6 +1263,7 @@ function SshAdvancedFields({
   onSelectedIdentityIdChange: (id: string) => void;
   onOpenClientKeyManager?: () => Promise<void>;
 }) {
+  useLocale();
   const ssh = draft.connection.kind === "ssh" || draft.connection.kind === "tmux" ? draft.connection : createSshConnection();
   const kind = draft.connection.kind === "tmux" ? "tmux" : "ssh";
   const [vaultPrivateKey, setVaultPrivateKey] = useState("");
@@ -1296,7 +1306,7 @@ function SshAdvancedFields({
 
   useEffect(() => () => requestGate.current.invalidateAll(), []);
 
-  if (section === "连接") {
+  if (section === "connect") {
     const updateSsh = (patch: Partial<typeof ssh>) => onDraftChange({
       ...draft,
       kind,
@@ -1343,7 +1353,7 @@ function SshAdvancedFields({
         const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: response.secretRef } : { passphraseSecretRef: response.secretRef };
         updateJump(index, patch);
         setJumpSecretDrafts((current) => ({ ...current, [jumpSecretKey(index, field)]: "" }));
-        setJumpStatus("已保存跳板凭据");
+        setJumpStatus(t("jump-host-credentials-saved"));
       } catch (error) {
         setJumpStatus(formatError(error));
       } finally {
@@ -1357,26 +1367,26 @@ function SshAdvancedFields({
       setJumpStatus("");
       const patch: Partial<JumpHop> = field === "passwordSecretRef" ? { passwordSecretRef: null } : { passphraseSecretRef: null };
       updateJump(index, patch);
-      setJumpStatus("保存 Profile 后清理未引用凭据");
+      setJumpStatus(t("unreferenced-credentials-will-be-removed-after-saving-the-profile"));
     };
     return (
       <>
-        <DialogField label="主机:(H)">
+        <DialogField label={t("host-h")}>
           <input
             value={ssh.endpoint.host}
             onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, host: event.target.value } })}
           />
         </DialogField>
-        <DialogField label="用户名:(U)">
+        <DialogField label={t("username-u")}>
           <input value={ssh.username} autoComplete="username" onChange={(event) => updateSsh({ username: event.target.value })} />
         </DialogField>
-        <DialogField label="端口:(P)">
+        <DialogField label={t("port-p")}>
           <input type="number" min={1} max={65535} value={ssh.endpoint.port} onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, port: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label="别名:(A)">
+        <DialogField label={t("alias-a")}>
           <input value={ssh.hostKeyPolicy.alias ?? ""} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, alias: event.target.value || null } } })} />
         </DialogField>
-        <DialogField label="Jump Host:" group>
+        <DialogField label={t("ui-jump-host")} group>
           <div className="jump-list">
             {ssh.jumps.map((jump, index) => {
               const policy = jump.hostKeyPolicy ?? createJumpHostKeyPolicy(jump);
@@ -1384,65 +1394,65 @@ function SshAdvancedFields({
                 <div className="jump-hop" key={index}>
                   <div className="jump-hop-row">
                     <span className="jump-hop-index">{index + 1}</span>
-                    <input value={jump.host} onChange={(event) => updateJump(index, { host: event.target.value })} placeholder="host" />
+                    <input value={jump.host} onChange={(event) => updateJump(index, { host: event.target.value })} placeholder={t("ui-host-2")} />
                     <input type="number" value={jump.port} onChange={(event) => updateJump(index, { port: Number(event.target.value) || 22 })} aria-label={`Jump ${index + 1} port`} />
-                    <input value={jump.username} onChange={(event) => updateJump(index, { username: event.target.value })} placeholder="user" />
+                    <input value={jump.username} onChange={(event) => updateJump(index, { username: event.target.value })} placeholder={t("ui-user")} />
                     <select
                       value={jump.identityRef ?? ""}
                       onChange={(event) => updateJump(index, { identityRef: event.target.value || null })}
                       aria-label={`Jump ${index + 1} client identity`}
-                      title="选择用于该跳板的客户端身份；留空表示继承 Profile 身份"
+                      title={t("select-a-client-identity-for-this-jump-host-leave")}
                     >
-                      <option value="">继承 Profile 身份</option>
+                      <option value="">{t("inherit-profile-identity")}</option>
                       {ssh.identityRefs.map((identity) => (
                         <option key={identity.id} value={identity.id}>
                           {identity.label} · {identitySourceLabel(identity.source)}
                         </option>
                       ))}
                     </select>
-                    <button type="button" className="icon-button" onClick={() => removeJump(index)} title="删除跳板" aria-label={`删除跳板 ${index + 1}`}>
+                    <button type="button" className="icon-button" onClick={() => removeJump(index)} title={t("delete-jump-host")} aria-label={t("delete-jump-host-2", [index + 1])}>
                       <Trash2 size={14} />
                     </button>
                   </div>
                   <div className="jump-hop-extra">
-                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passwordSecretRef", event.target.value)} placeholder="password" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title="保存跳板密码" disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? "").trim()}>
+                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passwordSecretRef", event.target.value)} placeholder={t("ui-password")} />
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passwordSecretRef")} title={t("save-jump-host-password")} disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passwordSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
-                    <input value={jump.passwordSecretRef ?? ""} onChange={(event) => updateJump(index, { passwordSecretRef: event.target.value || null })} placeholder="password secretRef" />
-                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passphraseSecretRef", event.target.value)} placeholder="passphrase" />
-                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title="保存跳板口令" disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? "").trim()}>
+                    <input value={jump.passwordSecretRef ?? ""} onChange={(event) => updateJump(index, { passwordSecretRef: event.target.value || null })} placeholder={t("ui-password-secretref")} />
+                    <input type="password" value={jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? ""} onChange={(event) => setJumpSecretDraft(index, "passphraseSecretRef", event.target.value)} placeholder={t("ui-passphrase")} />
+                    <button type="button" className="icon-button" onClick={() => void saveJumpSecret(index, "passphraseSecretRef")} title={t("save-jump-host-passphrase")} disabled={writeBusy || !(jumpSecretDrafts[jumpSecretKey(index, "passphraseSecretRef")] ?? "").trim()}>
                       <Lock size={14} />
                     </button>
-                    <input value={jump.passphraseSecretRef ?? ""} onChange={(event) => updateJump(index, { passphraseSecretRef: event.target.value || null })} placeholder="passphrase secretRef" />
-                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passwordSecretRef")} disabled={!jump.passwordSecretRef} title="删除跳板密码">
+                    <input value={jump.passphraseSecretRef ?? ""} onChange={(event) => updateJump(index, { passphraseSecretRef: event.target.value || null })} placeholder={t("ui-passphrase-secretref")} />
+                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passwordSecretRef")} disabled={!jump.passwordSecretRef} title={t("delete-jump-host-password")}>
                       <X size={14} />
                     </button>
-                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passphraseSecretRef")} disabled={!jump.passphraseSecretRef} title="删除跳板口令">
+                    <button type="button" className="icon-button" onClick={() => void deleteJumpSecret(index, "passphraseSecretRef")} disabled={!jump.passphraseSecretRef} title={t("delete-jump-host-passphrase")}>
                       <X size={14} />
                     </button>
                   </div>
                   <div className="jump-hop-policy">
                     <select value={jump.hostKeyPolicy ? "custom" : "inherit"} onChange={(event) => updateJump(index, { hostKeyPolicy: event.target.value === "custom" ? createJumpHostKeyPolicy(jump) : null })}>
-                      <option value="inherit">继承</option>
-                      <option value="custom">自定义</option>
+                      <option value="inherit">{t("inherit")}</option>
+                      <option value="custom">{t("custom")}</option>
                     </select>
                     {jump.hostKeyPolicy ? (
                       <>
                         <select value={policy.mode} onChange={(event) => updateJumpPolicy(index, { mode: event.target.value as HostKeyPolicy["mode"] })}>
-                          <option value="strict">strict</option>
-                          <option value="trust-on-first-use">trust-on-first-use</option>
-                          <option value="ask-every-time">ask-every-time</option>
+                          <option value="strict">{t("ui-strict")}</option>
+                          <option value="trust-on-first-use">{t("ui-trust-on-first-use")}</option>
+                          <option value="ask-every-time">{t("ui-ask-every-time")}</option>
                         </select>
-                        <input value={policy.alias ?? ""} onChange={(event) => updateJumpPolicy(index, { alias: event.target.value || null })} placeholder="host-key alias" />
+                        <input value={policy.alias ?? ""} onChange={(event) => updateJumpPolicy(index, { alias: event.target.value || null })} placeholder={t("ui-host-key-alias")} />
                         <select value={policy.trustScope} onChange={(event) => updateJumpPolicy(index, { trustScope: event.target.value as HostKeyPolicy["trustScope"] })}>
-                          <option value="profile">profile</option>
-                          <option value="project">project</option>
-                          <option value="user">user</option>
+                          <option value="profile">{t("ui-profile")}</option>
+                          <option value="project">{t("ui-project")}</option>
+                          <option value="user">{t("ui-user")}</option>
                         </select>
                         <label className="jump-hop-check">
                           <input type="checkbox" checked={policy.allowRotation} onChange={(event) => updateJumpPolicy(index, { allowRotation: event.target.checked })} />
-                          <span>轮换</span>
+                          <span>{t("rotate")}</span>
                         </label>
                         <label className="jump-hop-check">
                           <input type="checkbox" checked={policy.checkIp} onChange={(event) => updateJumpPolicy(index, { checkIp: event.target.checked })} />
@@ -1457,14 +1467,14 @@ function SshAdvancedFields({
             {jumpStatus ? <span className="settings-inline-status">{jumpStatus}</span> : null}
             <button type="button" className="settings-secondary-button jump-add-button" onClick={addJump}>
               <Plus size={14} />
-              <span>添加跳板</span>
+              <span>{t("add-jump-host")}</span>
             </button>
           </div>
         </DialogField>
-        <DialogToggleField label="SSH 保活:" checked={ssh.keepaliveEnabled} onChange={(keepaliveEnabled) => updateSsh({ keepaliveEnabled })} />
+        <DialogToggleField label={t("ssh-keepalive")} checked={ssh.keepaliveEnabled} onChange={(keepaliveEnabled) => updateSsh({ keepaliveEnabled })} />
         {ssh.keepaliveEnabled ? (
           <>
-            <DialogField label="探测间隔(s):">
+            <DialogField label={t("probe-interval-s")}>
               <input
                 type="number"
                 min={sshConnectionBounds.keepaliveIntervalSeconds.min}
@@ -1473,7 +1483,7 @@ function SshAdvancedFields({
                 onChange={(event) => updateSsh({ keepaliveIntervalSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label="未响应上限 (0=不自动断开):">
+            <DialogField label={t("unanswered-limit-0-no-automatic-disconnect")}>
               <input
                 type="number"
                 min={sshConnectionBounds.keepaliveMaxMissed.min}
@@ -1484,7 +1494,7 @@ function SshAdvancedFields({
             </DialogField>
           </>
         ) : null}
-        <DialogField label="TCP KeepAlive:">
+        <DialogField label={t("ui-tcp-keepalive")}>
           <select
             value={ssh.tcpKeepaliveEnabled === null ? "system" : ssh.tcpKeepaliveEnabled ? "enabled" : "disabled"}
             onChange={(event) => updateSsh({
@@ -1493,13 +1503,13 @@ function SshAdvancedFields({
                 : event.target.value === "enabled",
             })}
           >
-            <option value="system">系统默认</option>
-            <option value="enabled">开启</option>
-            <option value="disabled">关闭</option>
+            <option value="system">{t("system-default")}</option>
+            <option value="enabled">{t("enabled")}</option>
+            <option value="disabled">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogToggleField label="自动重连:" checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
-        <DialogField label="重连延迟(ms):">
+        <DialogToggleField label={t("auto-reconnect")} checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
+        <DialogField label={t("reconnect-delay-ms")}>
           <input
             type="number"
             min={sshConnectionBounds.reconnectDelayMs.min}
@@ -1514,11 +1524,11 @@ function SshAdvancedFields({
     );
   }
 
-  if (section === "代理") {
+  if (section === "proxy") {
     return <ProxyAdvancedFields proxy={ssh.proxy} onChange={(proxy) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, proxy } })} passwordUpdate={proxyPasswordUpdate} onPasswordUpdateChange={onProxyPasswordUpdateChange} />;
   }
 
-  if (section === "验证") {
+  if (section === "verification") {
     const checkHealth = async () => {
       const token = requestGate.current.begin("health");
       if (token === null) return;
@@ -1594,7 +1604,7 @@ function SshAdvancedFields({
           },
         });
         setHostKeyScan(null);
-        setHostKeyStatus(`已加入 Profile 草稿 ${response.trusted.fingerprintSha256}，保存会话后生效`);
+        setHostKeyStatus(t("added-to-profile-draft-takes-effect-after-saving-the", [response.trusted.fingerprintSha256]));
       } catch (error) {
         if (requestGate.current.isCurrent("host-key", token) && hostKeyRequestKeyRef.current === requestKey) {
           setHostKeyStatus(formatError(error));
@@ -1605,53 +1615,53 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label="HostKey:">
+        <DialogField label={t("ui-hostkey")}>
           <select value={ssh.hostKeyPolicy.mode} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, mode: event.target.value as "strict" | "trust-on-first-use" | "ask-every-time" } } })}>
-            <option value="strict">strict</option>
-            <option value="trust-on-first-use">trust-on-first-use</option>
-            <option value="ask-every-time">ask-every-time</option>
+            <option value="strict">{t("ui-strict")}</option>
+            <option value="trust-on-first-use">{t("ui-trust-on-first-use")}</option>
+            <option value="ask-every-time">{t("ui-ask-every-time")}</option>
           </select>
         </DialogField>
-        <DialogField label="轮换:(R)">
+        <DialogField label={t("rotation-r")}>
           <select value={ssh.hostKeyPolicy.allowRotation ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, allowRotation: event.target.value === "on" } } })}>
-            <option value="off">阻断变更</option>
-            <option value="on">允许追加</option>
+            <option value="off">{t("block-changes")}</option>
+            <option value="on">{t("allow-appending")}</option>
           </select>
         </DialogField>
-        <DialogField label="校验IP:(I)">
+        <DialogField label={t("verify-ip-i")}>
           <select value={ssh.hostKeyPolicy.checkIp ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, checkIp: event.target.value === "on" } } })}>
-            <option value="off">关闭</option>
-            <option value="on">开启</option>
+            <option value="off">{t("close")}</option>
+            <option value="on">{t("enabled")}</option>
           </select>
         </DialogField>
-        <DialogField label="信任域:(S)">
+        <DialogField label={t("trust-scope-s")}>
           <select value={ssh.hostKeyPolicy.trustScope} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, trustScope: event.target.value as "profile" | "project" | "user" } } })}>
-            <option value="profile">profile</option>
-            <option value="project">project</option>
-            <option value="user">user</option>
+            <option value="profile">{t("ui-profile")}</option>
+            <option value="project">{t("ui-project")}</option>
+            <option value="user">{t("ui-user")}</option>
           </select>
         </DialogField>
-        <DialogField label="扫描:" group>
+        <DialogField label={t("scan-2")} group>
           <div className="inline-actions">
-            <button type="button" onClick={() => void scanHostKey()} disabled={hostKeyBusy || writeBusy}>{hostKeyBusy ? "扫描中" : "扫描 Host Key"}</button>
+            <button type="button" onClick={() => void scanHostKey()} disabled={hostKeyBusy || writeBusy}>{hostKeyBusy ? t("scanning-2") : t("scan-host-key")}</button>
             <span>{hostKeyScan ? describeHostKeyEvaluation(hostKeyScan) : hostKeyStatus}</span>
           </div>
         </DialogField>
-        <DialogField label="健康:" group>
+        <DialogField label={t("health")} group>
           <div className="inline-actions ssh-health-check">
-            <button type="button" aria-label="检查 SSH 健康" onClick={() => void checkHealth()} disabled={sshHealthBusy}>
-              <Activity size={14} />{sshHealthBusy ? "检查中" : "检查 SSH 健康"}
+            <button type="button" aria-label={t("check-ssh-health")} onClick={() => void checkHealth()} disabled={sshHealthBusy}>
+              <Activity size={14} />{sshHealthBusy ? t("checking") : t("check-ssh-health")}
             </button>
-            <span className={sshHealth?.status === "healthy" ? "healthy" : sshHealth ? "degraded" : ""} title={sshHealth ? sshHealthDiagnostic(sshHealth) : sshHealthError}>
-              {sshHealth ? sshHealthSummary(sshHealth) : sshHealthError}
+            <span className={sshHealth?.status === "healthy" ? "healthy" : sshHealth ? "degraded" : ""} title={sshHealth ? sshHealthDiagnostic(sshHealth) : localizeDiagnostic(sshHealthError)}>
+              {sshHealth ? sshHealthSummary(sshHealth) : localizeDiagnostic(sshHealthError)}
             </span>
           </div>
         </DialogField>
         {hostKeyScan ? (
-          <DialogField label="处理:" group>
+          <DialogField label={t("action-2")} group>
             <div className="inline-actions">
-              <button type="button" onClick={() => void trustHostKey("append-to-profile")} disabled={hostKeyBusy || writeBusy}>加入 Profile</button>
-              <button type="button" onClick={() => void trustHostKey("replace-for-profile")} disabled={hostKeyBusy || writeBusy}>替换 Profile</button>
+              <button type="button" onClick={() => void trustHostKey("append-to-profile")} disabled={hostKeyBusy || writeBusy}>{t("add-to-profile")}</button>
+              <button type="button" onClick={() => void trustHostKey("replace-for-profile")} disabled={hostKeyBusy || writeBusy}>{t("replace-profile")}</button>
             </div>
           </DialogField>
         ) : null}
@@ -1659,62 +1669,62 @@ function SshAdvancedFields({
     );
   }
 
-  if (section === "代理人") {
+  if (section === "ssh-agent") {
     return (
       <>
-        <DialogField label="Agent:(A)">
+        <DialogField label={t("ui-agent-a")}>
           <select value={ssh.agentPolicy.enabled ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, enabled: event.target.value === "on" } } })}>
-            <option value="off">禁用</option>
-            <option value="on">启用</option>
+            <option value="off">{t("disable")}</option>
+            <option value="on">{t("enable")}</option>
           </select>
         </DialogField>
-        <DialogField label="Forward:(F)">
+        <DialogField label={t("ui-forward-f")}>
           <select value={ssh.agentPolicy.forwarding ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, forwarding: event.target.value === "on" } } })}>
-            <option value="off">禁用</option>
-            <option value="on">启用</option>
+            <option value="off">{t("disable")}</option>
+            <option value="on">{t("enable")}</option>
           </select>
         </DialogField>
-        <DialogField label="Offer:(O)">
+        <DialogField label={t("ui-offer-o")}>
           <select value={ssh.agentPolicy.offerMode} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, offerMode: event.target.value as "disabled" | "after-profile-keys" | "before-profile-keys" } } })}>
-            <option value="disabled">disabled</option>
-            <option value="after-profile-keys">after-profile-keys</option>
-            <option value="before-profile-keys">before-profile-keys</option>
+            <option value="disabled">{t("ui-disabled")}</option>
+            <option value="after-profile-keys">{t("ui-after-profile-keys")}</option>
+            <option value="before-profile-keys">{t("ui-before-profile-keys")}</option>
           </select>
         </DialogField>
       </>
     );
   }
 
-  if (section === "密码") {
+  if (section === "password") {
     const deleteSavedSecret = (field: "passwordSecretRef" | "passphraseSecretRef") => {
       const secretRef = ssh[field];
       if (!secretRef) return;
       setSecretStatus("");
       onDraftChange({ ...draft, kind, connection: { ...ssh, kind, [field]: null } });
-      setSecretStatus("保存 Profile 后清理未引用凭据");
+      setSecretStatus(t("unreferenced-credentials-will-be-removed-after-saving-the-profile"));
     };
     return (
       <>
-        <DialogField label="密码引用:">
+        <DialogField label={t("password-reference")}>
           <div className="inline-actions">
-            <input value={ssh.passwordSecretRef ?? ""} readOnly placeholder="未保存" />
-            <button type="button" onClick={() => void deleteSavedSecret("passwordSecretRef")} disabled={!ssh.passwordSecretRef}>删除</button>
+            <input value={ssh.passwordSecretRef ?? ""} readOnly placeholder={t("not-saved")} />
+            <button type="button" onClick={() => void deleteSavedSecret("passwordSecretRef")} disabled={!ssh.passwordSecretRef}>{t("delete")}</button>
           </div>
         </DialogField>
-        <DialogField label="口令引用:">
+        <DialogField label={t("passphrase-reference")}>
           <div className="inline-actions">
-            <input value={ssh.passphraseSecretRef ?? ""} readOnly placeholder="未保存" />
-            <button type="button" onClick={() => void deleteSavedSecret("passphraseSecretRef")} disabled={!ssh.passphraseSecretRef}>删除</button>
+            <input value={ssh.passphraseSecretRef ?? ""} readOnly placeholder={t("not-saved")} />
+            <button type="button" onClick={() => void deleteSavedSecret("passphraseSecretRef")} disabled={!ssh.passphraseSecretRef}>{t("delete")}</button>
           </div>
         </DialogField>
-        <DialogField label="状态:">
-          <input value={secretStatus} readOnly placeholder="连接弹窗勾选保存后会生成引用" />
+        <DialogField label={t("status-2")}>
+          <input value={secretStatus} readOnly placeholder={t("a-reference-is-created-when-you-select-save-in")} />
         </DialogField>
       </>
     );
   }
 
-  if (section === "公钥") {
+  if (section === "public-key") {
     const identities = ssh.identityRefs;
     const selectedIdentity = identities.find((identity) => identity.id === effectiveIdentityId)
       ?? identities[0]
@@ -1763,7 +1773,7 @@ function SshAdvancedFields({
         }
         updateIdentity({ source: "profile-vault", secretRef: response.secretRef, path: null });
         setVaultPrivateKey("");
-        setVaultStatus("已保存到 Stronghold");
+        setVaultStatus(t("saved-to-stronghold"));
       } catch (error) {
         setVaultStatus(formatError(error));
       } finally {
@@ -1776,28 +1786,28 @@ function SshAdvancedFields({
       setVaultBusy(true);
       setVaultStatus("");
       updateIdentity({ secretRef: null });
-      setVaultStatus("保存 Profile 后清理未引用私钥");
+      setVaultStatus(t("unreferenced-private-keys-will-be-removed-after-saving-the"));
       setVaultBusy(false);
     };
     return (
       <>
-        <DialogField label="身份:(I)">
+        <DialogField label={t("identity-i")}>
           <select value={ssh.identityPolicy.identitiesOnly ? "only" : "agent"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, identitiesOnly: event.target.value === "only" } } })}>
-            <option value="only">IdentitiesOnly</option>
-            <option value="agent">Profile + Agent</option>
+            <option value="only">{t("ui-identitiesonly")}</option>
+            <option value="agent">{t("ui-profile-agent")}</option>
           </select>
         </DialogField>
-        <DialogField label="顺序:(O)">
+        <DialogField label={t("order-o")}>
           <select value={ssh.identityPolicy.authOrder.join(">")} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, authOrder: event.target.value.split(">") as AuthMethod[] } } })}>
             {authOrderOptions.map((option, index) => (
               <option key={option} value={option}>
-                {option.replaceAll(">", " > ")}{!authOrderIsPreset && index === 0 ? "（当前配置）" : ""}
+                {option.replaceAll(">", " > ")}{!authOrderIsPreset && index === 0 ? t("current-settings") : ""}
               </option>
             ))}
           </select>
         </DialogField>
         <DialogToggleField
-          label="记住成功方式:(R)"
+          label={t("remember-successful-method-r")}
           checked={ssh.identityPolicy.recordSuccess}
           onChange={(recordSuccess) => onDraftChange({
             ...draft,
@@ -1813,64 +1823,64 @@ function SshAdvancedFields({
             },
           })}
         />
-        <DialogField label="公钥:(K) · 客户端身份">
-          <select value={selectedIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"], ...(event.target.value === "system-file" ? {} : { path: null }), ...(event.target.value === "profile-vault" ? {} : { secretRef: null }) })} disabled={selectedIdentityIndex < 0} aria-label="客户端身份来源">
-            <option value="system-file">本机私钥文件</option>
-            <option value="profile-vault">Profile Vault（Stronghold）</option>
-            <option value="agent">ssh-agent 身份</option>
-            <option value="public-key-only">仅公钥信息</option>
+        <DialogField label={t("public-key-k-client-identity")}>
+          <select value={selectedIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"], ...(event.target.value === "system-file" ? {} : { path: null }), ...(event.target.value === "profile-vault" ? {} : { secretRef: null }) })} disabled={selectedIdentityIndex < 0} aria-label={t("client-identity-source")}>
+            <option value="system-file">{t("local-private-key-file")}</option>
+            <option value="profile-vault">{t("ui-profile-vault-stronghold")}</option>
+            <option value="agent">{t("ssh-agent-identity")}</option>
+            <option value="public-key-only">{t("public-key-information-only")}</option>
           </select>
         </DialogField>
-        <div className="session-identity-selector" role="group" aria-label="客户端身份选择">
-          <span>身份配置</span>
+        <div className="session-identity-selector" role="group" aria-label={t("client-identity-selection")}>
+          <span>{t("identity-settings")}</span>
           <div className="inline-actions">
-            <select value={selectedIdentity.id} onChange={(event) => onSelectedIdentityIdChange(event.target.value)} disabled={!identities.length} aria-label="客户端身份选择">
-              {!identities.length ? <option value="">尚未配置身份</option> : null}
+            <select value={selectedIdentity.id} onChange={(event) => onSelectedIdentityIdChange(event.target.value)} disabled={!identities.length} aria-label={t("client-identity-selection")}>
+              {!identities.length ? <option value="">{t("no-identity-configured")}</option> : null}
               {identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.label} · {identitySourceLabel(identity.source)}</option>)}
             </select>
-            <button type="button" onClick={addIdentity} title="添加客户端身份">添加</button>
-            <button type="button" onClick={removeIdentity} disabled={selectedIdentityIndex < 0} title="移除当前身份引用">移除</button>
+            <button type="button" onClick={addIdentity} title={t("add-client-identity")}>{t("add")}</button>
+            <button type="button" onClick={removeIdentity} disabled={selectedIdentityIndex < 0} title={t("remove-current-identity-reference")}>{t("remove")}</button>
           </div>
         </div>
         <div className="session-identity-hint" role="note">
-          <strong>{identities.length ? "身份已按顺序尝试" : "没有可用于公钥认证的身份"}</strong>
-          <span>{identities.length ? "Profile Vault、系统私钥或 ssh-agent 身份由这里选择；不要手填 identity id 或 secretRef。" : "使用下方添加系统私钥，或打开 Client Key Manager 导入/绑定身份。"}</span>
+          <strong>{identities.length ? t("identities-tried-in-order") : t("no-identities-available-for-public-key-authentication")}</strong>
+          <span>{identities.length ? t("select-profile-vault-local-private-key-or-ssh-agent") : t("add-a-local-private-key-below-or-open-client")}</span>
           {onOpenClientKeyManager ? (
             <button type="button" onClick={async () => {
               setIdentityManagerBusy(true);
               try { await onOpenClientKeyManager(); } finally { setIdentityManagerBusy(false); }
             }} disabled={identityManagerBusy || writeBusy}>
-              {identityManagerBusy ? "正在打开身份管理器" : "管理客户端身份"}
+              {identityManagerBusy ? t("opening-identity-manager") : t("manage-client-identities")}
             </button>
           ) : null}
         </div>
-        <DialogField label="名称:(N)">
+        <DialogField label={t("name-n")}>
           <input value={selectedIdentity.label} onChange={(event) => updateIdentity({ label: event.target.value })} disabled={selectedIdentityIndex < 0} />
         </DialogField>
-        <DialogField label="私钥文件:(F)">
+        <DialogField label={t("private-key-file-f")}>
           <div className="inline-actions">
             <input value={selectedIdentity.path ?? ""} onChange={(event) => updateIdentity({ path: event.target.value || null, source: event.target.value ? "system-file" : selectedIdentity.source })} placeholder="~/.ssh/id_ed25519" disabled={selectedIdentity.source !== "system-file"} />
-            <button type="button" onClick={() => void choosePrivateKey()} disabled={selectedIdentityIndex < 0} title="选择本机 SSH 私钥文件">选择</button>
+            <button type="button" onClick={() => void choosePrivateKey()} disabled={selectedIdentityIndex < 0} title={t("select-local-ssh-private-key-file")}>{t("select-2")}</button>
           </div>
         </DialogField>
-        <DialogField label="Vault Ref:">
-          <input value={selectedIdentity.secretRef ? "已安全保存在 Stronghold" : ""} readOnly placeholder="未保存私钥" />
+        <DialogField label={t("ui-vault-ref")}>
+          <input value={selectedIdentity.secretRef ? t("securely-saved-in-stronghold") : ""} readOnly placeholder={t("no-private-key-saved")} />
         </DialogField>
         {selectedIdentity.source === "profile-vault" ? (
-          <DialogField label="私钥内容:">
-            <textarea value={vaultPrivateKey} onChange={(event) => setVaultPrivateKey(event.target.value)} placeholder="粘贴 OpenSSH 私钥，保存后只保留 secretRef" />
+          <DialogField label={t("private-key-content")}>
+            <textarea value={vaultPrivateKey} onChange={(event) => setVaultPrivateKey(event.target.value)} placeholder={t("paste-an-openssh-private-key-only-secretref-is-retained")} />
           </DialogField>
         ) : null}
         {selectedIdentity.source === "profile-vault" ? (
-          <DialogField label="密钥库:">
+          <DialogField label={t("vault")}>
             <div className="inline-actions">
-              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || writeBusy || !vaultPrivateKey.trim()}>保存到 Stronghold</button>
-              <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !selectedIdentity.secretRef}>删除</button>
+              <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || writeBusy || !vaultPrivateKey.trim()}>{t("save-to-stronghold")}</button>
+              <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !selectedIdentity.secretRef}>{t("delete")}</button>
               <span>{vaultStatus}</span>
             </div>
           </DialogField>
         ) : null}
-        <DialogField label="指纹:(P)">
+        <DialogField label={t("fingerprint-p")}>
           <input value={selectedIdentity.fingerprintSha256 ?? ""} onChange={(event) => updateIdentity({ fingerprintSha256: event.target.value || null })} placeholder="SHA256:..." disabled={selectedIdentityIndex < 0} />
         </DialogField>
       </>
@@ -1891,30 +1901,31 @@ function ProxyAdvancedFields({
   passwordUpdate: ProxyPasswordUpdate;
   onPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
+  useLocale();
   const update = (patch: Partial<ProxyConfig>) => onChange({ ...proxy, ...patch });
   const password = passwordUpdate?.action === "set" ? passwordUpdate.password : "";
   const passwordPendingClear = passwordUpdate?.action === "clear";
   return (
     <>
-      <DialogToggleField label="启用代理:" checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
+      <DialogToggleField label={t("enable-proxy")} checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
       {proxy.enabled ? (
         <>
-          <DialogField label="协议:">
+          <DialogField label={t("protocol")}>
             <select value={proxy.kind} onChange={(event) => update({ kind: event.target.value as ProxyConfig["kind"] })}>
               <option value="socks5">SOCKS5</option>
               <option value="http-connect">HTTP CONNECT</option>
             </select>
           </DialogField>
-          <DialogField label="代理主机:">
+          <DialogField label={t("proxy-host")}>
             <input value={proxy.host} onChange={(event) => update({ host: event.target.value })} />
           </DialogField>
-          <DialogField label="代理端口:">
+          <DialogField label={t("proxy-port")}>
             <input type="number" min={1} max={65535} value={proxy.port} onChange={(event) => update({ port: Number(event.target.value) })} />
           </DialogField>
-          <DialogField label="代理用户:">
+          <DialogField label={t("proxy-username")}>
             <input value={proxy.username} autoComplete="username" onChange={(event) => update({ username: event.target.value })} />
           </DialogField>
-          <DialogField label="代理密码:">
+          <DialogField label={t("proxy-password")}>
             <form className="proxy-password-control" onSubmit={(event) => event.preventDefault()}>
               <input type="text" name="username" autoComplete="username" value={proxy.username} readOnly hidden aria-hidden="true" tabIndex={-1} />
               <input
@@ -1922,14 +1933,14 @@ function ProxyAdvancedFields({
                 name="password"
                 autoComplete="new-password"
                 value={password}
-                placeholder={passwordPendingClear ? "保存后移除" : proxy.passwordSecretRef ? "已安全保存" : "未保存"}
+                placeholder={passwordPendingClear ? t("remove-after-saving") : proxy.passwordSecretRef ? t("securely-saved") : t("not-saved")}
                 onChange={(event) => onPasswordUpdateChange(event.target.value ? { action: "set", password: event.target.value, storage: "portable" } : null)}
               />
               <button
                 type="button"
                 className="icon-button"
-                title="移除已保存的代理密码"
-                aria-label="移除已保存的代理密码"
+                title={t("remove-saved-proxy-password")}
+                aria-label={t("remove-saved-proxy-password")}
                 disabled={passwordPendingClear || (!proxy.passwordSecretRef && passwordUpdate?.action !== "set")}
                 onClick={() => onPasswordUpdateChange({ action: "clear" })}
               >
@@ -1958,10 +1969,11 @@ function TcpLikeAdvancedFields({
   proxyPasswordUpdate: ProxyPasswordUpdate;
   onProxyPasswordUpdateChange: (update: ProxyPasswordUpdate) => void;
 }) {
+  useLocale();
   const kind = protocol === "Telnet" ? "telnet" : "tcp";
   const tcp = draft.connection.kind === kind ? draft.connection : createTcpConnection(kind);
 
-  if (section === "连接") {
+  if (section === "connect") {
     const updateTcp = (patch: Partial<typeof tcp>) => onDraftChange({
       ...draft,
       kind,
@@ -1969,14 +1981,14 @@ function TcpLikeAdvancedFields({
     });
     return (
       <>
-        <DialogField label="主机:(H)">
+        <DialogField label={t("host-h")}>
           <input value={tcp.host} onChange={(event) => updateTcp({ host: event.target.value })} />
         </DialogField>
-        <DialogField label="端口:(P)">
+        <DialogField label={t("port-p")}>
           <input type="number" min={1} max={65535} value={tcp.port} onChange={(event) => updateTcp({ port: Number(event.target.value) })} />
         </DialogField>
-        <DialogToggleField label="自动重连:" checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
-        <DialogField label="重连延迟(ms):">
+        <DialogToggleField label={t("auto-reconnect")} checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
+        <DialogField label={t("reconnect-delay-ms")}>
           <input
             type="number"
             min={tcpConnectionBounds.reconnectDelayMs.min}
@@ -1987,10 +1999,10 @@ function TcpLikeAdvancedFields({
             onChange={(event) => updateTcp({ reconnectDelayMs: Number(event.target.value) })}
           />
         </DialogField>
-        <DialogToggleField label="TCP KeepAlive:" checked={tcp.keepaliveEnabled} onChange={(keepaliveEnabled) => updateTcp({ keepaliveEnabled })} />
+        <DialogToggleField label={t("ui-tcp-keepalive")} checked={tcp.keepaliveEnabled} onChange={(keepaliveEnabled) => updateTcp({ keepaliveEnabled })} />
         {tcp.keepaliveEnabled ? (
           <>
-            <DialogField label="空闲时间(s):">
+            <DialogField label={t("idle-time-s")}>
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveIdleSeconds.min}
@@ -1999,7 +2011,7 @@ function TcpLikeAdvancedFields({
                 onChange={(event) => updateTcp({ keepaliveIdleSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label="探测间隔(s):">
+            <DialogField label={t("probe-interval-s")}>
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveIntervalSeconds.min}
@@ -2008,7 +2020,7 @@ function TcpLikeAdvancedFields({
                 onChange={(event) => updateTcp({ keepaliveIntervalSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label="失败次数:">
+            <DialogField label={t("failure-count")}>
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveRetries.min}
@@ -2028,7 +2040,7 @@ function TcpLikeAdvancedFields({
         <DialogToggleField label="TLS/SSL:" checked={tcp.tlsEnabled} onChange={(tlsEnabled) => updateTcp({ tlsEnabled })} />
         {tcp.tlsEnabled ? (
           <>
-            <DialogField label="TLS Server Name:">
+            <DialogField label={t("ui-tls-server-name")}>
               <input
                 value={tcp.tlsServerName ?? ""}
                 placeholder={tcp.host}
@@ -2037,7 +2049,7 @@ function TcpLikeAdvancedFields({
               />
             </DialogField>
             <DialogToggleField
-              label="接受无效证书(不安全):"
+              label={t("accept-invalid-certificates-unsafe")}
               checked={tcp.tlsAcceptInvalidCert}
               onChange={(tlsAcceptInvalidCert) => updateTcp({ tlsAcceptInvalidCert })}
             />
@@ -2065,15 +2077,16 @@ function SerialAdvancedFields({
   onRefreshSerialPorts: () => void;
   onDraftChange: (draft: SessionProfile) => void;
 }) {
+  useLocale();
   const serial = draft.connection.kind === "serial" ? draft.connection : createSerialConnection();
   const update = (patch: Partial<ReturnType<typeof createSerialConnection>>) => onDraftChange({ ...draft, kind: "serial", connection: { ...serial, ...patch } });
 
   return (
     <>
-      <DialogField label="串口:(S)">
+      <DialogField label={t("serial-port-s")}>
         <div className="serial-port-picker">
           <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
-            <option value="">{serialPorts.length ? "选择串口" : "未发现串口"}</option>
+            <option value="">{serialPorts.length ? t("select-serial-port") : t("no-serial-ports-found")}</option>
             {serialPortOptions(serial.port, serialPorts).map((option) => (
               <option key={option} value={option}>{option}</option>
             ))}
@@ -2081,8 +2094,8 @@ function SerialAdvancedFields({
           <button
             type="button"
             className="serial-port-refresh-button"
-            title="刷新设备串口列表"
-            aria-label="刷新串口列表"
+            title={t("refresh-device-serial-ports")}
+            aria-label={t("refresh-serial-ports")}
             onClick={onRefreshSerialPorts}
             disabled={serialPortsRefreshing}
           >
@@ -2090,8 +2103,8 @@ function SerialAdvancedFields({
           </button>
         </div>
       </DialogField>
-      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{serialPortsRefreshError}</div> : null}
-      <DialogField label="波特率:(B)">
+      {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{localizeDiagnostic(serialPortsRefreshError)}</div> : null}
+      <DialogField label={t("baud-rate-b")}>
         <input
           type="number"
           min={serialConnectionBounds.baudRate.min}
@@ -2105,7 +2118,7 @@ function SerialAdvancedFields({
           {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
         </datalist>
       </DialogField>
-      <DialogField label="数据位:(D)">
+      <DialogField label={t("data-bits-d")}>
         <select value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>
           <option value={5}>5</option>
           <option value={6}>6</option>
@@ -2113,40 +2126,40 @@ function SerialAdvancedFields({
           <option value={8}>8</option>
         </select>
       </DialogField>
-      <DialogField label="停止位:(S)">
+      <DialogField label={t("stop-bits-s")}>
         <select value={serial.stopBits} onChange={(event) => update({ stopBits: Number(event.target.value) })}>
           <option value={1}>1</option>
           <option value={2}>2</option>
         </select>
       </DialogField>
-      <DialogField label="校验:(P)">
+      <DialogField label={t("parity-p")}>
         <select value={serial.parity} onChange={(event) => update({ parity: event.target.value })}>
-          <option>none</option>
-          <option>odd</option>
-          <option>even</option>
+          <option value="none">{t("none")}</option>
+          <option value="odd">{t("odd")}</option>
+          <option value="even">{t("even")}</option>
         </select>
       </DialogField>
-      <DialogField label="流控:(F)">
+      <DialogField label={t("flow-control-f")}>
         <select value={serial.flowControl} onChange={(event) => update({ flowControl: event.target.value })}>
-          <option>none</option>
-          <option>software</option>
-          <option>hardware</option>
+          <option value="none">{t("none")}</option>
+          <option value="software">{t("software")}</option>
+          <option value="hardware">{t("hardware")}</option>
         </select>
       </DialogField>
       <DialogField label="DTR:(D)">
         <select value={serial.dtr ? "on" : "off"} onChange={(event) => update({ dtr: event.target.value === "on" })}>
-          <option value="off">关闭</option>
-          <option value="on">开启</option>
+          <option value="off">{t("close")}</option>
+          <option value="on">{t("enabled")}</option>
         </select>
       </DialogField>
       <DialogField label="RTS:(R)">
         <select value={serial.rts ? "on" : "off"} onChange={(event) => update({ rts: event.target.value === "on" })}>
-          <option value="off">关闭</option>
-          <option value="on">开启</option>
+          <option value="off">{t("close")}</option>
+          <option value="on">{t("enabled")}</option>
         </select>
       </DialogField>
-      <DialogToggleField label="自动重连:" checked={serial.reconnect} onChange={(reconnect) => update({ reconnect })} />
-      <DialogField label="重连延迟(ms):">
+      <DialogToggleField label={t("auto-reconnect")} checked={serial.reconnect} onChange={(reconnect) => update({ reconnect })} />
+      <DialogField label={t("reconnect-delay-ms")}>
         <input
           type="number"
           min={serialConnectionBounds.reconnectDelayMs.min}
@@ -2157,9 +2170,9 @@ function SerialAdvancedFields({
           onChange={(event) => update({ reconnectDelayMs: Number(event.target.value) })}
         />
       </DialogField>
-      <DialogToggleField label="接收空闲超时:" checked={serial.receiveIdleTimeoutEnabled} onChange={(receiveIdleTimeoutEnabled) => update({ receiveIdleTimeoutEnabled })} />
+      <DialogToggleField label={t("receive-idle-timeout")} checked={serial.receiveIdleTimeoutEnabled} onChange={(receiveIdleTimeoutEnabled) => update({ receiveIdleTimeoutEnabled })} />
       {serial.receiveIdleTimeoutEnabled ? (
-        <DialogField label="空闲上限(s):">
+        <DialogField label={t("idle-limit-s")}>
           <input
             type="number"
             min={serialConnectionBounds.receiveIdleTimeoutSeconds.min}
@@ -2186,13 +2199,14 @@ function DialogFrame({
   closeDisabled?: boolean;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <div className="dialog-backdrop">
       <section className={`wind-dialog ${className}`}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button type="button" aria-label="关闭" title="关闭" onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
+          <button type="button" aria-label={t("close")} title={t("close")} onClick={onClose} disabled={closeDisabled}><X size={22} /></button>
         </header>
         {children}
       </section>
@@ -2201,6 +2215,7 @@ function DialogFrame({
 }
 
 function DialogField({ label, children, group = false }: { label: string; children: ReactNode; group?: boolean }) {
+  useLocale();
   if (group) {
     return (
       <div className="dialog-field" role="group" aria-label={label}>
@@ -2218,6 +2233,7 @@ function DialogField({ label, children, group = false }: { label: string; childr
 }
 
 function DialogToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  useLocale();
   return (
     <label className="dialog-field dialog-toggle-field">
       <span>{label}</span>
@@ -2229,7 +2245,7 @@ function DialogToggleField({ label, checked, onChange }: { label: string; checke
 }
 
 function sshHealthSummary(report: SshHealthReport) {
-  const label = report.status === "healthy" ? "健康" : report.status === "degraded" ? "部分降级" : "无响应";
+  const label = report.status === "healthy" ? t("healthy") : report.status === "degraded" ? t("partially-degraded") : t("unresponsive");
   const timings = [
     report.transportRoundTripMs == null ? null : `SSH ${report.transportRoundTripMs} ms`,
     report.channelRoundTripMs == null ? null : `Channel ${report.channelRoundTripMs} ms`,
@@ -2247,20 +2263,20 @@ function sshHealthDiagnostic(report: SshHealthReport) {
 
 function sshAuthenticationLabel(method: AuthMethod) {
   switch (method) {
-    case "public-key": return "公钥";
-    case "keyboard-interactive": return "键盘交互";
-    case "password": return "密码";
+    case "public-key": return t("public-key");
+    case "keyboard-interactive": return t("keyboard-interactive");
+    case "password": return t("password");
     case "gssapi-with-mic": return "GSSAPI";
-    case "none": return "无认证";
+    case "none": return t("no-authentication");
   }
 }
 
 function identitySourceLabel(source: IdentityRef["source"]): string {
   switch (source) {
     case "profile-vault": return "Stronghold";
-    case "system-file": return "本机文件";
+    case "system-file": return t("local-file");
     case "agent": return "ssh-agent";
-    case "public-key-only": return "仅公钥";
+    case "public-key-only": return t("public-key-only");
   }
 }
 

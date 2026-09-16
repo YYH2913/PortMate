@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useState } from "react";
 import { Activity, LoaderCircle, Maximize2, RefreshCw } from "lucide-react";
 import { formatBytes, formatEventClock } from "./display-formatters";
@@ -16,6 +17,7 @@ export default function SysmonSidebar({
   enabled: boolean;
   onOpenDetails: () => void;
 }) {
+  useLocale();
   const [tab, setTab] = useState<SysmonSidebarTab>("processes");
   const remote = session ? isSshLikeSession(session) : false;
   const canSample = Boolean(session) && (!remote || session?.runtime.status === "connected");
@@ -26,7 +28,7 @@ export default function SysmonSidebar({
   const error = live.error;
 
   if (!session) {
-    return <div className="workspace-sysmon-empty"><Activity size={18} /><span>选择会话后开始监控</span></div>;
+    return <div className="workspace-sysmon-empty"><Activity size={18} /><span>{t("select-a-session-to-start-monitoring")}</span></div>;
   }
 
   const processes = snapshot?.processes ?? [];
@@ -38,32 +40,32 @@ export default function SysmonSidebar({
       <header className="workspace-sysmon-header">
         <div>
           <strong title={session.profile.name}>{session.profile.name}</strong>
-          <span>{snapshot ? formatEventClock(snapshot.ts) : remote ? "远端主机" : "本机"}</span>
+          <span>{snapshot ? formatEventClock(snapshot.ts) : remote ? t("remote-host") : t("local-host")}</span>
         </div>
-        <button type="button" title="刷新 Sysmon" aria-label="刷新 Sysmon" onClick={() => void refreshSysmonLive(session.profile.id)} disabled={!canSample || busy}>
+        <button type="button" title={t("refresh-sysmon")} aria-label={t("refresh-sysmon")} onClick={() => void refreshSysmonLive(session.profile.id)} disabled={!canSample || busy}>
           <RefreshCw size={14} className={busy ? "loading" : ""} />
         </button>
-        <button type="button" title="打开 Sysmon 详情" aria-label="打开 Sysmon 详情" onClick={onOpenDetails}>
+        <button type="button" title={t("open-sysmon-details")} aria-label={t("open-sysmon-details")} onClick={onOpenDetails}>
           <Maximize2 size={14} />
         </button>
       </header>
 
       <div className="workspace-sysmon-notices">
-        {!canSample ? <div className="workspace-sysmon-message">远端会话未连接</div> : null}
-        {error ? <div className="workspace-sysmon-message error" title={error}>{error}</div> : null}
+        {!canSample ? <div className="workspace-sysmon-message">{t("remote-session-disconnected")}</div> : null}
+        {error ? <div className="workspace-sysmon-message error" title={localizeDiagnostic(error)}>{localizeDiagnostic(error)}</div> : null}
       </div>
 
       <dl className="workspace-sysmon-summary">
         <SysmonMetric label="CPU" value={snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : "-"} percent={snapshot?.cpuPercent} />
-        <SysmonMetric label="内存" value={snapshot ? `${snapshot.memoryPercent.toFixed(1)}%` : "-"} percent={snapshot?.memoryPercent} />
+        <SysmonMetric label={t("memory")} value={snapshot ? `${snapshot.memoryPercent.toFixed(1)}%` : "-"} percent={snapshot?.memoryPercent} />
         <div><dt>RX</dt><dd>{snapshot ? formatRate(snapshot.rxKbps) : "-"}</dd></div>
         <div><dt>TX</dt><dd>{snapshot ? formatRate(snapshot.txKbps) : "-"}</dd></div>
       </dl>
 
-      <nav className="workspace-sysmon-tabs" aria-label="Sysmon 侧栏详情">
-        <button type="button" className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>进程 <span>{processes.length}</span></button>
-        <button type="button" className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>磁盘 <span>{disks.length}</span></button>
-        <button type="button" className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>网络 <span>{interfaces.length}</span></button>
+      <nav className="workspace-sysmon-tabs" aria-label={t("sysmon-sidebar-details")}>
+        <button type="button" className={tab === "processes" ? "active" : ""} onClick={() => setTab("processes")}>{t("processes")}<span>{processes.length}</span></button>
+        <button type="button" className={tab === "disks" ? "active" : ""} onClick={() => setTab("disks")}>{t("disks")}<span>{disks.length}</span></button>
+        <button type="button" className={tab === "network" ? "active" : ""} onClick={() => setTab("network")}>{t("network")}<span>{interfaces.length}</span></button>
       </nav>
 
       <div className="workspace-sysmon-list">
@@ -79,7 +81,7 @@ export default function SysmonSidebar({
           <div className="workspace-sysmon-row disk" key={`${disk.filesystem}-${disk.mountPoint}`}>
             <strong title={disk.mountPoint}>{disk.mountPoint}</strong>
             <span>{disk.usedPercent.toFixed(1)}%</span>
-            <small>{formatBytes(disk.availableBytes)} 可用</small>
+            <small>{t("available-2", [formatBytes(disk.availableBytes)])}</small>
           </div>
         )) : null}
         {tab === "network" ? interfaces.map((item) => (
@@ -90,15 +92,16 @@ export default function SysmonSidebar({
           </div>
         )) : null}
         {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length))
-          ? <div className="workspace-sysmon-list-empty">当前采样没有明细</div>
+          ? <div className="workspace-sysmon-list-empty">{t("no-details-in-the-current-sample")}</div>
           : null}
-        {!snapshot && canSample && !error ? <div className="workspace-sysmon-list-empty loading"><LoaderCircle size={16} />正在采样</div> : null}
+        {!snapshot && canSample && !error ? <div className="workspace-sysmon-list-empty loading"><LoaderCircle size={16} />{t("sampling")}</div> : null}
       </div>
     </section>
   );
 }
 
 function SysmonMetric({ label, value, percent }: { label: string; value: string; percent?: number }) {
+  useLocale();
   const bounded = Math.min(100, Math.max(0, percent ?? 0));
   return (
     <div>

@@ -17,7 +17,7 @@ export async function checkPacedSender(context, appUrl) {
     await page.getByRole('button', { name: '高级发送选项', exact: true }).click();
     const count = page.getByRole('spinbutton', { name: '发送次数', exact: true });
     const interval = page.getByRole('spinbutton', { name: '发送间隔（毫秒）', exact: true });
-    const text = page.getByRole('textbox', { name: 'send text', exact: true });
+    const text = page.getByRole('textbox', { name: "发送文本", exact: true });
     const dismiss = async () => {
       const notice = page.locator('.notice-dialog');
       await notice.waitFor();

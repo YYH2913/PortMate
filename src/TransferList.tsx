@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef } from "react";
 import { AlertCircle, Ban, CheckCircle2, Clock3, Copy, LoaderCircle, X } from "lucide-react";
 import { formatBytes, formatDuration, formatEventClock } from "./display-formatters";
@@ -22,6 +23,7 @@ export default function TransferList({
   onCancel: (task: TransferTask) => void;
   onDismiss: (transferId: string) => void;
 }) {
+  useLocale();
   const dismissDeadlines = useRef(new Map<string, number>());
 
   useEffect(() => {
@@ -51,7 +53,7 @@ export default function TransferList({
   }, [dismissedTransferIds, onDismiss, transfers]);
 
   const visibleTransfers = transfers.filter((task) => !dismissedTransferIds.has(task.id));
-  if (!visibleTransfers.length) return <div className="empty-pane top">没有传输任务</div>;
+  if (!visibleTransfers.length) return <div className="empty-pane top">{t("no-transfer-tasks")}</div>;
   return (
     <div className="transfer-list">
       {visibleTransfers.slice().reverse().map((task) => {
@@ -69,17 +71,17 @@ export default function TransferList({
               <span className="transfer-status"><StatusIcon size={14} /><span>{transferStatusLabel(task.status)}</span></span>
               <div className="transfer-row-actions">
                 {task.status === "queued" || task.status === "running" ? (
-                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onCancel(task)}>取消</button>
+                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onCancel(task)}>{t("cancel")}</button>
                 ) : null}
                 {task.status === "failed" || task.status === "cancelled" ? (
-                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onRetry(task)}>重试</button>
+                  <button type="button" disabled={operationsLocked || operationBusy} onClick={() => onRetry(task)}>{t("retry")}</button>
                 ) : null}
                 {task.status === "failed" ? (
                   <button
                     className="transfer-icon-button"
                     type="button"
-                    title="复制失败诊断"
-                    aria-label="复制失败诊断"
+                    title={t("copy-failure-diagnostics")}
+                    aria-label={t("copy-failure-diagnostics")}
                     onClick={() => void navigator.clipboard?.writeText(transferDiagnosticText(task)).catch(() => {})}
                   >
                     <Copy size={14} />
@@ -89,8 +91,8 @@ export default function TransferList({
                   <button
                     className="transfer-icon-button"
                     type="button"
-                    title={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
-                    aria-label={task.status === "completed" ? "关闭已完成传输" : "隐藏传输记录"}
+                    title={task.status === "completed" ? t("dismiss-completed-transfer") : t("hide-transfer-record")}
+                    aria-label={task.status === "completed" ? t("dismiss-completed-transfer") : t("hide-transfer-record")}
                     onClick={() => onDismiss(task.id)}
                   >
                     <X size={14} />
@@ -100,7 +102,7 @@ export default function TransferList({
             </div>
             <small title={`${task.source} → ${task.destination}`}>{task.source} → {task.destination}</small>
             <small>
-              {formatBytes(task.bytesDone)} / {task.bytesTotal ? formatBytes(task.bytesTotal) : "未知"}
+              {formatBytes(task.bytesDone)} / {task.bytesTotal ? formatBytes(task.bytesTotal) : t("unknown")}
               {task.averageBytesPerSecond ? ` · ${formatBytes(task.averageBytesPerSecond)}/s` : ""}
               {task.startedAt && task.finishedAt ? ` · ${formatDuration(task.startedAt, task.finishedAt)}` : ""}
               {task.status === "failed" && task.finishedAt ? ` · ${formatEventClock(task.finishedAt)}` : ""}

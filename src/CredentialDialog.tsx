@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { KeyRound, X } from "lucide-react";
@@ -37,6 +38,7 @@ export default function CredentialDialog({
   onSubmit: (credentials: ConnectionCredentials) => void;
   onOpenStronghold?: () => void;
 }) {
+  useLocale();
   const [username, setUsername] = useState(request.initialUsername);
   const [password, setPassword] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -93,7 +95,7 @@ export default function CredentialDialog({
         <header className="dialog-title credential-title">
           <span className="app-icon" />
           <div>
-            <strong>SSH 连接</strong>
+            <strong>{t("ssh-connection")}</strong>
             <small>{request.target}</small>
           </div>
           <button type="button" onClick={onCancel}><X size={20} /></button>
@@ -102,7 +104,7 @@ export default function CredentialDialog({
           <label className="credential-field">
             <span>OneKey</span>
             <select value={oneKeyId} onChange={(event) => selectOneKey(event.target.value)} disabled={!request.oneKeys.length}>
-              <option value="">{request.oneKeys.length ? "手动输入" : "没有绑定 OneKey"}</option>
+              <option value="">{request.oneKeys.length ? t("manual-entry") : t("no-onekey-bound")}</option>
               {request.oneKeys.map((oneKey) => (
                 <option key={oneKey.id} value={oneKey.id}>{oneKey.label}</option>
               ))}
@@ -114,67 +116,66 @@ export default function CredentialDialog({
               <span>
                 <strong>{selectedOneKey.label}</strong>
                 <small>{[
-                  selectedOneKey.hasPassword ? "密码" : "",
-                  selectedOneKey.hasPassphrase ? "私钥口令" : "",
-                  selectedOneKey.identity ? `公钥身份 · ${selectedOneKey.identity.label}` : "",
+                  selectedOneKey.hasPassword ? t("password") : "",
+                  selectedOneKey.hasPassphrase ? t("private-key-passphrase") : "",
+                  selectedOneKey.identity ? t("public-key-identity", [selectedOneKey.identity.label]) : "",
                 ].filter(Boolean).join(" / ")}</small>
               </span>
             </div>
           ) : null}
           <label className="credential-field">
-            <span>用户名</span>
+            <span>{t("username")}</span>
             <input ref={usernameRef} value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={Boolean(selectedOneKey)} />
           </label>
           {request.needsPassword ? (
             <label className="credential-field">
-              <span>{selectedOneKey ? "OneKey 密码" : request.hasSavedPassword ? "登录密码(已存)" : "登录密码"}</span>
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassword ? "已安全保存" : "未保存" : ""} />
+              <span>{selectedOneKey ? t("onekey-password") : request.hasSavedPassword ? t("login-password-saved") : t("login-password")}</span>
+              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassword ? t("securely-saved") : t("not-saved") : ""} />
             </label>
           ) : null}
           {request.needsPassword && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} disabled={!password || !canSaveToStronghold} />
-              <span>保存登录密码到 Stronghold{request.strongholdStatus === "unlocked" ? "" : "（需先解锁）"}</span>
+              <span>{t("save-login-password-to-stronghold")}{request.strongholdStatus === "unlocked" ? "" : t("unlock-first")}</span>
             </label>
           ) : null}
           {request.hasIdentityFiles ? (
             <label className="credential-field">
-              <span>{selectedOneKey ? "OneKey 私钥口令" : request.hasSavedPassphrase ? "私钥口令(已存)" : "私钥口令"}</span>
-              <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" autoComplete="off" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassphrase ? "已安全保存" : "未保存" : "没有可留空"} />
+              <span>{selectedOneKey ? t("onekey-passphrase") : request.hasSavedPassphrase ? t("private-key-passphrase-saved") : t("private-key-passphrase")}</span>
+              <input value={passphrase} onChange={(event) => setPassphrase(event.target.value)} type="password" autoComplete="off" disabled={Boolean(selectedOneKey)} placeholder={selectedOneKey ? selectedOneKey.hasPassphrase ? t("securely-saved") : t("not-saved") : t("leave-blank-if-none")} />
             </label>
           ) : null}
           {request.hasIdentityFiles && !selectedOneKey ? (
             <label className="credential-check">
               <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} disabled={!passphrase || !canSaveToStronghold} />
-              <span>保存私钥口令到 Stronghold{request.strongholdStatus === "unlocked" ? "" : "（需先解锁）"}</span>
+              <span>{t("save-private-key-passphrase-to-stronghold")}{request.strongholdStatus === "unlocked" ? "" : t("unlock-first")}</span>
             </label>
           ) : null}
           {!selectedOneKey && request.strongholdStatus && request.strongholdStatus !== "unlocked" ? (
             <div className="credential-vault-hint" role="note">
               <KeyRound size={14} />
               <span>{request.strongholdStatus === "not-created"
-                ? "尚未创建 Stronghold，保存密码前请先创建密钥库。"
+                ? t("stronghold-has-not-been-created-create-the-vault-before")
                 : request.strongholdStatus === "locked"
-                  ? "Stronghold 已锁定，保存密码前请先解锁密钥库。"
-                  : "正在读取 Stronghold 状态，保存凭据前请稍候。"}</span>
-              {onOpenStronghold ? <button type="button" onClick={onOpenStronghold}>打开 Stronghold</button> : null}
+                  ? t("stronghold-is-locked-unlock-the-vault-before-saving-passwords")
+                  : t("reading-stronghold-status-wait-before-saving-credentials")}</span>
+              {onOpenStronghold ? <button type="button" onClick={onOpenStronghold}>{t("open-stronghold")}</button> : null}
             </div>
           ) : null}
           <div className="credential-meta">
-            <span>本次连接</span>
+            <span>{t("this-connection")}</span>
             <span>{request.authOrder.join(" / ")}</span>
           </div>
         </section>
         <footer className="credential-actions">
-          <button type="button" onClick={onCancel}>取消</button>
-          <button type="submit">连接</button>
+          <button type="button" onClick={onCancel}>{t("cancel")}</button>
+          <button type="submit">{t("connect")}</button>
           {!selectedOneKey && canSaveToStronghold && (Boolean(password) || Boolean(passphrase)) ? (
             <button type="button" className="primary" onClick={(event) => {
               event.preventDefault();
               submitCredentials(true);
             }}>
-              <KeyRound size={14} />保存并连接
-            </button>
+              <KeyRound size={14} />{t("save-and-connect")}</button>
           ) : null}
         </footer>
       </form>

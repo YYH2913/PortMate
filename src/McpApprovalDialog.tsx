@@ -1,23 +1,24 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { Check, Clock3, ShieldAlert, X } from "lucide-react";
 import type { McpApprovalRequest } from "./types";
 
 const actionLabels: Record<string, string> = {
-  send_text: "发送终端文本",
-  send_bytes: "透传原始字节",
-  send_key: "发送终端按键",
-  serial_send_break: "发送串口 Break",
-  run_command: "执行终端命令",
-  run_local_command: "执行本地终端命令",
-  run_custom_script: "运行自定义脚本",
-  attach_tmux: "连接 Tmux",
-  start_transfer: "启动文件传输",
-  cancel_transfer: "取消文件传输",
-  retry_transfer: "重试文件传输",
-  create_tunnel: "创建指定转发或代理",
-  stop_tunnel: "停止指定转发或代理",
-  tunnel_request: "通过隧道发送请求",
-  udp_request: "通过隧道发送 UDP 数据报",
+  send_text: "send-terminal-text",
+  send_bytes: "send-raw-bytes",
+  send_key: "send-terminal-key",
+  serial_send_break: "send-serial-break",
+  run_command: "run-terminal-command",
+  run_local_command: "run-local-terminal-command",
+  run_custom_script: "run-custom-script",
+  attach_tmux: "attach-tmux",
+  start_transfer: "start-file-transfer",
+  cancel_transfer: "cancel-file-transfer",
+  retry_transfer: "retry-file-transfer",
+  create_tunnel: "create-specified-forward-or-proxy",
+  stop_tunnel: "stop-specified-forward-or-proxy",
+  tunnel_request: "send-request-through-tunnel",
+  udp_request: "send-udp-datagram-through-tunnel",
 };
 
 export default function McpApprovalDialog({
@@ -33,6 +34,7 @@ export default function McpApprovalDialog({
   onDecision: (approvalId: string, approved: boolean) => Promise<void>;
   onExpired: (approvalId: string) => void;
 }) {
+  useLocale();
   const dialogRef = useRef<HTMLElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
   const expiredRef = useRef(false);
@@ -113,25 +115,25 @@ export default function McpApprovalDialog({
         <header>
           <span className="mcp-approval-icon"><ShieldAlert size={19} /></span>
           <div>
-            <strong id="mcp-approval-title">MCP 写操作审批</strong>
-            <span>{queueCount > 1 ? `待处理 ${queueCount} 项` : "需要本次确认"}</span>
+            <strong id="mcp-approval-title">{t("mcp-write-approval")}</strong>
+            <span>{queueCount > 1 ? t("pending", [queueCount]) : t("confirmation-required")}</span>
           </div>
         </header>
         <dl>
-          <div><dt>Client</dt><dd><code>{request.clientId}</code></dd></div>
-          <div><dt>操作</dt><dd>{actionLabels[request.action] ?? request.action}</dd></div>
-          <div><dt>{request.sessionId === "portmate-host" ? "执行主机" : "会话"}</dt><dd><span>{request.sessionId === "portmate-host" ? "PortMate 本机" : sessionName}</span><code>{request.sessionId}</code></dd></div>
-          {request.target ? <div><dt>目标</dt><dd><span>{request.target.label}</span><code>{request.target.id}</code></dd></div> : null}
-          <div><dt>Scope</dt><dd><code>{request.scope}</code></dd></div>
+          <div><dt>{t("ui-client")}</dt><dd><code>{request.clientId}</code></dd></div>
+          <div><dt>{t("action")}</dt><dd>{t(actionLabels[request.action] ?? request.action)}</dd></div>
+          <div><dt>{request.sessionId === "portmate-host" ? t("execution-host") : t("session")}</dt><dd><span>{request.sessionId === "portmate-host" ? t("portmate-host") : sessionName}</span><code>{request.sessionId}</code></dd></div>
+          {request.target ? <div><dt>{t("target")}</dt><dd><span>{request.target.label}</span><code>{request.target.id}</code></dd></div> : null}
+          <div><dt>{t("ui-scope-2")}</dt><dd><code>{request.scope}</code></dd></div>
         </dl>
         <div className="mcp-approval-timer" id="mcp-approval-status" role="status">
           <span style={{ width: `${Math.min(100, Math.max(0, remainingMs / totalMs * 100))}%` }} />
-          <div><Clock3 size={13} /><span>{remainingSeconds} 秒后自动拒绝</span></div>
+          <div><Clock3 size={13} /><span>{t("automatically-rejected-in-seconds", [remainingSeconds])}</span></div>
         </div>
-        {error ? <div className="mcp-approval-error">{error}</div> : null}
+        {error ? <div className="mcp-approval-error">{localizeDiagnostic(error)}</div> : null}
         <footer>
-          <button ref={rejectRef} type="button" className="reject" disabled={busy} onClick={() => void decide(false)}><X size={15} />拒绝</button>
-          <button type="button" className="approve" disabled={busy} onClick={() => void decide(true)}><Check size={15} />本次允许</button>
+          <button ref={rejectRef} type="button" className="reject" disabled={busy} onClick={() => void decide(false)}><X size={15} />{t("reject")}</button>
+          <button type="button" className="approve" disabled={busy} onClick={() => void decide(true)}><Check size={15} />{t("allow-once")}</button>
         </footer>
       </section>
     </div>

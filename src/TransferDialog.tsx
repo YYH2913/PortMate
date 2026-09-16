@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { X } from "lucide-react";
@@ -26,6 +27,7 @@ export default function TransferDialog({
   onDismissTransfer: (transferId: string) => void;
   onNotice: (message: string) => void;
 }) {
+  useLocale();
   const protocols = useMemo(() => transferProtocolsForProfile(session.profile), [session.profile]);
   const [protocol, setProtocol] = useState<TransferProtocol | "">(() => protocols[0] ?? "");
   const [source, setSource] = useState("");
@@ -80,11 +82,11 @@ export default function TransferDialog({
     event.preventDefault();
     setError("");
     if (!protocol) {
-      setError("当前 Profile 未启用可用的传输协议。");
+      setError(t("no-supported-transfer-protocols-are-enabled-in-this-profile"));
       return;
     }
     if (!connected) {
-      setError("连接会话后才能开始传输。");
+      setError(t("connect-the-session-before-starting-a-transfer"));
       return;
     }
     const gate = startGateRef.current;
@@ -202,30 +204,30 @@ export default function TransferDialog({
       <form className="wind-dialog utility-dialog transfer-dialog" onSubmit={submit}>
         <header className="dialog-title">
           <span className="app-icon" />
-          <strong>传输任务</strong>
+          <strong>{t("transfer-tasks")}</strong>
           <button type="button" onClick={onClose}><X size={20} /></button>
         </header>
         <section className="utility-content">
-          <DialogField label="会话:"><input value={session.profile.name} readOnly /></DialogField>
-          <DialogField label="协议:">
+          <DialogField label={t("session-3")}><input value={session.profile.name} readOnly /></DialogField>
+          <DialogField label={t("protocol")}>
             <select value={protocol} disabled={!protocols.length} onChange={(event) => setProtocol(event.target.value as TransferProtocol)}>
-              {!protocols.length ? <option value="">未启用传输协议</option> : null}
+              {!protocols.length ? <option value="">{t("no-transfer-protocol-enabled")}</option> : null}
               {protocols.map((option) => <option key={option} value={option}>{transferProtocolLabel(option)}</option>)}
             </select>
           </DialogField>
           {modemProtocol ? (
-            <DialogField label="接收端:">
-              <div className="transfer-mode-switch" aria-label="Modem 接收端模式">
-                <button type="button" aria-pressed={modemMode === "device-load"} onClick={() => setModemMode("device-load")}>自动 {modemLoadCommand(protocol)}</button>
-                <button type="button" aria-pressed={modemMode === "path"} onClick={() => setModemMode("path")}>路径 / 已就绪</button>
+            <DialogField label={t("receiver")}>
+              <div className="transfer-mode-switch" aria-label={t("modem-receiver-mode")}>
+                <button type="button" aria-pressed={modemMode === "device-load"} onClick={() => setModemMode("device-load")}>{t("automatic-2", [modemLoadCommand(protocol)])}</button>
+                <button type="button" aria-pressed={modemMode === "path"} onClick={() => setModemMode("path")}>{t("path-ready")}</button>
               </div>
             </DialogField>
           ) : null}
-          <DialogField label={deviceLoadMode || tftpProtocol ? "本地文件:" : "来源:"}><input value={source} onChange={(event) => setSource(event.target.value)} placeholder={deviceLoadMode || tftpProtocol ? "/local/firmware.bin" : "/local/file 或 remote:/remote/file"} /></DialogField>
+          <DialogField label={deviceLoadMode || tftpProtocol ? t("local-file-2") : t("source")}><input value={source} onChange={(event) => setSource(event.target.value)} placeholder={deviceLoadMode || tftpProtocol ? "/local/firmware.bin" : t("local-file-or-remote-remote-file")} /></DialogField>
           {deviceLoadMode ? (
             <>
-              <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，例如 0x80000000" spellCheck={false} /></DialogField>
-              <DialogField label="传输波特率:">
+              <DialogField label={t("load-address")}><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder={t("optional-e-g-0x80000000")} spellCheck={false} /></DialogField>
+              <DialogField label={t("transfer-baud-rate")}>
                 <input
                   type="number"
                   min={1}
@@ -233,7 +235,7 @@ export default function TransferDialog({
                   list="transfer-load-baud-rate-options"
                   value={loadBaudRate}
                   onChange={(event) => setLoadBaudRate(event.target.value)}
-                  placeholder={session.profile.kind === "serial" ? "可选，留空使用当前波特率" : "仅串口会话可设置"}
+                  placeholder={session.profile.kind === "serial" ? t("optional-blank-uses-the-current-baud-rate") : t("only-configurable-for-serial-sessions")}
                   disabled={session.profile.kind !== "serial"}
                 />
                 <datalist id="transfer-load-baud-rate-options">
@@ -243,23 +245,23 @@ export default function TransferDialog({
             </>
           ) : tftpProtocol ? (
             <>
-              <DialogField label="设备 IP:"><input value={tftpDeviceIp} onChange={(event) => setTftpDeviceIp(event.target.value)} placeholder="例如 192.168.255.1" spellCheck={false} /></DialogField>
-              <DialogField label="服务端 IP:"><input value={tftpServerIp} onChange={(event) => setTftpServerIp(event.target.value)} placeholder="可选，按到设备的路由自动推断" spellCheck={false} /></DialogField>
-              <DialogField label="绑定地址:"><input value={tftpBindHost} onChange={(event) => setTftpBindHost(event.target.value)} placeholder="可选，例如 0.0.0.0" spellCheck={false} /></DialogField>
-              <DialogField label="监听端口:"><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder="0 表示自动分配；69 可能需要权限" /></DialogField>
-              <DialogField label="加载地址:"><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder="可选，默认 ${loadaddr}" spellCheck={false} /></DialogField>
-              <DialogField label="请求文件名:"><input value={tftpFileName} onChange={(event) => setTftpFileName(event.target.value)} placeholder="可选，默认使用本地文件名" spellCheck={false} /></DialogField>
-              <DialogField label="总超时(秒):"><input type="number" min={5} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
+              <DialogField label={t("device-ip")}><input value={tftpDeviceIp} onChange={(event) => setTftpDeviceIp(event.target.value)} placeholder={t("e-g-192-168-255-1")} spellCheck={false} /></DialogField>
+              <DialogField label={t("server-ip")}><input value={tftpServerIp} onChange={(event) => setTftpServerIp(event.target.value)} placeholder={t("optional-inferred-from-the-route-to-the-device")} spellCheck={false} /></DialogField>
+              <DialogField label={t("bind-address")}><input value={tftpBindHost} onChange={(event) => setTftpBindHost(event.target.value)} placeholder={t("optional-e-g-0-0-0-0")} spellCheck={false} /></DialogField>
+              <DialogField label={t("listen-port")}><input type="number" min={0} max={65_535} value={tftpBindPort} onChange={(event) => setTftpBindPort(event.target.value)} placeholder={t("0-assigns-a-port-automatically-69-may-require-privileges")} /></DialogField>
+              <DialogField label={t("load-address")}><input value={loadAddress} onChange={(event) => setLoadAddress(event.target.value)} placeholder={t("optional-default-loadaddr")} spellCheck={false} /></DialogField>
+              <DialogField label={t("requested-file-name")}><input value={tftpFileName} onChange={(event) => setTftpFileName(event.target.value)} placeholder={t("optional-defaults-to-the-local-file-name")} spellCheck={false} /></DialogField>
+              <DialogField label={t("total-timeout-seconds")}><input type="number" min={5} value={tftpTimeoutSeconds} onChange={(event) => setTftpTimeoutSeconds(event.target.value)} /></DialogField>
             </>
           ) : (
-            <DialogField label="目标:"><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="/local/file 或 remote:/remote/file" /></DialogField>
+            <DialogField label={t("target-2")}><input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder={t("local-file-or-remote-remote-file")} /></DialogField>
           )}
           <div className="transfer-queue-panel">
             <header>
-              <strong>队列</strong>
+              <strong>{t("queue")}</strong>
               <div>
-                <button type="button" onClick={() => void retryFailedTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !retryableTransfers.length}>重试失败</button>
-                <button type="button" onClick={() => void cancelActiveTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !activeTransfers.length}>取消未完成</button>
+                <button type="button" onClick={() => void retryFailedTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !retryableTransfers.length}>{t("retry-failed")}</button>
+                <button type="button" onClick={() => void cancelActiveTransfers()} disabled={batchBusy || Boolean(busyTransferIds.size) || !activeTransfers.length}>{t("cancel-unfinished")}</button>
               </div>
             </header>
             <TransferList
@@ -272,13 +274,13 @@ export default function TransferDialog({
               onDismiss={onDismissTransfer}
             />
           </div>
-          {!connected ? <div className="utility-status">当前会话未连接，只能查看和管理已有任务。</div> : null}
-          {connected && !protocols.length ? <div className="utility-status">当前 Profile 未启用适用于此协议的传输方式。</div> : null}
-          {error ? <div className="utility-error">{error}</div> : null}
+          {!connected ? <div className="utility-status">{t("the-session-is-disconnected-only-existing-tasks-can-be")}</div> : null}
+          {connected && !protocols.length ? <div className="utility-status">{t("this-profile-has-no-enabled-transfer-methods-for-this")}</div> : null}
+          {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
         </section>
         <footer className="utility-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || (!deviceLoadMode && !tftpProtocol && !destination.trim()) || (deviceLoadMode && Boolean(loadBaudRate.trim()) && !loadAddress.trim()) || (tftpProtocol && !tftpDeviceIp.trim())}>{busy ? "执行中" : "开始"}</button>
+          <button type="button" onClick={onClose}>{t("cancel")}</button>
+          <button type="submit" disabled={busy || !connected || !protocol || !source.trim() || (!deviceLoadMode && !tftpProtocol && !destination.trim()) || (deviceLoadMode && Boolean(loadBaudRate.trim()) && !loadAddress.trim()) || (tftpProtocol && !tftpDeviceIp.trim())}>{busy ? t("running-2") : t("start-2")}</button>
         </footer>
       </form>
     </div>
@@ -286,6 +288,7 @@ export default function TransferDialog({
 }
 
 function DialogField({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return (
     <label className="dialog-field">
       <span>{label}</span>

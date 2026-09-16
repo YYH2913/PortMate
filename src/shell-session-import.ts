@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 export const SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS = 1_000_000;
 export const SHELL_SESSION_IMPORT_MAX_CANDIDATES = 256;
 
@@ -25,7 +26,7 @@ export function parseShellSessions(source: string): ShellSessionImportResult {
     return {
       candidates: [],
       warnings: [],
-      error: `Shell 列表超过 ${SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS.toLocaleString()} 字符限制`,
+      error: t("shell-list-exceeds-the-character-limit", [SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS.toLocaleString()]),
     };
   }
 
@@ -40,28 +41,28 @@ export function parseShellSessions(source: string): ShellSessionImportResult {
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     if (lineNumber > MAX_SHELL_LINES) {
-      addWarning(`最多解析 ${MAX_SHELL_LINES} 行，后续内容已跳过`);
+      addWarning(t("at-most-lines-can-be-parsed-remaining-content-was", [MAX_SHELL_LINES]));
       break;
     }
     const rawValue = stripComment(lines[index]);
     if (!rawValue) continue;
     const program = normalizeShellProgram(rawValue);
     if (!program) {
-      addWarning(`第 ${lineNumber} 行：不是可直接导入的 Shell 路径`);
+      addWarning(t("line-not-a-directly-importable-shell-path", [lineNumber]));
       continue;
     }
     const basename = shellBasename(program);
     if (NON_INTERACTIVE_SHELLS.has(basename.toLowerCase())) {
-      addWarning(`第 ${lineNumber} 行：${basename} 不是交互式 Shell，已跳过`);
+      addWarning(t("line-is-not-an-interactive-shell-skipped", [lineNumber, basename]));
       continue;
     }
     const key = shellProgramKey(program);
     if (seenPrograms.has(key)) {
-      addWarning(`第 ${lineNumber} 行：${program} 重复，已跳过`);
+      addWarning(t("line-duplicate-skipped", [lineNumber, program]));
       continue;
     }
     if (candidates.length >= SHELL_SESSION_IMPORT_MAX_CANDIDATES) {
-      addWarning(`最多导入 ${SHELL_SESSION_IMPORT_MAX_CANDIDATES} 个 Shell 会话，后续条目已跳过`);
+      addWarning(t("at-most-shell-sessions-can-be-imported-remaining-entries", [SHELL_SESSION_IMPORT_MAX_CANDIDATES]));
       break;
     }
     seenPrograms.add(key);

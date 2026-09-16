@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import type { WorkspacePaneDirection, WorkspaceSplitDirection, WorkspaceSplitPlacement } from "./workspace-state";
 
@@ -78,23 +79,23 @@ const terminalModeMask: Record<TerminalKeyMode, number> = {
 };
 
 export const workspaceHotkeyCommands: readonly WorkspaceHotkeyCommand[] = [
-  { id: "focus-up", label: "焦点向上", defaultBinding: "Alt+ArrowUp", requiresMultiplePanes: true, action: { kind: "focus", direction: "up" } },
-  { id: "focus-down", label: "焦点向下", defaultBinding: "Alt+ArrowDown", requiresMultiplePanes: true, action: { kind: "focus", direction: "down" } },
-  { id: "focus-left", label: "焦点向左", defaultBinding: "Alt+ArrowLeft", requiresMultiplePanes: true, action: { kind: "focus", direction: "left" } },
-  { id: "focus-right", label: "焦点向右", defaultBinding: "Alt+ArrowRight", requiresMultiplePanes: true, action: { kind: "focus", direction: "right" } },
-  { id: "split-up", label: "向上拆分", defaultBinding: "Alt+Shift+Minus", requiresMultiplePanes: false, action: { kind: "split", direction: "horizontal", placement: "first" } },
-  { id: "split-down", label: "向下拆分", defaultBinding: "Alt+Minus", requiresMultiplePanes: false, action: { kind: "split", direction: "horizontal", placement: "second" } },
-  { id: "split-left", label: "向左拆分", defaultBinding: "Alt+Shift+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "first" } },
-  { id: "split-right", label: "向右拆分", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
-  { id: "close-pane", label: "关闭窗格", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
-  { id: "zoom-pane", label: "切换窗格缩放", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
-  { id: "previous-view", label: "上一个标签", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: -1 } },
-  { id: "next-view", label: "下一个标签", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: 1 } },
-  { id: "previous-view-local", label: "Local/Normal 上一个标签", defaultBinding: "Ctrl+PageUp", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: -1 } },
-  { id: "next-view-local", label: "Local/Normal 下一个标签", defaultBinding: "Ctrl+PageDown", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: 1 } },
-  { id: "close-view", label: "关闭视图", defaultBinding: "Ctrl+Shift+KeyW", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote | terminalModeMask.local, action: { kind: "view-history", operation: "close" } },
-  { id: "reopen-view", label: "重新打开视图", defaultBinding: "Ctrl+Shift+KeyT", requiresMultiplePanes: false, action: { kind: "view-history", operation: "reopen" } },
-  { id: "manage-one-keys", label: "打开 OneKeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
+  { id: "focus-up", label: "focus-up", defaultBinding: "Alt+ArrowUp", requiresMultiplePanes: true, action: { kind: "focus", direction: "up" } },
+  { id: "focus-down", label: "focus-down", defaultBinding: "Alt+ArrowDown", requiresMultiplePanes: true, action: { kind: "focus", direction: "down" } },
+  { id: "focus-left", label: "focus-left", defaultBinding: "Alt+ArrowLeft", requiresMultiplePanes: true, action: { kind: "focus", direction: "left" } },
+  { id: "focus-right", label: "focus-right", defaultBinding: "Alt+ArrowRight", requiresMultiplePanes: true, action: { kind: "focus", direction: "right" } },
+  { id: "split-up", label: "split-above", defaultBinding: "Alt+Shift+Minus", requiresMultiplePanes: false, action: { kind: "split", direction: "horizontal", placement: "first" } },
+  { id: "split-down", label: "split-below", defaultBinding: "Alt+Minus", requiresMultiplePanes: false, action: { kind: "split", direction: "horizontal", placement: "second" } },
+  { id: "split-left", label: "split-left", defaultBinding: "Alt+Shift+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "first" } },
+  { id: "split-right", label: "split-right", defaultBinding: "Alt+Backslash", requiresMultiplePanes: false, action: { kind: "split", direction: "vertical", placement: "second" } },
+  { id: "close-pane", label: "close-pane-3", defaultBinding: "Alt+KeyX", requiresMultiplePanes: true, action: { kind: "close" } },
+  { id: "zoom-pane", label: "toggle-pane-zoom", defaultBinding: "Alt+KeyZ", requiresMultiplePanes: true, action: { kind: "zoom" } },
+  { id: "previous-view", label: "previous-tab", defaultBinding: "Alt+BracketLeft", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view", label: "next-tab", defaultBinding: "Alt+BracketRight", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote, action: { kind: "cycle-view", offset: 1 } },
+  { id: "previous-view-local", label: "local-normal-previous-tab", defaultBinding: "Ctrl+PageUp", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: -1 } },
+  { id: "next-view-local", label: "local-normal-next-tab", defaultBinding: "Ctrl+PageDown", requiresMultiplePanes: false, terminalModes: terminalModeMask.local | terminalModeMask.normal, action: { kind: "cycle-view", offset: 1 } },
+  { id: "close-view", label: "close-view", defaultBinding: "Ctrl+Shift+KeyW", requiresMultiplePanes: false, terminalModes: terminalModeMask.remote | terminalModeMask.local, action: { kind: "view-history", operation: "close" } },
+  { id: "reopen-view", label: "reopen-view", defaultBinding: "Ctrl+Shift+KeyT", requiresMultiplePanes: false, action: { kind: "view-history", operation: "reopen" } },
+  { id: "manage-one-keys", label: "open-onekeys", defaultBinding: `${primaryChordModifier}+KeyT ${primaryChordModifier}+KeyK`, requiresMultiplePanes: false, action: { kind: "one-keys" } },
 ];
 
 export const defaultWorkspaceKeymap = Object.fromEntries(
@@ -157,7 +158,7 @@ export function workspaceKeyBindingFromEvent(input: WorkspaceHotkeyInput): strin
 }
 
 export function formatWorkspaceKeyBinding(binding: string): string {
-  if (!binding) return "未绑定";
+  if (!binding) return t("unbound");
   const labels: Record<string, string> = {
     ArrowUp: "↑",
     ArrowDown: "↓",

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { SessionSummary } from "./types";
 
 export const DEFAULT_SEND_COUNT = 1;
@@ -57,7 +58,7 @@ export function parseHexBytes(value: string): number[] {
   for (const token of tokens) {
     const hex = token.replace(/^0x/i, "");
     if (!/^(?:[0-9a-f]{2})+$/i.test(hex)) {
-      throw new Error("Hex 格式无效：每个字节需要两位十六进制数，可用空格或逗号分隔（例如 01 FF 或 0x01 0xFF）。");
+      throw new Error(t("invalid-hex-each-byte-requires-two-hexadecimal-digits-optionally"));
     }
     for (let index = 0; index < hex.length; index += 2) bytes.push(Number.parseInt(hex.slice(index, index + 2), 16));
   }

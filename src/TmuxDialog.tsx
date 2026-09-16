@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Pencil, Play, Plus, Radio, RefreshCw, Trash2, X } from "lucide-react";
@@ -55,6 +56,7 @@ export default function TmuxDialog({
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
+  useLocale();
   const [state, setState] = useState<TmuxState>({ sessions: [], windows: [], panes: [] });
   const [target, setTarget] = useState("portmate");
   const [busy, setBusy] = useState(false);
@@ -277,10 +279,10 @@ export default function TmuxDialog({
       if (!status.active || !runtimeId) {
         controlOwnedTargetsRef.current.delete(nextTarget);
         setControlRuntime(nextTarget, null);
-        throw new Error("Tmux control-mode 未返回有效 runtime ID");
+        throw new Error(t("tmux-control-mode-did-not-return-a-valid-runtime"));
       }
       setControlRuntime(nextTarget, runtimeId);
-      setFeedback(`${nextTarget} 已开启 control-mode 实时监听`);
+      setFeedback(t("control-mode-live-monitoring-enabled", [nextTarget]));
     } catch (error) {
       if (!isCurrentControlOperation(sessionId, nextTarget, token)) return;
       controlOwnedTargetsRef.current.delete(nextTarget);
@@ -313,11 +315,11 @@ export default function TmuxDialog({
       if (!isCurrentControlOperation(sessionId, target, token)) return;
       if (status.active) {
         if (status.runtimeId) setControlRuntime(target, status.runtimeId);
-        setError("Tmux control-mode runtime 已更新，请重试停止");
+        setError(t("tmux-control-mode-runtime-changed-retry-stopping-it"));
         return;
       }
       setControlRuntime(target, null, previousRuntimeId);
-      setFeedback(`${target} 已停止 control-mode 实时监听`);
+      setFeedback(t("control-mode-live-monitoring-stopped", [target]));
     } catch (error) {
       if (!isCurrentControlOperation(sessionId, target, token)) return;
       if (wasOwned) controlOwnedTargetsRef.current.add(target);
@@ -341,7 +343,7 @@ export default function TmuxDialog({
     try {
       await invokeBackend<SessionEvent>("attach_tmux", { sessionId, target: cleanTarget });
       if (!isCurrentOperation(sessionId, operationToken)) return;
-      onDone(`已发送 tmux attach/new-session：${cleanTarget}`);
+      onDone(t("sent-tmux-attach-new-session", [cleanTarget]));
     } catch (error) {
       if (isCurrentOperation(sessionId, operationToken)) setError(formatTmuxError(error));
     } finally {
@@ -370,7 +372,7 @@ export default function TmuxDialog({
       });
       if (isCurrentStateRequest(sessionId, token)) setState(nextState);
       if (isCurrentOperation(sessionId, operationToken)) {
-        setFeedback(`${nextTarget} 已${enabled ? "开启" : "关闭"} pane 同步输入`);
+        setFeedback(t("pane-synchronized-input", [nextTarget, enabled ? t("enabled") : t("close")]));
       }
     } catch (error) {
       if (isCurrentOperation(sessionId, operationToken)) setError(formatTmuxError(error));
@@ -451,15 +453,15 @@ export default function TmuxDialog({
     const name = editor.value.trim();
     if (editor.action === "rename-session") {
       if (!name) return;
-      void mutate("rename-session", editor.target, name, `${editor.target} 已重命名为 ${name}`);
+      void mutate("rename-session", editor.target, name, t("renamed-to", [editor.target, name]));
       return;
     }
     if (editor.action === "rename-window") {
       if (!name) return;
-      void mutate("rename-window", editor.target, name, `${editor.target} 已重命名为 ${name}`);
+      void mutate("rename-window", editor.target, name, t("renamed-to", [editor.target, name]));
       return;
     }
-    void mutate("new-window", editor.target, name || null, `${editor.target} 已新建 window`);
+    void mutate("new-window", editor.target, name || null, t("new-window-created-in", [editor.target]));
   }
 
   function openEditor(next: TmuxEditor) {
@@ -476,7 +478,7 @@ export default function TmuxDialog({
       action,
       deletionTarget,
       null,
-      `${label} 已关闭`,
+      t("closed", [label]),
     );
   }
 
@@ -500,7 +502,7 @@ export default function TmuxDialog({
       "select-layout",
       windowTarget,
       null,
-      `${windowTarget} 已应用 ${layout} 布局`,
+      t("applied-layout", [windowTarget, layout]),
       { layout },
     );
   }
@@ -509,8 +511,8 @@ export default function TmuxDialog({
     setEditor(null);
     setDeleteConfirmation(null);
     const feedback = option.action === "break-pane"
-      ? `${paneLabel} 已拆为新 window`
-      : `${paneLabel} 已移到 ${option.destination}`;
+      ? t("split-into-a-new-window", [paneLabel])
+      : t("moved-to", [paneLabel, option.destination]);
     void mutate(
       option.action,
       paneTarget,
@@ -530,39 +532,39 @@ export default function TmuxDialog({
           <strong>Tmux</strong>
           <button
             type="button"
-            title={controlOperationBusy ? "等待 control-mode 操作完成" : "关闭 Tmux"}
-            aria-label="关闭 Tmux"
+            title={controlOperationBusy ? t("wait-for-the-control-mode-operation-to-finish") : t("close-tmux")}
+            aria-label={t("close-tmux")}
             disabled={controlOperationBusy}
             onClick={onClose}
           ><X size={20} /></button>
         </header>
         <div className="tmux-content">
           <div className="tmux-toolbar">
-            <input aria-label="Tmux session target" maxLength={256} value={target} onChange={(event) => setTarget(event.target.value)} placeholder="session name" />
-            <button type="button" onClick={() => void attach()} disabled={operationBusy || controlBusyTargets.has(target.trim()) || !target.trim()}><Play size={14} />附着/新建</button>
-            <button type="button" onClick={() => void refreshTmux()} disabled={operationBusy}><RefreshCw size={14} />刷新</button>
+            <input aria-label={t("ui-tmux-session-target")} maxLength={256} value={target} onChange={(event) => setTarget(event.target.value)} placeholder={t("ui-session-name")} />
+            <button type="button" onClick={() => void attach()} disabled={operationBusy || controlBusyTargets.has(target.trim()) || !target.trim()}><Play size={14} />{t("attach-create")}</button>
+            <button type="button" onClick={() => void refreshTmux()} disabled={operationBusy}><RefreshCw size={14} />{t("refresh")}</button>
           </div>
           <div className="tmux-feedback" aria-live="polite">
-            {error ? <div className="utility-error">{error}</div> : null}
+            {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
             {feedback ? <div className="utility-success" role="status">{feedback}</div> : null}
             {deleteConfirmation ? (
               <div className="tmux-delete-confirmation" role="alert">
                 <span>
                   {deleteConfirmation.action === "kill-session"
-                    ? `关闭 session ${deleteConfirmation.label} 及其全部 window？`
+                    ? t("close-session-and-all-its-windows", [deleteConfirmation.label])
                     : deleteConfirmation.action === "kill-window"
-                      ? `关闭 window ${deleteConfirmation.label}？`
-                      : `关闭 pane ${deleteConfirmation.label}？`}
+                      ? t("close-window-2", [deleteConfirmation.label])
+                      : t("close-pane", [deleteConfirmation.label])}
                 </span>
-                <button type="button" onClick={() => setDeleteConfirmation(null)} disabled={Boolean(mutatingTarget)}>取消</button>
+                <button type="button" onClick={() => setDeleteConfirmation(null)} disabled={Boolean(mutatingTarget)}>{t("cancel")}</button>
                 <button type="button" className="danger" onClick={confirmDelete} disabled={Boolean(mutatingTarget)}>
-                  {mutatingTarget ? "关闭中" : "确认关闭"}
+                  {mutatingTarget ? t("closing") : t("confirm-close")}
                 </button>
               </div>
             ) : null}
           </div>
           <section className="tmux-section">
-            <h2>会话</h2>
+            <h2>{t("session")}</h2>
             <div className="tmux-list">
               {state.sessions.map((item) => (
                 <div className="tmux-session-row" data-tmux-session={item.name} key={item.name}>
@@ -581,15 +583,15 @@ export default function TmuxDialog({
                         void attach(item.name);
                       }}>
                         <strong>{item.name}</strong>
-                        <span>{item.windows} windows · {item.attached} attached</span>
-                        <small>{item.created ? new Date(item.created).toLocaleString() : "created time unavailable"}</small>
+                        <span>{item.windows}{" "}{t("ui-windows")}{" "}{item.attached}{" "}{t("ui-attached")}</span>
+                        <small>{item.created ? new Date(item.created).toLocaleString() : t("ui-created-time-unavailable")}</small>
                       </button>
                       <div className="tmux-row-actions">
                         <button
                           type="button"
                           className={controlRuntimes.has(item.name) ? "tmux-control-active" : ""}
-                          title={controlRuntimes.has(item.name) ? `停止实时监听 session ${item.name}` : `实时监听 session ${item.name}`}
-                          aria-label={controlRuntimes.has(item.name) ? `停止实时监听 session ${item.name}` : `实时监听 session ${item.name}`}
+                          title={controlRuntimes.has(item.name) ? t("stop-live-monitoring-session", [item.name]) : t("monitor-session-live", [item.name])}
+                          aria-label={controlRuntimes.has(item.name) ? t("stop-live-monitoring-session", [item.name]) : t("monitor-session-live", [item.name])}
                           aria-pressed={controlRuntimes.has(item.name)}
                           disabled={operationBusy || controlBusyTargets.has(item.name)}
                           onClick={() => {
@@ -597,9 +599,9 @@ export default function TmuxDialog({
                             else void startControl(item.name);
                           }}
                         ><Radio size={13} /></button>
-                        <button type="button" title={`在 ${item.name} 新建 window`} aria-label={`在 ${item.name} 新建 window`} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => openEditor({ action: "new-window", target: item.name, value: "" })}><Plus size={13} /></button>
-                        <button type="button" title={`重命名 session ${item.name}`} aria-label={`重命名 session ${item.name}`} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => openEditor({ action: "rename-session", target: item.name, value: item.name })}><Pencil size={13} /></button>
-                        <button type="button" className="danger" title={`关闭 session ${item.name}`} aria-label={`关闭 session ${item.name}`} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => {
+                        <button type="button" title={t("create-window-in", [item.name])} aria-label={t("create-window-in", [item.name])} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => openEditor({ action: "new-window", target: item.name, value: "" })}><Plus size={13} /></button>
+                        <button type="button" title={t("rename-session-2", [item.name])} aria-label={t("rename-session-2", [item.name])} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => openEditor({ action: "rename-session", target: item.name, value: item.name })}><Pencil size={13} /></button>
+                        <button type="button" className="danger" title={t("close-session", [item.name])} aria-label={t("close-session", [item.name])} disabled={operationBusy || controlBusyTargets.has(item.name)} onClick={() => {
                           setError("");
                           setFeedback("");
                           setEditor(null);
@@ -610,24 +612,24 @@ export default function TmuxDialog({
                   )}
                 </div>
               ))}
-              {!state.sessions.length ? <div className="empty-pane top">没有检测到 tmux session</div> : null}
+              {!state.sessions.length ? <div className="empty-pane top">{t("no-tmux-sessions-detected")}</div> : null}
             </div>
           </section>
           <section className="tmux-section">
-            <h2>窗口与窗格</h2>
+            <h2>{t("windows-and-panes")}</h2>
             <div className="tmux-window-list">
               {windows.map((window) => (
                 <article className="tmux-window" data-tmux-target={window.target} key={window.target}>
                   <header>
                     <span>
                       <strong>{window.target}</strong>
-                      <small>{window.name || window.windowId || "unnamed"} · {window.panes.length} panes{window.active ? " · active" : ""}</small>
+                      <small>{window.name || window.windowId || t("ui-unnamed")} · {window.panes.length}{" "}{t("ui-panes")}{window.active ? t("ui-active-suffix") : ""}</small>
                     </span>
                     <div className="tmux-window-controls">
                       <select
                         className="tmux-layout-select"
-                        aria-label={`${window.target} window 布局`}
-                        title={`切换 ${window.target} 布局`}
+                        aria-label={t("window-layout", [window.target])}
+                        title={t("change-layout", [window.target])}
                         defaultValue=""
                         disabled={operationBusy}
                         onChange={(event) => {
@@ -636,27 +638,27 @@ export default function TmuxDialog({
                           if (layout) applyWindowLayout(window.target, layout);
                         }}
                       >
-                        <option value="" disabled>布局</option>
-                        <option value="even-horizontal">等宽左右</option>
-                        <option value="even-vertical">等高上下</option>
-                        <option value="main-horizontal">主窗格上方</option>
-                        <option value="main-vertical">主窗格左侧</option>
-                        <option value="tiled">平铺</option>
+                        <option value="" disabled>{t("layout")}</option>
+                        <option value="even-horizontal">{t("equal-width-columns")}</option>
+                        <option value="even-vertical">{t("equal-height-rows")}</option>
+                        <option value="main-horizontal">{t("main-pane-on-top")}</option>
+                        <option value="main-vertical">{t("main-pane-on-left")}</option>
+                        <option value="tiled">{t("tiled")}</option>
                       </select>
                       <label className="tmux-sync-toggle">
                         <input
                           type="checkbox"
                           role="switch"
-                          aria-label={`${window.target} pane 同步输入`}
+                          aria-label={t("pane-synchronized-input-2", [window.target])}
                           checked={window.synchronized}
                           disabled={operationBusy}
                           onChange={(event) => void setPaneSync(window.target, event.currentTarget.checked)}
                         />
-                        <span>{syncingTarget === window.target ? "应用中" : "同步输入"}</span>
+                        <span>{syncingTarget === window.target ? t("applying") : t("synchronized-input")}</span>
                       </label>
                       <div className="tmux-row-actions">
-                        <button type="button" title={`重命名 window ${window.target}`} aria-label={`重命名 window ${window.target}`} disabled={operationBusy} onClick={() => openEditor({ action: "rename-window", target: window.target, value: window.name })}><Pencil size={13} /></button>
-                        <button type="button" className="danger" title={`关闭 window ${window.target}`} aria-label={`关闭 window ${window.target}`} disabled={operationBusy} onClick={() => {
+                        <button type="button" title={t("rename-window", [window.target])} aria-label={t("rename-window", [window.target])} disabled={operationBusy} onClick={() => openEditor({ action: "rename-window", target: window.target, value: window.name })}><Pencil size={13} /></button>
+                        <button type="button" className="danger" title={t("close-window-3", [window.target])} aria-label={t("close-window-3", [window.target])} disabled={operationBusy} onClick={() => {
                           setError("");
                           setFeedback("");
                           setEditor(null);
@@ -687,8 +689,8 @@ export default function TmuxDialog({
                           <button
                             type="button"
                             className="tmux-pane-summary"
-                            title={`激活 pane ${paneLabel}`}
-                            aria-label={`激活 pane ${paneLabel}`}
+                            title={t("activate-pane", [paneLabel])}
+                            aria-label={t("activate-pane", [paneLabel])}
                             disabled={operationBusy || !pane.paneId}
                             onClick={() => applyPaneMutation("select-pane", pane.paneId, paneLabel)}
                           >
@@ -698,8 +700,8 @@ export default function TmuxDialog({
                           </button>
                           <div className="tmux-pane-actions">
                           <select
-                            aria-label={`${paneLabel} pane 分割`}
-                            title={`分割 ${paneLabel}`}
+                            aria-label={t("pane-split", [paneLabel])}
+                            title={t("split", [paneLabel])}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId}
                             onChange={(event) => {
@@ -708,13 +710,13 @@ export default function TmuxDialog({
                               if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
-                            <option value="" disabled>分割</option>
-                            <option value="split-pane-horizontal">左右</option>
-                            <option value="split-pane-vertical">上下</option>
+                            <option value="" disabled>{t("split-2")}</option>
+                            <option value="split-pane-horizontal">{t("left-right")}</option>
+                            <option value="split-pane-vertical">{t("top-bottom")}</option>
                           </select>
                           <select
-                            aria-label={`${paneLabel} pane 交换`}
-                            title={`交换 ${paneLabel}`}
+                            aria-label={t("pane-swap", [paneLabel])}
+                            title={t("swap", [paneLabel])}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId || window.panes.length < 2}
                             onChange={(event) => {
@@ -723,13 +725,13 @@ export default function TmuxDialog({
                               if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
-                            <option value="" disabled>交换</option>
-                            <option value="swap-pane-previous">向前</option>
-                            <option value="swap-pane-next">向后</option>
+                            <option value="" disabled>{t("swap-2")}</option>
+                            <option value="swap-pane-previous">{t("previous")}</option>
+                            <option value="swap-pane-next">{t("next")}</option>
                           </select>
                           <select
-                            aria-label={`${paneLabel} pane 调整尺寸`}
-                            title={`调整 ${paneLabel} 尺寸`}
+                            aria-label={t("resize-pane", [paneLabel])}
+                            title={t("resize", [paneLabel])}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId}
                             onChange={(event) => {
@@ -738,16 +740,16 @@ export default function TmuxDialog({
                               if (action) applyPaneMutation(action, pane.paneId, paneLabel);
                             }}
                           >
-                            <option value="" disabled>尺寸</option>
-                            <option value="resize-pane-left">向左 5</option>
-                            <option value="resize-pane-right">向右 5</option>
-                            <option value="resize-pane-up">向上 5</option>
-                            <option value="resize-pane-down">向下 5</option>
+                            <option value="" disabled>{t("size-2")}</option>
+                            <option value="resize-pane-left">{t("left-5")}</option>
+                            <option value="resize-pane-right">{t("right-5")}</option>
+                            <option value="resize-pane-up">{t("up-5")}</option>
+                            <option value="resize-pane-down">{t("down-5")}</option>
                           </select>
                           <select
                             className="tmux-pane-move-select"
-                            aria-label={`${paneLabel} pane 移动`}
-                            title={`移动 ${paneLabel}`}
+                            aria-label={t("move-pane", [paneLabel])}
+                            title={t("move", [paneLabel])}
                             defaultValue=""
                             disabled={operationBusy || !pane.paneId || !moveOptions.length}
                             onChange={(event) => {
@@ -756,7 +758,7 @@ export default function TmuxDialog({
                               if (option) applyPaneMove(option, pane.paneId, paneLabel);
                             }}
                           >
-                            <option value="" disabled>移动</option>
+                            <option value="" disabled>{t("move-2")}</option>
                             {moveOptions.map((option) => (
                               <option value={option.key} key={option.key}>{option.label}</option>
                             ))}
@@ -764,8 +766,8 @@ export default function TmuxDialog({
                           <button
                             type="button"
                             className="danger"
-                            title={`关闭 pane ${paneLabel}`}
-                            aria-label={`关闭 pane ${paneLabel}`}
+                            title={t("close-pane-2", [paneLabel])}
+                            aria-label={t("close-pane-2", [paneLabel])}
                             disabled={operationBusy || !pane.paneId}
                             onClick={() => {
                               setError("");
@@ -785,7 +787,7 @@ export default function TmuxDialog({
                   </div>
                 </article>
               ))}
-              {!windows.length ? <div className="empty-pane top">没有可显示的 pane</div> : null}
+              {!windows.length ? <div className="empty-pane top">{t("no-panes-available")}</div> : null}
             </div>
           </section>
         </div>
@@ -796,15 +798,15 @@ export default function TmuxDialog({
 
 function paneMutationFeedback(action: TmuxPaneMutationAction, paneLabel: string): string {
   switch (action) {
-    case "select-pane": return `${paneLabel} 已激活`;
-    case "split-pane-horizontal": return `${paneLabel} 已左右分割`;
-    case "split-pane-vertical": return `${paneLabel} 已上下分割`;
-    case "swap-pane-previous": return `${paneLabel} 已与前一 pane 交换`;
-    case "swap-pane-next": return `${paneLabel} 已与后一 pane 交换`;
-    case "resize-pane-left": return `${paneLabel} 已向左调整 5 cells`;
-    case "resize-pane-right": return `${paneLabel} 已向右调整 5 cells`;
-    case "resize-pane-up": return `${paneLabel} 已向上调整 5 cells`;
-    case "resize-pane-down": return `${paneLabel} 已向下调整 5 cells`;
+    case "select-pane": return t("activated", [paneLabel]);
+    case "split-pane-horizontal": return t("split-left-right", [paneLabel]);
+    case "split-pane-vertical": return t("split-top-bottom", [paneLabel]);
+    case "swap-pane-previous": return t("swapped-with-the-previous-pane", [paneLabel]);
+    case "swap-pane-next": return t("swapped-with-the-next-pane", [paneLabel]);
+    case "resize-pane-left": return t("resized-5-cells-left", [paneLabel]);
+    case "resize-pane-right": return t("resized-5-cells-right", [paneLabel]);
+    case "resize-pane-up": return t("resized-5-cells-up", [paneLabel]);
+    case "resize-pane-down": return t("resized-5-cells-down", [paneLabel]);
   }
 }
 
@@ -814,20 +816,20 @@ function buildPaneMoveOptions(
   allowBreak: boolean,
 ): TmuxPaneMoveOption[] {
   const options: TmuxPaneMoveOption[] = allowBreak
-    ? [{ key: "break", label: "拆为新 window", action: "break-pane" }]
+    ? [{ key: "break", label: t("split-into-a-new-window-2"), action: "break-pane" }]
     : [];
   for (const destination of windows) {
     if (destination.target === currentWindowTarget) continue;
     options.push(
       {
         key: `horizontal:${destination.target}`,
-        label: `${destination.target} · 左右`,
+        label: t("left-right-2", [destination.target]),
         action: "move-pane-horizontal",
         destination: destination.target,
       },
       {
         key: `vertical:${destination.target}`,
-        label: `${destination.target} · 上下`,
+        label: t("top-bottom-2", [destination.target]),
         action: "move-pane-vertical",
         destination: destination.target,
       },
@@ -849,6 +851,7 @@ function TmuxInlineEditor({
   onSubmit: () => void;
   onCancel: () => void;
 }) {
+  useLocale();
   const rename = editor.action !== "new-window";
   return (
     <form className="tmux-inline-editor" onSubmit={(event) => {
@@ -857,9 +860,9 @@ function TmuxInlineEditor({
     }}>
       <input
         autoFocus
-        aria-label={editor.action === "new-window" ? `新 window 名称 ${editor.target}` : `新名称 ${editor.target}`}
+        aria-label={editor.action === "new-window" ? t("new-window-name-for", [editor.target]) : t("new-name-for", [editor.target])}
         maxLength={128}
-        placeholder={editor.action === "new-window" ? "window name（可选）" : "new name"}
+        placeholder={editor.action === "new-window" ? t("window-name-optional") : t("new-name")}
         value={editor.value}
         disabled={busy}
         onChange={(event) => onChange(event.currentTarget.value)}
@@ -870,8 +873,8 @@ function TmuxInlineEditor({
           }
         }}
       />
-      <button type="submit" title="保存" aria-label="保存" disabled={busy || (rename && !editor.value.trim())}><Check size={14} /></button>
-      <button type="button" title="取消" aria-label="取消" disabled={busy} onClick={onCancel}><X size={14} /></button>
+      <button type="submit" title={t("save")} aria-label={t("save")} disabled={busy || (rename && !editor.value.trim())}><Check size={14} /></button>
+      <button type="button" title={t("cancel")} aria-label={t("cancel")} disabled={busy} onClick={onCancel}><X size={14} /></button>
     </form>
   );
 }

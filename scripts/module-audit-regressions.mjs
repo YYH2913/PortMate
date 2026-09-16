@@ -240,7 +240,7 @@ export async function checkModuleAuditRegressions(context, appUrl) {
     for (const action of ["copy", "rotate", "start", "save"]) {
       await page.evaluate(() => { window.__mcpHttpConfig = window.__buildMcpHttpConfig({ ...window.__mcpHttpConfig, clientId: "ops-console" }); window.__mcpHttpToken = "old-window-token"; });
       await refresh.click();
-      await page.waitForFunction(() => document.querySelector('[aria-label="MCP HTTP Client ID"]')?.value === "ops-console");
+      await page.waitForFunction(() => document.querySelector('[aria-label="MCP HTTP 客户端 ID"]')?.value === "ops-console");
       if (action === "save") await dialog.getByLabel("MCP HTTP 端口").fill("9876");
       const before = await page.evaluate(() => {
         window.__mcpHttpConfig = window.__buildMcpHttpConfig({ ...window.__mcpHttpConfig, clientId: "audit-reader" });

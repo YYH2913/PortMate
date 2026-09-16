@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { KeyedRequestGate } from "./keyed-request-gate";
@@ -33,6 +34,7 @@ export default function SessionImportDialog({
   onImportPortMate: (profiles: SessionProfile[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
 }) {
+  useLocale();
   const [mode, setMode] = useState<SessionImportMode>("openssh");
   const operationGate = useRef(new KeyedRequestGate<"operation">());
   const dirtyModes = useRef(new Set<SessionImportMode>());
@@ -50,7 +52,7 @@ export default function SessionImportDialog({
     if (token === null) return;
     try {
       if (dirtyModes.current.has(mode)
-        && !window.confirm(`当前 ${importModeLabel(mode)} 导入内容尚未完成，切换格式将放弃这些内容。是否继续？`)) return;
+        && !window.confirm(t("the-import-is-unfinished-switching-formats-will-discard-it", [importModeLabel(mode)]))) return;
       dirtyModes.current.delete(mode);
       setMode(nextMode);
     } finally {
@@ -63,7 +65,7 @@ export default function SessionImportDialog({
     if (token === null) return;
     try {
       if (dirtyModes.current.has(mode)
-        && !window.confirm(`当前 ${importModeLabel(mode)} 导入内容尚未完成，关闭窗口将放弃这些内容。是否继续？`)) return;
+        && !window.confirm(t("the-import-is-unfinished-closing-will-discard-it-continue", [importModeLabel(mode)]))) return;
       dirtyModes.current.delete(mode);
       onClose();
     } finally {
@@ -72,7 +74,7 @@ export default function SessionImportDialog({
   }
 
   const headerAddon = (busy: boolean): ReactNode => (
-    <div className="session-import-mode-switch" role="group" aria-label="导入格式">
+    <div className="session-import-mode-switch" role="group" aria-label={t("import-format")}>
       {importModes.map((option) => (
         <button
           key={option.id}

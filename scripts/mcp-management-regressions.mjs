@@ -63,7 +63,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await dialog.locator(".mcp-grant-select").first().waitFor();
     assert.equal(await dialog.locator(".mcp-grant-select").count(), 2);
     assert.equal(await dialog.locator(".mcp-grant-copy, .mcp-grant-cc-switch").count(), 0);
-    assert.equal(await dialog.getByLabel("CC Switch Bearer Token", { exact: true }).count(), 0);
+    assert.equal(await dialog.getByLabel("CC Switch Bearer 令牌", { exact: true }).count(), 0);
     assert.deepEqual(await dialog.locator(".mcp-check-grid code").allTextContents(), [
       "read-sessions", "read-logs", "read-transfers", "read-tunnels", "read-scripts", "read-mcp",
       "write-input", "transfer", "host-files", "tunnel", "manage-sessions", "run-scripts", "manage-mcp",
@@ -111,7 +111,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     assert.equal(mutations(await records()).length, beforeCancel, "cancelling confirmation mutated authorization");
 
     await tab("HTTP");
-    assert.equal(await dialog.getByRole("combobox", { name: "MCP HTTP Client ID", exact: true }).inputValue(), "ops-console");
+    assert.equal(await dialog.getByRole("combobox", { name: "MCP HTTP 客户端 ID", exact: true }).inputValue(), "ops-console");
     await start();
     await dialog.locator(".mcp-http-runtime.running").waitFor();
     await tab("授权");
@@ -145,11 +145,11 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     assert.deepEqual(await page.evaluate(() => [window.__mcpHttpRuntime.phase, window.__mcpHttpToken]), ["stopped", null]);
     assert(await dialog.getByRole("button", { name: "生成 Token 并启动", exact: true }).isDisabled());
     assert(await dialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).isDisabled());
-    assert.equal(await dialog.getByRole("combobox", { name: "MCP HTTP Client ID", exact: true }).inputValue(), "");
+    assert.equal(await dialog.getByRole("combobox", { name: "MCP HTTP 客户端 ID", exact: true }).inputValue(), "");
 
     await createGrant("new-client", "New Client");
     assert.equal(await page.evaluate(() => window.__mcpHttpConfig.clientId), "ops-console", "grant creation silently rebound the HTTP identity");
-    const httpClient = dialog.getByRole("combobox", { name: "MCP HTTP Client ID", exact: true });
+    const httpClient = dialog.getByRole("combobox", { name: "MCP HTTP 客户端 ID", exact: true });
     await httpClient.selectOption("new-client");
     const beforeStart = (await records()).length;
     await start();
@@ -193,7 +193,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     assert(await dialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled());
     await dialog.getByLabel("MCP HTTP 客户端地址", { exact: true }).fill("192.0.2.42");
     await dialog.locator(".mcp-http-network summary").click();
-    await dialog.getByLabel("MCP HTTP Allowed Origins", { exact: true }).fill("https://console.example.test");
+    await dialog.getByLabel("MCP HTTP 允许的来源", { exact: true }).fill("https://console.example.test");
     await setConfirm(false);
     await dialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
     assert(await dialog.isVisible());

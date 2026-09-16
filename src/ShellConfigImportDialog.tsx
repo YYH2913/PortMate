@@ -1,3 +1,4 @@
+import { t, useLocale } from "./i18n";
 import SessionConfigImportDialog from "./SessionConfigImportDialog";
 import { SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS, parseShellSessions } from "./shell-session-import";
 import type { ShellSessionImportCandidate } from "./shell-session-import";
@@ -20,12 +21,13 @@ export default function ShellConfigImportDialog({
   operationGate: KeyedRequestGate<"operation">;
   onDraftDirtyChange: (dirty: boolean) => void;
 }) {
+  useLocale();
   return <SessionConfigImportDialog
-    title="导入本地 Shell"
+    title={t("import-local-shells")}
     sourceLabel="/etc/shells"
-    sourceAriaLabel="Shell 列表内容"
+    sourceAriaLabel={t("shell-list-content")}
     sourcePlaceholder="/bin/zsh"
-    emptyMessage="没有可导入的本地 Shell"
+    emptyMessage={t("no-local-shells-available-to-import")}
     maxSourceChars={SHELL_SESSION_IMPORT_MAX_SOURCE_CHARS}
     parse={parseConfig}
     candidateName={(candidate) => candidate.name}

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { McpGrant } from "./types";
 
 const MCP_CLIENT_ID_RANDOM_BYTES = 16;
@@ -63,7 +64,7 @@ export function mcpGrantDraftHasUnsavedChanges(
 export function generateMcpClientId(): string {
   const source = globalThis.crypto;
   if (!source?.getRandomValues) {
-    throw new Error("当前环境不支持安全随机数，无法生成 Client ID");
+    throw new Error(t("secure-random-numbers-are-unavailable-cannot-generate-client-id"));
   }
   const bytes = source.getRandomValues(new Uint8Array(MCP_CLIENT_ID_RANDOM_BYTES));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;

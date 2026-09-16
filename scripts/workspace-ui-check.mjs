@@ -11,6 +11,7 @@ import { checkSerialColumnDetection } from "./serial-column-detection-regression
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
+import { checkI18n } from "./i18n-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -333,7 +334,7 @@ try {
     args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
   });
   checks: {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const context = await browser.newContext({ locale: "zh-CN", viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, initialCustomScripts, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
@@ -1945,6 +1946,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_I18N_ONLY === "1") {
+    await checkI18n(context, appUrl);
+    console.log("Six-language and RTL browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_MODULE_AUDIT_ONLY === "1") {
     await checkModuleAuditRegressions(context, appUrl);
     console.log("Module architecture/interaction audit regressions passed");
@@ -2000,6 +2007,7 @@ try {
     await context.close();
     break checks;
   }
+  await checkI18n(context, appUrl);
   await checkHostScripts(context, appUrl, screenshotPrefix);
   await checkCommandSubmissions(context, appUrl);
   await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
@@ -2384,28 +2392,28 @@ Host staging
   const jumpHostDialog = page.locator(".session-settings-dialog");
   await jumpHostDialog.waitFor();
   await jumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
-  const jumpGroup = jumpHostDialog.getByRole("group", { name: "Jump Host:", exact: true });
+  const jumpGroup = jumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
   const jumpRows = jumpGroup.locator(".jump-hop");
-  await jumpRows.nth(0).locator('input[placeholder="host"]').fill("jump-one.example.test");
-  await jumpRows.nth(0).locator('input[placeholder="password"]').fill("first-staged-secret");
+  await jumpRows.nth(0).locator("input[placeholder=\"主机\"]").fill("jump-one.example.test");
+  await jumpRows.nth(0).locator("input[placeholder=\"密码\"]").fill("first-staged-secret");
   await jumpRows.nth(0).locator('button[title="保存跳板密码"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('.jump-hop input[placeholder="password secretRef"]')[0]?.value);
-  await jumpRows.nth(1).locator('input[placeholder="host"]').fill("jump-two.example.test");
-  await jumpRows.nth(1).locator('input[placeholder="password"]').fill("second-staged-secret");
+  await page.waitForFunction(() => document.querySelectorAll(".jump-hop input[placeholder=\"密码凭据引用\"]")[0]?.value);
+  await jumpRows.nth(1).locator("input[placeholder=\"主机\"]").fill("jump-two.example.test");
+  await jumpRows.nth(1).locator("input[placeholder=\"密码\"]").fill("second-staged-secret");
   await jumpRows.nth(1).locator('button[title="保存跳板密码"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('.jump-hop input[placeholder="password secretRef"]')[1]?.value);
-  await jumpRows.nth(1).locator('input[placeholder="passphrase"]').fill("second-draft-passphrase");
-  const firstJumpSecretRef = await jumpRows.nth(0).locator('input[placeholder="password secretRef"]').inputValue();
-  const secondJumpSecretRef = await jumpRows.nth(1).locator('input[placeholder="password secretRef"]').inputValue();
+  await page.waitForFunction(() => document.querySelectorAll(".jump-hop input[placeholder=\"密码凭据引用\"]")[1]?.value);
+  await jumpRows.nth(1).locator("input[placeholder=\"密钥口令\"]").fill("second-draft-passphrase");
+  const firstJumpSecretRef = await jumpRows.nth(0).locator("input[placeholder=\"密码凭据引用\"]").inputValue();
+  const secondJumpSecretRef = await jumpRows.nth(1).locator("input[placeholder=\"密码凭据引用\"]").inputValue();
   assert(firstJumpSecretRef && secondJumpSecretRef && firstJumpSecretRef !== secondJumpSecretRef,
     `Jump Host secret setup did not produce distinct refs: ${firstJumpSecretRef}, ${secondJumpSecretRef}`);
   await jumpGroup.getByRole("button", { name: "删除跳板 1", exact: true }).click();
   assert(await jumpRows.count() === 1
-    && await jumpRows.nth(0).locator('input[placeholder="host"]').inputValue() === "jump-two.example.test"
-    && await jumpRows.nth(0).locator('input[placeholder="password secretRef"]').inputValue() === secondJumpSecretRef
-    && await jumpRows.nth(0).locator('input[placeholder="passphrase"]').inputValue() === "second-draft-passphrase",
+    && await jumpRows.nth(0).locator("input[placeholder=\"主机\"]").inputValue() === "jump-two.example.test"
+    && await jumpRows.nth(0).locator("input[placeholder=\"密码凭据引用\"]").inputValue() === secondJumpSecretRef
+    && await jumpRows.nth(0).locator("input[placeholder=\"密钥口令\"]").inputValue() === "second-draft-passphrase",
   "deleting the first Jump Host did not preserve the second hop, staged ref, and local secret draft");
   await jumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
   await jumpHostDialog.waitFor({ state: "detached" });
@@ -2432,9 +2440,9 @@ Host staging
   const reopenedJumpHostDialog = page.locator(".session-settings-dialog");
   await reopenedJumpHostDialog.waitFor();
   await reopenedJumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
-  const reopenedJumpGroup = reopenedJumpHostDialog.getByRole("group", { name: "Jump Host:", exact: true });
+  const reopenedJumpGroup = reopenedJumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   assert(await reopenedJumpGroup.locator(".jump-hop").count() === 1
-    && await reopenedJumpGroup.locator('input[placeholder="host"]').inputValue() === "jump-two.example.test",
+    && await reopenedJumpGroup.locator("input[placeholder=\"主机\"]").inputValue() === "jump-two.example.test",
   "saved Jump Host deletion was not restored when reopening Session Settings");
   await reopenedJumpGroup.getByRole("button", { name: "删除跳板 1", exact: true }).click();
   await reopenedJumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
@@ -4309,7 +4317,7 @@ Host staging
     "sender advanced-settings indicator did not clear after restoring defaults");
   await page.screenshot({ path: `${screenshotPrefix}-sender.png`, fullPage: true });
   await sender.getByRole("button", { name: "发送", exact: true }).click();
-  await sender.getByRole("textbox", { name: "send text", exact: true }).fill("uname -a");
+  await sender.getByRole("textbox", { name: "发送文本", exact: true }).fill("uname -a");
   const senderLifecycleStart = await page.evaluate(() => {
     window.__deferTerminalSends = true;
     window.__pendingTerminalSends = [];
@@ -4380,7 +4388,7 @@ Host staging
   }));
   const historyRowsBeforeInvalid = await page.locator(".history-list button").allTextContents();
   for (const invalidCommand of ["bad\0command", "界".repeat(8_193)]) {
-    await sender.getByRole("textbox", { name: "send text", exact: true }).evaluate((textarea, value) => {
+    await sender.getByRole("textbox", { name: "发送文本", exact: true }).evaluate((textarea, value) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       setter?.call(textarea, value);
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -5111,7 +5119,7 @@ Host staging
   await sectionSelect.selectOption("验证");
   await page.waitForFunction(() => (
     document.querySelector('select[aria-label="会话类型"]')?.value === "SSH"
-      && document.querySelector('select[aria-label="会话配置项"]')?.value === "验证"
+      && document.querySelector('select[aria-label="会话配置项"]')?.value === "verification"
   ));
   const sshHealthButton = page.locator(".session-settings-dialog .ssh-health-check")
     .getByRole("button", { name: "检查 SSH 健康", exact: true });
@@ -7032,7 +7040,7 @@ Host staging
   await page.getByRole("tab", { name: "日志", exact: true }).click();
   const deletedLogSearch = page.getByRole("combobox", { name: "搜索会话和日志", exact: true });
   await deletedLogSearch.fill(staleDeletedLogMarker);
-  assert(await page.getByRole("option").count() === 0,
+  assert(await page.locator(".search-dialog").getByRole("option").count() === 0,
     "a tail_log response that completed after Profile deletion restored the deleted log state");
   await deletedLogSearch.press("Escape");
   await page.locator(".search-dialog").waitFor({ state: "detached" });
@@ -7206,7 +7214,7 @@ Host staging
   const startupMcpDialog = startupDomainPage.locator(".mcp-dialog");
   await startupMcpDialog.waitFor();
   await startupMcpDialog.locator(".mcp-new").click();
-  await startupMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").fill("startup-hydration-client");
+  await startupMcpDialog.locator(".dialog-field", { hasText: "客户端 ID:" }).locator("input").fill("startup-hydration-client");
   await startupMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Startup Hydration Client");
   await startupMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
   await startupMcpDialog.locator(".mcp-grant-select", { hasText: "Startup Hydration Client" }).waitFor();
@@ -7376,12 +7384,12 @@ Host staging
   const lifecycleMcpDialog = grantLifecyclePage.locator(".mcp-dialog");
   await lifecycleMcpDialog.waitFor();
   await lifecycleMcpDialog.locator(".mcp-new").click();
-  await lifecycleMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").fill("late-close-client");
+  await lifecycleMcpDialog.locator(".dialog-field", { hasText: "客户端 ID:" }).locator("input").fill("late-close-client");
   await lifecycleMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Late Close Client");
   await grantLifecyclePage.evaluate(() => { window.__deferGrantMutations = true; });
   await lifecycleMcpDialog.locator(".mcp-actions").getByRole("button", { name: "保存", exact: true }).click();
   await grantLifecyclePage.waitForFunction(() => window.__pendingGrantMutations.length === 1);
-  assert(await lifecycleMcpDialog.locator(".dialog-field", { hasText: "Client ID:" }).locator("input").isDisabled()
+  assert(await lifecycleMcpDialog.locator(".dialog-field", { hasText: "客户端 ID:" }).locator("input").isDisabled()
     && await lifecycleMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").isDisabled(),
   "MCP grant editor remained mutable while a save request was pending");
   await grantLifecyclePage.evaluate(() => {
@@ -7800,7 +7808,7 @@ Host staging
   await hostKeyLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const firstKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
   await firstKeyManager.waitFor();
-  await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("first.example ssh-ed25519 AAAAFIRST");
+  await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea").fill("first.example ssh-ed25519 AAAAFIRST");
   const firstHostKeyImportBaseline = await hostKeyLifecyclePage.evaluate(() => {
     window.__deferHostKeyMutations = true;
     return window.__invokeCalls.filter((call) => call.command === "import_known_hosts").length;
@@ -7819,7 +7827,7 @@ Host staging
     && firstHostKeyImportState.calls === 1
     && await firstHostKeyImport.isDisabled(),
   `known_hosts import submitted duplicate writes: ${JSON.stringify(firstHostKeyImportState)}`);
-  assert(await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").isDisabled(),
+  assert(await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea").isDisabled(),
     "known_hosts editor remained mutable while an import was pending");
   await hostKeyLifecyclePage.evaluate(() => {
     window.__keyManagerClosePrompts = [];
@@ -7842,7 +7850,7 @@ Host staging
   const secondKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
   await secondKeyManager.waitFor();
   await secondKeyManager.locator(".key-row", { hasText: "first.example:22" }).waitFor();
-  await secondKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("second.example ssh-ed25519 AAAASECOND");
+  await secondKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea").fill("second.example ssh-ed25519 AAAASECOND");
   await secondKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
   await secondKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
@@ -7861,7 +7869,7 @@ Host staging
   await hostKeyLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const thirdKeyManager = hostKeyLifecyclePage.locator(".key-dialog");
   await thirdKeyManager.waitFor();
-  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea").fill("third.example ssh-ed25519 AAAATHIRD");
+  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea").fill("third.example ssh-ed25519 AAAATHIRD");
   await thirdKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
   await thirdKeyManager.locator(".key-row", { hasText: "first.example:22" }).waitFor();
   await thirdKeyManager.locator(".key-row", { hasText: "second.example:22" }).waitFor();
@@ -7874,7 +7882,7 @@ Host staging
   const firstHostKeyRow = thirdKeyManager.locator(".key-row", { hasText: "first.example:22" });
   await firstHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
   const hostKeyEditPanel = thirdKeyManager.locator(".key-edit-panel");
-  await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").fill("Operator label");
+  await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Operator label");
   const secondHostKeyRow = thirdKeyManager.locator(".key-row", { hasText: "second.example:22" });
   await hostKeyLifecyclePage.evaluate(() => {
     window.__hostKeyDraftPrompts = [];
@@ -7885,8 +7893,8 @@ Host staging
     };
   });
   await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
-  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "Alias:" }).locator("input").inputValue() === "first.example"
-    && await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").inputValue() === "Operator label",
+  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "别名:" }).locator("input").inputValue() === "first.example"
+    && await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").inputValue() === "Operator label",
   "Host Key editor discarded an unsaved draft after switch cancellation");
   await hostKeyLifecyclePage.evaluate(() => {
     window.confirm = (message) => {
@@ -7904,11 +7912,11 @@ Host staging
     && hostKeyDraftPrompts.every((prompt) => prompt.includes("切换 Host Key"))
     && hostKeyDraftPrompts.every((prompt) => !prompt.includes("Operator label")),
   `Host Key draft confirmation was missing or exposed draft values: ${JSON.stringify(hostKeyDraftPrompts)}`);
-  await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").fill("Operator label");
+  await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Operator label");
   await hostKeyLifecyclePage.evaluate(() => { window.__deferHostKeyMutations = true; });
   await hostKeyEditPanel.getByRole("button", { name: "保存编辑", exact: true }).click();
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
-  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "Label:" }).locator("input").isDisabled()
+  assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").isDisabled()
     && await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).isDisabled(),
   "Host Key editor remained mutable while an update was pending");
   await hostKeyLifecyclePage.evaluate(() => {
@@ -8039,7 +8047,7 @@ Host staging
     && pendingKnownHostsExportState.pending === 1
     && await knownHostsExportButton.isDisabled(),
   `known_hosts export submitted duplicate reads: ${JSON.stringify(pendingKnownHostsExportState)}`);
-  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts:" }).locator("textarea")
+  await thirdKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea")
     .fill("export-race.example ssh-ed25519 AAAAEXPORT");
   await thirdKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
   await thirdKeyManager.locator(".key-row", { hasText: "export-race.example:22" }).waitFor();
@@ -8117,14 +8125,14 @@ Host staging
   const firstProfileManager = profileLifecyclePage.locator(".key-dialog");
   await firstProfileManager.waitFor();
   await firstProfileManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
-  await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Closed identity");
+  await firstProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Closed identity");
   await profileLifecyclePage.evaluate(() => { window.__deferProfileMutations = true; });
   await firstProfileManager.getByRole("button", { name: "保存字段", exact: true }).evaluate((button) => {
     button.click();
     button.click();
   });
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
-  assert(await firstProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").isDisabled()
+  assert(await firstProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").isDisabled()
     && await firstProfileManager.locator(".client-key-edit-button").first().isDisabled(),
   "Identity editor remained mutable while a save was pending");
   await profileLifecyclePage.evaluate(() => {
@@ -8148,7 +8156,7 @@ Host staging
   const secondProfileManager = profileLifecyclePage.locator(".key-dialog");
   await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
   await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
-  await secondProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deferred identity");
+  await secondProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Deferred identity");
   await secondProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
   await secondProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
@@ -8168,8 +8176,8 @@ Host staging
   const thirdProfileManager = profileLifecyclePage.locator(".key-dialog");
   await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
   await thirdProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
-  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Current identity");
-  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "Path / Agent comment" }).locator("input").fill("/home/operator/.ssh/id_ed25519 ");
+  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Current identity");
+  await thirdProfileManager.locator(".client-key-inspector label", { hasText: "路径 / 代理备注" }).locator("input").fill("/home/operator/.ssh/id_ed25519 ");
   await thirdProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await thirdProfileManager.getByRole("button", { name: "编辑 Current identity", exact: true }).waitFor();
   await profileLifecyclePage.evaluate(() => {
@@ -8198,7 +8206,7 @@ Host staging
       "Initial identity", "Closed identity", "Closed identity",
     ]),
   `a stale Profile mutation replaced the latest identity state: ${JSON.stringify(profileLifecycleState)}`);
-  const currentIdentityLabel = thirdProfileManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input");
+  const currentIdentityLabel = thirdProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input");
   await currentIdentityLabel.fill("Unsaved identity label");
   await profileLifecyclePage.evaluate(() => {
     window.__identityDraftPrompts = [];
@@ -8236,7 +8244,7 @@ Host staging
   await deletedProfileMutationPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const deletedProfileMutationManager = deletedProfileMutationPage.locator(".key-dialog");
   await deletedProfileMutationManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
-  await deletedProfileMutationManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deleted Profile identity");
+  await deletedProfileMutationManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Deleted Profile identity");
   await deletedProfileMutationPage.evaluate(() => { window.__deferProfileMutations = true; });
   await deletedProfileMutationManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await deletedProfileMutationPage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
@@ -8275,7 +8283,7 @@ Host staging
   await importingKeyManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("private key import vault");
   await importingKeyManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("private key import vault");
   await importingKeyManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
-  await importingKeyManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
+  await importingKeyManager.locator(".portable-vault-bar small", { hasText: "已解锁" }).waitFor();
   const importPanel = importingKeyManager.locator(".key-import-panel");
   await importPanel.locator("summary").click();
   await privateKeyImportLifecyclePage.evaluate(() => {
@@ -8290,7 +8298,7 @@ Host staging
     };
   });
   const privateKeyFileInput = importPanel.locator('input[type="file"]');
-  const privateKeyLabelInput = importPanel.getByPlaceholder("Key label", { exact: true });
+  const privateKeyLabelInput = importPanel.getByPlaceholder("密钥名称", { exact: true });
   const privateKeyTextInput = importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true });
   const privateKeyImportButton = importPanel.getByRole("button", { name: "导入到 Profile", exact: true });
   await privateKeyFileInput.setInputFiles({
@@ -8333,7 +8341,7 @@ Host staging
     && !privateKeyFileReadState.text.includes("first-key-body")
     && privateKeyFileReadState.status.includes("second.key"),
   `an older private-key file read replaced the latest selection: ${JSON.stringify(privateKeyFileReadState)}`);
-  await importPanel.getByPlaceholder("Key label", { exact: true }).fill("Deferred imported key");
+  await importPanel.getByPlaceholder("密钥名称", { exact: true }).fill("Deferred imported key");
   await importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true }).fill([
     "-----BEGIN OPENSSH PRIVATE KEY-----",
     "test-key-body",
@@ -8368,7 +8376,7 @@ Host staging
   await privateKeyImportLifecyclePage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const currentKeyManager = privateKeyImportLifecyclePage.locator(".key-dialog");
   await currentKeyManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
-  await currentKeyManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Current identity");
+  await currentKeyManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Current identity");
   await currentKeyManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await currentKeyManager.getByRole("button", { name: "编辑 Current identity", exact: true }).waitFor();
 
@@ -8414,7 +8422,7 @@ Host staging
   await migrationManager.getByLabel("新建 Stronghold 主密码", { exact: true }).fill("migration test vault");
   await migrationManager.getByLabel("确认 Stronghold 主密码", { exact: true }).fill("migration test vault");
   await migrationManager.getByRole("button", { name: "创建 Stronghold", exact: true }).click();
-  await migrationManager.locator(".portable-vault-bar small", { hasText: "Unlocked" }).waitFor();
+  await migrationManager.locator(".portable-vault-bar small", { hasText: "已解锁" }).waitFor();
   await migrationManager.locator("details.portable-vault-migration").evaluate((details) => { details.open = true; });
   const migrationPreviewButton = migrationManager.locator(".portable-vault-migration-preview-button");
   const migrationPreviewBaseline = await migrationOperationPage.evaluate(() => {
@@ -9547,7 +9555,7 @@ Host staging
   const lockVault = secondVaultManager.getByRole("button", { name: "锁定 portable vault", exact: true });
   await lockVault.waitFor();
   await lockVault.click();
-  await secondVaultManager.locator(".portable-vault-bar small", { hasText: "Locked" }).waitFor();
+  await secondVaultManager.locator(".portable-vault-bar small", { hasText: "已锁定" }).waitFor();
   const vaultLifecycleState = await vaultLifecyclePage.evaluate(() => ({
     backend: structuredClone(window.__portableVault),
     pending: window.__pendingVaultMutations.length,
@@ -9639,7 +9647,7 @@ Host staging
   await profileRecoveryPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const profileRecoveryManager = profileRecoveryPage.locator(".key-dialog");
   await profileRecoveryManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
-  await profileRecoveryManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Rejected identity");
+  await profileRecoveryManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Rejected identity");
   await profileRecoveryPage.evaluate(() => { window.__profileMutationFailureMode = "rename"; });
   await profileRecoveryManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await profileRecoveryManager.locator(".utility-error", { hasText: "simulated conflicting Profile mutation" }).waitFor();
@@ -9666,7 +9674,7 @@ Host staging
   await emptyProfileRecoveryPage.getByRole("button", { name: "密钥管理器", exact: true }).click();
   const emptyProfileRecoveryManager = emptyProfileRecoveryPage.locator(".key-dialog");
   await emptyProfileRecoveryManager.getByRole("button", { name: "编辑 Initial identity", exact: true }).click();
-  await emptyProfileRecoveryManager.locator(".client-key-inspector label", { hasText: "Label" }).locator("input").fill("Deleted identity");
+  await emptyProfileRecoveryManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Deleted identity");
   await emptyProfileRecoveryPage.evaluate(() => { window.__profileMutationFailureMode = "empty"; });
   await emptyProfileRecoveryManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await emptyProfileRecoveryManager.locator(".utility-error", { hasText: "simulated deleted Profile mutation" }).waitFor();
@@ -10091,7 +10099,7 @@ Host staging
     `workspace Profile event synchronization browser exceptions: ${JSON.stringify(profileSyncErrors)}`);
   await profileSyncPage.close();
 
-  const cacheRecoveryContext = await browser.newContext({ viewport: { width: 960, height: 680 } });
+  const cacheRecoveryContext = await browser.newContext({ locale: "zh-CN", viewport: { width: 960, height: 680 } });
   await cacheRecoveryContext.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem("portmate.sessions", JSON.stringify({ version: 1, sessions: [null] }));

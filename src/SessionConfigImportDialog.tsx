@@ -1,3 +1,4 @@
+import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { AlertTriangle, FileUp, LoaderCircle, Upload, X } from "lucide-react";
@@ -52,6 +53,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
   onImport: (candidates: C[]) => Promise<SessionConfigImportSaveResult>;
   onClose: () => void;
 }) {
+  useLocale();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileReadGate = useRef(new KeyedRequestGate<"file">());
   const [source, setSource] = useState("");
@@ -76,7 +78,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
 
   function updateSource(value: string, name = "") {
     if (value.length > maxSourceChars) {
-      setSourceError(`配置超过 ${maxSourceChars.toLocaleString()} 字符限制`);
+      setSourceError(t("configuration-exceeds-the-character-limit", [maxSourceChars.toLocaleString()]));
       return;
     }
     setSource(value);
@@ -92,7 +94,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
     setFileReadBusy(true);
     setResultMessage(null);
     if (file.size > maxSourceChars) {
-      setSourceError(`文件超过 ${maxSourceChars.toLocaleString()} 字节限制`);
+      setSourceError(t("file-exceeds-the-byte-limit", [maxSourceChars.toLocaleString()]));
       if (fileReadGate.current.finish("file", token)) {
         fileReadActive.current = false;
         setFileReadBusy(false);
@@ -145,8 +147,8 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
       const failures = result.failures.map((failure) => failure.message).filter(Boolean);
       setResultMessage({
         text: failures.length
-          ? `已导入 ${result.savedIds.length} 个会话；${failures.join("；")}`
-          : `已导入 ${result.savedIds.length} 个会话`,
+          ? t("imported-sessions", [result.savedIds.length, failures.join("；")])
+          : t("imported-sessions-2", [result.savedIds.length]),
         error: failures.length > 0,
       });
     } catch (error) {
@@ -167,15 +169,13 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
           <FileUp size={17} />
           <strong id="session-config-import-title">{title}</strong>
           {headerAddon?.(locked)}
-          <button type="button" title="关闭" aria-label={`关闭${title}`} onClick={onClose} disabled={locked}><X size={18} /></button>
+          <button type="button" title={t("close")} aria-label={t("close-2", [title])} onClick={onClose} disabled={locked}><X size={18} /></button>
         </header>
         <section className="session-config-import-content">
           <div className="session-import-source-header">
             <span>{sourceName || sourceLabel}</span>
             <button type="button" className="session-import-file-button" onClick={() => fileInputRef.current?.click()} disabled={busy}>
-              <Upload size={14} />
-              选择文件
-            </button>
+              <Upload size={14} />{t("select-file")}</button>
             <input
               ref={fileInputRef}
               className="session-import-file-input"
@@ -198,10 +198,10 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
             disabled={locked}
           />
           <div className="session-import-summary" aria-live="polite">
-            <span>{parsed.candidates.length} 个会话</span>
-            {parsed.warnings.length ? <span className="warning"><AlertTriangle size={14} />{parsed.warnings.length} 个未导入项</span> : null}
+            <span>{t("sessions", [parsed.candidates.length])}</span>
+            {parsed.warnings.length ? <span className="warning"><AlertTriangle size={14} />{parsed.warnings.length}{t("unimported-items")}</span> : null}
           </div>
-          <div className="session-import-list" role="list" aria-label={`${title}预览`}>
+          <div className="session-import-list" role="list" aria-label={t("preview-2", [title])}>
             {parsed.candidates.map((candidate) => {
               const name = candidateName(candidate);
               const target = candidateTarget(candidate);
@@ -210,7 +210,7 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
                 <label key={candidate.id} className="session-import-row" role="listitem">
                   <input
                     type="checkbox"
-                    aria-label={`导入 ${name}`}
+                    aria-label={t("import-2", [name])}
                     checked={selectedIds.has(candidate.id)}
                     disabled={locked}
                     onChange={(event) => toggleCandidate(candidate.id, event.target.checked)}
@@ -230,20 +230,18 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
           </div>
           {parsed.warnings.length ? (
             <details className="session-import-warnings">
-              <summary><AlertTriangle size={14} />查看未导入项</summary>
+              <summary><AlertTriangle size={14} />{t("view-unimported-items")}</summary>
               <ul>{parsed.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
             </details>
           ) : null}
-          {activeError || resultMessage ? <div className={activeError || resultMessage?.error ? "dialog-note error" : "dialog-note"}>{activeError || resultMessage?.text}</div> : <div className="dialog-note" />}
+          {activeError || resultMessage ? <div className={activeError || resultMessage?.error ? "dialog-note error" : "dialog-note"}>{localizeDiagnostic(activeError) || resultMessage?.text}</div> : <div className="dialog-note" />}
         </section>
         <footer className="dialog-footer session-import-footer">
-          <span>{selectedCandidates.length ? `已选择 ${selectedCandidates.length} 个` : ""}</span>
+          <span>{selectedCandidates.length ? t("selected", [selectedCandidates.length]) : ""}</span>
           <div className="dialog-actions inline">
-            <button type="button" onClick={onClose} disabled={locked}>取消</button>
+            <button type="button" onClick={onClose} disabled={locked}>{t("cancel")}</button>
             <button type="submit" className="primary" disabled={locked || Boolean(activeError) || !selectedCandidates.length}>
-              {busy ? <LoaderCircle size={15} className="spin" /> : <FileUp size={15} />}
-              导入
-            </button>
+              {busy ? <LoaderCircle size={15} className="spin" /> : <FileUp size={15} />}{t("import")}</button>
           </div>
         </footer>
       </form>
