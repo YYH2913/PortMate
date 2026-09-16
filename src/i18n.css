@@ -1,0 +1,67 @@
+.language-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.language-selector select { min-width: 105px; max-width: 180px; }
+.language-selector.compact { padding-inline: 6px; flex-shrink: 0; }
+.language-selector.compact select { width: 112px; min-width: 0; }
+:root[lang="ar"] { font-family: "Segoe UI", Tahoma, Arial, sans-serif; }
+:root[dir="rtl"] .wind-layout,
+:root[dir="rtl"] .workspace-pane-split,
+:root[dir="rtl"] .terminal-workspace,
+:root[dir="rtl"] .terminal-terminal-region { direction: ltr; }
+:root[dir="rtl"] .workspace-dock,
+:root[dir="rtl"] .terminal-view-toolbar,
+:root[dir="rtl"] .terminal-free-input,
+:root[dir="rtl"] .terminal-search { direction: rtl; }
+:root[dir="rtl"] .menu-popover { text-align: right; }
+:root[dir="rtl"] .dialog-field > span,
+:root[dir="rtl"] .setting-row > span { text-align: start; }
+:root[dir="rtl"] .menu-trigger,
+:root[dir="rtl"] .menu-popover button,
+:root[dir="rtl"] .settings-tabs button,
+:root[dir="rtl"] .language-selector,
+:root[dir="rtl"] .dialog-title { font-family: "Segoe UI", Tahoma, Arial, sans-serif; }
+/* Transport content, code and editable addresses never inherit UI direction. */
+.terminal-host, .xterm, .terminal-free-input textarea,
+.terminal-byte-inspector, .serial-analyzer-inspector pre,
+code, pre, input[type="number"], input[type="password"], input[type="url"],
+.file-path-input, .mcp-http-command, .custom-script-editor textarea {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+/* Machine-readable fields remain LTR even when their surrounding labels are RTL. */
+.mcp-http-view input:not([type="checkbox"]), .mcp-http-view textarea,
+.mcp-revoke-input input, .shell-arguments-editor input, input[spellcheck="false"] {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+@media (max-width: 900px) {
+  .language-selector.compact { gap: 3px; padding-inline: 2px; }
+  .language-selector.compact select { width: 90px; }
+  /* A second menu row keeps long translated labels clear of the vault/tools. */
+  .wind-root { --menu-height: 64px; }
+  .wind-menu {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 32px 32px;
+  }
+  .menu-primary { display: contents; }
+  .menu-brand { grid-column: 1; grid-row: 1; justify-self: start; }
+  .menu-primary > .language-selector { grid-column: 1; grid-row: 1; justify-self: end; }
+  .menu-tools { grid-column: 2; grid-row: 1; margin: 0; }
+  .menu-row {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .menu-trigger { width: 100%; padding-inline: 4px; overflow-wrap: anywhere; line-height: 1.1; }
+  .menu-popover { position: fixed; top: 63px; inset-inline-start: 4px; }
+  .menu-item:nth-child(n + 3) .menu-popover { inset-inline-start: auto; inset-inline-end: 4px; }
+}

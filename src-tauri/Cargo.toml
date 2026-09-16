@@ -44,6 +44,7 @@ sha1_11 = { package = "sha1", version = "0.11", features = ["oid"] }
 sha2.workspace = true
 serialport = { version = "4.10.0", default-features = false }
 socket2 = { version = "0.6.5", features = ["all"] }
+sys-locale = "0.3.2"
 native-tls = "0.2.18"
 tar = "0.4.46"
 tauri = { version = "2.11.5", default-features = false, features = [

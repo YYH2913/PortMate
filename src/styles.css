@@ -744,21 +744,21 @@ button {
 
 .wind-root {
   display: grid;
-  grid-template-rows: 32px minmax(0, 1fr) 28px;
+  grid-template-rows: var(--menu-height, 32px) minmax(0, 1fr) 28px;
   height: 100vh;
   background: var(--bg);
 }
 
 .wind-root.quick-bar-visible {
-  grid-template-rows: 32px 34px minmax(0, 1fr) 28px;
+  grid-template-rows: var(--menu-height, 32px) 34px minmax(0, 1fr) 28px;
 }
 
 .wind-root.status-bar-hidden {
-  grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-rows: var(--menu-height, 32px) minmax(0, 1fr);
 }
 
 .wind-root.quick-bar-visible.status-bar-hidden {
-  grid-template-rows: 32px 34px minmax(0, 1fr);
+  grid-template-rows: var(--menu-height, 32px) 34px minmax(0, 1fr);
 }
 
 .wind-menu {

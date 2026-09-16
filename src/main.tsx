@@ -1,6 +1,8 @@
+import { t, useLocale } from "./i18n";
 import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles.css";
+import "./i18n.css";
 import App from "./App";
 import { parseDetachedPaneRequest } from "./detached-pane-state";
 import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
@@ -8,6 +10,7 @@ import { parseWorkspaceWindowRequest } from "./workspace-window-route";
 import { useModalInteractionBoundary } from "./modal-interaction-boundary";
 import { isBackendAvailable } from "./api";
 import { listenTerminalByteEvents, listenTerminalLiveEvents } from "./terminal-byte-events";
+import { initializeI18n } from "./i18n";
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));
@@ -25,7 +28,7 @@ if (isBackendAvailable()) {
     .catch(() => {});
 }
 
-void loadBundledTerminalFont().finally(() => {
+void Promise.all([loadBundledTerminalFont(), initializeI18n()]).finally(() => {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <PortMateRoute />
@@ -34,17 +37,18 @@ void loadBundledTerminalFont().finally(() => {
 });
 
 function PortMateRoute() {
+  useLocale();
   useModalInteractionBoundary();
   if (detachedPaneRequest) {
     return (
-      <Suspense fallback={<div className="detached-pane-loading">正在加载终端...</div>}>
+      <Suspense fallback={<div className="detached-pane-loading">{t("loading-terminal")}</div>}>
         <DetachedPaneApp request={detachedPaneRequest} />
       </Suspense>
     );
   }
   if (serialAnalyzerRequest) {
     return (
-      <Suspense fallback={<div className="detached-pane-loading">正在加载串口分析器...</div>}>
+      <Suspense fallback={<div className="detached-pane-loading">{t("loading-serial-analyzer")}</div>}>
         <SerialAnalyzerApp request={serialAnalyzerRequest} />
       </Suspense>
     );

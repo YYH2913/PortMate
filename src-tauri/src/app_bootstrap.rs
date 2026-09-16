@@ -31,6 +31,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            locale_commands::system_locale,
             session_terminal::list_sessions,
             session_terminal::read_screen,
             log_commands::tail_log,
