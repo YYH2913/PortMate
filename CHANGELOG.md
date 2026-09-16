@@ -6,8 +6,25 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-09-17
+
 ### Changed
 
+- Stronghold unlock controls now provide password visibility, verification progress,
+  and focused retry feedback in the key manager and lock screen. Failed create,
+  unlock, and password-change attempts retain their drafts for correction.
+- Reorganized Session, Terminal, Workspace, and Tools menus by workflow. New
+  workspace windows now belong to the Workspace menu; connection actions and
+  management tools are grouped separately.
+- Session settings use protocol tabs and a searchable navigation tree, with stable
+  dialog dimensions and protocol-specific authentication pages. Terminal settings
+  use a searchable sidebar with a compact layout on narrow windows.
+- Expanded the About page with supported capabilities, profile-isolated trust,
+  optional MCP access, maintainer links, and component information, with matching
+  translations across all six interface languages.
+- HTTP client JSON now defaults its Server ID to `portmate-<client-id>` for the
+  selected authorization identity. Explicitly edited names remain unchanged during
+  refresh and binding changes; the import name never changes the authorization itself.
 - Separated MCP client authorization from HTTP transport management. The Grants page
   owns permissions, session scope, expiration, and revocation; the HTTP page owns the
   explicit client binding, network settings, Token, connection JSON, and managed service.
@@ -18,6 +35,21 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- Connection credential prompts can unlock an existing Stronghold vault inline.
+  Vault status updates keep save controls in sync, and opening the key manager
+  no longer cancels the pending connection prompt.
+- File manager listings now sort independently by name, type, size, or modification
+  time, with directories first and natural filename order. Added detail columns,
+  file/selection size summaries, localized timestamps, and readable permissions;
+  range selection follows the displayed sort order.
+- Added system-language detection, a persistent UI language selector shared by windows,
+  English fallback, and Arabic RTL layout. Arabic, Chinese, English, French, Russian, and
+  Spanish have matching catalog coverage across controls, advanced settings, host scripts,
+  permissions, command help, and registered native diagnostics. Language changes do not remount terminal sessions
+  or translate commands, device output, paths, or user-authored content.
+- Added presentation-only native diagnostic localization, complete catalog/placeholder
+  checks, and translated-label regressions for serial enum values. Error state, protocol
+  identifiers, and matching logic remain unchanged; unrecognized diagnostics stay verbatim.
 - Added two-step MCP revocation confirmation, including exact Client ID entry, cancellation,
   and protection against duplicate submissions while revocation is pending.
 - Command history now captures commands finalized after serial-side line
@@ -35,6 +67,26 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Unified localized Stronghold error presentation across vault operations, credential
+  prompts, and screen unlocking, with separate messages for incomplete vault files,
+  existing vault state, and master-password verification failures.
+- Localized Tools menu identifiers and restored the Session reconnect action.
+  Removed shortcut hints without matching bindings, corrected the Find shortcut,
+  and disabled selection-only export and synchronized input when unavailable.
+- Desktop and backend OneKey prompt detection now retain the same last 160
+  Unicode characters of a prompt line, avoiding inconsistent identity validation
+  for long interactive SSH prompts.
+- Modem path-ready upload destinations remain device paths instead of being
+  expanded under the profile's local transfer directory. Transfer hints preserve
+  the literal `remote:` prefix in every language.
+- Internal workspace tab and panel dragging now uses pointer gestures so it works
+  alongside Windows native file drops. Fixed hidden-panel insertion positions,
+  RTL dock ordering, cancellation cleanup, and viewport-limited resize keyboard
+  dead zones; real mouse regressions cover docking, grouping, and splitting.
+- SFTP local target validation no longer probes incomplete Windows drive prefixes
+  such as `\\?\F:` while traversing a full path. Root and ancestor link checks
+  remain in place, including junction protection. File-manager parent navigation
+  and renaming preserve drive/UNC share roots and remote POSIX filename separators.
 - File mutations and transfers now target the successfully loaded directory, not
   an unsubmitted address draft. Failed listings clear stale selection and disable
   mutations; reconnects reject old directory results, and refreshes retain address
@@ -78,6 +130,25 @@ or an unsigned artifact is not a production release. The complete release gates 
   and clears its Token. Cleanup failures are reported without restoring revoked permissions.
 - Preserved unsaved HTTP drafts on failed saves, ignored stale runtime polls after mutations,
   and kept the authorization footer from obscuring the final instructions.
+
+### Security
+
+- Remote mutation checks also reject Windows-style backslash-separated `..`
+  components. MCP content uploads reject local-only destinations before accepting
+  chunks or reserving upload quota, using shared transfer endpoint classification.
+- HTTP management checks the expected binding and network configuration under the runtime
+  lock before token or process changes. Stale windows cannot silently act on another client.
+
+### Migration
+
+- No new Store format migration is introduced in 0.1.10. HTTP Bridge setup requires an
+  explicitly selected active client; a missing or revoked binding must be replaced manually.
+- UI routing and preference values use English identifiers or numbers, independent of
+  display language. Completion preferences use numeric character/row counts and
+  `none` / `input` / `top`; old translated preference values are not migrated.
+- Profile-transfer JSON now uses version 2 with structured English warning codes and
+  unchanged user labels. Version 1 transfer documents are not accepted; export them again
+  from the updated application. This does not change the native Store format.
 
 ## [0.1.9] - 2026-09-09
 

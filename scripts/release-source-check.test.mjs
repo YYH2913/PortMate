@@ -88,6 +88,12 @@ describe("release source boundary", () => {
     expect(findReleaseSourceViolations(cleanSource())).toEqual([]);
   });
 
+  it("allows release notes without a Known Limitations section", () => {
+    const source = cleanSource();
+    source.changelogText = releaseNotes().replace("### Known Limitations\nAlpha limitation.\n", "");
+    expect(findReleaseSourceViolations(source)).toEqual([]);
+  });
+
   it("rejects JavaScript, Tauri, and PortMate Cargo version drift", () => {
     const source = cleanSource();
     source.packageLock.packages[""].version = "0.1.0";

@@ -6,7 +6,7 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
-<p align="center"><code>v0.1.9</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.10</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <strong>English</strong> |
@@ -65,6 +65,20 @@ The screenshots below use an isolated, local-only fixture. Hostnames, addresses,
 To regenerate these documentation fixtures locally, run `npm run docs:screenshots`. The command uses Playwright and writes only to `docs/images/`; it never connects to a device or reads host files.
 
 ## Features
+
+### Interface language (0.1.10)
+
+PortMate follows the operating system language by default, with English fallback for
+unsupported languages. Choose Arabic, Chinese, English, French, Russian, or Spanish in
+the top bar or application settings. The choice applies immediately across windows.
+Arabic uses RTL interface layout; terminal content, script editors, and commands remain LTR.
+Internal actions, configuration values, and command syntax stay English/numeric;
+user-authored names, commands, and paths are never translated.
+
+All six languages have matching catalog coverage, including advanced settings, host scripts,
+permission dialogs, command help, and registered native diagnostics. Application-owned
+diagnostics are translated only for display; unknown system/device messages remain verbatim.
+Catalog and placeholder completeness are checked by the test suite.
 
 | Area | Capabilities |
 | --- | --- |

@@ -19,8 +19,8 @@ const requiredReleaseHeadings = [
   "Fixed",
   "Security",
   "Migration",
-  "Known Limitations",
 ];
+// Release-specific limitations are optional; general release gates live in RELEASE.md.
 
 export function findReleaseSourceViolations(source) {
   const violations = [];
