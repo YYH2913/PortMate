@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setLanguagePreference } from "./i18n";
 import {
   ccSwitchServerIdForGrant,
   defaultMcpHttpOrigins,
@@ -49,6 +50,21 @@ describe("MCP HTTP settings", () => {
     expect(ccSwitchServerIdForGrant("  Lab Operator / Router  ")).toBe("portmate-lab-operator-router");
     expect(ccSwitchServerIdForGrant("中文授权")).toBe("portmate");
     expect(ccSwitchServerIdForGrant("x".repeat(128))).toHaveLength(64);
+  });
+
+  it("keeps grant-derived JSON names independent of the UI language", () => {
+    const clientId = "client-e0337164-7d48-4391-afb9-d1e0d21bd44e";
+    for (const locale of ["ar", "zh", "en", "fr", "ru", "es"] as const) {
+      setLanguagePreference(locale);
+      const serverId = ccSwitchServerIdForGrant(clientId);
+      expect(serverId).toBe(`portmate-${clientId}`);
+      const json = JSON.parse(formatCcSwitchMcpJson({ clientHost: "192.0.2.42", port: 8787 }, {
+        serverId, token: "test-token",
+      }));
+      expect(Object.keys(json)).toEqual([serverId]);
+      expect(json[serverId].headers.Authorization).toBe("Bearer test-token");
+      expect(json[serverId].url).toBe("http://192.0.2.42:8787/mcp");
+    }
   });
 
   it("formats IPv6 client endpoints and rejects listener wildcard addresses", () => {

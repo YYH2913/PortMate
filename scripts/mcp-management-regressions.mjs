@@ -112,6 +112,8 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
 
     await tab("HTTP");
     assert.equal(await dialog.getByRole("combobox", { name: "MCP HTTP 客户端 ID", exact: true }).inputValue(), "ops-console");
+    const serverId = dialog.getByLabel("CC Switch 服务端 ID", { exact: true });
+    assert.equal(await serverId.inputValue(), "portmate-ops-console", "default Server ID did not follow the loaded HTTP binding");
     await start();
     await dialog.locator(".mcp-http-runtime.running").waitFor();
     await tab("授权");
@@ -151,6 +153,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     assert.equal(await page.evaluate(() => window.__mcpHttpConfig.clientId), "ops-console", "grant creation silently rebound the HTTP identity");
     const httpClient = dialog.getByRole("combobox", { name: "MCP HTTP 客户端 ID", exact: true });
     await httpClient.selectOption("new-client");
+    assert.equal(await serverId.inputValue(), "portmate-new-client", "automatic Server ID did not follow the new binding");
     const beforeStart = (await records()).length;
     await start();
     await dialog.locator(".mcp-http-runtime.running").waitFor();
@@ -163,6 +166,13 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     const beforeCopy = mutations(await records()).length;
     await dialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
     await page.waitForFunction(() => window.__clipboardText.includes("Bearer portmate-test-token-1"));
+    assert.deepEqual(await page.evaluate(() => Object.keys(JSON.parse(window.__clipboardText))), ["portmate-new-client"]);
+    await serverId.fill("portmate-custom-name");
+    await dialog.getByRole("button", { name: "刷新 HTTP 状态", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="刷新 HTTP 状态"]').disabled);
+    assert.equal(await serverId.inputValue(), "portmate-custom-name", "refresh overwrote a manually entered Server ID");
+    await dialog.getByRole("button", { name: "复制 CC Switch JSON", exact: true }).click();
+    await page.waitForFunction(() => Object.keys(JSON.parse(window.__clipboardText))[0] === "portmate-custom-name");
     assert.equal(mutations(await records()).length, beforeCopy, "copy unexpectedly changed HTTP settings");
     await bounds(".mcp-http-view");
     await page.screenshot({ path: `${screenshotPrefix}-mcp-http.png`, fullPage: true, animations: "disabled" });

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { mcpGrantIsActive } from "./mcp-grant-state";
-import { CC_SWITCH_DEFAULT_SERVER_ID, CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS, defaultMcpHttpSettings, formatCcSwitchMcpJson, formatMcpHttpOrigins, isNonLoopbackMcpHost, mcpHttpClientEndpoint, mcpHttpSettingsFromConfig, parseMcpHttpOrigins } from "./mcp-http-state";
+import { ccSwitchServerIdForGrant, CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS, defaultMcpHttpSettings, formatCcSwitchMcpJson, formatMcpHttpOrigins, isNonLoopbackMcpHost, mcpHttpClientEndpoint, mcpHttpSettingsFromConfig, parseMcpHttpOrigins } from "./mcp-http-state";
 import { prepareMcpHttpAccess } from "./mcp-http-workflow";
 import type { McpGrant, McpHttpAccessResponse, McpHttpConfig, McpHttpConfigRequest, McpHttpRuntimeStatus, McpHttpTokenResponse } from "./types";
 
@@ -21,7 +21,11 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(Date.now);
-  const [serverId, setServerId] = useState(CC_SWITCH_DEFAULT_SERVER_ID);
+  // An explicit override is independent of the HTTP authorization identity.
+  // Derive the automatic name during render so refresh/binding changes cannot
+  // briefly expose a JSON entry named for the previous client.
+  const [serverIdOverride, setServerId] = useState<string | null>(null);
+  const serverId = serverIdOverride ?? ccSwitchServerIdForGrant(settings.clientId);
   const [toolTimeout, setToolTimeout] = useState(CC_SWITCH_DEFAULT_TOOL_TIMEOUT_SECONDS);
   const [copiedValue, setCopiedValue] = useState("");
   const [commandCopied, setCommandCopied] = useState(false);
