@@ -8,6 +8,8 @@ import {
   ArrowRightLeft,
   Check,
   Clock3,
+  Eye,
+  EyeOff,
   Files,
   Folder,
   Lock,
@@ -5170,6 +5172,7 @@ function ScreenLockOverlay({
 }) {
   useLocale();
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submitPendingRef = useRef(false);
@@ -5178,6 +5181,7 @@ function ScreenLockOverlay({
 
   useEffect(() => {
     setPassword("");
+    setShowPassword(false);
     setError("");
     window.requestAnimationFrame(() => primaryRef.current?.focus({ preventScroll: true }));
   }, [state.mode]);
@@ -5191,9 +5195,16 @@ function ScreenLockOverlay({
     try {
       await onUnlock(password);
     } catch (unlockError) {
-      setPassword("");
-      setError(formatError(unlockError));
-      window.requestAnimationFrame(() => primaryRef.current?.focus({ preventScroll: true }));
+      setError(formatPortableVaultError(unlockError));
+      window.requestAnimationFrame(() => {
+        const field = primaryRef.current;
+        if (field instanceof HTMLInputElement) {
+          field.focus({ preventScroll: true });
+          field.select();
+        } else {
+          primaryRef.current?.focus({ preventScroll: true });
+        }
+      });
     } finally {
       submitPendingRef.current = false;
       setBusy(false);
@@ -5253,15 +5264,32 @@ function ScreenLockOverlay({
           <>
             <label className="screen-lock-field">
               <span>{t("portable-vault-master-password")}</span>
-              <input
-                ref={(element) => { primaryRef.current = element; }}
-                type="password"
-                value={password}
-                autoComplete="current-password"
-                disabled={busy}
-                onChange={(event) => setPassword(event.target.value)}
-              />
+              <span className="screen-lock-password-row">
+                <input
+                  ref={(element) => { primaryRef.current = element; }}
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  autoComplete="current-password"
+                  disabled={busy}
+                  aria-invalid={error ? true : undefined}
+                  onChange={(event) => {
+                    setPassword(event.target.value);
+                    if (error) setError("");
+                  }}
+                />
+                <button
+                  type="button"
+                  className="screen-lock-password-toggle"
+                  title={showPassword ? t("hide-master-password") : t("show-master-password")}
+                  aria-label={showPassword ? t("hide-master-password") : t("show-master-password")}
+                  disabled={busy}
+                  onClick={() => setShowPassword((current) => !current)}
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </span>
             </label>
+            <p className="screen-lock-hint">{t("unlocking-stronghold-may-take-a-few-seconds")}</p>
             <button className={busy ? "screen-lock-primary busy" : "screen-lock-primary"} type="submit" disabled={busy || !password}>
               {busy ? <LoaderCircle size={15} /> : <Unlock size={15} />}
               <span>{busy ? t("verifying") : t("unlock")}</span>

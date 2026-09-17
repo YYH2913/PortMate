@@ -6611,7 +6611,8 @@ fieldset label {
 }
 
 .credential-password-row,
-.portable-vault-password-row {
+.portable-vault-password-row,
+.screen-lock-password-row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -6619,12 +6620,14 @@ fieldset label {
 }
 
 .credential-password-row input,
-.portable-vault-password-row input {
+.portable-vault-password-row input,
+.screen-lock-password-row input {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.credential-password-toggle {
+.credential-password-toggle,
+.screen-lock-password-toggle {
   display: inline-grid;
   flex: 0 0 auto;
   width: 30px;
@@ -6636,8 +6639,18 @@ fieldset label {
   cursor: pointer;
 }
 
+.screen-lock-password-toggle {
+  width: 38px;
+  height: 38px;
+  border-color: #344252;
+  background: #111820;
+  color: #c9d6e1;
+}
+
 .credential-password-toggle:hover,
-.credential-password-toggle:focus-visible {
+.credential-password-toggle:focus-visible,
+.screen-lock-password-toggle:hover,
+.screen-lock-password-toggle:focus-visible {
   outline: 0;
   border-color: rgba(94, 234, 212, 0.55);
   color: var(--cyan);
@@ -6663,7 +6676,8 @@ fieldset label {
   animation: transfer-spin 1.2s linear infinite;
 }
 
-.credential-vault-unlock-error {
+.credential-vault-unlock-error,
+.screen-lock-hint {
   margin: 0;
   overflow-wrap: anywhere;
   line-height: 1.45;
@@ -6671,6 +6685,11 @@ fieldset label {
 
 .credential-vault-unlock-error {
   color: var(--red);
+  font-size: 11px;
+}
+
+.screen-lock-hint {
+  color: #8ea0b0;
   font-size: 11px;
 }
 
