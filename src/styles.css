@@ -10108,17 +10108,18 @@ fieldset label {
 .about-hero-copy p {
   color: #d7e1eb;
   font-size: 14px;
+  line-height: 1.55;
 }
 
 .about-hero-copy small {
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .about-meta {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   border-block: 1px solid var(--line);
 }
@@ -10128,11 +10129,15 @@ fieldset label {
   min-width: 0;
   gap: 5px;
   padding: 12px 14px;
-  border-right: 1px solid var(--line-soft);
+  border-inline-end: 1px solid var(--line-soft);
 }
 
-.about-meta > div:last-child {
-  border-right: 0;
+.about-meta > div:nth-child(3n) {
+  border-inline-end: 0;
+}
+
+.about-meta > div:nth-child(-n + 3) {
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .about-meta dt {
@@ -10146,6 +10151,23 @@ fieldset label {
   overflow-wrap: anywhere;
   color: var(--text);
   font-size: 12px;
+}
+
+.about-author-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cyan);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+.about-author-link:hover,
+.about-author-link:focus-visible {
+  text-decoration: underline;
+  outline: 0;
 }
 
 .about-section {
@@ -10183,6 +10205,44 @@ fieldset label {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.about-capabilities {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--line-soft);
+}
+
+.about-capabilities > div {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 12px 14px;
+  border-inline-end: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.about-capabilities > div:nth-child(2n) {
+  border-inline-end: 0;
+}
+
+.about-capabilities > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.about-capabilities dt {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.about-capabilities dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .about-link-grid {
@@ -10362,12 +10422,32 @@ fieldset label {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .about-meta > div:nth-child(2) {
-    border-right: 0;
+  .about-meta > div {
+    border-inline-end: 1px solid var(--line-soft);
   }
 
-  .about-meta > div:nth-child(-n + 2) {
+  .about-meta > div:nth-child(2n) {
+    border-inline-end: 0;
+  }
+
+  .about-meta > div:nth-child(-n + 4) {
     border-bottom: 1px solid var(--line-soft);
+  }
+
+  .about-meta > div:nth-child(n + 5) {
+    border-bottom: 0;
+  }
+
+  .about-capabilities {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .about-capabilities > div {
+    border-inline-end: 0;
+  }
+
+  .about-capabilities > div:last-child {
+    border-bottom: 0;
   }
 
   .about-link-grid {
