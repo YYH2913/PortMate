@@ -303,7 +303,7 @@
   "stronghold-has-not-been-created-create-the-vault-before": "Stronghold не создан. Создайте хранилище, прежде чем сохранить пароли.",
   "stronghold-is-locked-unlock-the-vault-before-saving-passwords": "Stronghold заблокирован. Разблокируйте хранилище перед сохранением паролей.",
   "reading-stronghold-status-wait-before-saving-credentials": "Читаю статус Stronghold. Подождите, прежде чем сохранить удостоверения.",
-  "open-stronghold": "Открытый Stronghold",
+  "open-stronghold": "Открыть Stronghold",
   "unlock-stronghold": "Разблокировать Stronghold",
   "enter-the-stronghold-master-password-to-use-saved": "Введите главный пароль, чтобы использовать сохранённые пароли SSH, фразы закрытых ключей и OneKey.",
   "this-connection": "Эта связь",

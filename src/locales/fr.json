@@ -303,7 +303,7 @@
   "stronghold-has-not-been-created-create-the-vault-before": "Stronghold n'a pas été créé. Créez le coffre-fort avant de sauvegarder les mots de passe.",
   "stronghold-is-locked-unlock-the-vault-before-saving-passwords": "Stronghold est verrouillé. Déverrouillez le coffre avant d’enregistrer des mots de passe.",
   "reading-stronghold-status-wait-before-saving-credentials": "Lire l'état de Stronghold. Attends avant d'enregistrer les informations.",
-  "open-stronghold": "ouverture Stronghold",
+  "open-stronghold": "Ouvrir Stronghold",
   "unlock-stronghold": "Déverrouiller Stronghold",
   "enter-the-stronghold-master-password-to-use-saved": "Saisissez le mot de passe principal pour utiliser les mots de passe SSH, phrases de clé privée et OneKeys enregistrés.",
   "this-connection": "Cette connexion",

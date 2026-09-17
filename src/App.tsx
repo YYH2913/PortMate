@@ -1132,6 +1132,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }, []);
 
   useEffect(() => {
+    setCredentialPrompt((current) => {
+      if (!current) return current;
+      const strongholdStatus = portableVaultStatus
+        ? portableVaultStatus.unlocked ? "unlocked" : portableVaultStatus.exists ? "locked" : "not-created"
+        : "unknown";
+      return current.strongholdStatus === strongholdStatus ? current : { ...current, strongholdStatus };
+    });
+  }, [portableVaultStatus]);
+
+  useEffect(() => {
     if (restoredScreenLockPreparedRef.current) return;
     restoredScreenLockPreparedRef.current = true;
     const current = screenLockRef.current;
@@ -5099,9 +5109,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             request={credentialPrompt}
             onCancel={() => completeCredentialPrompt(credentialPrompt.requestId, null)}
             onSubmit={(credentials) => completeCredentialPrompt(credentialPrompt.requestId, credentials)}
-            onOpenStronghold={() => {
-              completeCredentialPrompt(credentialPrompt.requestId, null);
-              setUtilityDialog("keys");
+            onOpenStronghold={() => setUtilityDialog("keys")}
+            onUnlockStronghold={async (password) => {
+              if (!isBackendAvailable()) {
+                throw new Error(t("browser-preview-is-not-connected-to-the-desktop-credential"));
+              }
+              const next = await invokeBackend<PortableVaultStatus>("unlock_portable_vault", {
+                request: { password },
+              });
+              setPortableVaultStatus(next);
+              if (!next.unlocked) throw new Error(t("portable-vault-is-not-unlocked"));
             }}
           />
         </Suspense>

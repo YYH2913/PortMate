@@ -303,7 +303,7 @@
   "stronghold-has-not-been-created-create-the-vault-before": "Stronghold no se ha creado. Crear la bóveda antes de guardar contraseñas.",
   "stronghold-is-locked-unlock-the-vault-before-saving-passwords": "Stronghold está bloqueado. Desbloquee la bóveda antes de guardar contraseñas.",
   "reading-stronghold-status-wait-before-saving-credentials": "Leyendo el estado de Stronghold. Espera antes de guardar las credenciales.",
-  "open-stronghold": "Stronghold abierto",
+  "open-stronghold": "Abrir Stronghold",
   "unlock-stronghold": "Desbloquear Stronghold",
   "enter-the-stronghold-master-password-to-use-saved": "Introduzca la contraseña maestra para usar las contraseñas SSH, frases de clave privada y OneKeys guardadas.",
   "this-connection": "Esta conexión",

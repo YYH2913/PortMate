@@ -6575,6 +6575,42 @@ fieldset label {
   background: rgba(244, 184, 96, 0.14);
 }
 
+.credential-vault-unlock {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  background: rgba(15, 23, 32, 0.42);
+}
+
+.credential-vault-unlock-copy {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  color: var(--cyan);
+}
+
+.credential-vault-unlock-copy div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.credential-vault-unlock-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.credential-vault-unlock-copy span,
+.credential-vault-unlock small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.credential-password-row,
 .portable-vault-password-row {
   display: flex;
   align-items: center;
@@ -6582,13 +6618,60 @@ fieldset label {
   min-width: 0;
 }
 
+.credential-password-row input,
 .portable-vault-password-row input {
   flex: 1 1 auto;
   min-width: 0;
 }
 
+.credential-password-toggle {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--control);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.credential-password-toggle:hover,
+.credential-password-toggle:focus-visible {
+  outline: 0;
+  border-color: rgba(94, 234, 212, 0.55);
+  color: var(--cyan);
+}
+
+.credential-vault-unlock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.credential-vault-unlock-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.credential-vault-unlock-actions button[aria-busy="true"] svg,
 .portable-vault-create-button[aria-busy="true"] svg {
   animation: transfer-spin 1.2s linear infinite;
+}
+
+.credential-vault-unlock-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.credential-vault-unlock-error {
+  color: var(--red);
+  font-size: 11px;
 }
 
 @media (max-width: 480px) {

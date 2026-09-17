@@ -1,8 +1,9 @@
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { KeyRound, X } from "lucide-react";
+import { Eye, EyeOff, KeyRound, LoaderCircle, Unlock, X } from "lucide-react";
 import { selectedSshOneKey } from "./one-key-login-state";
+import { formatPortableVaultError } from "./portable-vault-error";
 import type { AuthMethod, OneKeySummary } from "./types";
 
 export type ConnectionCredentials = {
@@ -32,11 +33,13 @@ export default function CredentialDialog({
   onCancel,
   onSubmit,
   onOpenStronghold,
+  onUnlockStronghold,
 }: {
   request: CredentialPromptState;
   onCancel: () => void;
   onSubmit: (credentials: ConnectionCredentials) => void;
   onOpenStronghold?: () => void;
+  onUnlockStronghold?: (password: string) => Promise<void>;
 }) {
   useLocale();
   const [username, setUsername] = useState(request.initialUsername);
@@ -45,14 +48,28 @@ export default function CredentialDialog({
   const [oneKeyId, setOneKeyId] = useState("");
   const [savePassword, setSavePassword] = useState(false);
   const [savePassphrase, setSavePassphrase] = useState(false);
+  const [vaultPassword, setVaultPassword] = useState("");
+  const [vaultUnlockBusy, setVaultUnlockBusy] = useState(false);
+  const [vaultUnlockError, setVaultUnlockError] = useState("");
+  const [showVaultPassword, setShowVaultPassword] = useState(false);
   const usernameRef = useRef<HTMLInputElement | null>(null);
+  const vaultPasswordRef = useRef<HTMLInputElement | null>(null);
   const selectedOneKey = selectedSshOneKey(request.oneKeys, oneKeyId);
   const canSaveToStronghold = request.strongholdStatus === "unlocked";
+  const canUnlockInline = Boolean(onUnlockStronghold) && request.strongholdStatus === "locked" && !selectedOneKey;
 
   useEffect(() => {
     usernameRef.current?.focus();
     usernameRef.current?.select();
   }, []);
+
+  useEffect(() => {
+    if (request.strongholdStatus === "unlocked") {
+      setVaultPassword("");
+      setVaultUnlockError("");
+      setShowVaultPassword(false);
+    }
+  }, [request.strongholdStatus]);
 
   function selectOneKey(nextOneKeyId: string) {
     const oneKey = selectedSshOneKey(request.oneKeys, nextOneKeyId);
@@ -85,6 +102,24 @@ export default function CredentialDialog({
   function submit(event: FormEvent) {
     event.preventDefault();
     submitCredentials(false);
+  }
+
+  async function unlockVault() {
+    if (!onUnlockStronghold || !vaultPassword || vaultUnlockBusy) return;
+    setVaultUnlockBusy(true);
+    setVaultUnlockError("");
+    try {
+      await onUnlockStronghold(vaultPassword);
+      setVaultPassword("");
+    } catch (error) {
+      setVaultUnlockError(formatPortableVaultError(error));
+      window.requestAnimationFrame(() => {
+        vaultPasswordRef.current?.focus();
+        vaultPasswordRef.current?.select();
+      });
+    } finally {
+      setVaultUnlockBusy(false);
+    }
   }
 
   return (
@@ -151,7 +186,58 @@ export default function CredentialDialog({
               <span>{t("save-private-key-passphrase-to-stronghold")}{request.strongholdStatus === "unlocked" ? "" : t("unlock-first")}</span>
             </label>
           ) : null}
-          {!selectedOneKey && request.strongholdStatus && request.strongholdStatus !== "unlocked" ? (
+          {canUnlockInline ? (
+            <div className="credential-vault-unlock" role="group" aria-labelledby="credential-vault-unlock-title">
+              <div className="credential-vault-unlock-copy">
+                <KeyRound size={14} />
+                <div>
+                  <strong id="credential-vault-unlock-title">{t("unlock-stronghold")}</strong>
+                  <span>{t("enter-the-stronghold-master-password-to-use-saved")}</span>
+                </div>
+              </div>
+              <label className="credential-field">
+                <span>{t("stronghold-master-password")}</span>
+                <span className="credential-password-row">
+                  <input
+                    ref={vaultPasswordRef}
+                    value={vaultPassword}
+                    type={showVaultPassword ? "text" : "password"}
+                    autoComplete="off"
+                    disabled={vaultUnlockBusy}
+                    aria-invalid={vaultUnlockError ? true : undefined}
+                    onChange={(event) => {
+                      setVaultPassword(event.target.value);
+                      if (vaultUnlockError) setVaultUnlockError("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void unlockVault();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="credential-password-toggle"
+                    title={showVaultPassword ? t("hide-master-password") : t("show-master-password")}
+                    aria-label={showVaultPassword ? t("hide-master-password") : t("show-master-password")}
+                    onClick={() => setShowVaultPassword((current) => !current)}
+                  >
+                    {showVaultPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </span>
+              </label>
+              <div className="credential-vault-unlock-actions">
+                <button type="button" className="primary" disabled={vaultUnlockBusy || !vaultPassword} aria-busy={vaultUnlockBusy} onClick={() => void unlockVault()}>
+                  {vaultUnlockBusy ? <LoaderCircle size={14} /> : <Unlock size={14} />}
+                  {vaultUnlockBusy ? t("verifying") : t("unlock-stronghold")}
+                </button>
+                {onOpenStronghold ? <button type="button" onClick={onOpenStronghold}>{t("open-stronghold")}</button> : null}
+              </div>
+              <small>{t("unlocking-stronghold-may-take-a-few-seconds")}</small>
+              {vaultUnlockError ? <p className="credential-vault-unlock-error" role="alert">{vaultUnlockError}</p> : null}
+            </div>
+          ) : !selectedOneKey && request.strongholdStatus && request.strongholdStatus !== "unlocked" ? (
             <div className="credential-vault-hint" role="note">
               <KeyRound size={14} />
               <span>{request.strongholdStatus === "not-created"

@@ -33,6 +33,24 @@ describe("credential dialog Stronghold guidance", () => {
     expect(html).toContain("打开 Stronghold");
   });
 
+  it("unlocks Stronghold in the connection prompt instead of sending the operator away", () => {
+    const html = renderToStaticMarkup(
+      <CredentialDialog
+        request={{ ...baseRequest, strongholdStatus: "locked" }}
+        onCancel={() => {}}
+        onSubmit={() => {}}
+        onOpenStronghold={() => {}}
+        onUnlockStronghold={async () => {}}
+      />,
+    );
+
+    expect(html).toContain("解锁 Stronghold");
+    expect(html).toContain("Stronghold 主密码");
+    expect(html).toContain("打开 Stronghold");
+    expect(html).toContain("主密码验证使用本机密钥派生，可能需要几秒。");
+    expect(html).not.toContain("Stronghold 已锁定，保存密码前请先解锁密钥库。");
+  });
+
   it("does not show a setup warning after the vault is unlocked", () => {
     const html = renderToStaticMarkup(
       <CredentialDialog
