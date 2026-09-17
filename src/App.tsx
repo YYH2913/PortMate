@@ -33,6 +33,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
 import { waitForChildWindowReady } from "./child-window-launch";
+import { formatPortableVaultError } from "./portable-vault-error";
 import {
   COMMAND_HISTORY_STORAGE_KEY,
   commandHistoryCommands,
@@ -1089,8 +1090,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           request: { password },
         });
         setPortableVaultStatus(unlocked);
-      } catch {
-        throw new Error(t("master-password-verification-failed"));
+      } catch (error) {
+        throw new Error(formatPortableVaultError(error));
       }
       if (!unlocked.unlocked) throw new Error(t("portable-vault-is-not-unlocked"));
       if (!gate.isCurrent("unlock", token) || screenLockRef.current?.lockedAt !== current.lockedAt) {

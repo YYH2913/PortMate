@@ -19,6 +19,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
+import { formatPortableVaultError } from "./portable-vault-error";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { identityStableKey, mergeAgentIdentities } from "./client-identity-state";
 import { formatBytes } from "./display-formatters";
@@ -498,7 +499,7 @@ export default function KeyManagerDialog({
       if (mountedRef.current) {
         setPortableVaultPassword("");
         setPortableVaultCreateConfirmPassword("");
-        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+        setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
       }
     } finally {
       onCredentialOperationFinish(operationToken);
@@ -531,7 +532,7 @@ export default function KeyManagerDialog({
     } catch (error) {
       if (mountedRef.current) {
         setPortableVaultPassword("");
-        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+        setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
       }
     } finally {
       onCredentialOperationFinish(operationToken);
@@ -555,7 +556,7 @@ export default function KeyManagerDialog({
       clearPortableVaultRotation();
       setPortableVaultFeedback({ kind: "status", message: t("portable-vault-locked") });
     } catch (error) {
-      if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+      if (mountedRef.current) setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
     } finally {
       onCredentialOperationFinish(operationToken);
       if (mountedRef.current) setPortableVaultBusy(false);
@@ -600,7 +601,7 @@ export default function KeyManagerDialog({
     } catch (error) {
       if (mountedRef.current) {
         clearPortableVaultRotation();
-        setPortableVaultFeedback({ kind: "error", message: formatError(error) });
+        setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
       }
     } finally {
       onCredentialOperationFinish(operationToken);
