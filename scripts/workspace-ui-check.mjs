@@ -4755,12 +4755,12 @@ Host staging
     .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
   assert(JSON.stringify(settingsPages) === JSON.stringify([
     "应用",
-    "安全",
     "快捷键",
+    "鼠标",
     "自动补全",
     "命令历史",
-    "鼠标",
     "同步输入",
+    "安全",
   ]), `terminal settings navigation is still redundant: ${JSON.stringify(settingsPages)}`);
   const settingsBounds = await page.locator(".terminal-settings-dialog").evaluate((dialog) => {
     const rect = dialog.getBoundingClientRect();

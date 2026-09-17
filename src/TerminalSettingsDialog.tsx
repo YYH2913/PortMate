@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Ban, FolderOpen, RotateCcw, X } from "lucide-react";
+import { Ban, FolderOpen, RotateCcw, Search, X } from "lucide-react";
 import { isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import {
@@ -36,12 +36,12 @@ const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 
 const terminalSettingPages = [
   "application",
-  "security",
   "keyboard-shortcuts",
+  "mouse",
   "autocomplete",
   "command-history-settings",
-  "mouse",
   "synchronized-input",
+  "security",
 ] as const;
 
 const sessionKindLabels: Record<SessionKind, string> = {
@@ -78,8 +78,9 @@ export default function TerminalSettingsDialog({
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
 }) {
-  useLocale();
+  const { locale } = useLocale();
   const [activeItem, setActiveItem] = useState("application");
+  const [pageQuery, setPageQuery] = useState("");
   const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
   const [syncDraft, setSyncDraft] = useState(syncSettings);
   const [workspaceKeymapDraft, setWorkspaceKeymapDraft] = useState(workspaceKeymap);
@@ -88,10 +89,21 @@ export default function TerminalSettingsDialog({
   const directoryRequestGate = useRef(new KeyedRequestGate<"directory">());
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
+  const visiblePages = useMemo(() => {
+    const needle = pageQuery.trim().toLocaleLowerCase();
+    if (!needle) return [...terminalSettingPages];
+    return terminalSettingPages.filter((page) => t(page).toLocaleLowerCase().includes(needle));
+  }, [locale, pageQuery]);
   const dirty = terminalSettingsDraftHasUnsavedChanges(
     { prefs, syncSettings: syncDraft, workspaceKeymap: workspaceKeymapDraft },
     { prefs: initialPrefs, syncSettings, workspaceKeymap },
   );
+
+  useEffect(() => {
+    if (visiblePages.length && !visiblePages.includes(activeItem as typeof terminalSettingPages[number])) {
+      setActiveItem(visiblePages[0]);
+    }
+  }, [activeItem, visiblePages]);
 
   useEffect(() => () => {
     directoryRequestGate.current.invalidateAll();
@@ -133,14 +145,37 @@ export default function TerminalSettingsDialog({
 
   return (
     <DialogFrame title={t("terminal-settings")} className="terminal-settings-dialog" onClose={closeDialog}>
-      <nav className="settings-tabs" role="tablist" aria-label={t("terminal-settings-pages")}>
-        {terminalSettingPages.map((page) => (
-          <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
+      <nav className="settings-nav">
+        <label className="settings-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            type="search"
+            value={pageQuery}
+            placeholder={t("search-settings")}
+            aria-label={t("search-settings")}
+            onChange={(event) => setPageQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && pageQuery) {
+                event.preventDefault();
+                setPageQuery("");
+              }
+            }}
+          />
+        </label>
+        <div className="settings-tabs" role="tablist" aria-label={t("terminal-settings-pages")}>
+          {visiblePages.length ? visiblePages.map((page) => (
+            <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
               {t(page)}
             </button>
-        ))}
+          )) : (
+            <p className="settings-search-empty">{t("no-matching-settings")}</p>
+          )}
+        </div>
       </nav>
       <section className="settings-content" role="tabpanel">
+        <header className="session-settings-pane-title">
+          <h2>{t(activeItem)}</h2>
+        </header>
         <TerminalSettingsContent
           activeItem={activeItem}
           prefs={prefs}
