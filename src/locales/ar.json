@@ -1018,6 +1018,8 @@
   "session-type": "نوع الجلسة",
   "settings": "الإعدادات",
   "session-settings-pages": "صفحات إعدادات الجلسة",
+  "search-settings": "البحث في الإعدادات",
+  "no-matching-settings": "لا توجد إعدادات مطابقة",
   "advanced-settings": "إعدادات متقدمة",
   "complete-the-highlighted-connection-details": "إكمال تفاصيل الاتصال المبرزة",
   "save-only": "حفظ فقط",

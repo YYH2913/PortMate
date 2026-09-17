@@ -1018,6 +1018,8 @@
   "session-type": "会话类型",
   "settings": "配置项",
   "session-settings-pages": "会话配置项",
+  "search-settings": "搜索设置",
+  "no-matching-settings": "没有匹配的配置项",
   "advanced-settings": "高级设置",
   "complete-the-highlighted-connection-details": "请完善标记的连接信息",
   "save-only": "仅保存",

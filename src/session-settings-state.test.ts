@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { t } from "./i18n";
 import {
+  filterSessionTree,
   flattenSessionTree,
   MAX_SESSION_PROFILE_GROUP_CHARACTERS,
   MAX_SESSION_PROFILE_NAME_CHARACTERS,
@@ -8,6 +9,7 @@ import {
   MAX_SESSION_PROFILE_TAGS,
   normalizeSessionMetadataText,
   normalizeSessionProfileMetadata,
+  protocolSettingsSection,
   protocolTabs,
   removeJumpSecretDraftIndex,
   sessionSettingTrees,
@@ -20,33 +22,59 @@ import {
   createTcpConnection,
 } from "./session-profile-helpers";
 
-const sharedPages = ["session", "terminal", "logs", "triggers", "transfers"];
+const sharedPagesAfterProtocol = ["terminal", "logs", "transfers", "triggers"];
+const sshAuthPages = ["public-key", "password", "ssh-agent", "proxy", "verification"];
 
 describe("session settings navigation", () => {
   it("keeps one route for each real profile capability", () => {
     expect(protocolTabs).toEqual(["Shell", "SSH", "Tmux", "Telnet", "Tcp", "Serial"]);
-    expect(flattenSessionTree(sessionSettingTrees.Shell)).toEqual([...sharedPages, "Shell"]);
+    expect(flattenSessionTree(sessionSettingTrees.Shell)).toEqual(["session", "Shell", ...sharedPagesAfterProtocol]);
     expect(flattenSessionTree(sessionSettingTrees.SSH)).toEqual([
-      ...sharedPages,
+      "session",
       "SSH",
-      "proxy",
-      "verification",
-      "ssh-agent",
-      "password",
-      "public-key",
+      ...sshAuthPages,
+      ...sharedPagesAfterProtocol,
     ]);
     expect(flattenSessionTree(sessionSettingTrees.Tmux)).toEqual([
-      ...sharedPages,
+      "session",
       "Tmux",
+      ...sshAuthPages,
+      ...sharedPagesAfterProtocol,
+    ]);
+    expect(flattenSessionTree(sessionSettingTrees.Telnet)).toEqual(["session", "Telnet", "proxy", ...sharedPagesAfterProtocol]);
+    expect(flattenSessionTree(sessionSettingTrees.Tcp)).toEqual(["session", "Tcp", "proxy", ...sharedPagesAfterProtocol]);
+    expect(flattenSessionTree(sessionSettingTrees.Serial)).toEqual(["session", "serial", ...sharedPagesAfterProtocol]);
+    expect(protocolSettingsSection("Serial")).toBe("serial");
+    expect(protocolSettingsSection("SSH")).toBe("SSH");
+  });
+
+  it("filters the session tree by visible labels without dropping parents", () => {
+    const tree = sessionSettingTrees.SSH;
+    const labels: Record<string, string> = {
+      session: "会话",
+      terminal: "终端",
+      logs: "日志",
+      triggers: "触发器",
+      transfers: "传输",
+      SSH: "SSH",
+      proxy: "代理",
+      verification: "验证",
+      "ssh-agent": "代理人",
+      password: "密码",
+      "public-key": "公钥",
+    };
+    const labelOf = (section: string) => labels[section] ?? section;
+
+    expect(flattenSessionTree(filterSessionTree(tree, "公钥", labelOf))).toEqual(["SSH", "public-key"]);
+    expect(flattenSessionTree(filterSessionTree(tree, "ssh", labelOf))).toEqual([
+      "SSH",
+      "public-key",
+      "password",
+      "ssh-agent",
       "proxy",
       "verification",
-      "ssh-agent",
-      "password",
-      "public-key",
     ]);
-    expect(flattenSessionTree(sessionSettingTrees.Telnet)).toEqual([...sharedPages, "Telnet", "proxy"]);
-    expect(flattenSessionTree(sessionSettingTrees.Tcp)).toEqual([...sharedPages, "Tcp", "proxy"]);
-    expect(flattenSessionTree(sessionSettingTrees.Serial)).toEqual([...sharedPages, "serial"]);
+    expect(filterSessionTree(tree, "不存在", labelOf)).toEqual([]);
   });
 
   it("does not expose duplicate or non-runtime settings", () => {

@@ -1018,6 +1018,8 @@
   "session-type": "Tipo de sesión",
   "settings": "Configuración",
   "session-settings-pages": "Páginas de configuración de sesión",
+  "search-settings": "Buscar ajustes",
+  "no-matching-settings": "No hay ajustes coincidentes",
   "advanced-settings": "Ajustes avanzados",
   "complete-the-highlighted-connection-details": "Completa los detalles de conexión resaltados",
   "save-only": "Solo guardar",

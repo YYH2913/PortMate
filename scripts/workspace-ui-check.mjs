@@ -21,6 +21,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function protocolTabName(protocol) {
+  return protocol === "Tcp" ? "TCP" : protocol;
+}
+
+async function selectSessionProtocol(root, protocol) {
+  await root.getByRole("tab", { name: protocolTabName(protocol), exact: true }).click();
+}
+
+async function selectSessionSection(root, label) {
+  await root.getByRole("treeitem", { name: label, exact: true }).click();
+}
+
 async function samplePngCenter(browser, png) {
   const sampleContext = await browser.newContext();
   try {
@@ -2391,7 +2403,7 @@ Host staging
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const jumpHostDialog = page.locator(".session-settings-dialog");
   await jumpHostDialog.waitFor();
-  await jumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await jumpHostDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
   const jumpGroup = jumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
@@ -2439,7 +2451,7 @@ Host staging
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const reopenedJumpHostDialog = page.locator(".session-settings-dialog");
   await reopenedJumpHostDialog.waitFor();
-  await reopenedJumpHostDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await reopenedJumpHostDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
   const reopenedJumpGroup = reopenedJumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   assert(await reopenedJumpGroup.locator(".jump-hop").count() === 1
     && await reopenedJumpGroup.locator("input[placeholder=\"主机\"]").inputValue() === "jump-two.example.test",
@@ -4927,12 +4939,12 @@ Host staging
   `terminal settings draft was persisted or exposed without confirmation: ${JSON.stringify(terminalSettingsDiscardState)}`);
 
   const expectedSessionPages = {
-    Shell: ["会话", "终端", "日志", "触发器", "传输", "Shell"],
-    SSH: ["会话", "终端", "日志", "触发器", "传输", "SSH", "代理", "验证", "代理人", "密码", "公钥"],
-    Tmux: ["会话", "终端", "日志", "触发器", "传输", "Tmux", "代理", "验证", "代理人", "密码", "公钥"],
-    Telnet: ["会话", "终端", "日志", "触发器", "传输", "Telnet", "代理"],
-    Tcp: ["会话", "终端", "日志", "触发器", "传输", "Tcp", "代理"],
-    Serial: ["会话", "终端", "日志", "触发器", "传输", "串口"],
+    Shell: ["会话", "Shell", "终端", "日志", "传输", "触发器"],
+    SSH: ["会话", "SSH", "公钥", "密码", "代理人", "代理", "验证", "终端", "日志", "传输", "触发器"],
+    Tmux: ["会话", "Tmux", "公钥", "密码", "代理人", "代理", "验证", "终端", "日志", "传输", "触发器"],
+    Telnet: ["会话", "Telnet", "代理", "终端", "日志", "传输", "触发器"],
+    Tcp: ["会话", "Tcp", "代理", "终端", "日志", "传输", "触发器"],
+    Serial: ["会话", "串口", "终端", "日志", "传输", "触发器"],
   };
   const protocolPageLabels = {
     Shell: "Shell",
@@ -5073,35 +5085,34 @@ Host staging
   `quick session dialog is not compact: ${JSON.stringify(quickSessionBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-session-create.png`, fullPage: true });
   await createSessionDialog.getByRole("button", { name: "高级设置", exact: true }).click();
-  const protocolSelect = page.getByRole("combobox", { name: "会话类型", exact: true });
-  const sectionSelect = page.getByRole("combobox", { name: "会话配置项", exact: true });
-  await protocolSelect.waitFor();
+  const advancedSessionDialog = page.locator(".session-settings-dialog.advanced");
+  await advancedSessionDialog.getByRole("tree", { name: "会话配置项", exact: true }).waitFor();
   await page.getByRole("button", { name: "快速设置", exact: true }).click();
   const returnedQuickDialog = page.locator(".session-settings-dialog.quick");
   assert(await returnedQuickDialog.getByRole("textbox", { name: "SSH 主机或 IP", exact: true }).inputValue() === "router.local"
     && await returnedQuickDialog.getByRole("textbox", { name: "SSH 用户名", exact: true }).inputValue() === "root",
     "returning from advanced session settings discarded the SSH host or username draft");
   await returnedQuickDialog.getByRole("button", { name: "高级设置", exact: true }).click();
-  await protocolSelect.waitFor();
+  await advancedSessionDialog.getByRole("tree", { name: "会话配置项", exact: true }).waitFor();
   assert(await page.locator(".session-settings-dialog .protocol-tabs").count() === 0
     && await page.locator(".session-settings-dialog .settings-tree").count() === 0,
   "redundant session settings navigation is still rendered");
   for (const [protocol, expectedPages] of Object.entries(expectedSessionPages)) {
-    await protocolSelect.selectOption(protocol);
-    const actualPages = await sectionSelect.locator("option")
-      .evaluateAll((options) => options.map((option) => option.textContent?.trim()));
+    await selectSessionProtocol(advancedSessionDialog, protocol);
+    const actualPages = await advancedSessionDialog.getByRole("treeitem")
+      .evaluateAll((items) => items.map((item) => item.textContent?.trim()));
     assert(JSON.stringify(actualPages) === JSON.stringify(expectedPages),
       `${protocol} session settings are redundant: ${JSON.stringify(actualPages)}`);
-    await sectionSelect.selectOption({ label: protocolPageLabels[protocol] });
+    await selectSessionSection(advancedSessionDialog, protocolPageLabels[protocol]);
     assert(await page.locator(".session-settings-dialog .session-form > *").count() > 0,
       `${protocol} has no real protocol settings`);
   }
-  await protocolSelect.selectOption("SSH");
-  await sectionSelect.selectOption("SSH");
+  await selectSessionProtocol(advancedSessionDialog, "SSH");
+  await selectSessionSection(advancedSessionDialog, "SSH");
   assert(await page.getByLabel("主机:(H)", { exact: true }).inputValue() === "router.local"
     && await page.getByLabel("用户名:(U)", { exact: true }).inputValue() === "root",
     "advanced SSH settings recombined or discarded the separate host and username fields");
-  await sectionSelect.selectOption("公钥");
+  await selectSessionSection(advancedSessionDialog, "公钥");
   const authOrderSelect = page.locator(".session-settings-dialog .dialog-field", { hasText: "顺序:(O)" }).locator("select");
   const authOrderOptions = await authOrderSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
   assert(authOrderOptions.length === 15
@@ -5116,16 +5127,16 @@ Host staging
   assert(await recordAuthSuccess.getAttribute("aria-pressed") === "true", "SSH successful-auth recording is not enabled by default");
   await recordAuthSuccess.click();
   assert(await recordAuthSuccess.getAttribute("aria-pressed") === "false", "SSH successful-auth recording cannot be disabled from Session Settings");
-  await sectionSelect.selectOption("验证");
+  await selectSessionSection(advancedSessionDialog, "验证");
   await page.waitForFunction(() => (
-    document.querySelector('select[aria-label="会话类型"]')?.value === "SSH"
-      && document.querySelector('select[aria-label="会话配置项"]')?.value === "verification"
+    document.querySelector(".session-settings-dialog")?.getAttribute("data-session-protocol") === "SSH"
+      && document.querySelector(".session-settings-dialog")?.getAttribute("data-session-section") === "verification"
   ));
   const sshHealthButton = page.locator(".session-settings-dialog .ssh-health-check")
     .getByRole("button", { name: "检查 SSH 健康", exact: true });
   assert(await sshHealthButton.count() === 1, `SSH health action is unavailable: ${JSON.stringify({
-    protocol: await protocolSelect.inputValue(),
-    section: await sectionSelect.inputValue(),
+    protocol: await advancedSessionDialog.getAttribute("data-session-protocol"),
+    section: await advancedSessionDialog.getAttribute("data-session-section"),
     form: await page.locator(".session-settings-dialog .session-form").textContent(),
   })}`);
   await sshHealthButton.click();
@@ -5134,18 +5145,18 @@ Host staging
   assert(sshHealthCall?.args?.probeSftp === true,
     `SSH health UI omitted the SFTP probe: ${JSON.stringify(sshHealthCall)}`);
   await page.screenshot({ path: `${screenshotPrefix}-ssh-health.png`, fullPage: true });
-  await protocolSelect.selectOption("SSH");
-  await sectionSelect.selectOption("传输");
+  await selectSessionProtocol(advancedSessionDialog, "SSH");
+  await selectSessionSection(advancedSessionDialog, "传输");
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 1
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "SCP:" }).count() === 1,
   "SSH transfer capabilities are missing from the consolidated page");
-  await protocolSelect.selectOption("Serial");
-  await sectionSelect.selectOption("传输");
+  await selectSessionProtocol(advancedSessionDialog, "Serial");
+  await selectSessionSection(advancedSessionDialog, "传输");
   await page.waitForTimeout(180);
   assert(await page.locator(".session-settings-dialog .dialog-field", { hasText: "SFTP:" }).count() === 0
     && await page.locator(".session-settings-dialog .dialog-field", { hasText: "XModem:" }).count() === 1,
   "Serial transfer page exposes capabilities from another protocol");
-  await sectionSelect.selectOption("串口");
+  await selectSessionSection(advancedSessionDialog, "串口");
   const baudRateInput = page.locator('.session-settings-dialog input[list="serial-baud-rate-options"]');
   const baudRateOptions = await page.locator("#serial-baud-rate-options option")
     .evaluateAll((options) => options.map((option) => Number(option.value)));
@@ -5183,7 +5194,7 @@ Host staging
   await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
   const serialProfileDialog = page.locator(".session-settings-dialog");
   await serialProfileDialog.waitFor();
-  await serialProfileDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("串口");
+  await serialProfileDialog.getByRole("treeitem", { name: "串口", exact: true }).click();
   assert(await serialProfileDialog.locator(".dialog-field", { hasText: "串口:(S)" }).locator("select").inputValue() === "/dev/ttyUSB0 ",
     "Session Settings did not preserve the exact serial device path");
   await serialProfileDialog.getByRole("button", { name: "保存", exact: true }).click();
@@ -5207,7 +5218,7 @@ Host staging
     await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
     const dialog = page.locator(".session-settings-dialog");
     await dialog.waitFor();
-    await dialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("终端");
+    await dialog.getByRole("treeitem", { name: "终端", exact: true }).click();
     const terminalBounds = await dialog.locator(".dialog-field").evaluateAll((fields) => Object.fromEntries(fields.flatMap((field) => {
       const label = field.querySelector(":scope > span")?.textContent?.trim() ?? "";
       const input = field.querySelector("input");
@@ -8996,7 +9007,7 @@ Host staging
   await sessionOperationPage.getByRole("button", { name: "会话", exact: true }).click();
   await sessionOperationPage.getByRole("button", { name: "会话设置", exact: true }).click();
   sessionOperationDialog = sessionOperationPage.locator(".session-settings-dialog");
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationDialog.getByRole("treeitem", { name: "验证", exact: true }).click();
   const healthCallBaseline = await sessionOperationPage.evaluate(() => {
     window.__deferSessionValidation = true;
     window.__pendingSessionValidation = [];
@@ -9013,9 +9024,9 @@ Host staging
   assert(initialHealthRequest.sessionId === "edge-router"
     && initialHealthRequest.expectedProfile?.connection?.endpoint?.host === "10.0.0.1",
   `SSH health check omitted its connected Profile snapshot: ${JSON.stringify(initialHealthRequest)}`);
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
   await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("new-router.local");
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationDialog.getByRole("treeitem", { name: "验证", exact: true }).click();
   assert(!await deferredHealth.isDisabled()
     && !(await sessionOperationDialog.textContent()).includes("健康 · russh"),
   "editing an SSH target did not immediately invalidate its pending health report");
@@ -9031,9 +9042,9 @@ Host staging
   await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
   await sessionOperationDialog.getByText("SSH 连接配置已更改，请保存并重新连接后再检查健康状态", { exact: true }).waitFor();
 
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
   await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("10.0.0.1");
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationDialog.getByRole("treeitem", { name: "验证", exact: true }).click();
 
   const deferredHostKeyScan = sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true });
   await deferredHostKeyScan.evaluate((button) => {
@@ -9043,9 +9054,9 @@ Host staging
   await sessionOperationPage.waitForFunction(() => window.__pendingSessionValidation.length === 1);
   assert(await sessionOperationDialog.getByRole("button", { name: "扫描中", exact: true }).isDisabled(),
     "a pending Host Key scan remained actionable");
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("SSH");
+  await sessionOperationDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
   await sessionOperationDialog.getByLabel("主机:(H)", { exact: true }).fill("new-router.local");
-  await sessionOperationDialog.getByRole("combobox", { name: "会话配置项", exact: true }).selectOption("验证");
+  await sessionOperationDialog.getByRole("treeitem", { name: "验证", exact: true }).click();
   await sessionOperationPage.evaluate(() => window.__pendingSessionValidation.shift().resolve());
   await sessionOperationPage.waitForTimeout(100);
   assert(await sessionOperationDialog.getByRole("button", { name: "扫描 Host Key", exact: true }).count() === 1
@@ -9171,7 +9182,7 @@ Host staging
   await deletedSettingsSecretPage.getByRole("button", { name: "会话", exact: true }).click();
   await deletedSettingsSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
   const deletedSettingsSecretDialog = deletedSettingsSecretPage.locator(".session-settings-dialog");
-  await deletedSettingsSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await selectSessionSection(deletedSettingsSecretDialog, "公钥");
   await deletedSettingsSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
   await deletedSettingsSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true }).fill("deleted profile private key");
   await deletedSettingsSecretPage.evaluate(() => {
@@ -9431,7 +9442,7 @@ Host staging
   await cancelledDraftSecretPage.getByRole("button", { name: "会话", exact: true }).click();
   await cancelledDraftSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
   const cancelledDraftSecretDialog = cancelledDraftSecretPage.locator(".session-settings-dialog");
-  await cancelledDraftSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await selectSessionSection(cancelledDraftSecretDialog, "公钥");
   await cancelledDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
   const cancelledDraftSecretText = cancelledDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
   await cancelledDraftSecretText.fill("staged private key");
@@ -9482,7 +9493,7 @@ Host staging
   await committedDraftSecretPage.getByRole("button", { name: "会话", exact: true }).click();
   await committedDraftSecretPage.getByRole("button", { name: "会话设置", exact: true }).click();
   const committedDraftSecretDialog = committedDraftSecretPage.locator(".session-settings-dialog");
-  await committedDraftSecretDialog.getByLabel("会话配置项", { exact: true }).selectOption({ label: "公钥" });
+  await selectSessionSection(committedDraftSecretDialog, "公钥");
   await committedDraftSecretDialog.locator(".dialog-field", { hasText: "公钥:(K)" }).locator("select").selectOption("profile-vault");
   const committedDraftSecretText = committedDraftSecretDialog.getByPlaceholder("粘贴 OpenSSH 私钥，保存后只保留 secretRef", { exact: true });
   await committedDraftSecretText.fill("committed private key");

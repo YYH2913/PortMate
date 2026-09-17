@@ -63,8 +63,8 @@ export async function checkI18n(context, appUrl, screenshotPrefix = "/tmp/portma
     await page.locator(".menu-trigger[aria-controls=menu-session]").click();
     await page.locator("#menu-session").getByRole("button", { name: await message("session-settings"), exact: true }).click();
     const sessionSettings = page.locator(".session-settings-dialog");
-    await sessionSettings.getByRole("combobox", { name: await message("session-type"), exact: true }).selectOption("Serial");
-    await sessionSettings.getByRole("combobox", { name: await message("session-settings-pages"), exact: true }).selectOption("serial");
+    await sessionSettings.getByRole("tab", { name: "Serial", exact: true }).click();
+    await sessionSettings.getByRole("treeitem", { name: await message("serial"), exact: true }).click();
     const parity = sessionSettings.locator("select").filter({ has: page.locator('option[value="odd"]') });
     const flow = sessionSettings.locator("select").filter({ has: page.locator('option[value="hardware"]') });
     assert.deepEqual(await parity.locator("option").evaluateAll(options => options.map(option => option.value)), ["none", "odd", "even"]);

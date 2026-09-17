@@ -1018,6 +1018,8 @@
   "session-type": "Session type",
   "settings": "Settings",
   "session-settings-pages": "Session settings pages",
+  "search-settings": "Search settings",
+  "no-matching-settings": "No matching settings",
   "advanced-settings": "Advanced settings",
   "complete-the-highlighted-connection-details": "Complete the highlighted connection details",
   "save-only": "Save only",

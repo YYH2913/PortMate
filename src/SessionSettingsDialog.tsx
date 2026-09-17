@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Search,
   Server,
   SlidersHorizontal,
   SquareTerminal,
@@ -42,13 +43,16 @@ import {
   chooseSshPrivateKeyPath,
 } from "./session-profile-helpers";
 import {
+  filterSessionTree,
   flattenSessionTree,
   MAX_SESSION_PROFILE_GROUP_CHARACTERS,
   MAX_SESSION_PROFILE_NAME_CHARACTERS,
   MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS,
   normalizeSessionMetadataText,
+  protocolSettingsSection,
   protocolTabs,
   removeJumpSecretDraftIndex,
+  sessionSectionLabel,
   sessionSettingTrees,
   validateQuickConnectProfile,
 } from "./session-settings-state";
@@ -130,6 +134,7 @@ export default function SessionSettingsDialog({
   const [writeBusy, setWriteBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
   const [selectedIdentityId, setSelectedIdentityId] = useState("");
+  const [sectionQuery, setSectionQuery] = useState("");
   const [serialPortsRefreshing, setSerialPortsRefreshing] = useState(false);
   const [serialPortsRefreshError, setSerialPortsRefreshError] = useState("");
   const writeGate = useRef(new KeyedRequestGate<"write">());
@@ -141,6 +146,11 @@ export default function SessionSettingsDialog({
   const quickTargetRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
+  const visibleTree = useMemo(
+    () => filterSessionTree(sessionTree, sectionQuery, sessionSectionLabel),
+    [locale, sectionQuery, sessionTree],
+  );
+  const visibleSections = useMemo(() => flattenSessionTree(visibleTree), [visibleTree]);
   const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft, locale]);
   const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
@@ -170,8 +180,12 @@ export default function SessionSettingsDialog({
   useEffect(() => {
     if (!allowedSections.includes(activeSection)) {
       setActiveSection("session");
+      return;
     }
-  }, [activeSection, allowedSections]);
+    if (visibleSections.length && !visibleSections.includes(activeSection)) {
+      setActiveSection(visibleSections[0]);
+    }
+  }, [activeSection, allowedSections, visibleSections]);
 
   useEffect(() => {
     writeGate.current.invalidateAll();
@@ -179,6 +193,7 @@ export default function SessionSettingsDialog({
     void cleanupStagedSecrets();
     setActiveProtocol(protocolFromKind(draft.kind));
     setActiveSection(initialSection);
+    setSectionQuery("");
     setSurface(mode === "create" && initialSection === "session" ? "quick" : "advanced");
     connectionDrafts.current.clear();
     connectionDrafts.current.set(protocolFromKind(draft.kind), draft.connection);
@@ -230,6 +245,7 @@ export default function SessionSettingsDialog({
       : converted;
     setActiveProtocol(tab);
     setActiveSection(surface === "advanced" ? protocolSettingsSection(tab) : "session");
+    setSectionQuery("");
     setProxyPasswordUpdate(null);
     onDraftChange(nextDraft);
   }
@@ -288,7 +304,9 @@ export default function SessionSettingsDialog({
   return (
     <DialogFrame
       title={mode === "create" ? t("new-session") : t("session-settings")}
-      className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : activeSection === "session" ? "compact" : activeSection === "transfers" ? "medium" : "advanced"}`}
+      className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : "advanced"}`}
+      dataSessionProtocol={activeProtocol}
+      dataSessionSection={activeSection}
       onClose={() => void cancel()}
       closeDisabled={busy}
     >
@@ -312,25 +330,31 @@ export default function SessionSettingsDialog({
         </>
       ) : (
         <>
-          <div className="session-settings-nav">
-            {mode === "create" ? (
-              <button type="button" className="session-quick-return" onClick={() => setSurface("quick")} disabled={busy}>
-                <SquareTerminal size={15} />{t("quick-setup-2")}</button>
-            ) : null}
-            <label>
-              <span>{t("session-type")}</span>
-              <select aria-label={t("session-type")} value={activeProtocol} onChange={(event) => changeProtocol(event.target.value as ProtocolTab)} disabled={busy}>
-                {protocolTabs.map((tab) => <option key={tab} value={tab}>{protocolLabel(tab)}</option>)}
-              </select>
-            </label>
-            <label>
-              <span>{t("settings")}</span>
-              <select aria-label={t("session-settings-pages")} value={activeSection} onChange={(event) => setActiveSection(event.target.value)} disabled={busy}>
-                {allowedSections.map((section) => <option key={section} value={section}>{t(section)}</option>)}
-              </select>
-            </label>
-          </div>
-          <section className="session-form" inert={busy}>
+          <QuickProtocolTabs
+            activeProtocol={activeProtocol}
+            busy={busy}
+            compact
+            ariaLabel={t("session-type")}
+            controlsId="session-settings-panel"
+            onChange={changeProtocol}
+          />
+          <SessionSettingsSidebar
+            mode={mode}
+            busy={busy}
+            query={sectionQuery}
+            tree={visibleTree}
+            activeSection={activeSection}
+            onQueryChange={setSectionQuery}
+            onSelectSection={setActiveSection}
+            onReturnToQuick={() => {
+              setSectionQuery("");
+              setSurface("quick");
+            }}
+          />
+          <section className="session-form" id="session-settings-panel" role="tabpanel" aria-label={sessionSectionLabel(activeSection)} inert={busy}>
+            <header className="session-settings-pane-title">
+              <h2>{sessionSectionLabel(activeSection)}</h2>
+            </header>
             <SessionSettingsContent
               activeProtocol={activeProtocol}
               activeSection={activeSection}
@@ -389,20 +413,26 @@ function QuickProtocolTabs({
   activeProtocol,
   busy,
   onChange,
+  compact = false,
+  ariaLabel,
+  controlsId = "quick-session-fields",
 }: {
   activeProtocol: ProtocolTab;
   busy: boolean;
   onChange: (protocol: ProtocolTab) => void;
+  compact?: boolean;
+  ariaLabel?: string;
+  controlsId?: string;
 }) {
   useLocale();
   return (
-    <div className="session-protocol-tabs" role="tablist" aria-label={t("connection-protocol")}>
+    <div className={`session-protocol-tabs${compact ? " compact" : ""}`} role="tablist" aria-label={ariaLabel ?? t("connection-protocol")}>
       {protocolTabs.map((protocol) => (
         <button
           type="button"
           role="tab"
           aria-selected={activeProtocol === protocol}
-          aria-controls="quick-session-fields"
+          aria-controls={controlsId}
           className={activeProtocol === protocol ? "active" : ""}
           disabled={busy}
           key={protocol}
@@ -413,6 +443,133 @@ function QuickProtocolTabs({
         </button>
       ))}
     </div>
+  );
+}
+
+function SessionSettingsSidebar({
+  mode,
+  busy,
+  query,
+  tree,
+  activeSection,
+  onQueryChange,
+  onSelectSection,
+  onReturnToQuick,
+}: {
+  mode: "create" | "edit";
+  busy: boolean;
+  query: string;
+  tree: readonly { label: string; children?: readonly string[] }[];
+  activeSection: string;
+  onQueryChange: (value: string) => void;
+  onSelectSection: (section: string) => void;
+  onReturnToQuick: () => void;
+}) {
+  useLocale();
+  return (
+    <aside className="session-settings-nav">
+      {mode === "create" ? (
+        <button type="button" className="session-quick-return" onClick={onReturnToQuick} disabled={busy}>
+          <SquareTerminal size={15} />{t("quick-setup-2")}
+        </button>
+      ) : null}
+      <label className="settings-search">
+        <Search size={14} aria-hidden="true" />
+        <input
+          type="search"
+          value={query}
+          disabled={busy}
+          placeholder={t("search-settings")}
+          aria-label={t("search-settings")}
+          onChange={(event) => onQueryChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query) {
+              event.preventDefault();
+              onQueryChange("");
+            }
+          }}
+        />
+      </label>
+      <nav className="session-settings-tree" role="tree" aria-label={t("session-settings-pages")}>
+        {tree.length ? tree.map((node) => (
+          <SessionTreeBranch
+            key={node.label}
+            node={node}
+            busy={busy}
+            activeSection={activeSection}
+            onSelectSection={onSelectSection}
+          />
+        )) : (
+          <p className="settings-search-empty">{t("no-matching-settings")}</p>
+        )}
+      </nav>
+    </aside>
+  );
+}
+
+function SessionTreeBranch({
+  node,
+  busy,
+  activeSection,
+  onSelectSection,
+}: {
+  node: { label: string; children?: readonly string[] };
+  busy: boolean;
+  activeSection: string;
+  onSelectSection: (section: string) => void;
+}) {
+  useLocale();
+  return (
+    <div className="session-settings-tree-branch">
+      <SessionTreeItem
+        section={node.label}
+        selected={activeSection === node.label}
+        busy={busy}
+        onSelect={onSelectSection}
+      />
+      {node.children?.length ? (
+        <div className="session-settings-tree-children" role="group">
+          {node.children.map((child) => (
+            <SessionTreeItem
+              key={child}
+              section={child}
+              nested
+              selected={activeSection === child}
+              busy={busy}
+              onSelect={onSelectSection}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionTreeItem({
+  section,
+  nested = false,
+  selected,
+  busy,
+  onSelect,
+}: {
+  section: string;
+  nested?: boolean;
+  selected: boolean;
+  busy: boolean;
+  onSelect: (section: string) => void;
+}) {
+  useLocale();
+  return (
+    <button
+      type="button"
+      role="treeitem"
+      aria-selected={selected}
+      className={`session-settings-tree-item${nested ? " nested" : ""}${selected ? " active" : ""}`}
+      disabled={busy}
+      onClick={() => onSelect(section)}
+    >
+      {sessionSectionLabel(section)}
+    </button>
   );
 }
 
@@ -431,10 +588,6 @@ function ProtocolIcon({ protocol }: { protocol: ProtocolTab }) {
 
 function protocolLabel(protocol: ProtocolTab) {
   return protocol === "Tcp" ? "TCP" : protocol;
-}
-
-function protocolSettingsSection(protocol: ProtocolTab) {
-  return protocol === "Serial" ? t("serial") : protocol;
 }
 
 function QuickField({
@@ -2189,12 +2342,16 @@ function SerialAdvancedFields({
 function DialogFrame({
   title,
   className,
+  dataSessionProtocol,
+  dataSessionSection,
   onClose,
   closeDisabled = false,
   children,
 }: {
   title: string;
   className: string;
+  dataSessionProtocol?: string;
+  dataSessionSection?: string;
   onClose: () => void;
   closeDisabled?: boolean;
   children: ReactNode;
@@ -2202,7 +2359,11 @@ function DialogFrame({
   useLocale();
   return (
     <div className="dialog-backdrop">
-      <section className={`wind-dialog ${className}`}>
+      <section
+        className={`wind-dialog ${className}`}
+        data-session-protocol={dataSessionProtocol}
+        data-session-section={dataSessionSection}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>

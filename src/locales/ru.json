@@ -1018,6 +1018,8 @@
   "session-type": "Тип сессии",
   "settings": "Настройки",
   "session-settings-pages": "Страницы настройки сеансов",
+  "search-settings": "Поиск настроек",
+  "no-matching-settings": "Нет подходящих настроек",
   "advanced-settings": "Расширенные настройки",
   "complete-the-highlighted-connection-details": "Заполните подчеркнутые детали соединения",
   "save-only": "Только сохранить",

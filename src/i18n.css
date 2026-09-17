@@ -23,6 +23,7 @@
 :root[dir="rtl"] .menu-trigger,
 :root[dir="rtl"] .menu-popover button,
 :root[dir="rtl"] .settings-tabs button,
+:root[dir="rtl"] .session-settings-tree-item,
 :root[dir="rtl"] .language-selector,
 :root[dir="rtl"] .dialog-title { font-family: "Segoe UI", Tahoma, Arial, sans-serif; }
 /* Transport content, code and editable addresses never inherit UI direction. */

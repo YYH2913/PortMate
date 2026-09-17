@@ -4977,7 +4977,6 @@ body[data-portmate-modal-open] .portmate-context-menu {
   grid-template-rows: 43px 52px minmax(0, 1fr) 58px;
   width: min(760px, calc(100vw - 24px));
   height: min(640px, calc(100vh - 36px));
-  transition: height 140ms ease;
 }
 
 .session-settings-dialog.quick {
@@ -4986,12 +4985,9 @@ body[data-portmate-modal-open] .portmate-context-menu {
   height: min(640px, calc(100vh - 36px));
 }
 
-.session-settings-dialog.compact {
-  height: min(460px, calc(100vh - 36px));
-}
-
-.session-settings-dialog.medium {
-  height: min(520px, calc(100vh - 36px));
+.session-settings-dialog.advanced {
+  grid-template-columns: 196px minmax(0, 1fr);
+  grid-template-rows: 43px 48px minmax(0, 1fr) 58px;
 }
 
 .dialog-title {
@@ -5020,6 +5016,47 @@ body[data-portmate-modal-open] .portmate-context-menu {
   height: 22px;
   border: 3px solid var(--cyan);
   border-right-width: 7px;
+}
+
+.settings-search {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 8px 10px 0;
+  padding: 0 8px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--muted);
+}
+
+.settings-search:focus-within {
+  border-color: var(--cyan);
+  color: var(--text);
+}
+
+.settings-search input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-search input:focus {
+  outline: 0;
+}
+
+.settings-search-empty {
+  margin: 16px 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .settings-tabs {
@@ -5361,33 +5398,104 @@ fieldset label {
 
 .session-settings-nav {
   display: flex;
-  align-items: center;
-  gap: 18px;
+  flex-direction: column;
   min-width: 0;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line);
+  min-height: 0;
+  padding: 8px 0 10px;
+  border-inline-end: 1px solid var(--line);
   background: #111820;
 }
 
-.session-settings-nav label {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 160px);
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
+.session-settings-dialog.advanced > .session-protocol-tabs {
+  grid-column: 1 / -1;
+  grid-row: 2;
 }
 
-.session-settings-nav select {
-  width: 100%;
+.session-settings-dialog.advanced > .session-settings-nav {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.session-settings-dialog.advanced > .session-form {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.session-settings-dialog.advanced > .dialog-actions {
+  grid-column: 1 / -1;
+  grid-row: 4;
+}
+
+.session-settings-nav .settings-search {
+  margin: 0 10px 8px;
+}
+
+.session-settings-nav .session-quick-return {
+  margin: 0 10px 8px;
+}
+
+.session-settings-tree {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: start;
   min-width: 0;
-  height: 34px;
-  padding-inline: 8px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--control);
+  min-height: 0;
+  padding: 0 8px;
+  overflow: auto;
+}
+
+.session-settings-tree-branch {
+  display: grid;
+}
+
+.session-settings-tree-children {
+  display: grid;
+}
+
+.session-settings-tree-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+}
+
+.session-settings-tree-item.nested {
+  padding-inline-start: 22px;
+  color: #93a4b3;
+}
+
+.session-settings-tree-item:hover:not(:disabled) {
+  background: rgba(94, 234, 212, 0.04);
   color: var(--text);
+}
+
+.session-settings-tree-item.active {
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--cyan);
+}
+
+.session-settings-pane-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 4px;
+}
+
+.session-settings-pane-title h2 {
+  margin: 0;
+  color: #d9f7f2;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .session-quick-return {
@@ -5474,6 +5582,20 @@ fieldset label {
 .session-protocol-tabs button.active::after {
   opacity: 1;
   transform: scaleX(1);
+}
+
+.session-protocol-tabs.compact {
+  padding: 6px 10px;
+}
+
+.session-protocol-tabs.compact button {
+  height: 36px;
+  font-size: 12px;
+}
+
+.session-protocol-tabs.compact button svg {
+  width: 15px;
+  height: 15px;
 }
 
 .session-quick-form {
@@ -5793,6 +5915,7 @@ fieldset label {
   display: grid;
   align-content: start;
   gap: 11px;
+  min-height: 0;
   padding: 18px;
   overflow: auto;
 }
@@ -9121,37 +9244,44 @@ fieldset label {
     height: min(700px, calc(100vh - 24px));
   }
 
-  .create-session-dialog.advanced {
+  .session-settings-dialog.advanced {
+    grid-template-columns: 132px minmax(0, 1fr);
     grid-template-rows: 43px 104px minmax(0, 1fr) auto;
   }
 
-  .session-settings-dialog.compact {
-    height: min(480px, calc(100vh - 24px));
+  .session-settings-dialog.advanced > .session-protocol-tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
-  .session-settings-dialog.medium {
-    height: min(560px, calc(100vh - 24px));
+  .session-settings-dialog.advanced > .session-settings-nav {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .session-settings-dialog.advanced > .session-form {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  .session-settings-dialog.advanced > .dialog-actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
   }
 
   .session-settings-dialog .session-settings-nav {
-    grid-column: 1;
-    grid-row: 2;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    padding: 7px 10px;
+    padding: 8px 0;
   }
 
-  .session-settings-dialog .session-settings-nav label {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto 32px;
-    gap: 3px;
+  .session-settings-nav .settings-search,
+  .session-settings-nav .session-quick-return {
+    margin-inline: 6px;
   }
 
   .create-session-dialog .session-settings-nav .session-quick-return {
-    grid-column: 1 / -1;
-    justify-self: start;
     height: 28px;
+    padding-inline: 8px;
+    font-size: 11px;
   }
 
   .session-protocol-tabs {
@@ -9210,15 +9340,13 @@ fieldset label {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .session-settings-dialog .session-form {
-    grid-column: 1;
-    grid-row: 3;
+  .session-settings-dialog.quick .session-quick-form,
+  .session-settings-dialog.advanced .session-form {
     padding: 16px 12px;
   }
 
-  .session-settings-dialog .dialog-actions {
-    grid-column: 1;
-    grid-row: 4;
+  .session-settings-dialog.quick .dialog-actions,
+  .session-settings-dialog.advanced .dialog-actions {
     gap: 6px;
     padding: 0 12px 12px;
   }

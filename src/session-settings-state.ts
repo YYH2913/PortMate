@@ -13,24 +13,56 @@ export type SessionTreeNode = { label: string; children?: readonly string[] };
 export type QuickConnectField = "target" | "port" | "baudRate";
 export type QuickConnectIssue = { field: QuickConnectField; message: string };
 
-const sharedSessionTree: readonly SessionTreeNode[] = [
-  { label: "session" },
-  { label: "terminal", children: ["logs"] },
-  { label: "triggers" },
+const sharedSessionTreeAfterProtocol: readonly SessionTreeNode[] = [
+  { label: "terminal" },
+  { label: "logs" },
   { label: "transfers" },
+  { label: "triggers" },
 ];
 
+const sshAuthTree: readonly string[] = ["public-key", "password", "ssh-agent", "proxy", "verification"];
+
 export const sessionSettingTrees: Record<ProtocolTab, readonly SessionTreeNode[]> = {
-  Shell: [...sharedSessionTree, { label: "Shell" }],
-  SSH: [...sharedSessionTree, { label: "SSH", children: ["proxy", "verification", "ssh-agent", "password", "public-key"] }],
-  Tmux: [...sharedSessionTree, { label: "Tmux", children: ["proxy", "verification", "ssh-agent", "password", "public-key"] }],
-  Telnet: [...sharedSessionTree, { label: "Telnet", children: ["proxy"] }],
-  Tcp: [...sharedSessionTree, { label: "Tcp", children: ["proxy"] }],
-  Serial: [...sharedSessionTree, { label: "serial" }],
+  Shell: [{ label: "session" }, { label: "Shell" }, ...sharedSessionTreeAfterProtocol],
+  SSH: [{ label: "session" }, { label: "SSH", children: sshAuthTree }, ...sharedSessionTreeAfterProtocol],
+  Tmux: [{ label: "session" }, { label: "Tmux", children: sshAuthTree }, ...sharedSessionTreeAfterProtocol],
+  Telnet: [{ label: "session" }, { label: "Telnet", children: ["proxy"] }, ...sharedSessionTreeAfterProtocol],
+  Tcp: [{ label: "session" }, { label: "Tcp", children: ["proxy"] }, ...sharedSessionTreeAfterProtocol],
+  Serial: [{ label: "session" }, { label: "serial" }, ...sharedSessionTreeAfterProtocol],
 };
 
 export function flattenSessionTree(tree: readonly SessionTreeNode[]): string[] {
   return tree.flatMap((item) => (item.children ? [item.label, ...item.children] : [item.label]));
+}
+
+export function protocolSettingsSection(protocol: ProtocolTab): string {
+  return protocol === "Serial" ? "serial" : protocol;
+}
+
+export function sessionSectionLabel(section: string): string {
+  return t(section);
+}
+
+export function filterSessionTree(
+  tree: readonly SessionTreeNode[],
+  query: string,
+  labelOf: (section: string) => string = sessionSectionLabel,
+): SessionTreeNode[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return tree.map((node) => ({ ...node, children: node.children ? [...node.children] : undefined }));
+  return tree.flatMap((node) => {
+    const selfMatches = labelOf(node.label).toLocaleLowerCase().includes(needle);
+    const matchingChildren = (node.children ?? []).filter((child) => (
+      selfMatches || labelOf(child).toLocaleLowerCase().includes(needle)
+    ));
+    if (selfMatches) {
+      return [{ label: node.label, children: node.children ? [...node.children] : undefined }];
+    }
+    if (matchingChildren.length) {
+      return [{ label: node.label, children: matchingChildren }];
+    }
+    return [];
+  });
 }
 
 export function validateQuickConnectProfile(
