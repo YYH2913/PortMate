@@ -6575,6 +6575,22 @@ fieldset label {
   background: rgba(244, 184, 96, 0.14);
 }
 
+.portable-vault-password-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.portable-vault-password-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.portable-vault-create-button[aria-busy="true"] svg {
+  animation: transfer-spin 1.2s linear infinite;
+}
+
 @media (max-width: 480px) {
   .credential-vault-hint {
     grid-template-columns: 18px minmax(0, 1fr);
@@ -11146,6 +11162,10 @@ fieldset label {
   background: var(--control);
   color: var(--text);
   font-size: 12px;
+}
+
+.portable-vault-create .portable-vault-password-row input {
+  width: auto;
 }
 
 .portable-vault-create-button {

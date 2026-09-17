@@ -7,8 +7,11 @@ import {
   ArrowUp,
   CheckCircle2,
   Copy,
+  Eye,
+  EyeOff,
   FileText,
   KeyRound,
+  LoaderCircle,
   Lock,
   Pencil,
   Plus,
@@ -178,6 +181,9 @@ export default function KeyManagerDialog({
   const [portableVault, setPortableVault] = useState<PortableVaultStatus | null>(null);
   const [portableVaultPassword, setPortableVaultPassword] = useState("");
   const [portableVaultCreateConfirmPassword, setPortableVaultCreateConfirmPassword] = useState("");
+  const [showPortableVaultPassword, setShowPortableVaultPassword] = useState(false);
+  const unlockInputRef = useRef<HTMLInputElement | null>(null);
+  const previousVaultUnlocked = useRef<boolean | undefined>(undefined);
   const [portableVaultCurrentPassword, setPortableVaultCurrentPassword] = useState("");
   const [portableVaultNewPassword, setPortableVaultNewPassword] = useState("");
   const [portableVaultConfirmPassword, setPortableVaultConfirmPassword] = useState("");
@@ -348,6 +354,13 @@ export default function KeyManagerDialog({
     }
   }, [portableVault?.unlocked]);
 
+  useEffect(() => {
+    const unlocked = portableVault?.unlocked;
+    const shouldFocus = Boolean(portableVault?.exists && unlocked === false && previousVaultUnlocked.current !== false);
+    previousVaultUnlocked.current = unlocked;
+    if (shouldFocus) unlockInputRef.current?.focus();
+  }, [portableVault]);
+
   function clearPortableVaultRotation() {
     setPortableVaultCurrentPassword("");
     setPortableVaultNewPassword("");
@@ -494,11 +507,10 @@ export default function KeyManagerDialog({
       applyPortableVaultStatus(next);
       setPortableVaultPassword("");
       setPortableVaultCreateConfirmPassword("");
+      setShowPortableVaultPassword(false);
       setPortableVaultFeedback({ kind: "status", message: t("stronghold-created-and-unlocked-credentials-can-now-be-saved") });
     } catch (error) {
       if (mountedRef.current) {
-        setPortableVaultPassword("");
-        setPortableVaultCreateConfirmPassword("");
         setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
       }
     } finally {
@@ -528,11 +540,15 @@ export default function KeyManagerDialog({
       if (!mountedRef.current) return;
       applyPortableVaultStatus(next);
       setPortableVaultPassword("");
+      setShowPortableVaultPassword(false);
       setPortableVaultFeedback({ kind: "status", message: existed ? t("portable-vault-unlocked") : t("portable-vault-created-and-unlocked") });
     } catch (error) {
       if (mountedRef.current) {
-        setPortableVaultPassword("");
         setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
+        window.requestAnimationFrame(() => {
+          unlockInputRef.current?.focus();
+          unlockInputRef.current?.select();
+        });
       }
     } finally {
       onCredentialOperationFinish(operationToken);
@@ -600,7 +616,6 @@ export default function KeyManagerDialog({
       setPortableVaultFeedback({ kind: "status", message: t("portable-vault-master-password-changed") });
     } catch (error) {
       if (mountedRef.current) {
-        clearPortableVaultRotation();
         setPortableVaultFeedback({ kind: "error", message: formatPortableVaultError(error) });
       }
     } finally {
@@ -1777,15 +1792,51 @@ export default function KeyManagerDialog({
                 </span>
                 {portableVault?.unlocked ? (
                   <button className="key-icon-button" type="button" title={t("lock-portable-vault")} aria-label={t("lock-portable-vault")} onClick={() => void lockPortableVault()} disabled={vaultOperationBusy}><Lock size={14} /></button>
-                ) : portableVault?.exists ? (
-                  <div className="portable-vault-unlock-actions">
-                    <input type="password" aria-label={t("stronghold-master-password")} autoComplete="current-password" value={portableVaultPassword} onChange={(event) => setPortableVaultPassword(event.target.value)} placeholder={t("enter-the-master-password-to-unlock")} disabled={vaultOperationBusy} onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }} />
-                    <button className="key-icon-button" type="button" title={t("unlock-portable-vault")} aria-label={t("unlock-portable-vault")} onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword}><Unlock size={14} /></button>
-                  </div>
                 ) : null}
               </div>
               {!portableVault ? (
                 <div className="portable-vault-loading" role="status">{t("reading-stronghold-status")}</div>
+              ) : portableVault.exists && !portableVault.unlocked ? (
+                <div className="portable-vault-create portable-vault-unlock" aria-live="polite">
+                  <div className="portable-vault-create-copy">
+                    <strong>{t("unlock-stronghold")}</strong>
+                    <span>{t("enter-the-stronghold-master-password-to-use-saved")}</span>
+                  </div>
+                  <label>
+                    <span>{t("stronghold-master-password")}</span>
+                    <span className="portable-vault-password-row">
+                      <input
+                        ref={unlockInputRef}
+                        type={showPortableVaultPassword ? "text" : "password"}
+                        aria-label={t("stronghold-master-password")}
+                        autoComplete="current-password"
+                        value={portableVaultPassword}
+                        placeholder={t("enter-the-master-password-to-unlock")}
+                        disabled={vaultOperationBusy}
+                        aria-invalid={portableVaultFeedback?.kind === "error" ? true : undefined}
+                        onChange={(event) => {
+                          setPortableVaultPassword(event.target.value);
+                          if (portableVaultFeedback?.kind === "error") setPortableVaultFeedback(null);
+                        }}
+                        onKeyDown={(event) => { if (event.key === "Enter") void unlockPortableVault(); }}
+                      />
+                      <button
+                        type="button"
+                        className="key-icon-button"
+                        title={showPortableVaultPassword ? t("hide-master-password") : t("show-master-password")}
+                        aria-label={showPortableVaultPassword ? t("hide-master-password") : t("show-master-password")}
+                        onClick={() => setShowPortableVaultPassword((current) => !current)}
+                      >
+                        {showPortableVaultPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </span>
+                  </label>
+                  <button type="button" className="portable-vault-create-button" onClick={() => void unlockPortableVault()} disabled={vaultOperationBusy || !portableVaultPassword} aria-busy={portableVaultBusy} aria-label={t("unlock-portable-vault")}>
+                    {portableVaultBusy ? <LoaderCircle size={14} /> : <Unlock size={14} />}
+                    {portableVaultBusy ? t("verifying") : t("unlock-stronghold")}
+                  </button>
+                  <small className="portable-vault-create-note">{t("unlocking-stronghold-may-take-a-few-seconds")}</small>
+                </div>
               ) : !portableVault.exists ? (
                 <div className="portable-vault-create" aria-live="polite">
                   <div className="portable-vault-create-copy">
