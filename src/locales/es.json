@@ -1893,6 +1893,8 @@
   "workspace": "Espacio de trabajo",
   "status-bar": "Barra de estado",
   "tools": "Herramientas",
+  "connection": "Conexión",
+  "input": "Entrada",
   "connection-tools": "Herramientas de conexión",
   "automation": "Automatización",
   "management": "Administración",

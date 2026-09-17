@@ -19,17 +19,33 @@ describe("top menu capabilities", () => {
       expect(typeof menuItemDisabled(item, ready)).toBe("boolean");
     }
     expect(menuGroups.map((group) => group.label)).toEqual(["session", "terminal", "workspace", "tools"]);
+    expect(menuGroups.find((group) => group.label === "session")?.items).toEqual([
+      "new-session",
+      "local-terminal",
+      "import-sessions",
+      "duplicate-session",
+      "start-session",
+      "reconnect-session",
+      "close-session-2",
+      "session-settings",
+    ]);
+    expect(menuGroups.find((group) => group.label === "workspace")?.items[0]).toBe("new-workspace-window");
     expect(items).not.toContain("session-search");
     expect(items).not.toContain("copy");
     expect(items).not.toContain("close-pane-3");
   });
 
   it("separates connection, automation, and management tools without duplicating commands", () => {
+    for (const group of menuGroups) {
+      const sections = menuSectionsForGroup(group.label, group.items);
+      expect(sections.flatMap((section) => section.items), group.label).toEqual([...group.items]);
+    }
     const tools = menuGroups.find((group) => group.label === "tools");
     expect(tools).toBeDefined();
     const sections = menuSectionsForGroup("tools", tools?.items ?? []);
     expect(sections.map((section) => section.label)).toEqual(["connection-tools", "automation", "management"]);
-    expect(sections.flatMap((section) => section.items)).toEqual(tools?.items);
+    expect(sections[0]?.items).toEqual(["transfer-tasks", "port-forwarding", "tmux", "serial-analyzer", "sysmon"]);
+    expect(sections[2]?.items).toEqual(["terminal-settings", "key-manager", "log-manager", "about-portmate"]);
   });
 
   it("disables session and terminal commands without changing always-available tools", () => {

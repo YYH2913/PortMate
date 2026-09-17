@@ -9946,7 +9946,7 @@ Host staging
     });
     delete window.__TAURI_INTERNALS__;
   });
-  await workspaceWindowPage.getByRole("button", { name: "会话", exact: true }).click();
+  await workspaceWindowPage.getByRole("button", { name: "工作区", exact: true }).click();
   await workspaceWindowPage.getByRole("button", { name: "新建工作区窗口", exact: true }).click();
   await workspaceWindowPage.waitForFunction(() => window.__workspaceWindowPopupCalls.length === 1);
   const workspaceWindowPopup = await workspaceWindowPage.evaluate(() => window.__workspaceWindowPopupCalls[0]);

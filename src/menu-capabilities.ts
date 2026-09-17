@@ -1,10 +1,68 @@
 import type { SessionKind, SessionStatus } from "./types";
 
 export const menuGroups = [
-  { label: "session", items: ["local-terminal", "new-session", "import-sessions", "new-workspace-window", "session-settings", "start-session", "reconnect-session", "close-session-2", "duplicate-session"] },
-  { label: "terminal", items: ["find", "go-to-line", "block-selection", "insert-mode", "normal-mode", "local-mode", "local-editing", "synchronized-input", "free-input", "export-terminal-text", "export-selected-text"] },
-  { label: "workspace", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar", "restore-layout"] },
-  { label: "tools", items: ["transfer-tasks", "port-forwarding", "tmux", "sysmon", "serial-analyzer", "one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge", "terminal-settings", "log-manager", "key-manager", "about-portmate"] },
+  {
+    label: "session",
+    items: [
+      "new-session",
+      "local-terminal",
+      "import-sessions",
+      "duplicate-session",
+      "start-session",
+      "reconnect-session",
+      "close-session-2",
+      "session-settings",
+    ],
+  },
+  {
+    label: "terminal",
+    items: [
+      "find",
+      "go-to-line",
+      "block-selection",
+      "insert-mode",
+      "normal-mode",
+      "local-mode",
+      "local-editing",
+      "synchronized-input",
+      "free-input",
+      "export-terminal-text",
+      "export-selected-text",
+    ],
+  },
+  {
+    label: "workspace",
+    items: [
+      "new-workspace-window",
+      "explorer",
+      "file-manager",
+      "command-history",
+      "sysmon-sidebar",
+      "send",
+      "quick-bar",
+      "status-bar",
+      "restore-layout",
+    ],
+  },
+  {
+    label: "tools",
+    items: [
+      "transfer-tasks",
+      "port-forwarding",
+      "tmux",
+      "serial-analyzer",
+      "sysmon",
+      "one-keys",
+      "quick-commands",
+      "custom-scripts",
+      "triggers",
+      "mcp-bridge",
+      "terminal-settings",
+      "key-manager",
+      "log-manager",
+      "about-portmate",
+    ],
+  },
 ] as const;
 
 export type MenuItem = (typeof menuGroups)[number]["items"][number];
@@ -14,14 +72,31 @@ export type MenuSection = {
   items: readonly MenuItem[];
 };
 
-const toolMenuSections: readonly MenuSection[] = [
-  { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "tmux", "sysmon", "serial-analyzer"] },
-  { label: "automation", items: ["one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge"] },
-  { label: "management", items: ["terminal-settings", "log-manager", "key-manager", "about-portmate"] },
-];
+const menuSections = {
+  session: [
+    { label: "create", items: ["new-session", "local-terminal", "import-sessions", "duplicate-session"] },
+    { label: "connection", items: ["start-session", "reconnect-session", "close-session-2"] },
+    { label: "", items: ["session-settings"] },
+  ],
+  terminal: [
+    { label: "edit", items: ["find", "go-to-line", "block-selection"] },
+    { label: "input", items: ["insert-mode", "normal-mode", "local-mode", "local-editing", "synchronized-input", "free-input"] },
+    { label: "export", items: ["export-terminal-text", "export-selected-text"] },
+  ],
+  workspace: [
+    { label: "", items: ["new-workspace-window"] },
+    { label: "", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar"] },
+    { label: "", items: ["restore-layout"] },
+  ],
+  tools: [
+    { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "tmux", "serial-analyzer", "sysmon"] },
+    { label: "automation", items: ["one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge"] },
+    { label: "management", items: ["terminal-settings", "key-manager", "log-manager", "about-portmate"] },
+  ],
+} as const satisfies Record<(typeof menuGroups)[number]["label"], readonly MenuSection[]>;
 
 export function menuSectionsForGroup(label: string, items: readonly MenuItem[]): readonly MenuSection[] {
-  return label === "tools" ? toolMenuSections : [{ label: "", items }];
+  return label in menuSections ? menuSections[label as keyof typeof menuSections] : [{ label: "", items }];
 }
 
 export type MenuCapabilityContext = {

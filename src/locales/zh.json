@@ -1893,6 +1893,8 @@
   "workspace": "工作区",
   "status-bar": "状态栏",
   "tools": "工具",
+  "connection": "连接",
+  "input": "输入",
   "connection-tools": "连接工具",
   "automation": "自动化",
   "management": "管理",

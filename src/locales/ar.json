@@ -1893,6 +1893,8 @@
   "workspace": "مساحة العمل",
   "status-bar": "شريط الحالة",
   "tools": "الأدوات",
+  "connection": "الاتصال",
+  "input": "إدخال",
   "connection-tools": "أدوات الاتصال",
   "automation": "الأتمتة",
   "management": "الإدارة",

@@ -1893,6 +1893,8 @@
   "workspace": "Espace de travail",
   "status-bar": "Barre d’état",
   "tools": "Outils",
+  "connection": "Connexion",
+  "input": "Saisie",
   "connection-tools": "Outils de connexion",
   "automation": "Automatisation",
   "management": "Gestion",
