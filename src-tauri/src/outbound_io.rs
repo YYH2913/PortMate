@@ -200,19 +200,10 @@ pub(super) async fn write_session_bytes_for_runtime_with_cancellation(
                 .filter(|runtime| {
                     expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
                 })
-                .map(|runtime| Arc::clone(&runtime.writer))
+                .map(|runtime| (Arc::clone(&runtime.writer), Arc::clone(&runtime.child), Arc::clone(&runtime.closed)))
         };
-        if let Some(writer) = writer {
-            let mut writer = writer.lock().map_err(|error| error.to_string())?;
-            if cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                return Err("发送已取消".into());
-            }
-            writer
-                .write_all(bytes)
-                .map_err(|error| format!("Shell PTY 写入失败: {error}"))?;
-            writer
-                .flush()
-                .map_err(|error| format!("Shell PTY 刷新失败: {error}"))?;
+        if let Some((writer, child, closed)) = writer {
+            write_shell_bytes(writer, child, closed, bytes, cancellation).await?;
         } else {
             let writer = {
                 let connections = runtimes.tcp.lock().map_err(|error| error.to_string())?;
@@ -414,16 +405,10 @@ pub(super) async fn write_runtime_bytes_for_runtime_with_lane(
             .filter(|runtime| {
                 expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
             })
-            .map(|runtime| Arc::clone(&runtime.writer))
+            .map(|runtime| (Arc::clone(&runtime.writer), Arc::clone(&runtime.child), Arc::clone(&runtime.closed)))
     };
-    if let Some(writer) = shell_writer {
-        let mut writer = writer.lock().map_err(|error| error.to_string())?;
-        writer
-            .write_all(&wire_bytes)
-            .map_err(|error| format!("Shell modem 写入失败: {error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("Shell modem 刷新失败: {error}"))?;
+    if let Some((writer, child, closed)) = shell_writer {
+        write_shell_bytes(writer, child, closed, &wire_bytes, None).await?;
         record_outbound_control_event_for_optional_runtime_with_accepted_side_effect(
             &io,
             session_id,

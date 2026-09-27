@@ -107,6 +107,19 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
         assert_eq!(break_result["sent"], true);
         assert_eq!(break_result["sessionId"], profile.id);
         {
+            let writer = state.serial.lock().unwrap().get(&profile.id).unwrap().writer.as_ref().unwrap().clone();
+            let held = writer.lock().unwrap();
+            let break_state = state.clone();
+            let id = profile.id.clone();
+            let pending_break = tokio::task::spawn_blocking(move || {
+                serial_commands::serial_send_break_inner_with_validation(&break_state, &id, None)
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(state.serial.try_lock().is_ok(), "waiting for a port writer must not lock the registry");
+            drop(held);
+            pending_break.await.unwrap().unwrap();
+        }
+        {
             let store = state.store.lock().unwrap();
             assert!(store.events.iter().any(|event| {
                 event.session_id == profile.id
@@ -199,8 +212,7 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
         let reason = disconnected.runtime.last_disconnect_reason.unwrap();
         assert!(reason.contains("serial receive idle timeout"), "{reason}");
         assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
-        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("
-");
+        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("\n");
         assert!(screen.contains("serial receive idle timeout"), "{screen}");
     });
 
@@ -416,8 +428,7 @@ fn serial_socat_reconnects_after_pty_replacement() {
         tokio::time::sleep(Duration::from_millis(1_200)).await;
         assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
 
-        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("
-");
+        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("\n");
         assert!(screen.contains("serial read failed"), "{screen}");
         assert!(screen.contains("serial port reconnected"));
         assert!(screen.contains(&replacement_portmate_pty.display().to_string()));

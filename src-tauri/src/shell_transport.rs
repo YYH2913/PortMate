@@ -1,6 +1,69 @@
 use super::*;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty};
 
+pub(super) async fn write_shell_bytes(
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    closed: Arc<AtomicBool>,
+    bytes: &[u8],
+    cancellation: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    let bytes = bytes.to_vec();
+    let worker_closed = Arc::clone(&closed);
+    let worker_cancel = cancellation.clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut worker = tokio::task::spawn_blocking(move || {
+        let cancelled = || worker_closed.load(Ordering::SeqCst) || Instant::now() >= deadline
+            || worker_cancel.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst));
+        let mut writer = loop {
+            if cancelled() { return Err("Shell write cancelled".into()); }
+            match writer.try_lock() {
+                Ok(writer) => break writer,
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(5)),
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut remaining = bytes.as_slice();
+        while !remaining.is_empty() {
+            if cancelled() { return Err("Shell write cancelled".into()); }
+            match writer.write(&remaining[..remaining.len().min(4096)]) {
+                Ok(0) => return Err("Shell PTY write returned zero".into()),
+                Ok(size) => remaining = &remaining[size..],
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(error) => return Err(format!("Shell PTY write failed: {error}")),
+            }
+        }
+        Ok(())
+    });
+    loop {
+        tokio::select! {
+            result = &mut worker => {
+                let result = result.map_err(|error| error.to_string())?;
+                if result.is_err() {
+                    closed.store(true, Ordering::SeqCst);
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(mut child) = child.lock() { let _ = child.kill(); }
+                    });
+                }
+                return result;
+            },
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                if closed.load(Ordering::SeqCst) || Instant::now() >= deadline
+                    || cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    // A partially written frame cannot be retried safely. End this
+                    // PTY generation and unblock the worker by terminating its child.
+                    closed.store(true, Ordering::SeqCst);
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(mut child) = child.lock() { let _ = child.kill(); }
+                    });
+                    return Err("Shell write cancelled or timed out; session terminated".into());
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct ShellRuntime {
     pub(super) runtime_id: String,
     pub(super) master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -152,6 +215,17 @@ pub(super) fn prepare_shell_session(
         .spawn_command(command)
         .map_err(|error| format!("Shell 启动失败 {program}: {error}"))?;
     drop(pair.slave);
+    #[cfg(unix)]
+    if let Some(fd) = pair.master.as_raw_fd() {
+        // The cloned PTY descriptors share status flags. Both read and write
+        // loops handle WouldBlock so close/cancellation never needs a stuck I/O.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            let mut child = child;
+            let _ = child.kill();
+            return Err(format!("Shell nonblocking PTY setup failed: {}", std::io::Error::last_os_error()));
+        }
+    }
 
     let mut prepared = PreparedShellSession {
         profile,
@@ -349,6 +423,9 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                     );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 Err(error) => {
                     disconnect_reason = Some(
                         wait_for_shell_child_disconnect_reason(&child, &program)

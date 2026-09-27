@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn shell_blocked_write_is_cancellable_without_blocking_async_timers() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let mut profile = test_shell_profile();
+        let ConnectionConfig::Shell(shell) = &mut profile.connection else { unreachable!() };
+        shell.program = "/bin/sh".into();
+        shell.args = vec!["-c".into(), "stty raw -echo; exec sleep 30".into()];
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        open_shell_session(&state, profile.clone()).unwrap();
+        let (writer, child, closed) = {
+            let runtimes = state.shell.lock().unwrap();
+            let runtime = runtimes.get(&profile.id).unwrap();
+            (Arc::clone(&runtime.writer), Arc::clone(&runtime.child), Arc::clone(&runtime.closed))
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let writing = tokio::spawn(async move {
+            write_shell_bytes(writer, child, closed, &vec![b'x'; 4 * 1024 * 1024], Some(worker_cancel)).await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel.store(true, Ordering::SeqCst);
+        assert!(tokio::time::timeout(Duration::from_secs(2), writing).await.unwrap().unwrap().is_err());
+        close_session_inner(&state, profile.id).await.unwrap();
+    });
+}
+
 #[test]
 fn shell_exit_status_disconnect_reason_preserves_code_and_signal() {
     assert_eq!(

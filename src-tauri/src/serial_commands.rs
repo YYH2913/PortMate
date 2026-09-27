@@ -188,7 +188,13 @@ pub(crate) fn serial_set_lines(
     if request.dtr.is_none() && request.rts.is_none() {
         return Err("串口线路请求必须包含 DTR 或 RTS".to_string());
     }
+    let _worker = state.serial_workers.register_for_session(&request.session_id)?;
     let connections = state.serial.lock().map_err(|error| error.to_string())?;
+    let runtime = connections.get(&request.session_id)
+        .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))
+        .ok_or_else(|| "Serial session is disconnected".to_string())?;
+    let runtime_id = runtime.runtime_id.clone();
+    let closed = Arc::clone(&runtime.closed);
     let writer = connections
         .get(&request.session_id)
         .ok_or_else(|| "串口会话尚未连接".to_string())?
@@ -196,8 +202,10 @@ pub(crate) fn serial_set_lines(
         .as_ref()
         .map(Arc::clone)
         .ok_or_else(|| "串口正在重连".to_string())?;
+    drop(connections);
     let mut port = writer.lock().map_err(|error| error.to_string())?;
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    if closed.load(Ordering::SeqCst) { return Err("Serial session closed during line update".into()); }
+    let store = state.store.lock().map_err(|error| error.to_string())?;
     let (old_dtr, old_rts) = match store.profile(&request.session_id) {
         Some(SessionProfile {
             connection: ConnectionConfig::Serial(serial),
@@ -211,6 +219,7 @@ pub(crate) fn serial_set_lines(
         }
         None => return Err(format!("unknown session: {}", request.session_id)),
     };
+    drop(store);
     apply_serial_line_updates_with(old_dtr, old_rts, request.dtr, request.rts, |line, value| {
         match line {
             SerialControlLine::Dtr => port
@@ -221,7 +230,10 @@ pub(crate) fn serial_set_lines(
                 .map_err(|error| error.to_string()),
         }
     })?;
-    record_applied_serial_line_state(&mut store, &state.store_path, &request)
+    drop(port);
+    with_current_session_runtime_store(&state.session_io(), &request.session_id, &runtime_id, |store| {
+        record_applied_serial_line_state(store, &state.store_path, &request)
+    })?.ok_or_else(|| "Serial connection changed during line update".to_string())?
 }
 
 #[tauri::command]
@@ -238,6 +250,7 @@ pub(super) fn serial_send_break_inner_with_validation(
     commit_validation: Option<CommitValidation>,
 ) -> Result<(), String> {
     ensure_serial_profile(&state.store, session_id)?;
+    let _worker = state.serial_workers.register_for_session(session_id)?;
     let connections = state.serial.lock().map_err(|error| error.to_string())?;
     let runtime = connections
         .get(session_id)
@@ -248,7 +261,11 @@ pub(super) fn serial_send_break_inner_with_validation(
         .as_ref()
         .map(Arc::clone)
         .ok_or_else(|| "串口正在重连".to_string())?;
+    let runtime_id = runtime.runtime_id.clone();
+    let closed = Arc::clone(&runtime.closed);
+    drop(connections);
     let port = writer.lock().map_err(|error| error.to_string())?;
+    if closed.load(Ordering::SeqCst) { return Err("Serial session closed before Break".into()); }
     if let Some(validate) = commit_validation {
         validate()?;
     }
@@ -261,11 +278,10 @@ pub(super) fn serial_send_break_inner_with_validation(
         eprintln!("PortMate: serial Break clear succeeded on retry");
     }
     drop(port);
-    drop(connections);
-
-    let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    with_current_session_runtime_store(&state.session_io(), session_id, &runtime_id, |store| {
     store.record_system_event(session_id, "PortMate: serial Break sent");
-    persist_applied_store(&store, &state.store_path, "serial Break event")
+    persist_applied_store(store, &state.store_path, "serial Break event")
         .map_err(|error| format!("Break 已发送并清除，但系统事件无法持久化: {error}"))?;
     Ok(())
+    })?.ok_or_else(|| "Serial connection changed during Break".to_string())?
 }
