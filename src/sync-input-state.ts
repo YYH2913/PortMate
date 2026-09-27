@@ -96,7 +96,7 @@ export function formatSyncInput(
 ): string {
   let payload = applyAffixes ? `${settings.prefix}${text}${settings.suffix}` : text;
   if (settings.newlineMode === "protocol" && targetKind === "telnet") {
-    payload = payload.replace(/\r(?!\n)/g, "\r\n");
+    payload = formatDirectInput(payload, targetKind);
   } else if (settings.newlineMode === "lf" || settings.newlineMode === "crlf") {
     const newline = settings.newlineMode === "crlf" ? "\r\n" : "\n";
     payload = payload.replace(/\r\n|\r|\n/g, newline);
@@ -182,8 +182,10 @@ export class SyncInputDispatcher {
   }
 }
 
-function formatDirectInput(text: string, targetKind?: SessionKind): string {
-  return targetKind === "telnet" ? text.replace(/\r(?!\n)/g, "\r\n") : text;
+export function formatDirectInput(text: string, targetKind?: SessionKind): string {
+  // Text submitted by the terminal uses NVT newlines even after BINARY is
+  // negotiated. Raw/binary input must bypass this presentation conversion.
+  return targetKind === "telnet" ? text.replace(/\r\n|\r|\n/g, "\r\n") : text;
 }
 
 function defaultWait(milliseconds: number): Promise<void> {

@@ -32,6 +32,7 @@ import type { ScreenLockMarker } from "./screen-lock-state";
 import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
 import type { SyncInputOrigin } from "./sync-input-state";
+import { formatDirectInput } from "./sync-input-state";
 import TerminalCanvas from "./TerminalCanvas";
 import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
 import { TerminalInputStreams } from "./terminal-input-stream";
@@ -289,6 +290,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     options?: TerminalInputSendOptions,
   ): void | Promise<void> {
     if (captureTerminalInputEpoch() === null) return;
+    if (!options?.binary) {
+      text = formatDirectInput(text, session?.profile.kind);
+    }
     if (origin === "interactive" && !options?.awaitWrite) {
       directInputPumpRef.current?.enqueueFast(sessionId, text, origin, options);
       return;

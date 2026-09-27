@@ -6,6 +6,7 @@ import { checkPacedSender } from "./paced-sender-regressions.mjs";
 import { checkHostScripts } from "./host-script-regressions.mjs";
 import { checkTerminalFontZoom } from "./terminal-font-zoom-regressions.mjs";
 import { checkSerialLogin } from "./serial-login-regressions.mjs";
+import { checkTelnetInput } from "./telnet-input-regressions.mjs";
 import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
@@ -2017,6 +2018,12 @@ try {
     await context.close();
     break checks;
   }
+  if (process.env.PORTMATE_UI_TELNET_ONLY === "1") {
+    await checkTelnetInput(context, appUrl);
+    console.log("Telnet direct/private input browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SERIAL_LOGIN_ONLY === "1") {
     await checkSerialLogin(context, appUrl);
     console.log("Serial Linux login browser regressions passed");
@@ -2049,6 +2056,7 @@ try {
   await checkCommandSubmissions(context, appUrl);
   await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
   await checkSerialLogin(context, appUrl);
+  await checkTelnetInput(context, appUrl);
   await checkSerialWrap(context, appUrl);
   await checkSerialColumnDetection(context, appUrl);
   await checkModuleAuditRegressions(context, appUrl);

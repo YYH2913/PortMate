@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { defaultSyncInputSettings, formatSyncInput, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
+import { defaultSyncInputSettings, formatDirectInput, formatSyncInput, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 
 describe("sync input state", () => {
+  it("normalizes direct Telnet Enter, private input and multiline paste independently of sync", () => {
+    for (const input of ["\r", "\n", "\r\n"]) {
+      expect(formatDirectInput(input, "telnet")).toBe("\r\n");
+      expect(formatDirectInput(`password${input}`, "telnet")).toBe("password\r\n");
+    }
+    expect(formatDirectInput("a\rb\nc\r\nd", "telnet")).toBe("a\r\nb\r\nc\r\nd");
+    for (const kind of ["ssh", "serial", "shell", "tcp", "tmux"] as const) {
+      expect(formatDirectInput("a\rb\n", kind)).toBe("a\rb\n");
+    }
+    expect(formatSyncInput("a\nb\r", defaultSyncInputSettings, "telnet")).toBe("a\r\nb\r\n");
+    expect(formatSyncInput("a\r", { ...defaultSyncInputSettings, newlineMode: "preserve" }, "telnet")).toBe("a\r");
+  });
   it("normalizes protocols, delay, newline, and bounded affixes", () => {
     expect(normalizeSyncInputSettings({
       protocols: ["ssh", "ssh", "serial", "invalid"],

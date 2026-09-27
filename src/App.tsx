@@ -94,7 +94,7 @@ import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShort
 import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
 import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
-import { defaultSyncInputSettings, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
+import { defaultSyncInputSettings, formatDirectInput, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputCandidate, SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
 import { TerminalInputStreams } from "./terminal-input-stream";
@@ -3942,7 +3942,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     options?: TerminalInputSendOptions,
   ): void | Promise<void> {
     const currentSessions = sessionsRef.current;
-    if (!currentSessions.some((session) => session.profile.id === sessionId)) return;
+    const sourceSession = currentSessions.find((session) => session.profile.id === sessionId);
+    if (!sourceSession) return;
     const broadcastEnabled = syncInputRef.current;
     // Mouse reports are addressed to the pane that received the pointer
     // event. Keep them source-local even when synchronized input is enabled.
@@ -3954,14 +3955,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (options?.sensitive) {
       syncCommandTrackersRef.current.set(sessionId,
         trackTerminalCommandInput(emptyTerminalCommandLineTracker(), text, true).state);
-      return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
+      return directInputPumpRef.current?.dispatch(sessionId, formatDirectInput(text, sourceSession.profile.kind), origin, options);
     }
     // When synchronization is disabled, keep each session on its dedicated
     // pump so an external atomic send cannot overtake queued keystrokes or
     // wait behind the broadcast FIFO.
     if (!broadcastEnabled) {
       syncCommandTrackersRef.current.clear();
-      return directInputPumpRef.current?.dispatch(sessionId, text, origin, options);
+      return directInputPumpRef.current?.dispatch(sessionId, formatDirectInput(text, sourceSession.profile.kind), origin, options);
     }
     const settings = syncInputSettingsRef.current;
     let candidates = syncInputCandidatesRef.current;
