@@ -19,6 +19,7 @@ pub(super) const TELNET_TTYPE_IS: u8 = 0;
 pub(super) const TELNET_TTYPE_SEND: u8 = 1;
 
 pub(super) struct TelnetRuntimeState {
+    pub(super) protocol_lane: Arc<tokio::sync::Mutex<()>>,
     binary_enabled: bool,
     naws_enabled: bool,
     pub(super) local_binary: AtomicBool,
@@ -35,6 +36,7 @@ impl TelnetRuntimeState {
             return None;
         };
         Some(Arc::new(Self {
+            protocol_lane: Arc::new(tokio::sync::Mutex::new(())),
             binary_enabled: tcp.telnet_binary,
             naws_enabled: tcp.telnet_naws,
             local_binary: AtomicBool::new(false),
@@ -58,7 +60,10 @@ enum TelnetState {
 pub(super) struct TelnetNegotiator {
     state: TelnetState,
     pub(super) subnegotiation: Vec<u8>,
-    pending_cr: bool,
+    after_cr: bool,
+    local_options: [bool; 256],
+    remote_options: [bool; 256],
+    subnegotiation_overflow: bool,
     runtime: Arc<TelnetRuntimeState>,
 }
 
@@ -67,42 +72,35 @@ impl TelnetNegotiator {
         Self {
             state: TelnetState::Data,
             subnegotiation: Vec::new(),
-            pending_cr: false,
+            after_cr: false,
+            local_options: [false; 256],
+            remote_options: [false; 256],
+            subnegotiation_overflow: false,
             runtime,
         }
     }
 
     fn push_data_byte(&mut self, byte: u8, output: &mut Vec<u8>, remote_binary: bool) {
         if remote_binary {
-            self.flush_pending_cr(output);
+            self.after_cr = false;
             output.push(byte);
             return;
         }
-        if self.pending_cr {
-            output.push(b'\r');
-            self.pending_cr = false;
+        if self.after_cr {
+            self.after_cr = false;
             if byte == 0 {
                 return;
             }
         }
-        if byte == b'\r' {
-            self.pending_cr = true;
-        } else {
-            output.push(byte);
-        }
-    }
-
-    fn flush_pending_cr(&mut self, output: &mut Vec<u8>) {
-        if self.pending_cr {
-            output.push(b'\r');
-            self.pending_cr = false;
-        }
+        // Render CR immediately; only its optional NVT NUL padding is pending.
+        // Telnet commands may be interleaved between the CR and its padding.
+        self.after_cr = byte == b'\r';
+        output.push(byte);
     }
 
     pub(super) fn finish(&mut self) -> Vec<u8> {
-        let mut output = Vec::new();
-        self.flush_pending_cr(&mut output);
-        output
+        self.after_cr = false;
+        Vec::new()
     }
 
     pub(super) fn filter(&mut self, input: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -113,7 +111,6 @@ impl TelnetNegotiator {
             match self.state {
                 TelnetState::Data => {
                     if *byte == TELNET_IAC {
-                        self.flush_pending_cr(&mut output);
                         self.state = TelnetState::Iac;
                     } else {
                         self.push_data_byte(*byte, &mut output, remote_binary);
@@ -129,6 +126,7 @@ impl TelnetNegotiator {
                     }
                     TELNET_SB => {
                         self.subnegotiation.clear();
+                        self.subnegotiation_overflow = false;
                         self.state = TelnetState::Subnegotiation;
                     }
                     _ => {
@@ -136,7 +134,13 @@ impl TelnetNegotiator {
                     }
                 },
                 TelnetState::Command(command) => {
-                    replies.extend(telnet_option_replies(command, *byte, &self.runtime));
+                    replies.extend(telnet_option_replies(
+                        command,
+                        *byte,
+                        &self.runtime,
+                        &mut self.local_options,
+                        &mut self.remote_options,
+                    ));
                     remote_binary = self.runtime.remote_binary.load(Ordering::SeqCst);
                     self.state = TelnetState::Data;
                 }
@@ -144,25 +148,25 @@ impl TelnetNegotiator {
                     if *byte == TELNET_IAC {
                         self.state = TelnetState::SubnegotiationIac;
                     } else {
-                        self.subnegotiation.push(*byte);
+                        self.push_subnegotiation(*byte);
                     }
                 }
                 TelnetState::SubnegotiationIac => {
                     if *byte == TELNET_SE {
-                        if let Some(reply) = telnet_subnegotiation_reply(
+                        if let Some(reply) = (!self.subnegotiation_overflow).then(|| telnet_subnegotiation_reply(
                             &self.subnegotiation,
                             &self.runtime.terminal_type,
-                        ) {
+                        )).flatten() {
                             replies.push(reply);
                         }
                         self.subnegotiation.clear();
                         self.state = TelnetState::Data;
                     } else if *byte == TELNET_IAC {
-                        self.subnegotiation.push(TELNET_IAC);
+                        self.push_subnegotiation(TELNET_IAC);
                         self.state = TelnetState::Subnegotiation;
                     } else {
-                        self.subnegotiation.push(TELNET_IAC);
-                        self.subnegotiation.push(*byte);
+                        self.push_subnegotiation(TELNET_IAC);
+                        self.push_subnegotiation(*byte);
                         self.state = TelnetState::Subnegotiation;
                     }
                 }
@@ -170,9 +174,35 @@ impl TelnetNegotiator {
         }
         (output, replies)
     }
+
+    fn push_subnegotiation(&mut self, byte: u8) {
+        if self.subnegotiation.len() < 4096 && !self.subnegotiation_overflow {
+            self.subnegotiation.push(byte);
+        } else {
+            self.subnegotiation.clear();
+            self.subnegotiation_overflow = true;
+        }
+    }
 }
 
-fn telnet_option_replies(command: u8, option: u8, runtime: &TelnetRuntimeState) -> Vec<Vec<u8>> {
+fn telnet_option_replies(
+    command: u8,
+    option: u8,
+    runtime: &TelnetRuntimeState,
+    local_options: &mut [bool; 256],
+    remote_options: &mut [bool; 256],
+) -> Vec<Vec<u8>> {
+    // We only respond to peer-initiated negotiation. RFC 854 requires silence
+    // for requests for an already active mode and negative acknowledgements
+    // of an already disabled mode, otherwise peers can negotiate forever.
+    let enabled = match command {
+        TELNET_DO | TELNET_DONT => &mut local_options[usize::from(option)],
+        TELNET_WILL | TELNET_WONT => &mut remote_options[usize::from(option)],
+        _ => return Vec::new(),
+    };
+    if matches!(command, TELNET_DO | TELNET_WILL) == *enabled {
+        return Vec::new();
+    }
     let response = match command {
         TELNET_DO => match option {
             TELNET_OPT_BINARY if runtime.binary_enabled => {
@@ -222,6 +252,7 @@ fn telnet_option_replies(command: u8, option: u8, runtime: &TelnetRuntimeState) 
         }
         _ => return Vec::new(),
     };
+    *enabled = matches!(response, TELNET_WILL | TELNET_DO);
     let mut replies = vec![vec![TELNET_IAC, response, option]];
     if command == TELNET_DO && option == TELNET_OPT_NAWS && response == TELNET_WILL {
         replies.push(telnet_naws_message(

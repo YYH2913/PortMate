@@ -186,12 +186,21 @@ pub(super) fn read_tcp_stream(
         let mut decoder = StreamDecoder::default();
 
         'read_loop: loop {
-            match read_half.read(&mut buffer).await {
+            if closed.load(Ordering::SeqCst) {
+                break;
+            }
+            // shutdown() only closes the sending direction. A peer may keep
+            // its half open forever, so periodically observe local cancellation.
+            let received = tokio::select! {
+                result = read_half.read(&mut buffer) => result,
+                _ = tokio::time::sleep(Duration::from_millis(25)) => continue,
+            };
+            match received {
                 Ok(0) => break,
                 Ok(size) => {
                     let _telnet_lane_guard = if telnet.is_some() {
-                        match acquire_outbound_lane(&io.store_path, &session_id).await {
-                            Ok(guard) => Some(guard),
+                        match acquire_telnet_protocol_lane(&io.runtimes, &session_id).await {
+                            Ok(guard) => guard,
                             Err(error) => {
                                 disconnect_reason = Some(format!(
                                     "{label} Telnet negotiation outbound lane failed: {error}"

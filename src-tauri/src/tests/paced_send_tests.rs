@@ -87,7 +87,7 @@ fn paced_send_cancel_discards_text_and_hex_waiting_in_native_lane_or_writer() {
                     pending_io,
                     pending_id,
                     "old".into(),
-                    payload,
+                    Some(payload),
                     job,
                     runtime,
                 )
@@ -114,7 +114,7 @@ fn paced_send_cancel_discards_text_and_hex_waiting_in_native_lane_or_writer() {
                 io.clone(),
                 id.clone(),
                 "new".into(),
-                b"new".to_vec(),
+                Some(b"new".to_vec()),
                 job,
                 runtime,
             )

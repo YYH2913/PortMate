@@ -146,7 +146,7 @@ struct InteractiveWriteRequest {
     session_id: String,
     runtime_id: String,
     text: String,
-    wire_bytes: Vec<u8>,
+    wire_bytes: Option<Vec<u8>>,
     coalesce: bool,
     sensitive: bool,
     completion: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -263,7 +263,7 @@ pub(super) fn enqueue_interactive_bytes(
         io,
         session_id,
         text,
-        wire_bytes,
+        Some(wire_bytes),
         false,
         false,
         InteractiveWriteCompletion {
@@ -375,12 +375,11 @@ fn enqueue_interactive_text_with_completion(
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
-    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
     enqueue_interactive_payload_with_completion(
         io,
         session_id,
         text,
-        wire_bytes,
+        None,
         coalesce,
         sensitive,
         InteractiveWriteCompletion {
@@ -399,12 +398,11 @@ pub(super) fn enqueue_terminal_stream_text(
     coalesce: bool,
     sensitive: bool,
 ) -> Result<(), String> {
-    let wire_bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
     enqueue_interactive_payload_with_completion(
         io,
         session_id,
         text,
-        wire_bytes,
+        None,
         coalesce,
         sensitive,
         InteractiveWriteCompletion {
@@ -416,10 +414,10 @@ pub(super) fn enqueue_terminal_stream_text(
 }
 
 pub(super) async fn enqueue_paced_payload_and_wait(
-    io: SessionIo, session_id: String, text: String, wire_bytes: Vec<u8>,
+    io: SessionIo, session_id: String, text: String, wire_bytes: Option<Vec<u8>>,
     job: Arc<paced_send::PacedSendJob>, runtime_id: String,
 ) -> Result<(), String> {
-    if wire_bytes.len() > 4 * 1024 * 1024 { return Err("发送内容超过 4 MiB".into()); }
+    if wire_bytes.as_ref().map_or(text.len(), Vec::len) > 4 * 1024 * 1024 { return Err("发送内容超过 4 MiB".into()); }
     let (completion, result) = tokio::sync::oneshot::channel();
     enqueue_interactive_payload_with_completion(io, session_id, text, wire_bytes, false, false,
         InteractiveWriteCompletion {
@@ -442,12 +440,12 @@ fn enqueue_interactive_payload_with_completion(
     io: SessionIo,
     session_id: String,
     text: String,
-    wire_bytes: Vec<u8>,
+    wire_bytes: Option<Vec<u8>>,
     coalesce: bool,
     sensitive: bool,
     completion: InteractiveWriteCompletion,
 ) -> Result<(), String> {
-    if session_id.is_empty() || wire_bytes.is_empty() {
+    if session_id.is_empty() || wire_bytes.as_ref().map_or(text.is_empty(), Vec::is_empty) {
         return Ok(());
     }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
@@ -494,7 +492,7 @@ fn enqueue_interactive_payload_with_completion(
                     let io = first.io;
                     let session_id = first.session_id;
                     let runtime_id = first.runtime_id;
-                    let mut wire_bytes = first.wire_bytes;
+                    let wire_bytes = first.wire_bytes;
                     let coalesce = first.coalesce;
                     let sensitive = first.sensitive;
                     let completion = first.completion;
@@ -526,11 +524,11 @@ fn enqueue_interactive_payload_with_completion(
                             && next.cancellation.is_none()
                             && next.coalesce
                             && next.sensitive == sensitive
+                            && next.wire_bytes.is_none() && wire_bytes.is_none()
                             && next.runtime_id == runtime_id
                             && next.text.len() <= remaining
                         {
                             text.push_str(&next.text);
-                            wire_bytes.extend_from_slice(&next.wire_bytes);
                         } else {
                             // Keep the next request intact for the following
                             // batch rather than splitting UTF-8 text.
@@ -894,7 +892,7 @@ async fn send_text_interactive_inner_for_runtime(
     session_id: String,
     text: String,
     expected_runtime_id: &str,
-    wire_bytes: Vec<u8>,
+    wire_bytes: Option<Vec<u8>>,
     sensitive: bool,
     cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<SessionEvent, String> {
@@ -903,7 +901,7 @@ async fn send_text_interactive_inner_for_runtime(
         session_id,
         text,
         Some(expected_runtime_id),
-        Some(wire_bytes),
+        wire_bytes,
         sensitive,
         cancellation,
     )
@@ -920,12 +918,13 @@ async fn send_text_interactive_inner_for_optional_runtime(
     cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+    let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, &session_id).await?;
     if cancellation.as_ref().is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
         return Err("终端写入确认已超时，请求在执行前取消".to_string());
     }
     let wire_bytes = match provided_wire_bytes {
         Some(bytes) => bytes,
-        None => outbound_text_for_session(&io.store, &io.runtimes.tcp, &session_id, &text)?
+        None => outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?
             .into_bytes(),
     };
     clear_active_command(&io, &session_id);
@@ -965,6 +964,7 @@ pub(super) async fn send_one_key_value(
     prompt_validation: Option<&OneKeyPromptValidation>,
 ) -> Result<SessionEvent, String> {
     let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
+    let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, session_id).await?;
     if let Some(validation) = prompt_validation {
         let store = io.store.lock().map_err(|error| error.to_string())?;
         let one_key = store
@@ -990,7 +990,11 @@ pub(super) async fn send_one_key_value(
             &validation.prompt_event_id,
         )?;
     }
-    let text = Zeroizing::new(format!("{value}\r"));
+    let terminator = terminal_key_sequence_for_protocol(
+        "Enter",
+        is_telnet_session(&io.store, session_id)?,
+    )?;
+    let text = Zeroizing::new(format!("{value}{terminator}"));
     let wire_text = Zeroizing::new(outbound_text_for_session(
         &io.store,
         &io.runtimes.tcp,
@@ -1086,6 +1090,7 @@ pub(super) async fn send_text_under_outbound_lane(
     audit_action: Option<&str>,
     expected_runtime_id: Option<&str>,
 ) -> Result<SessionEvent, String> {
+    let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, session_id).await?;
     let wire_text = outbound_text_for_session(&io.store, &io.runtimes.tcp, session_id, text)?;
     if expected_runtime_id.is_none() {
         clear_active_command(io, session_id);
@@ -1220,6 +1225,7 @@ pub(super) async fn run_command_under_outbound_lane_with_annotations_and_display
         expected_runtime_id,
         commit_validation,
     } = context;
+    let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, session_id).await?;
     if let Some(validate) = commit_validation {
         validate()?;
     }

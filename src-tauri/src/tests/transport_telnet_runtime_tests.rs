@@ -1,4 +1,128 @@
 #[test]
+fn telnet_receives_while_user_lane_is_held_and_encodes_after_negotiation() {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+                host: "127.0.0.1".into(), port: address.port(), reconnect: false, ..Default::default()
+            }));
+            let root = canonical_test_tempdir();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let mut tap = state.tcp.lock().unwrap().get(&profile.id).unwrap().tap.subscribe();
+            let lane = acquire_outbound_lane(&state.store_path, &profile.id).await.unwrap();
+            enqueue_interactive_text(state.session_io(), profile.id.clone(), "\r".into(), false).unwrap();
+            peer.write_all(&[TELNET_IAC, TELNET_DO, TELNET_OPT_BINARY, b'O', b'K']).await.unwrap();
+            let mut reply = [0; 3];
+            peer.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY]);
+            assert_eq!(tap.recv().await.unwrap(), b"OK");
+            drop(lane);
+            let mut byte = [0];
+            peer.read_exact(&mut byte).await.unwrap();
+            assert_eq!(byte, [b'\r']);
+            assert!(tokio::time::timeout(Duration::from_millis(50), peer.read(&mut byte)).await.is_err(), "queued NVT padding leaked into BINARY mode");
+            close_session_inner(&state, profile.id).await.unwrap();
+        }).await.unwrap();
+    });
+}
+
+#[test]
+fn tcp_close_releases_reader_when_peer_keeps_its_half_open() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(TcpConnection {
+            host: "127.0.0.1".into(), port: listener.local_addr().unwrap().port(), reconnect: false, ..Default::default()
+        }));
+        let root = canonical_test_tempdir();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let mut tap = state.tcp.lock().unwrap().get(&profile.id).unwrap().tap.subscribe();
+        close_session_inner(&state, profile.id).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), tap.recv()).await.unwrap().is_err());
+    });
+}
+
+#[test]
+fn telnet_login_and_commands_submit_crlf_with_and_without_binary() {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(TEST_RUNTIME_TRANSITION_TIMEOUT, async {
+            for binary in [false, true] {
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    if binary {
+                        socket
+                            .write_all(&[TELNET_IAC, TELNET_DO, TELNET_OPT_BINARY])
+                            .await
+                            .unwrap();
+                        let mut reply = [0; 3];
+                        socket.read_exact(&mut reply).await.unwrap();
+                        assert_eq!(reply, [TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY]);
+                    }
+                    ready_tx.send(()).unwrap();
+                    // A strict NVT login shell executes only after CRLF.
+                    for expected in [b"user\r\n".as_slice(), b"show\r\n", b"\r\n"] {
+                        let mut received = vec![0; expected.len()];
+                        socket.read_exact(&mut received).await.unwrap();
+                        assert_eq!(received, expected);
+                    }
+                });
+                let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection {
+                    host: "127.0.0.1".into(),
+                    port: address.port(),
+                    reconnect: false,
+                    ..Default::default()
+                }));
+                let root = canonical_test_tempdir();
+                let state =
+                    test_app_state(profile.clone(), root.path().join("portmate-store.sqlite3"));
+                open_tcp_session(&state, profile.clone()).await.unwrap();
+                ready_rx.await.unwrap();
+                send_one_key_value(
+                    state.session_io(),
+                    &profile.id,
+                    "user",
+                    "one-key",
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+                let command = crate::session_terminal::terminate_command_for_session(
+                    "show".into(),
+                    &state.store,
+                    &profile.id,
+                )
+                .unwrap();
+                send_text_inner(state.session_io(), profile.id.clone(), command)
+                    .await
+                    .unwrap();
+                send_text_interactive_inner_with_sensitivity(
+                    state.session_io(),
+                    profile.id.clone(),
+                    terminal_key_sequence_for_protocol("Enter", true).unwrap(),
+                    true,
+                )
+                .await
+                .unwrap();
+                server.await.unwrap();
+                close_session_inner(&state, profile.id.clone())
+                    .await
+                    .unwrap();
+            }
+        })
+        .await
+        .expect("Telnet login/command submission timed out");
+    });
+}
+
+#[test]
 fn telnet_loopback_applies_binary_naws_resize_and_profile_terminal_type() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

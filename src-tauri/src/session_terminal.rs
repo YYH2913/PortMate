@@ -78,9 +78,17 @@ pub(super) fn terminal_key_sequence_for_protocol(
 }
 
 pub(super) fn terminate_command_for_protocol(mut command: String, is_telnet: bool) -> String {
+    if is_telnet {
+        // Command submission must not depend on whether BINARY has completed
+        // negotiation: a bare LF is data in that mode, not an NVT newline.
+        command = command.replace("\r\n", "\n").replace('\r', "\n");
+        if !command.ends_with('\n') {
+            command.push('\n');
+        }
+        return command.replace('\n', "\r\n");
+    }
     let needs_terminator = !command.ends_with('\n') && !command.ends_with('\r');
-    let telnet_bare_cr = is_telnet && command.ends_with('\r') && !command.ends_with("\r\n");
-    if needs_terminator || telnet_bare_cr {
+    if needs_terminator {
         command.push('\n');
     }
     command
@@ -179,7 +187,7 @@ pub(super) async fn resize_session_inner(
     };
     if let Some((writer, telnet)) = telnet_target {
         let io = state.session_io();
-        let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+        let _lane_guard = acquire_telnet_protocol_lane(&io.runtimes, &session_id).await?;
         telnet.cols.store(cols, Ordering::SeqCst);
         telnet.rows.store(rows, Ordering::SeqCst);
         if telnet.naws_negotiated.load(Ordering::SeqCst) {
@@ -258,8 +266,7 @@ pub(crate) async fn send_text(
         }
         let io = state.session_io();
         let (job, runtime_id) = paced_send::target(&io, window.label(), &job_id, &session_id)?;
-        let bytes = outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes();
-        enqueue_paced_payload_and_wait(io, session_id, text, bytes, job, runtime_id).await?;
+        enqueue_paced_payload_and_wait(io, session_id, text, None, job, runtime_id).await?;
         return Ok(None);
     }
     let interactive = interactive.unwrap_or(false);
@@ -338,7 +345,7 @@ pub(crate) async fn send_bytes(
         let summary = format_outbound_byte_summary(&bytes);
         let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
         let event = deferred_outbound_event(&session_id, &summary, &wire_bytes, false);
-        enqueue_paced_payload_and_wait(io, session_id, summary, wire_bytes, job, runtime_id).await?;
+        enqueue_paced_payload_and_wait(io, session_id, summary, Some(wire_bytes), job, runtime_id).await?;
         return Ok(event);
     }
     if queued.unwrap_or(false) {

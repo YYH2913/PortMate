@@ -2,6 +2,20 @@ use super::*;
 use crate::session_terminal::terminate_command_for_protocol;
 
 #[test]
+fn telnet_subnegotiation_is_bounded_and_recovers_at_end_marker() {
+    let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+    let mut parser = TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
+    parser.filter(&[TELNET_IAC, TELNET_SB, TELNET_OPT_TERMINAL_TYPE, TELNET_TTYPE_SEND]);
+    for _ in 0..100 {
+        assert!(parser.filter(&[b'x'; 8192]).0.is_empty());
+        assert!(parser.subnegotiation.len() <= 4096);
+    }
+    let (output, replies) = parser.filter(&[TELNET_IAC, TELNET_SE, b'O', b'K']);
+    assert_eq!(output, b"OK");
+    assert!(replies.is_empty());
+}
+
+#[test]
 fn telnet_negotiator_filters_iac_and_replies() {
     let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
     let mut negotiator = TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
@@ -23,6 +37,114 @@ fn telnet_negotiator_filters_iac_and_replies() {
             vec![TELNET_IAC, TELNET_WILL, TELNET_OPT_TERMINAL_TYPE],
         ]
     );
+}
+
+#[test]
+fn telnet_negotiation_settles_duplicates_and_negative_acknowledgements() {
+    let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+    let runtime = TelnetRuntimeState::from_profile(&profile).unwrap();
+    let mut negotiator = TelnetNegotiator::new(Arc::clone(&runtime));
+    for (enable, disable, positive, negative, option) in [
+        (
+            TELNET_DO,
+            TELNET_DONT,
+            TELNET_WILL,
+            TELNET_WONT,
+            TELNET_OPT_BINARY,
+        ),
+        (
+            TELNET_WILL,
+            TELNET_WONT,
+            TELNET_DO,
+            TELNET_DONT,
+            TELNET_OPT_BINARY,
+        ),
+        (
+            TELNET_WILL,
+            TELNET_WONT,
+            TELNET_DO,
+            TELNET_DONT,
+            TELNET_OPT_ECHO,
+        ),
+        (
+            TELNET_DO,
+            TELNET_DONT,
+            TELNET_WILL,
+            TELNET_WONT,
+            TELNET_OPT_TERMINAL_TYPE,
+        ),
+        (
+            TELNET_DO,
+            TELNET_DONT,
+            TELNET_WILL,
+            TELNET_WONT,
+            TELNET_OPT_NAWS,
+        ),
+    ] {
+        assert!(negotiator
+            .filter(&[TELNET_IAC, disable, option])
+            .1
+            .is_empty());
+        let replies = negotiator.filter(&[TELNET_IAC, enable, option]).1;
+        assert_eq!(replies[0], [TELNET_IAC, positive, option]);
+        assert_eq!(replies.len(), if option == TELNET_OPT_NAWS { 2 } else { 1 });
+        assert!(negotiator
+            .filter(&[TELNET_IAC, enable, option])
+            .1
+            .is_empty());
+        assert_eq!(
+            negotiator.filter(&[TELNET_IAC, disable, option]).1,
+            [vec![TELNET_IAC, negative, option]]
+        );
+        assert!(negotiator
+            .filter(&[TELNET_IAC, disable, option])
+            .1
+            .is_empty());
+        assert!(!negotiator
+            .filter(&[TELNET_IAC, enable, option])
+            .1
+            .is_empty());
+        negotiator.filter(&[TELNET_IAC, disable, option]);
+    }
+    assert!(!runtime.local_binary.load(Ordering::SeqCst));
+    assert!(!runtime.remote_binary.load(Ordering::SeqCst));
+    assert!(!runtime.naws_negotiated.load(Ordering::SeqCst));
+    // Reject unsupported modes, then stop when the peer acknowledges rejection.
+    assert_eq!(
+        negotiator.filter(&[TELNET_IAC, TELNET_DO, 44]).1,
+        [vec![TELNET_IAC, TELNET_WONT, 44]]
+    );
+    assert!(negotiator
+        .filter(&[TELNET_IAC, TELNET_DONT, 44])
+        .1
+        .is_empty());
+    assert_eq!(
+        negotiator.filter(&[TELNET_IAC, TELNET_WILL, 44]).1,
+        [vec![TELNET_IAC, TELNET_DONT, 44]]
+    );
+    assert!(negotiator
+        .filter(&[TELNET_IAC, TELNET_WONT, 44])
+        .1
+        .is_empty());
+}
+
+#[test]
+fn telnet_renders_cr_immediately_and_skips_padding_across_commands() {
+    let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
+    let mut negotiator = TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
+    assert_eq!(negotiator.filter(b"prompt\r").0, b"prompt\r");
+    assert!(negotiator.filter(&[TELNET_IAC, TELNET_WILL]).0.is_empty());
+    assert_eq!(negotiator.filter(&[TELNET_OPT_ECHO, 0, b'>']).0, b">");
+    assert_eq!(negotiator.filter(b"\r").0, b"\r");
+    assert_eq!(negotiator.filter(b"\n").0, b"\n");
+    assert_eq!(negotiator.filter(b"\r").0, b"\r");
+    assert_eq!(
+        negotiator
+            .filter(&[TELNET_IAC, TELNET_WILL, TELNET_OPT_BINARY, 0])
+            .0,
+        [0]
+    );
+    assert!(negotiator.finish().is_empty());
 }
 
 #[test]
@@ -139,6 +261,16 @@ fn telnet_outbound_text_uses_crlf() {
         terminate_command_for_protocol("show\r".to_string(), false),
         "show\r"
     );
+    for command in ["show", "show\r", "show\n", "show\r\n"] {
+        let submitted = terminate_command_for_protocol(command.to_string(), true);
+        for binary in [false, true] {
+            assert_eq!(encode_telnet_outbound_text(&submitted, binary), "show\r\n");
+        }
+    }
+    assert_eq!(
+        terminate_command_for_protocol("a\nb\rc\r\nd".into(), true),
+        "a\r\nb\r\nc\r\nd\r\n"
+    );
     assert_eq!(
         encode_telnet_outbound_bytes(&[0x01, TELNET_IAC]),
         vec![0x01, TELNET_IAC, TELNET_IAC]
@@ -150,12 +282,12 @@ fn telnet_negotiator_handles_fragmented_nvt_and_subnegotiation() {
     let profile = test_tcp_profile(ConnectionConfig::Telnet(TcpConnection::default()));
     let mut negotiator = TelnetNegotiator::new(TelnetRuntimeState::from_profile(&profile).unwrap());
     let (first, replies) = negotiator.filter(b"left\r");
-    assert_eq!(first, b"left");
+    assert_eq!(first, b"left\r");
     assert!(replies.is_empty());
 
     let (second, replies) =
         negotiator.filter(&[0, b'|', b'\r', b'\n', TELNET_IAC, TELNET_SB, 99, TELNET_IAC]);
-    assert_eq!(second, b"\r|\r\n");
+    assert_eq!(second, b"|\r\n");
     assert!(replies.is_empty());
     let (escaped, replies) = negotiator.filter(&[TELNET_IAC]);
     assert!(escaped.is_empty());
@@ -166,9 +298,9 @@ fn telnet_negotiator_handles_fragmented_nvt_and_subnegotiation() {
     assert!(replies.is_empty());
 
     let (last, replies) = negotiator.filter(b"tail\r");
-    assert_eq!(last, b"tail");
+    assert_eq!(last, b"tail\r");
     assert!(replies.is_empty());
-    assert_eq!(negotiator.finish(), b"\r");
+    assert!(negotiator.finish().is_empty());
 }
 
 #[test]

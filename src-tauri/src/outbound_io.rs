@@ -5,6 +5,19 @@ type OutboundLanes = Mutex<HashMap<(PathBuf, String), Weak<tokio::sync::Mutex<()
 static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
 const OUTBOUND_LANE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(super) async fn acquire_telnet_protocol_lane(
+    runtimes: &RuntimeRegistry, session_id: &str,
+) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
+    let lane = runtimes.tcp.lock().map_err(|error| error.to_string())?
+        .get(session_id).and_then(|runtime| runtime.telnet.as_ref())
+        .map(|telnet| Arc::clone(&telnet.protocol_lane));
+    match lane {
+        Some(lane) => tokio::time::timeout(OUTBOUND_LANE_WAIT_TIMEOUT, lane.lock_owned())
+            .await.map(Some).map_err(|_| "Telnet protocol writer timed out".into()),
+        None => Ok(None),
+    }
+}
+
 pub(super) fn outbound_lane(
     store_path: &Path,
     session_id: &str,
