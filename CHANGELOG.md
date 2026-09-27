@@ -6,6 +6,24 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Fixed
+
+- SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
+  dedicated PTY exec channel instead of typing commands into the foreground app.
+- TCP readers stop after local disconnect even when the peer keeps its socket open.
+  Shell writes run outside async workers with cancellation/deadlines, and serial
+  control operations release the global registry before waiting for device I/O.
+- Telnet protocol negotiation no longer waits for long-running user transfers;
+  queued text is encoded under the current negotiated mode at send time, and
+  oversized subnegotiations are bounded and discarded until their end marker.
+- All terminal transports retain fragmented UTF-8 characters across reads. MCP
+  screen snapshots now reflect terminal cursor, erase and alternate-screen state,
+  exclude outbound/system logs, and reset on reconnect or terminal replacement.
+- Restored Telnet CRLF submission for direct terminal input, private login input,
+  detached panes, OneKey credentials, and commands after BINARY negotiation.
+  Telnet option acknowledgements now settle without negotiation loops, and received
+  carriage returns render immediately while NVT padding is filtered across packets.
+
 ## [0.1.10] - 2026-09-17
 
 ### Changed
