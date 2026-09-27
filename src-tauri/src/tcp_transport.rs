@@ -183,6 +183,7 @@ pub(super) fn read_tcp_stream(
         let mut telnet = telnet.map(TelnetNegotiator::new);
         let mut disconnect_reason = None;
         let mut disconnect_reason_recorded = false;
+        let mut decoder = StreamDecoder::default();
 
         'read_loop: loop {
             match read_half.read(&mut buffer).await {
@@ -219,7 +220,7 @@ pub(super) fn read_tcp_stream(
                             raw_log: &buffer[..size],
                             terminal: &bytes,
                         },
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        decoder.feed(&bytes),
                         || {
                             if has_protocol_bytes {
                                 let _ = tap.send(bytes.clone());
@@ -281,7 +282,7 @@ pub(super) fn read_tcp_stream(
                         raw_log: &[],
                         terminal: &bytes,
                     },
-                    String::from_utf8_lossy(&bytes).to_string(),
+                    decoder.feed(&bytes),
                     || {
                         let _ = tap.send(bytes.clone());
                     },
@@ -289,6 +290,7 @@ pub(super) fn read_tcp_stream(
             }
         }
 
+        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| format!("{label} socket closed")),
         )

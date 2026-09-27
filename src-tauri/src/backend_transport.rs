@@ -64,6 +64,8 @@ mod tmux_commands;
 mod tmux_protocol;
 mod tmux_runtime;
 mod transport_timing;
+mod stream_decode;
+use stream_decode::StreamDecoder;
 mod tunnel_commands;
 
 use modem_protocol::*;

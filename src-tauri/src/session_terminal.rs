@@ -201,6 +201,7 @@ pub(super) fn resize_session_profile_in_store(
     cols: u16,
     rows: u16,
 ) -> Result<SessionSummary, String> {
+    store.resize_terminal_screen(session_id, rows, cols);
     let profile = store
         .profiles
         .iter_mut()

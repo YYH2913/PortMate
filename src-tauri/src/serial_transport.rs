@@ -352,6 +352,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
         let mut buffer = vec![0_u8; 8192];
         let mut last_received_at = Instant::now();
         let mut disconnect_reason = None;
+        let mut decoder = StreamDecoder::default();
 
         while !closed.load(Ordering::SeqCst) {
             match read_serial_chunk(&mut *reader, &mut buffer) {
@@ -365,7 +366,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
                         Some(&runtime_id),
                         EventStream::Stdout,
                         ChannelByteViews::same(&bytes),
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        decoder.feed(&bytes),
                         || {
                             let _ = tap.send(bytes.clone());
                             record_serial_capture(&capture, EventDirection::Inbound, &bytes);
@@ -393,6 +394,7 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
         }
 
         // Abort a driver-level write before releasing the reader clone. This
+        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
         // is especially important on Windows, where a pending COM write keeps
         // the exclusive device handle alive and makes an immediate reopen fail.
         let _ = reader.clear(serialport::ClearBuffer::All);

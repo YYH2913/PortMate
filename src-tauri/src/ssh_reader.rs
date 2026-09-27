@@ -46,6 +46,8 @@ pub(super) fn read_ssh_channel(
         let io = state.session_io();
         let session_id = profile.id.clone();
         let mut disconnect_reason = None;
+        let mut stdout_decoder = StreamDecoder::default();
+        let mut stderr_decoder = StreamDecoder::default();
 
         loop {
             if closed.load(Ordering::SeqCst) {
@@ -65,7 +67,7 @@ pub(super) fn read_ssh_channel(
                         Some(&runtime_id),
                         EventStream::Stdout,
                         ChannelByteViews::same(&bytes),
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        stdout_decoder.feed(&bytes),
                         || {
                             let _ = tap.send(bytes.clone());
                         },
@@ -83,7 +85,7 @@ pub(super) fn read_ssh_channel(
                         Some(&runtime_id),
                         stream,
                         ChannelByteViews::same(&bytes),
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        if ext == 1 { stderr_decoder.feed(&bytes) } else { stdout_decoder.feed(&bytes) },
                         || {
                             let _ = tap.send(bytes.clone());
                         },
@@ -120,6 +122,8 @@ pub(super) fn read_ssh_channel(
             }
         }
 
+        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut stdout_decoder);
+        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stderr, &mut stderr_decoder);
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| "SSH channel closed".to_string()),
         )

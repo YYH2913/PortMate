@@ -323,6 +323,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
         }
         let mut buffer = vec![0_u8; 8192];
         let mut disconnect_reason = None;
+        let mut decoder = StreamDecoder::default();
 
         while !closed.load(Ordering::SeqCst) {
             match reader.read(&mut buffer) {
@@ -341,7 +342,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
                         Some(&runtime_id),
                         EventStream::Stdout,
                         ChannelByteViews::same(&bytes),
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        decoder.feed(&bytes),
                         || {
                             let _ = tap.send(bytes.clone());
                         },
@@ -358,6 +359,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
+        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| format!("shell closed ({program})")),
         )

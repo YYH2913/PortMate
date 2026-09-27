@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn terminal_snapshot_tracks_erase_alternate_screen_and_excludes_input() {
+    let mut store = test_store();
+    for text in ["old", "\r\x1b[2Knew", " 中文"] {
+        store.record_stream_event("test-session", EventDirection::Inbound, EventStream::Stdout, text).unwrap();
+    }
+    store.record_system_event("test-session", "system noise");
+    store.record_stream_event("test-session", EventDirection::Outbound, EventStream::Stdout, "typed").unwrap();
+    assert_eq!(store.screen("test-session").as_deref(), Some("new 中文"));
+    store.record_stream_event("test-session", EventDirection::Inbound, EventStream::Stdout, "\x1b[?1049h\x1b[2J\x1b[Halternate").unwrap();
+    assert_eq!(store.screen("test-session").as_deref(), Some("alternate"));
+    store.record_stream_event("test-session", EventDirection::Inbound, EventStream::Stdout, "\x1b[?1049l").unwrap();
+    assert_eq!(store.screen("test-session").as_deref(), Some("new 中文"));
+    store.reset_terminal_screen("test-session");
+    assert_eq!(store.screen("test-session").as_deref(), Some(""));
+    let mut stale = store.events.iter().find(|e| e.direction == EventDirection::Inbound).unwrap().clone();
+    stale.id = uuid::Uuid::new_v4().to_string();
+    stale.text = Some("stale queued output".into());
+    store.record_prepared_event(stale).unwrap();
+    assert_eq!(store.screen("test-session").as_deref(), Some(""));
+}
+
+#[test]
 fn log_queries_keep_the_newest_visible_events_in_chronological_order() {
     let mut store = test_store();
     let mut hidden = store.profiles[0].clone();

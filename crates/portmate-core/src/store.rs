@@ -15,6 +15,7 @@ mod exports;
 mod histories;
 mod security;
 mod sessions;
+mod terminal;
 #[cfg(test)]
 use events::{EVENT_TRIM_BATCH, MAX_EVENTS_PER_SESSION};
 #[cfg(test)]
@@ -62,6 +63,8 @@ pub struct SessionStore {
     /// so bounding a chatty session's log no longer rescans every session's events.
     #[serde(skip)]
     event_counts: HashMap<String, usize>,
+    #[serde(skip)]
+    terminal_screens: HashMap<String, terminal::TerminalScreen>,
     /// Runtime-only bounded outbox for the desktop system-event sink. Cloned
     /// stores share it because several Tauri mutations use a
     /// clone-then-persist-then-swap transaction pattern.

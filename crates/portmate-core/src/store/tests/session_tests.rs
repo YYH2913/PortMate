@@ -95,7 +95,8 @@ fn open_and_close_session_updates_runtime_and_log() {
     let mut store = test_store();
     let opened = store.open_session("test-session").unwrap();
     assert_eq!(opened.runtime.status, SessionStatus::Connected);
-    assert!(store.screen("test-session").unwrap().contains("connected"));
+    assert!(store.tail_log("test-session", 10).iter().any(|event| event.text.as_deref().is_some_and(|text| text.contains("connected"))));
+    assert!(store.screen("test-session").is_none());
 
     let closed = store.close_session("test-session").unwrap();
     assert_eq!(closed.runtime.status, SessionStatus::Disconnected);
@@ -104,10 +105,7 @@ fn open_and_close_session_updates_runtime_and_log() {
         closed.runtime.last_disconnect_reason.as_deref(),
         Some("user closed session")
     );
-    assert!(store
-        .screen("test-session")
-        .unwrap()
-        .contains("disconnected"));
+    assert!(store.tail_log("test-session", 10).iter().any(|event| event.text.as_deref().is_some_and(|text| text.contains("disconnected"))));
 }
 
 #[test]

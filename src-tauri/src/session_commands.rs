@@ -11,6 +11,7 @@ pub(super) fn mark_session_connected_with_events(
     messages: impl IntoIterator<Item = String>,
 ) -> Result<(SessionSummary, Vec<String>), String> {
     let fallback = store.set_runtime_status(&profile.id, SessionStatus::Connected)?;
+    store.reset_terminal_screen(&profile.id);
     let mut event_ids = Vec::new();
     for message in messages {
         if let Some(event_id) = store.record_system_event_tracked(&profile.id, message) {

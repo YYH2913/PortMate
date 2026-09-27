@@ -199,7 +199,8 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
         let reason = disconnected.runtime.last_disconnect_reason.unwrap();
         assert!(reason.contains("serial receive idle timeout"), "{reason}");
         assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
-        let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("
+");
         assert!(screen.contains("serial receive idle timeout"), "{screen}");
     });
 
@@ -415,7 +416,8 @@ fn serial_socat_reconnects_after_pty_replacement() {
         tokio::time::sleep(Duration::from_millis(1_200)).await;
         assert!(!state.serial.lock().unwrap().contains_key(&profile.id));
 
-        let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+        let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("
+");
         assert!(screen.contains("serial read failed"), "{screen}");
         assert!(screen.contains("serial port reconnected"));
         assert!(screen.contains(&replacement_portmate_pty.display().to_string()));

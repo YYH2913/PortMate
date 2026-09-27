@@ -1,6 +1,16 @@
 use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 
+pub(super) fn finish_channel_decoder(
+    io: &SessionIo, session_id: &str, runtime_id: &str, stream: EventStream, decoder: &mut StreamDecoder,
+) {
+    let text = decoder.finish();
+    if !text.is_empty() {
+        record_channel_bytes_with_accepted_side_effect(io, session_id, Some(runtime_id), stream,
+            ChannelByteViews::same(&[]), text, || {});
+    }
+}
+
 pub(super) fn append_logging_error(event: &mut SessionEvent, error: impl Into<String>) {
     let error = error.into();
     if error.is_empty() {

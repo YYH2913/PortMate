@@ -234,6 +234,7 @@ impl SessionStore {
             .retain(|runtime| runtime.session_id != session_id);
         self.events.retain(|event| event.session_id != session_id);
         self.event_counts.remove(session_id);
+        self.terminal_screens.remove(session_id);
         self.transfers
             .retain(|transfer| transfer.session_id != session_id);
         self.timeline.retain(|mark| mark.session_id != session_id);

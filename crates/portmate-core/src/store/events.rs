@@ -118,6 +118,10 @@ impl SessionStore {
             .events
             .last()
             .is_some_and(|recorded| recorded.ts > event.ts);
+        if event.direction == EventDirection::Inbound
+            && matches!(event.stream, EventStream::Stdout | EventStream::Stderr) {
+            if let Some(text) = &event.text { self.process_terminal_output(&session_id, text, event.ts); }
+        }
         self.events.push(event.clone());
         if arrived_out_of_order {
             self.events.sort_by_key(|recorded| recorded.ts);
@@ -186,19 +190,7 @@ impl SessionStore {
     }
 
     pub fn screen(&self, session_id: &str) -> Option<String> {
-        let lines = self
-            .events
-            .iter()
-            .filter(|event| event.session_id == session_id)
-            .filter_map(|event| event.text.as_deref())
-            .rev()
-            .take(80)
-            .collect::<Vec<_>>();
-        if lines.is_empty() {
-            None
-        } else {
-            Some(lines.into_iter().rev().collect::<Vec<_>>().join("\n"))
-        }
+        self.terminal_screen(session_id)
     }
 
     pub fn tail_log(&self, session_id: &str, limit: usize) -> Vec<SessionEvent> {

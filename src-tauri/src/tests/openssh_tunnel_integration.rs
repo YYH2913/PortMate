@@ -619,7 +619,7 @@ pub(super) async fn exercise_openssh_tunnel_reconnect(
             text.contains("failed to restore SSH tunnel reconnect-conflict")
                 && text.contains("SSH tunnel bind failed")
         })));
-    let screen = state.store.lock().unwrap().screen(&profile.id).unwrap();
+    let screen = state.store.lock().unwrap().tail_log(&profile.id, 500).iter().filter_map(|e| e.text.as_deref()).collect::<Vec<_>>().join("\n");
     assert!(screen.contains("reconnecting in 5000ms"), "{screen}");
 
     let mut restored_client = TcpStream::connect(("127.0.0.1", reconnect_tunnel.bind_port))
