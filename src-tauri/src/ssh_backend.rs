@@ -51,6 +51,39 @@ impl<H> SshBackendSession<H>
 where
     H: client::Handler,
 {
+    pub(super) async fn open_terminal_exec(
+        &self, command: &str, term: &str, cols: u16, rows: u16,
+    ) -> Result<(SshBackendChannelReader, SshBackendChannelWriter), String> {
+        match self {
+            Self::Russh(handle) => {
+                let mut channel = handle.channel_open_session().await.map_err(|e| e.to_string())?;
+                let mut pending = VecDeque::new();
+                channel.request_pty(true, term, cols.into(), rows.into(), 0, 0, &[]).await.map_err(|e| e.to_string())?;
+                await_ssh_terminal_reply(&mut channel, &mut pending, "PTY").await?;
+                channel.exec(true, command).await.map_err(|e| e.to_string())?;
+                await_ssh_terminal_reply(&mut channel, &mut pending, "exec").await?;
+                let (reader, writer) = SshBackendChannel::from_russh(channel).split();
+                Ok((SshBackendChannelReader::Buffered(Box::new(reader), pending), writer))
+            }
+            Self::Libssh(session) => {
+                let session = session.clone();
+                let command = command.to_string();
+                let term = term.to_string();
+                let channel = tokio::task::spawn_blocking(move || {
+                    run_libssh_runtime_operation(&session, Instant::now() + SSH_RUNTIME_OPERATION_TIMEOUT, "tmux terminal", || {
+                        let channel = session.new_channel().map_err(|e| e.to_string())?;
+                        channel.open_session().map_err(|e| e.to_string())?;
+                        channel.request_pty(&term, cols.into(), rows.into()).map_err(|e| e.to_string())?;
+                        channel.request_exec(&command).map_err(|e| e.to_string())?;
+                        Ok(channel)
+                    })
+                }).await.map_err(|e| e.to_string())??;
+                Ok(SshBackendChannel::from_libssh(channel).split())
+            }
+        }
+
+    }
+
     pub(super) fn from_russh(handle: client::Handle<H>) -> Self {
         Self::Russh(handle)
     }

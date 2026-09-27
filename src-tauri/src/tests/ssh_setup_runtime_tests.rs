@@ -10,6 +10,66 @@ fn tunnel_label_reflects_assigned_local_port() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn ssh_terminal_setup_rejects_peer_denied_pty_and_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let key = root.path().join("host");
+    generate_ed25519_test_key(&key);
+    tauri::async_runtime::block_on(async {
+        for reject_pty in [true, false] {
+            let (port, counters, task) = spawn_mixed_auth_test_server(&key, "user", "secret").await;
+            counters.reject_pty.store(reject_pty, Ordering::SeqCst);
+            counters.reject_shell.store(!reject_pty, Ordering::SeqCst);
+            let mut handle = client::connect(Arc::new(client::Config::default()), ("127.0.0.1", port), AcceptAnyTestSshClient).await.unwrap();
+            assert!(handle.authenticate_password("user", "secret").await.unwrap().success());
+            let profile = test_ssh_profile();
+            let ConnectionConfig::Ssh(ssh) = &profile.connection else { unreachable!() };
+            let error = open_ssh_terminal_channel_with_timeout(&handle, &profile, ssh, Duration::from_secs(2), "test").await.unwrap_err();
+            assert!(matches!(error, SshTerminalSetupError::Failed(ref message) if message.contains(if reject_pty { "PTY" } else { "shell" })), "{error}");
+            task.abort();
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn tmux_attach_replaces_pty_without_typing_into_foreground_application() {
+    let root = canonical_test_tempdir();
+    let key = root.path().join("host");
+    generate_ed25519_test_key(&key);
+    tauri::async_runtime::block_on(async {
+        let (port, counters, task) = spawn_mixed_auth_test_server(&key, "user", "secret").await;
+        let mut profile = test_ssh_profile();
+        let ConnectionConfig::Ssh(ssh) = &mut profile.connection else { unreachable!() };
+        ssh.endpoint.host = "127.0.0.1".into();
+        ssh.endpoint.port = port;
+        ssh.username = "user".into();
+        ssh.reconnect = false;
+        ssh.identity_policy.auth_order = vec![AuthMethod::Password];
+        ssh.identity_refs.clear();
+        ssh.agent_policy.enabled = false;
+        ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        open_ssh_session(&state, profile.clone(), Some("secret".into()), None).await.unwrap();
+        let runtime_id = state.ssh.lock().unwrap().get(&profile.id).unwrap().runtime_id.clone();
+        for target in ["first", "second:0"] {
+            attach_tmux_inner(&state, &profile.id, target, None).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if state.store.lock().unwrap().screen(&profile.id).is_some_and(|s| s.contains("TMUX-READY")) { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            assert_eq!(state.ssh.lock().unwrap().get(&profile.id).unwrap().runtime_id, runtime_id);
+        }
+        assert_eq!(counters.tmux_exec_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(counters.terminal_input_bytes.load(Ordering::SeqCst), 0);
+        close_session_inner(&state, profile.id).await.unwrap();
+        task.abort();
+    });
+}
+
 #[test]
 fn bounded_connection_step_preserves_results_and_stops_pending_operations() {
     tauri::async_runtime::block_on(async {

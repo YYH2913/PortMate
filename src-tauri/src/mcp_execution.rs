@@ -488,23 +488,13 @@ async fn execute_ipc_request_inner(
         "attach_tmux" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let target = ipc_string_arg(&request.args, "target")?.to_string();
-            let command = tmux_attach_command(&target)?;
-            let actor = mcp_audit_actor(&request.client_id);
             let validation = mcp_commit_validation(
                 &state,
                 &request,
                 execution_context,
                 authorization_context,
             )?;
-            let event = send_text_inner_with_context_and_validation(
-                state.session_io(),
-                session_id,
-                command,
-                &actor,
-                None,
-                Some(validation),
-            )
-            .await?;
+            let event = attach_tmux_inner(&state, &session_id, &target, Some(validation)).await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
         "export_session_bundle" => {

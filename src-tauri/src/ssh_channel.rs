@@ -125,11 +125,16 @@ impl SshBackendChannel {
 pub(super) enum SshBackendChannelReader {
     Russh(ChannelReadHalf),
     Libssh(LibsshChannelReader),
+    Buffered(Box<SshBackendChannelReader>, VecDeque<SshBackendMessage>),
 }
 
 impl SshBackendChannelReader {
     pub(super) async fn wait(&mut self) -> Option<SshBackendMessage> {
         match self {
+            Self::Buffered(reader, pending) => match pending.pop_front() {
+                Some(message) => Some(message),
+                None => Box::pin(reader.wait()).await,
+            },
             Self::Russh(reader) => reader.wait().await.map(SshBackendMessage::from),
             Self::Libssh(reader) => reader.wait().await,
         }
@@ -140,6 +145,10 @@ impl SshBackendChannelReader {
         closed: &AtomicBool,
     ) -> Option<SshBackendMessage> {
         match self {
+            Self::Buffered(reader, pending) => match pending.pop_front() {
+                Some(message) => Some(message),
+                None => Box::pin(reader.wait_until_closed(closed)).await,
+            },
             Self::Russh(reader) => reader.wait().await.map(SshBackendMessage::from),
             Self::Libssh(reader) => reader.wait_until_closed(closed).await,
         }
@@ -204,6 +213,14 @@ pub(super) async fn resize_ssh_channel_with_timeout(
 }
 
 impl SshBackendChannelWriter {
+    pub(super) async fn close(&self) -> Result<(), String> {
+        match self {
+            Self::Russh(writer) => tokio::time::timeout(SSH_TERMINAL_WRITE_TIMEOUT, writer.close())
+                .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string()),
+            Self::Libssh(channel) => run_libssh_channel_operation_with_timeout(Arc::clone(channel),
+                SSH_TERMINAL_WRITE_TIMEOUT, "terminal close", |channel| channel.close().map_err(|e| e.to_string())).await,
+        }
+    }
     pub(super) async fn data(&self, data: &[u8]) -> Result<(), String> {
         self.data_with_timeout(data, SSH_RUNTIME_OPERATION_TIMEOUT)
             .await

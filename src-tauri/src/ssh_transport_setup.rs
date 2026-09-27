@@ -263,9 +263,9 @@ pub(super) async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
     ssh: &SshConnection,
     timeout: Duration,
     disconnect_description: &str,
-) -> Result<Channel<client::Msg>, SshTerminalSetupError> {
+) -> Result<(Channel<client::Msg>, VecDeque<SshBackendMessage>), SshTerminalSetupError> {
     let setup = async {
-        let channel = session
+        let mut channel = session
             .channel_open_session()
             .await
             .map_err(|error| format!("SSH 打开 session channel 失败: {error}"))?;
@@ -281,6 +281,8 @@ pub(super) async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
             )
             .await
             .map_err(|error| format!("SSH 请求 PTY 失败: {error}"))?;
+        let mut pending = VecDeque::new();
+        await_ssh_terminal_reply(&mut channel, &mut pending, "PTY").await?;
         apply_ssh_terminal_color_env(&channel).await;
         if ssh.agent_policy.forwarding {
             channel
@@ -288,17 +290,14 @@ pub(super) async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
                 .await
                 .map_err(|error| format!("SSH 请求 agent forwarding 失败: {error}"))?;
         }
-        channel
-            .request_shell(true)
-            .await
-            .map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
         if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
-            channel
-                .data(&b"tmux new-session -A -s portmate\r"[..])
-                .await
-                .map_err(|_| "Tmux attach 命令发送失败: SSH channel 已关闭".to_string())?;
+            channel.exec(true, "exec tmux new-session -A -s portmate").await.map_err(|error| error.to_string())?;
+            await_ssh_terminal_reply(&mut channel, &mut pending, "tmux exec").await?;
+        } else {
+            channel.request_shell(true).await.map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
+            await_ssh_terminal_reply(&mut channel, &mut pending, "shell").await?;
         }
-        Ok::<_, String>(channel)
+        Ok::<_, String>((channel, pending))
     };
 
     match bounded_connection_step(setup, timeout).await {
@@ -313,6 +312,30 @@ pub(super) async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
             })
         }
     }
+}
+
+pub(super) async fn await_ssh_terminal_reply(
+    channel: &mut Channel<client::Msg>,
+    pending: &mut VecDeque<SshBackendMessage>,
+    request: &str,
+) -> Result<(), String> {
+    let mut buffered = 0;
+    while let Some(message) = channel.wait().await {
+        match message {
+            ChannelMsg::Success => return Ok(()),
+            ChannelMsg::Failure => return Err(format!("SSH server rejected {request} request")),
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            ChannelMsg::Data { ref data } | ChannelMsg::ExtendedData { ref data, .. } => {
+                buffered += data.len();
+                if buffered > 64 * 1024 {
+                    return Err(format!("SSH {request} reply exceeded setup buffer limit"));
+                }
+                pending.push_back(SshBackendMessage::from(message));
+            }
+            _ => {}
+        }
+    }
+    Err(format!("SSH channel closed before {request} confirmation"))
 }
 
 pub(super) async fn apply_ssh_terminal_color_env(channel: &Channel<client::Msg>) {

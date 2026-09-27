@@ -14,15 +14,7 @@ pub(crate) async fn attach_tmux(
     session_id: String,
     target: String,
 ) -> Result<SessionEvent, String> {
-    let command = tmux_attach_command(&target)?;
-    send_text_inner_with_context(
-        state.inner().session_io(),
-        session_id,
-        command,
-        "desktop-user",
-        Some("attach_tmux"),
-    )
-    .await
+    attach_tmux_inner(state.inner(), &session_id, &target, None).await
 }
 
 #[tauri::command]

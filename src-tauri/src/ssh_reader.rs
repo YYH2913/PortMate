@@ -40,7 +40,7 @@ pub(super) fn read_ssh_channel(
             reader_finished,
         } = task;
         let _reader_completion = SshReaderCompletionGuard {
-            terminal_channel_open,
+            terminal_channel_open: Arc::clone(&terminal_channel_open),
             reader_finished: Some(reader_finished),
         };
         let io = state.session_io();
@@ -50,12 +50,18 @@ pub(super) fn read_ssh_channel(
         let mut stderr_decoder = StreamDecoder::default();
 
         loop {
-            if closed.load(Ordering::SeqCst) {
+            if closed.load(Ordering::SeqCst) || !terminal_channel_open.load(Ordering::SeqCst) {
                 break;
             }
-            let Some(message) = read_half.wait_until_closed(&closed).await else {
+            let cancellable_wait = !matches!(read_half, SshBackendChannelReader::Libssh(_));
+            let message = tokio::select! {
+                message = read_half.wait_until_closed(&closed) => message,
+                _ = tokio::time::sleep(Duration::from_millis(100)), if cancellable_wait => continue,
+            };
+            let Some(message) = message else {
                 break;
             };
+            if !terminal_channel_open.load(Ordering::SeqCst) { return; }
             if let Some(reason) = ssh_channel_disconnect_reason(&message) {
                 disconnect_reason = Some(reason);
             }
@@ -122,6 +128,7 @@ pub(super) fn read_ssh_channel(
             }
         }
 
+        if !terminal_channel_open.load(Ordering::SeqCst) { return; }
         finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut stdout_decoder);
         finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stderr, &mut stderr_decoder);
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
@@ -136,7 +143,8 @@ pub(super) fn read_ssh_channel(
             };
             if connections
                 .get(&session_id)
-                .is_none_or(|runtime| runtime.runtime_id != runtime_id)
+                .is_none_or(|runtime| runtime.runtime_id != runtime_id
+                    || !Arc::ptr_eq(&runtime.terminal_channel_open, &terminal_channel_open))
             {
                 return;
             }

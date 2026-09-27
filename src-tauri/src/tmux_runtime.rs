@@ -4,6 +4,54 @@ mod control;
 
 pub(super) use control::*;
 
+pub(super) async fn attach_tmux_inner(
+    state: &AppState, session_id: &str, target: &str, validation: Option<CommitValidation>,
+) -> Result<SessionEvent, String> {
+    // Open a PTY exec channel; never type shell syntax into an unknown foreground
+    // program. Replacing only this terminal channel detaches only our tmux client.
+    let command = tmux_attach_command(target)?;
+    let lane = session_open::session_lifecycle_lane(state, session_id)?;
+    let _lifecycle = lane.lock().await;
+    let io = state.session_io();
+    let _outbound = acquire_outbound_lane(&io.store_path, session_id).await?;
+    if let Some(validate) = validation { validate()?; }
+    if state.store.lock().map_err(|e| e.to_string())?.transfers.iter().any(|transfer|
+        transfer.session_id == session_id
+        && matches!(transfer.protocol, TransferProtocol::Xmodem | TransferProtocol::Ymodem | TransferProtocol::Zmodem | TransferProtocol::Tftp)
+        && matches!(transfer.status, TransferStatus::Queued | TransferStatus::Running)) {
+        return Err("Finish or cancel the terminal transfer before attaching tmux".into());
+    }
+    let (runtime_id, auxiliary) = tmux_auxiliary_lease(state, session_id)?;
+    let profile = state.store.lock().map_err(|e| e.to_string())?.profile(session_id)
+        .ok_or_else(|| "Session no longer exists".to_string())?;
+    let handle = auxiliary.handle();
+    let (reader, writer) = tokio::time::timeout(SSH_RUNTIME_OPERATION_TIMEOUT, async {
+        let handle = handle.lock().await;
+        handle.open_terminal_exec(&command, &profile.terminal.term, profile.terminal.cols, profile.terminal.rows).await
+    }).await.map_err(|_| "Tmux terminal setup timed out".to_string())??;
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let open = Arc::new(AtomicBool::new(true));
+    let (old_writer, closed, tap) = {
+        let mut connections = state.ssh.lock().map_err(|e| e.to_string())?;
+        let runtime = connections.get_mut(session_id).filter(|r| r.runtime_id == runtime_id && !r.closed.load(Ordering::SeqCst))
+            .ok_or_else(|| "SSH connection changed during tmux attach".to_string())?;
+        runtime.terminal_channel_open.store(false, Ordering::SeqCst);
+        runtime.terminal_channel_open = Arc::clone(&open);
+        runtime.reader_finished = finished_rx;
+        let old = std::mem::replace(&mut runtime.writer, Arc::new(tokio::sync::Mutex::new(writer)));
+        (old, Arc::clone(&runtime.closed), runtime.tap.clone())
+    };
+    clear_interactive_write_queue(&io.store_path, session_id);
+    clear_active_command(&io, session_id);
+    if let Ok(mut store) = state.store.lock() { store.reset_terminal_screen(session_id); }
+    tauri::async_runtime::spawn(read_ssh_channel(SshReadTask {
+        state: state.clone(), profile, runtime_id, tap, read_half: reader, closed,
+        terminal_channel_open: open, reader_finished: finished_tx,
+    }));
+    let _ = tokio::time::timeout(SSH_TERMINAL_WRITE_TIMEOUT, async { old_writer.lock().await.close().await }).await;
+    Ok(record_outbound_control_event(&io, session_id, command.as_bytes(), "tmux-attach", None, false))
+}
+
 pub(super) async fn list_tmux_state_inner(
     state: &AppState,
     session_id: &str,

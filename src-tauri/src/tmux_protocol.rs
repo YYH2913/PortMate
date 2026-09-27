@@ -121,7 +121,7 @@ pub(super) fn tmux_attach_command(target: &str) -> Result<String, String> {
     let target = normalize_tmux_target(target)?;
     let target = shell_quote(target);
     Ok(format!(
-        "tmux switch-client -t {target} || tmux attach -t {target} || tmux new-session -A -s {target}\r"
+        "if tmux has-session -t {target} 2>/dev/null; then exec tmux attach-session -t {target}; else exec tmux new-session -s {target}; fi"
     ))
 }
 

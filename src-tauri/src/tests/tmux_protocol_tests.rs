@@ -43,7 +43,7 @@ fn tmux_targets_are_bounded_and_shell_quoted() {
     assert!(tmux_attach_command(&"x".repeat(257)).is_err());
     assert_eq!(
         tmux_attach_command("  lab  ").unwrap(),
-        "tmux switch-client -t 'lab' || tmux attach -t 'lab' || tmux new-session -A -s 'lab'\r"
+        "if tmux has-session -t 'lab' 2>/dev/null; then exec tmux attach-session -t 'lab'; else exec tmux new-session -s 'lab'; fi"
     );
     assert_eq!(
         tmux_pane_sync_command("lab'; touch /tmp/portmate-tmux #", true).unwrap(),

@@ -593,19 +593,10 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                         )
                     })?;
             }
-            channel
-                .request_shell()
-                .map_err(|error| {
-                    libssh_terminal_setup_error("请求 shell", error, connect_timeout)
-                })?;
             if attach_tmux {
-                let mut stdin = channel.stdin();
-                stdin
-                    .write_all(b"tmux new-session -A -s portmate\r")
-                    .map_err(|error| format!("libssh Tmux attach 写入失败: {error}"))?;
-                stdin
-                    .flush()
-                    .map_err(|error| format!("libssh Tmux attach 刷新失败: {error}"))?;
+                channel.request_exec("exec tmux new-session -A -s portmate").map_err(|error| error.to_string())?;
+            } else {
+                channel.request_shell().map_err(|error| libssh_terminal_setup_error("请求 shell", error, connect_timeout))?;
             }
             terminal_session
                 .set_option(libssh_rs::SshOption::Timeout(

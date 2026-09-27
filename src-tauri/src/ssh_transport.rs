@@ -250,7 +250,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         "PortMate terminal channel setup timeout",
     )
     .await;
-    let channel = match channel {
+    let (channel, pending) = match channel {
         Ok(channel) => channel,
         Err(error) => {
             let cleanup_warning = if matches!(error, SshTerminalSetupError::Failed(_)) {
@@ -276,6 +276,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
 
     let runtime_id = Uuid::new_v4().to_string();
     let (read_half, write_half) = SshBackendChannel::from_russh(channel).split();
+    let read_half = SshBackendChannelReader::Buffered(Box::new(read_half), pending);
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
     let (tap, _) = broadcast::channel(1024);
     let closed = Arc::new(AtomicBool::new(false));
