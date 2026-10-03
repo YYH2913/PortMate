@@ -125,6 +125,9 @@ pub(super) fn write_atomic_export_with_checksum_policy(
     let temp_path = final_path.with_file_name(format!(".{file_name}.{nonce}.part"));
     let checksum_temp_path =
         final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.part"));
+    let backup_path = final_path.with_file_name(format!(".{file_name}.{nonce}.backup"));
+    let checksum_backup_path =
+        final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.backup"));
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -160,9 +163,27 @@ pub(super) fn write_atomic_export_with_checksum_policy(
     }
     drop(checksum);
 
+    let mut backups = Vec::new();
+    if overwrite {
+        for (path, backup) in [
+            (final_path, &backup_path),
+            (&checksum_path, &checksum_backup_path),
+        ] {
+            if fs::symlink_metadata(path).is_ok() {
+                if let Err(error) = fs::rename(path, backup) {
+                    let _ = restore_export_backups(&backups);
+                    let _ = fs::remove_file(&temp_path);
+                    let _ = fs::remove_file(&checksum_temp_path);
+                    return Err(format!("failed to preserve existing {label} artifact: {error}"));
+                }
+                backups.push((backup.clone(), path.to_path_buf()));
+            }
+        }
+    }
     if let Err(error) = install_export_artifact(&temp_path, final_path, overwrite) {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&checksum_temp_path);
+        let _ = restore_export_backups(&backups);
         return Err(format!(
             "failed to finalize {label} {}: {error}",
             final_path.display()
@@ -170,10 +191,12 @@ pub(super) fn write_atomic_export_with_checksum_policy(
     }
     if let Err(error) = install_export_artifact(&checksum_temp_path, &checksum_path, overwrite) {
         let _ = fs::remove_file(&checksum_temp_path);
-        if !overwrite {
-            let _ = fs::remove_file(final_path);
-        }
+        let _ = fs::remove_file(final_path);
+        let _ = restore_export_backups(&backups);
         return Err(format!("failed to finalize {label} checksum: {error}"));
+    }
+    for (backup, _) in &backups {
+        let _ = fs::remove_file(backup);
     }
     Ok(FinalizedArchive {
         checksum_path,
@@ -209,7 +232,11 @@ fn validate_export_artifact_target(
     }
 }
 
-fn install_export_artifact(source: &Path, destination: &Path, overwrite: bool) -> std::io::Result<()> {
+pub(super) fn install_export_artifact(
+    source: &Path,
+    destination: &Path,
+    overwrite: bool,
+) -> std::io::Result<()> {
     if !overwrite {
         #[cfg(windows)]
         return move_export_artifact_windows(source, destination, false);
@@ -225,6 +252,16 @@ fn install_export_artifact(source: &Path, destination: &Path, overwrite: bool) -
         }
     }
     replace_export_artifact(source, destination)
+}
+
+fn restore_export_backups(backups: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
+    let mut first_error = None;
+    for (backup, destination) in backups.iter().rev() {
+        if let Err(error) = fs::rename(backup, destination) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(not(windows))]
@@ -377,7 +414,7 @@ pub(super) fn finalize_archive_with_checksum(
             ));
         }
     }
-    fs::rename(temp_path, final_path).map_err(|error| {
+    install_export_artifact(temp_path, final_path, false).map_err(|error| {
         let _ = fs::remove_file(temp_path);
         format!(
             "failed to finalize {label} {}: {error}",
@@ -414,7 +451,7 @@ pub(super) fn finalize_archive_with_checksum(
             checksum_path.display()
         ));
     }
-    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+    if let Err(error) = install_export_artifact(&checksum_temp_path, &checksum_path, false) {
         let _ = fs::remove_file(final_path);
         let _ = fs::remove_file(&checksum_temp_path);
         return Err(format!(

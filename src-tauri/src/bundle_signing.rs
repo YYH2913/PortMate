@@ -248,21 +248,21 @@ pub(super) fn finalize_signed_bundle_archive(
         cleanup();
         return Err(error);
     }
-    if let Err(error) = fs::rename(temp_path, final_path) {
+    if let Err(error) = install_export_artifact(temp_path, final_path, false) {
         cleanup();
         return Err(format!(
             "failed to finalize {label} {}: {error}",
             final_path.display()
         ));
     }
-    if let Err(error) = fs::rename(&checksum_temp_path, &checksum_path) {
+    if let Err(error) = install_export_artifact(&checksum_temp_path, &checksum_path, false) {
         cleanup();
         return Err(format!(
             "failed to finalize {label} checksum {}: {error}",
             checksum_path.display()
         ));
     }
-    if let Err(error) = fs::rename(&signature_temp_path, &signature_path) {
+    if let Err(error) = install_export_artifact(&signature_temp_path, &signature_path, false) {
         cleanup();
         return Err(format!(
             "failed to finalize {label} signature {}: {error}",
