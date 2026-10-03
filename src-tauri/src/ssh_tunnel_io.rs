@@ -354,7 +354,11 @@ pub(super) async fn pipe_ssh_channel_to_tcp(
     } else {
         "tunnel"
     };
-    tokio::try_join!(local_to_remote, remote_to_local)
-        .map(|_| ())
-        .map_err(|error| format!("{pipe_kind} pipe failed ({}): {error}", tunnel.label))
+    tokio::pin!(local_to_remote);
+    tokio::pin!(remote_to_local);
+    let result = tokio::select! {
+        result = &mut local_to_remote => result,
+        result = &mut remote_to_local => result,
+    };
+    result.map_err(|error| format!("{pipe_kind} pipe failed ({}): {error}", tunnel.label))
 }

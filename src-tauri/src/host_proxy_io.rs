@@ -226,8 +226,10 @@ pub(super) async fn execute_udp_tunnel_request_inner(
         .timeout_ms
         .unwrap_or(DEFAULT_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS);
     let target = format!("{target_host}:{target_port}");
-    let target_addr = lookup_host((target_host.as_str(), target_port))
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let target_addr = tokio::time::timeout_at(deadline, lookup_host((target_host.as_str(), target_port)))
         .await
+        .map_err(|_| format!("MCP UDP target lookup timed out after {timeout_ms} ms: {target}"))?
         .map_err(|error| format!("MCP UDP target lookup failed {target}: {error}"))?
         .next()
         .ok_or_else(|| format!("MCP UDP target lookup returned no address: {target}"))?;
@@ -235,8 +237,9 @@ pub(super) async fn execute_udp_tunnel_request_inner(
         std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
         std::net::SocketAddr::V6(_) => std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0)),
     };
-    let socket = UdpSocket::bind(bind_addr)
+    let socket = tokio::time::timeout_at(deadline, UdpSocket::bind(bind_addr))
         .await
+        .map_err(|_| format!("MCP UDP relay bind timed out after {timeout_ms} ms"))?
         .map_err(|error| format!("MCP UDP relay bind failed: {error}"))?;
     let metrics = Arc::clone(&runtime.metrics);
     let Some(permit) =
@@ -249,22 +252,19 @@ pub(super) async fn execute_udp_tunnel_request_inner(
     let _permit = permit;
     metrics.connection_opened();
     let result = async {
-        socket
-            .connect(target_addr)
+        tokio::time::timeout_at(deadline, socket.connect(target_addr))
             .await
+            .map_err(|_| format!("MCP UDP target connect timed out after {timeout_ms} ms {target}"))?
             .map_err(|error| format!("MCP UDP target connect failed {target}: {error}"))?;
-        socket
-            .send(&payload)
+        tokio::time::timeout_at(deadline, socket.send(&payload))
             .await
+            .map_err(|_| format!("MCP UDP datagram send timed out after {timeout_ms} ms {target}"))?
             .map_err(|error| format!("MCP UDP datagram send failed {target}: {error}"))?;
         let mut response = vec![0_u8; MAX_MCP_UDP_DATAGRAM_BYTES];
-        let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
-        tokio::pin!(deadline);
-        let received = tokio::select! {
-            result = socket.recv(&mut response) => {
-                result.map_err(|error| format!("MCP UDP datagram receive failed {target}: {error}"))?
-            }
-            _ = &mut deadline => {
+        let received = match tokio::time::timeout_at(deadline, socket.recv(&mut response)).await {
+            Ok(result) => result
+                .map_err(|error| format!("MCP UDP datagram receive failed {target}: {error}"))?,
+            Err(_) => {
                 return Ok::<McpUdpExchangeResult, String>(McpUdpExchangeResult {
                     tunnel_id: runtime.spec.id.clone(),
                     target_host,
