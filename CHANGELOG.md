@@ -31,6 +31,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Local and remote batch planners now recheck directory identity after enumeration, and recursive SFTP deletion aborts when a directory changes between listing and removal.
 - Manual SSH opens now enforce the same profile snapshot used by reconnects, so endpoint and host-key policy edits during a handshake fail before trust data is persisted.
 - Synchronized input batches now retain each target's terminal epoch and skip queued data after reconnect; delayed clipboard reads also verify the observed connection before injecting text.
+- Trigger command output-reader failures now terminate the command process group before returning, preventing background descendants from surviving a failed capture.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

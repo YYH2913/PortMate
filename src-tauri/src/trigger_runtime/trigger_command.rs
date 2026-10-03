@@ -106,9 +106,13 @@ pub(crate) async fn run_shell_command_bounded(
     let (stdout, stderr) = match outputs {
         Ok(Ok(outputs)) => outputs,
         Ok(Err(error)) => {
+            let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
             stdout_task.abort();
             stderr_task.abort();
-            return Err(error);
+            return Err(format!(
+                "{error}{}",
+                trigger_command_cleanup_suffix(cleanup_warning)
+            ));
         }
         Err(_) => {
             let cleanup_warning = terminate_trigger_command(&mut child, process_id).await;
