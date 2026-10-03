@@ -15,6 +15,8 @@ const extension = target.includes("windows") ? ".exe" : "";
 const cargoTargetDir = resolveTargetDirectory();
 const source = crossTarget
   ? resolve(cargoTargetDir, target, profile, `portmate-mcp${extension}`)
+  : configuredTarget
+    ? resolve(cargoTargetDir, target, profile, `portmate-mcp${extension}`)
   : resolve(cargoTargetDir, profile, `portmate-mcp${extension}`);
 const destination = resolve(
   projectRoot,
