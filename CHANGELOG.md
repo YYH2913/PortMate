@@ -22,6 +22,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
+- Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.

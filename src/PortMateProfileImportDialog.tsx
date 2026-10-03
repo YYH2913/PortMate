@@ -35,6 +35,9 @@ export default function PortMateProfileImportDialog({
   const [warnings, setWarnings] = useState<ProfileTransferWarning[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const fileReadActive = useRef(false);
+  const [fileReadBusy, setFileReadBusy] = useState(false);
+  const locked = busy || fileReadBusy;
 
   useEffect(() => () => fileGate.current.invalidateAll(), []);
 
@@ -54,25 +57,41 @@ export default function PortMateProfileImportDialog({
     onDraftDirtyChange(Boolean(value || name));
   }
 
+  function cancelFileRead() {
+    fileGate.current.invalidate("file");
+    fileReadActive.current = false;
+    setFileReadBusy(false);
+  }
+
   async function readFile(file: File | null) {
     if (!file) return;
+    const token = fileGate.current.replace("file");
+    fileReadActive.current = true;
+    setFileReadBusy(true);
     if (file.size > MAX_PROFILE_TRANSFER_BYTES) {
+      updateSource("", file.name);
       setError(t("profile-file-exceeds-the-8-mib-limit"));
+      if (fileGate.current.finish("file", token)) {
+        fileReadActive.current = false;
+        setFileReadBusy(false);
+      }
       return;
     }
-    const token = fileGate.current.replace("file");
     try {
       const text = await file.text();
       if (fileGate.current.isCurrent("file", token)) updateSource(text, file.name);
     } catch (readError) {
       if (fileGate.current.isCurrent("file", token)) setError(readError instanceof Error ? readError.message : String(readError));
     } finally {
-      fileGate.current.finish("file", token);
+      if (fileGate.current.finish("file", token)) {
+        fileReadActive.current = false;
+        setFileReadBusy(false);
+      }
     }
   }
 
   async function importProfiles() {
-    if (!profiles.length || busy) return;
+    if (!profiles.length || locked || fileReadActive.current) return;
     const token = operationGate.begin("operation");
     if (token === null) return;
     setBusy(true);
@@ -98,9 +117,9 @@ export default function PortMateProfileImportDialog({
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{t("import-portmate-profiles")}</strong>
-          <button type="button" onClick={onClose} disabled={busy} aria-label={t("close")}><X size={20} /></button>
+          <button type="button" onClick={onClose} disabled={locked} aria-label={t("close")}><X size={20} /></button>
         </header>
-        {headerAddon?.(busy)}
+        {headerAddon?.(locked)}
         <section className="session-import-content">
           <p className="session-identity-hint"><strong>{t("portable-configuration-without-plaintext-credentials")}</strong><span>{t("passwords-private-keys-and-proxy-secrets-are-excluded-from")}</span></p>
           <div className="session-import-file-row">
@@ -108,14 +127,14 @@ export default function PortMateProfileImportDialog({
             <input ref={fileInputRef} type="file" accept=".json,.portmate.json" hidden onChange={(event) => { void readFile(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
             <span>{fileName || t("no-file-selected")}</span>
           </div>
-          <textarea aria-label={t("ui-portmate-profile-json")} value={source} onChange={(event) => updateSource(event.target.value)} placeholder={t("or-paste-portmate-profile-json")} disabled={busy} />
+          <textarea aria-label={t("ui-portmate-profile-json")} value={source} onChange={(event) => { cancelFileRead(); updateSource(event.target.value); }} placeholder={t("or-paste-portmate-profile-json")} disabled={busy} />
           {error ? <div className="utility-error" role="alert">{localizeDiagnostic(error)}</div> : null}
           {warnings.length ? <div className="session-import-warnings">{warnings.map((warning) => <div key={JSON.stringify([warning.code, warning.profileName])}>{profileTransferWarningLabel(warning)}</div>)}</div> : null}
           {profiles.length ? <div className="session-import-preview">{t("importing-profiles", [profiles.length, profiles.map((profile) => profile.name).join("、")])}</div> : null}
         </section>
         <footer className="dialog-actions session-settings-actions">
-          <button type="button" onClick={onClose} disabled={busy}>{t("cancel")}</button>
-          <button type="button" className="session-connect-button" onClick={() => void importProfiles()} disabled={busy || !profiles.length}><Upload size={15} />{t("import-profiles")}</button>
+          <button type="button" onClick={onClose} disabled={locked}>{t("cancel")}</button>
+          <button type="button" className="session-connect-button" onClick={() => void importProfiles()} disabled={locked || !profiles.length}><Upload size={15} />{t("import-profiles")}</button>
         </footer>
       </section>
     </div>
