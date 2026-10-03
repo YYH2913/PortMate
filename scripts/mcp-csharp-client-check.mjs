@@ -14,6 +14,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = createMcpClientFixture(["official-csharp-sdk-stdio-check", "official-csharp-sdk-http-check"]);
@@ -21,30 +22,25 @@ const project = join(projectRoot, "scripts", "mcp-csharp-client-check", "McpCsha
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-csharp-client-versions.json"), "utf8"));
 validateMatrix(matrix);
 
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
+const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) throw new Error(`MCP C# client check binary does not exist: ${binary}`);
 
 const environment = {
   ...process.env,
   ...fixture.environment,
-  DOTNET_CLI_HOME: join(projectRoot, "target", "mcp-dotnet-home"),
+  DOTNET_CLI_HOME: join(targetRoot, "mcp-dotnet-home"),
   DOTNET_NOLOGO: "1",
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1",
   DOTNET_CLI_TELEMETRY_OPTOUT: "1",
-  NUGET_PACKAGES: join(projectRoot, "target", "mcp-csharp-nuget-packages"),
+  NUGET_PACKAGES: join(targetRoot, "mcp-csharp-nuget-packages"),
 };
 mkdirSync(environment.DOTNET_CLI_HOME, { recursive: true });
 mkdirSync(environment.NUGET_PACKAGES, { recursive: true });
-const dotnet = await ensureDotnet(matrix.dotnet, environment);
+const dotnet = await ensureDotnet(matrix.dotnet, environment, targetRoot);
 
 for (const entry of matrix.sdks) {
-  const environmentRoot = join(projectRoot, "target", `mcp-csharp-sdk-${entry.version}`);
+  const environmentRoot = join(targetRoot, `mcp-csharp-sdk-${entry.version}`);
   const lockFile = join(environmentRoot, "packages.lock.json");
   const lockSource = join(
     projectRoot,
@@ -116,7 +112,7 @@ function validateMatrix(value) {
   }
 }
 
-async function ensureDotnet({ version, archives }, environment) {
+async function ensureDotnet({ version, archives }, environment, targetRoot) {
   const configuredDotnet = process.env.PORTMATE_DOTNET?.trim();
   const command = configuredDotnet || "dotnet";
   const probe = run(command, ["--version"], {
@@ -136,7 +132,7 @@ async function ensureDotnet({ version, archives }, environment) {
   const archive = archives[rid];
   if (!archive) throw new Error(`No pinned .NET SDK ${version} archive for ${rid}`);
 
-  const toolsRoot = join(projectRoot, "target", "mcp-dotnet-sdk-tools");
+  const toolsRoot = join(targetRoot, "mcp-dotnet-sdk-tools");
   const installRoot = join(toolsRoot, `dotnet-${version}-${rid}`);
   const executable = join(installRoot, process.platform === "win32" ? "dotnet.exe" : "dotnet");
   if (!existsSync(executable)) {

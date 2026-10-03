@@ -3,13 +3,14 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = createMcpClientFixture(["official-go-sdk-stdio-check", "official-go-sdk-http-check"]);
 const moduleRoot = join(projectRoot, "scripts", "mcp-go-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-go-client-versions.json"), "utf8"));
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(projectRoot, "target", "debug", process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
+const binary = resolveMcpBinary(projectRoot);
 
 if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   typeof entry !== "object"
@@ -24,7 +25,7 @@ if (!existsSync(binary)) {
 }
 
 for (const { version: sdkVersion, protocolVersion } of matrix) {
-  const environmentRoot = join(projectRoot, "target", `mcp-go-sdk-${sdkVersion}`);
+  const environmentRoot = join(targetRoot, `mcp-go-sdk-${sdkVersion}`);
   mkdirSync(environmentRoot, { recursive: true });
   cpSync(join(moduleRoot, "main.go"), join(environmentRoot, "main.go"));
   const lockRoot = join(moduleRoot, "locks", sdkVersion);

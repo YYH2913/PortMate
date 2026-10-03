@@ -1,7 +1,10 @@
-import path from "node:path";
+import path, { dirname, resolve } from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveMcpBinary } from "./mcp-binary-path.mjs";
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
 const sdkModule = (relativePath, packagePath) => sdkRoot
@@ -17,13 +20,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const binary = process.env.PORTMATE_MCP_BINARY
-  ? path.resolve(process.env.PORTMATE_MCP_BINARY)
-  : path.resolve(
-    "target",
-    "debug",
-    process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-  );
+const binary = resolveMcpBinary(projectRoot);
 const fixture = createMcpClientFixture(["official-sdk-stdio-check"]);
 fixture.setReadAccess(false);
 const transport = new StdioClientTransport({

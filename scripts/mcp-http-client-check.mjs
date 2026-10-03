@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { dirname, resolve } from "node:path";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveMcpBinary } from "./mcp-binary-path.mjs";
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const sdkRoot = process.env.PORTMATE_MCP_TYPESCRIPT_SDK_ROOT?.trim();
 const sdkModule = (relativePath, packagePath) => sdkRoot
@@ -185,13 +189,7 @@ async function verifyIpv6Listener(binary, bindHost, connectHost, port, allowRemo
   }
 }
 
-const binary = process.env.PORTMATE_MCP_BINARY
-  ? path.resolve(process.env.PORTMATE_MCP_BINARY)
-  : path.resolve(
-    "target",
-    "debug",
-    process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-  );
+const binary = resolveMcpBinary(projectRoot);
 await verifyRemoteBindRequiresOptIn(binary, "0.0.0.0");
 await verifyIpv6Listeners(binary);
 

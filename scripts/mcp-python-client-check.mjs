@@ -3,8 +3,12 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
+const binary = resolveMcpBinary(projectRoot);
+if (!existsSync(binary)) throw new Error(`MCP Python client check binary does not exist: ${binary}`);
 const fixture = createMcpClientFixture(["official-python-sdk-stdio-check", "official-python-sdk-http-check"]);
 const bootstrap = findPython();
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-python-client-versions.json"), "utf8"));
@@ -17,7 +21,7 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
 }
 
 for (const { version: sdkVersion, protocolVersion } of matrix) {
-  const environmentRoot = join(projectRoot, "target", `mcp-python-sdk-${sdkVersion}`);
+  const environmentRoot = join(targetRoot, `mcp-python-sdk-${sdkVersion}`);
   const lockPath = join(
     projectRoot,
     "scripts",
@@ -62,6 +66,7 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
     env: {
       ...process.env,
       ...fixture.environment,
+      PORTMATE_MCP_BINARY: binary,
       PORTMATE_MCP_PYTHON_SDK_VERSION: sdkVersion,
       PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION: protocolVersion,
     },

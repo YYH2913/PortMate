@@ -3,8 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
 const fixture = createMcpClientFixture(["official-ruby-sdk-stdio-check", "official-ruby-sdk-http-check"]);
 const ruby = process.env.PORTMATE_RUBY?.trim() || "ruby";
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-ruby-client-versions.json"), "utf8"));
@@ -25,13 +27,7 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   throw new Error("scripts/mcp-ruby-client-versions.json must contain exact SDK, dependency, and protocol versions");
 }
 
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) {
   throw new Error(`MCP Ruby client check binary does not exist: ${binary}`);
 }
@@ -41,7 +37,7 @@ run(ruby, ["-e", "require 'rubygems'; raise 'Ruby 3.2 or newer is required' if G
 });
 
 for (const entry of matrix) {
-  const environmentRoot = join(projectRoot, "target", `mcp-ruby-sdk-${entry.version}`);
+  const environmentRoot = join(targetRoot, `mcp-ruby-sdk-${entry.version}`);
   const required = [
     ["hana", entry.hanaVersion],
     ["regexp_parser", entry.regexpParserVersion],

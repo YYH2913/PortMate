@@ -4,18 +4,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { cargoLockPinsPackage } from "./cargo-lock-state.mjs";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = createMcpClientFixture(["official-rust-sdk-stdio-check", "official-rust-sdk-http-check"]);
 const project = join(projectRoot, "scripts", "mcp-rust-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-rust-client-versions.json"), "utf8"));
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
+const binary = resolveMcpBinary(projectRoot);
 
 if (!existsSync(binary)) {
   throw new Error(`MCP Rust client check binary does not exist: ${binary}`);
@@ -30,7 +26,7 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
 }
 
 for (const { version: sdkVersion, protocolVersion } of matrix) {
-  const environmentRoot = join(projectRoot, "target", `mcp-rust-sdk-${sdkVersion}`);
+  const environmentRoot = join(targetRoot, `mcp-rust-sdk-${sdkVersion}`);
   const sourceRoot = join(environmentRoot, "src");
   mkdirSync(sourceRoot, { recursive: true });
   cpSync(join(project, "src", "main.rs"), join(sourceRoot, "main.rs"));

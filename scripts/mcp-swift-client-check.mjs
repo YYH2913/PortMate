@@ -18,8 +18,10 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { runSwiftBuildWithRecovery } from "./swift-package-state.mjs";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
 const fixture = createMcpClientFixture(["official-swift-sdk-stdio-check", "official-swift-sdk-http-check"]);
 const templateRoot = join(projectRoot, "scripts", "mcp-swift-client-check");
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-swift-client-versions.json"), "utf8"));
@@ -30,23 +32,17 @@ if (process.platform === "win32") {
   );
 }
 
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) throw new Error(`MCP Swift client check binary does not exist: ${binary}`);
 
 const environment = { ...process.env, ...fixture.environment };
 environment.SWIFTPM_MAX_CONCURRENT_OPERATIONS = "1";
-const swift = await ensureSwift(matrix.swift, environment);
-const cache = join(projectRoot, "target", "mcp-swift-cache");
+const swift = await ensureSwift(matrix.swift, environment, targetRoot);
+const cache = join(targetRoot, "mcp-swift-cache");
 mkdirSync(cache, { recursive: true });
 
 for (const entry of matrix.sdks) {
-  const environmentRoot = join(projectRoot, "target", `mcp-swift-sdk-${entry.version}`);
+  const environmentRoot = join(targetRoot, `mcp-swift-sdk-${entry.version}`);
   const sourceRoot = join(environmentRoot, "Sources", "McpSwiftClientCheck");
   const scratch = join(environmentRoot, "build");
   mkdirSync(sourceRoot, { recursive: true });
@@ -192,7 +188,7 @@ function validateMatrix(value) {
   }
 }
 
-async function ensureSwift({ version, archives }, environment) {
+async function ensureSwift({ version, archives }, environment, targetRoot) {
   const configuredSwift = process.env.PORTMATE_SWIFT?.trim();
   const command = configuredSwift || "swift";
   const probe = run(command, ["--version"], {
@@ -216,10 +212,10 @@ async function ensureSwift({ version, archives }, environment) {
     throw new Error(`Swift ${version} is required; no self-contained bootstrap archive is pinned for ${rid}`);
   }
 
-  const toolsRoot = join(projectRoot, "target", "mcp-swift-tools");
+  const toolsRoot = join(targetRoot, "mcp-swift-tools");
   const installRoot = join(toolsRoot, `swift-${version}-${rid}`);
   const executable = join(installRoot, "usr", "bin", "swift");
-  const archivePath = join(projectRoot, "target", `swift-${version}-RELEASE-ubuntu24.04.tar.gz`);
+  const archivePath = join(targetRoot, `swift-${version}-RELEASE-ubuntu24.04.tar.gz`);
   if (!existsSync(executable)) {
     mkdirSync(toolsRoot, { recursive: true });
     if (!existsSync(archivePath)) {

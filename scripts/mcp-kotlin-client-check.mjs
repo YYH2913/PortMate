@@ -3,10 +3,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMavenRunner } from "./mcp-jvm-tools.mjs";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = createMcpClientFixture(["official-kotlin-sdk-stdio-check", "official-kotlin-sdk-http-check"]);
 const manifestRoot = join(projectRoot, "scripts", "mcp-kotlin-client-check");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
 const matrix = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-kotlin-client-versions.json"), "utf8"));
 const tools = JSON.parse(readFileSync(join(projectRoot, "scripts", "mcp-jvm-tool-versions.json"), "utf8"));
 const versionPattern = /^\d+\.\d+\.\d+$/;
@@ -21,13 +23,7 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   throw new Error("scripts/mcp-kotlin-client-versions.json must contain exact SDK, compiler, Ktor, and protocol versions");
 }
 
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) throw new Error(`MCP Kotlin client check binary does not exist: ${binary}`);
 
 const runMaven = await createMavenRunner({
@@ -39,7 +35,7 @@ for (const entry of matrix) {
   runMaven([
     "--batch-mode",
     "--no-transfer-progress",
-    `-Dmaven.repo.local=${join(projectRoot, "target", "mcp-kotlin-maven-repository")}`,
+    `-Dmaven.repo.local=${join(targetRoot, "mcp-kotlin-maven-repository")}`,
     `-Dmcp.sdk.version=${entry.version}`,
     `-Dkotlin.version=${entry.kotlinVersion}`,
     `-Dktor.version=${entry.ktorVersion}`,

@@ -3,8 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { npmInvocation } from "./npm-invocation.mjs";
+import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const targetRoot = resolveCargoTargetDirectory(projectRoot);
 const matrix = JSON.parse(readFileSync(
   join(projectRoot, "scripts", "mcp-typescript-client-versions.json"),
   "utf8",
@@ -19,13 +21,7 @@ if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   throw new Error("scripts/mcp-typescript-client-versions.json must contain exact SDK and protocol versions");
 }
 
-const configured = process.env.PORTMATE_MCP_BINARY?.trim();
-const binary = configured || join(
-  projectRoot,
-  "target",
-  "debug",
-  process.platform === "win32" ? "portmate-mcp.exe" : "portmate-mcp",
-);
+const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) {
   throw new Error(`MCP TypeScript client check binary does not exist: ${binary}`);
 }
@@ -36,7 +32,7 @@ for (const {
   protocolVersion,
   protocolHeader,
 } of matrix) {
-  const environmentRoot = join(projectRoot, "target", `mcp-typescript-sdk-${sdkVersion}`);
+  const environmentRoot = join(targetRoot, `mcp-typescript-sdk-${sdkVersion}`);
   mkdirSync(environmentRoot, { recursive: true });
   const manifest = `${JSON.stringify({
     name: `portmate-mcp-typescript-client-check-${sdkVersion.replaceAll(".", "-")}`,

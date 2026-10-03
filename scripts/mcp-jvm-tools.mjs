@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolveCargoTargetDirectory } from "./mcp-binary-path.mjs";
 
 export async function createMavenRunner({ projectRoot, manifestRoot, distribution }) {
   if (
@@ -62,7 +63,7 @@ export async function createMavenRunner({ projectRoot, manifestRoot, distributio
 }
 
 async function ensureMaven(projectRoot, { version, sha512 }) {
-  const toolsRoot = join(projectRoot, "target", "mcp-jvm-sdk-tools");
+  const toolsRoot = join(resolveCargoTargetDirectory(projectRoot), "mcp-jvm-sdk-tools");
   const mavenRoot = join(toolsRoot, `apache-maven-${version}`);
   if (hasMavenLauncher(mavenRoot)) return mavenRoot;
 
