@@ -220,6 +220,7 @@ pub(super) fn respond_mcp_approval_inner(
         .map_err(|error| error.to_string())?
         .remove(&approval_id)
         .ok_or_else(|| "MCP approval is no longer pending".to_string())?;
+    let approved = approved && pending.request.expires_at > Utc::now();
     pending
         .response
         .send(approved)
@@ -235,6 +236,9 @@ pub(super) async fn await_mcp_approval_with_emitter<F>(
 where
     F: FnOnce(&McpApprovalRequest) -> Result<(), String>,
 {
+    if request.expires_at <= Utc::now() {
+        return Ok(McpApprovalOutcome::TimedOut);
+    }
     let (response, receiver) = tokio::sync::oneshot::channel();
     {
         let mut pending = state
@@ -262,8 +266,23 @@ where
             .remove(&request.id);
         return Err(error);
     }
-    match tokio::time::timeout(timeout, receiver).await {
-        Ok(Ok(true)) => Ok(McpApprovalOutcome::Approved),
+    let remaining = request
+        .expires_at
+        .signed_duration_since(Utc::now())
+        .to_std()
+        .unwrap_or_default()
+        .min(timeout);
+    if remaining.is_zero() {
+        state
+            .pending_mcp_approvals
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(&request.id);
+        return Ok(McpApprovalOutcome::TimedOut);
+    }
+    match tokio::time::timeout(remaining, receiver).await {
+        Ok(Ok(true)) if request.expires_at > Utc::now() => Ok(McpApprovalOutcome::Approved),
+        Ok(Ok(true)) => Ok(McpApprovalOutcome::TimedOut),
         Ok(Ok(false)) => Ok(McpApprovalOutcome::Denied),
         Ok(Err(_)) => Err("MCP approval response channel closed".to_string()),
         Err(_) => {
