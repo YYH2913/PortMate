@@ -1,5 +1,19 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn renameatx_np(
+        fromfd: libc::c_int,
+        from: *const libc::c_char,
+        tofd: libc::c_int,
+        to: *const libc::c_char,
+        flags: libc::c_uint,
+    ) -> libc::c_int;
+}
+
 pub(super) fn ensure_local_path_missing(path: &Path, label: &str) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(_) => Err(format!("{label}已存在: {}", path.display())),
@@ -54,7 +68,56 @@ fn rename_local_path_without_overwrite(source: &Path, target: &Path) -> Result<(
 
     #[cfg(not(target_os = "linux"))]
     {
-        fs::rename(source, target).map_err(|error| error.to_string())
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let source = CString::new(source.as_os_str().as_bytes())
+                .map_err(|_| format!("本地移动源路径包含 NUL: {}", source.display()))?;
+            let target = CString::new(target.as_os_str().as_bytes())
+                .map_err(|_| format!("本地移动目标路径包含 NUL: {}", target.display()))?;
+            let status = unsafe {
+                renameatx_np(
+                    libc::AT_FDCWD,
+                    source.as_ptr(),
+                    libc::AT_FDCWD,
+                    target.as_ptr(),
+                    0x0000_0002,
+                )
+            };
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error().to_string())
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+            let source = source
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let target = target
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let status = unsafe {
+                MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH)
+            };
+            if status == 0 {
+                Err(std::io::Error::last_os_error().to_string())
+            } else {
+                Ok(())
+            }
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = (source, target);
+            Err("当前平台不支持原子禁止覆盖的本地移动".to_string())
+        }
     }
 }
 
