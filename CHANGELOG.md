@@ -21,6 +21,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
 - SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
+- Local transfer sources now bind the opened handle to its original file identity, and completed transfers replace the destination atomically without deleting it first.
+- ZModem receives now use the same parent-component and temporary-file protections as other local transfer protocols.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

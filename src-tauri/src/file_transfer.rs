@@ -331,8 +331,14 @@ pub(super) fn open_local_resume_writer(path: &Path, offset: u64) -> std::io::Res
         return Err(std::io::Error::other(error));
     }
     if offset == 0 {
+        if local_transfer_entry(path, "本地断点文件")
+            .map_err(std::io::Error::other)?
+            .is_some()
+        {
+            fs::remove_file(path)?;
+        }
         let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
+        options.create_new(true).write(true);
         #[cfg(unix)]
         options.custom_flags(libc::O_NOFOLLOW);
         options.open(path)
@@ -349,17 +355,50 @@ pub(super) fn finalize_local_resume_file(temp: &Path, target: &Path) -> Result<(
     if local_transfer_entry(temp, "本地断点文件")?.is_none() {
         return Err(format!("本地断点文件不存在: {}", temp.display()));
     }
-    if local_transfer_entry(target, "本地目标文件")?.is_some() {
-        fs::remove_file(target)
-            .map_err(|error| format!("删除旧目标文件失败 {}: {error}", target.display()))?;
-    }
-    fs::rename(temp, target).map_err(|error| {
+    let _ = local_transfer_entry(target, "本地目标文件")?;
+    replace_local_transfer_file(temp, target).map_err(|error| {
         format!(
             "重命名本地目标文件失败 {} -> {}: {error}",
             temp.display(),
             target.display()
         )
     })
+}
+
+fn replace_local_transfer_file(temp: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source = temp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let destination = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temp, target)
+    }
 }
 
 pub(super) fn local_transfer_entry(
@@ -407,10 +446,34 @@ pub(super) fn open_local_transfer_source(
     let opened_metadata = file
         .metadata()
         .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
-    if !opened_metadata.is_file() || opened_metadata.len() != metadata.len() {
+    if !opened_metadata.is_file()
+        || opened_metadata.len() != metadata.len()
+        || !same_local_file_identity(&metadata, &opened_metadata)
+    {
         return Err(format!("{label}在打开前后发生变化: {}", path.display()));
     }
     Ok((file, metadata.len()))
+}
+
+fn same_local_file_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.nlink() == 1
+            && after.nlink() == 1;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return before.volume_serial_number() == after.volume_serial_number()
+            && before.file_index() == after.file_index();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        before.len() == after.len()
+    }
 }
 
 pub(super) fn ensure_local_transfer_source_size(

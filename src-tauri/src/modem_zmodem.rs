@@ -79,9 +79,7 @@ pub(super) async fn zmodem_receive_files(
                 if current_file.is_some() { return Err("ZModem 前一个文件尚未完成".into()); }
                 let incoming = String::from_utf8_lossy(info.name);
                 let target = zmodem_local_target_path(local_destination, &incoming, received_files)?;
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("创建 ZModem 本地目录失败: {e}"))?;
-                }
+                prepare_local_transfer_target_path(&target, "ZModem 本地目标文件")?;
                 let (file, temp) = open_new_local_transfer_file(&target)?;
                 current_file = Some((file, target, temp));
             }
