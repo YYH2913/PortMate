@@ -138,21 +138,17 @@ fn modem_transfer_paths_reject_root_and_dot_components() {
         );
     }
 
-    let accepted = modem_direction(&StartTransferRequest {
+    let trailing_separator_error = match modem_direction(&StartTransferRequest {
         session_id: "session".to_string(),
         protocol: TransferProtocol::Ymodem,
         source: source.display().to_string(),
         destination: "remote:/tmp/portmate/".to_string(),
     })
-    .unwrap();
-    match accepted {
-        ModemDirection::Upload {
-            remote_destination, ..
-        } => {
-            assert_eq!(remote_destination, "/tmp/portmate/")
-        }
-        _ => panic!("expected Modem upload direction"),
-    }
+    {
+        Err(error) => error,
+        Ok(_) => panic!("directory-form Modem targets must be rejected"),
+    };
+    assert!(trailing_separator_error.contains("不能以 / 结尾"));
 
     let _ = fs::remove_dir_all(root);
 }

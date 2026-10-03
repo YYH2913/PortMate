@@ -399,6 +399,9 @@ pub(super) fn modem_direction(request: &StartTransferRequest) -> Result<ModemDir
     match (source_remote, destination_remote) {
         (None, Some(remote_destination)) => {
             validate_remote_transfer_path(remote_destination, "Modem 远端目标路径")?;
+            if remote_destination.ends_with('/') {
+                return Err("Modem 远端目标路径不能以 / 结尾；请提供文件路径".to_string());
+            }
             if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_none() {
                 return Err("本地传输源不存在".to_string());
             }
@@ -409,6 +412,9 @@ pub(super) fn modem_direction(request: &StartTransferRequest) -> Result<ModemDir
         }
         (Some(remote_source), None) => {
             validate_remote_transfer_path(remote_source, "Modem 远端源路径")?;
+            if remote_source.ends_with('/') {
+                return Err("Modem 远端源路径不能以 / 结尾；请提供文件路径".to_string());
+            }
             Ok(ModemDirection::Download {
                 remote_source: remote_source.to_string(),
                 local_destination: request.destination.clone(),
@@ -417,6 +423,9 @@ pub(super) fn modem_direction(request: &StartTransferRequest) -> Result<ModemDir
         (None, None) => {
             if local_transfer_entry(Path::new(&request.source), "本地传输源")?.is_some() {
                 validate_remote_transfer_path(&request.destination, "Modem 远端目标路径")?;
+                if request.destination.ends_with('/') {
+                    return Err("Modem 远端目标路径不能以 / 结尾；请提供文件路径".to_string());
+                }
                 Ok(ModemDirection::Upload {
                     local_source: request.source.clone(),
                     remote_destination: request.destination.clone(),
