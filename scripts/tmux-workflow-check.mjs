@@ -135,6 +135,10 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript(({ initialSession, initialWorkspace, tmuxState }) => {
     localStorage.clear();
+    // The assertions below intentionally use the Chinese catalog. Pin the
+    // locale so the compatibility runner is deterministic on non-Chinese CI
+    // hosts instead of depending on navigator.language.
+    localStorage.setItem("portmate.language.v1", "zh");
     localStorage.setItem("portmate.workspace.v1", JSON.stringify(initialWorkspace));
     localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
       startupMode: "none",
