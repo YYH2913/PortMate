@@ -86,13 +86,7 @@ pub(crate) fn rotate_client_identity(
 ) -> Result<ClientIdentityMutationResponse, String> {
     let _credential_guard = lock_credential_operations(state.inner())?;
     ensure_no_pending_profile_secret_migration(&state.store_path)?;
-    let private_key = request
-        .private_key
-        .trim_end_matches(['\r', '\n'])
-        .to_string();
-    if private_key.trim().is_empty() {
-        return Err("私钥内容不能为空".to_string());
-    }
+    let private_key = prepare_stored_secret(request.private_key)?;
     let (saved_passphrase_ref, current_secret_ref) = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         let current = find_client_identity(&store, &request.profile_id, &request.identity_id)?;

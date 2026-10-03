@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) const MAX_STORED_SECRET_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_STORED_SECRET_BYTES: usize = 1024 * 1024;
 
-pub(super) fn prepare_stored_secret(secret: String) -> Result<String, String> {
+pub(crate) fn prepare_stored_secret(secret: String) -> Result<String, String> {
     if secret.len() > MAX_STORED_SECRET_BYTES {
         return Err(format!(
             "密钥内容不能超过 {MAX_STORED_SECRET_BYTES} 字节"

@@ -20,6 +20,7 @@ mod vault_commands;
 use bundle_signing::*;
 use portable_vault::*;
 use profile_security::*;
+use secret_commands::*;
 use secret_provider::*;
 use session_credentials::*;
 use ssh_agent::*;
