@@ -962,6 +962,7 @@ pub(super) async fn send_one_key_value(
     origin: &str,
     prompt_event_id: Option<&str>,
     prompt_validation: Option<&OneKeyPromptValidation>,
+    expected_runtime_id: Option<&str>,
 ) -> Result<SessionEvent, String> {
     let _lane_guard = acquire_outbound_lane(&io.store_path, session_id).await?;
     let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, session_id).await?;
@@ -1008,7 +1009,7 @@ pub(super) async fn send_one_key_value(
         &io.serial_workers,
         session_id,
         wire_text.as_bytes(),
-        None,
+        expected_runtime_id,
     )
     .await?;
     Ok(record_outbound_control_event(

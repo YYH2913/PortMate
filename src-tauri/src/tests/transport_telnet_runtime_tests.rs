@@ -91,6 +91,7 @@ fn telnet_login_and_commands_submit_crlf_with_and_without_binary() {
                     "one-key",
                     None,
                     None,
+                    None,
                 )
                 .await
                 .unwrap();

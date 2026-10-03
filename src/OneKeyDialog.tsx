@@ -303,7 +303,12 @@ export default function OneKeyDialog({
     setFeedback(null);
     try {
       await invokeBackend("send_one_key", {
-        request: { id: draft.id, sessionId: pendingSessionId, field },
+        request: {
+          id: draft.id,
+          sessionId: pendingSessionId,
+          field,
+          expectedConnectedSince: active.runtime.connectedSince ?? null,
+        },
       });
       if (operationGateRef.current.isCurrent("operation", operationToken) && mountedRef.current) {
         setFeedback({ kind: "status", text: t("sent", [field === "username" ? t("username") : field === "password" ? t("password") : t("private-key-passphrase")]) });

@@ -102,6 +102,8 @@ pub struct SendOneKeyRequest {
     pub session_id: String,
     pub field: OneKeyField,
     #[serde(default)]
+    pub expected_connected_since: Option<String>,
+    #[serde(default)]
     pub source: OneKeySendSource,
     #[serde(default)]
     pub prompt_event_id: Option<String>,

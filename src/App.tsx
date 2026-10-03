@@ -3769,7 +3769,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         if (!attemptIsCurrent()) return;
         const saved = isBackendAvailable()
           ? credentials.oneKeyId
-            ? await invokeBackend<SessionSummary>("open_session_with_one_key", { sessionId: persisted.profile.id, oneKeyId: credentials.oneKeyId })
+            ? await invokeBackend<SessionSummary>("open_session_with_one_key", {
+              sessionId: persisted.profile.id,
+              oneKeyId: credentials.oneKeyId,
+              expectedConnectedSince: session.runtime.connectedSince ?? null,
+            })
             : await invokeBackend<SessionSummary>("open_session", {
               request: { sessionId: persisted.profile.id, credentialHandle },
             })
@@ -4142,6 +4146,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             field,
             source: "prompt-completion",
             promptEventId,
+            expectedConnectedSince: sessionsRef.current.find((item) => item.profile.id === sessionId)?.runtime.connectedSince ?? null,
           },
         });
       } catch (error) {

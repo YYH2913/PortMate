@@ -44,6 +44,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Tmux list parsing now uses a non-printable field separator excluded from valid names, preventing delimiter collisions from truncating names or shifting mutation targets.
 - Host script launch now rejects parameter/environment combinations that would exceed the Windows process environment block instead of failing at process creation.
 - Profile Vault private-key rotation now applies the same 1 MiB, NUL, and empty-secret validation as other secret writes before parsing or storing the key.
+- OneKey sends and SSH logins now carry the observed connection generation through to the backend write, preventing credentials from crossing a reconnect or endpoint change.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

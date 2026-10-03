@@ -3,6 +3,7 @@ use super::session_open::{
     open_reserved_session_inner, open_session_inner, register_session_open_cancellation,
     SessionOpenCredentials,
 };
+use super::one_key_commands::validate_one_key_connection_generation;
 use super::*;
 
 pub(super) fn mark_session_connected_with_events(
@@ -128,9 +129,14 @@ pub(crate) async fn open_session_with_one_key(
     state: State<'_, AppState>,
     session_id: String,
     one_key_id: String,
+    expected_connected_since: Option<String>,
 ) -> Result<SessionSummary, String> {
     let state = state.inner().clone();
     let cancellation = register_session_open_cancellation(&state, &session_id)?;
+    {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        validate_one_key_connection_generation(&store, &session_id, expected_connected_since.as_deref())?;
+    }
     let credentials = resolve_one_key_login_credentials(&state, &session_id, &one_key_id)?;
     open_reserved_session_inner(
         state,

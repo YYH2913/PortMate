@@ -29,6 +29,11 @@ pub(crate) async fn send_one_key(
         if status != SessionStatus::Connected {
             return Err("OneKey 只能发送到已连接会话".to_string());
         }
+        validate_one_key_connection_generation(
+            &store,
+            &request.session_id,
+            request.expected_connected_since.as_deref(),
+        )?;
         let (prompt_event_id, prompt_validation) = match request.source {
             OneKeySendSource::Manual => (None, None),
             OneKeySendSource::PromptCompletion => {
@@ -80,6 +85,11 @@ pub(crate) async fn send_one_key(
         };
         (value, origin, prompt_event_id, prompt_validation)
     };
+    let runtime_id = current_session_runtime_id(
+        &state.inner().session_io().runtimes,
+        &request.session_id,
+    )?
+    .ok_or_else(|| "OneKey 会话连接代际已变化，请重试".to_string())?;
     send_one_key_value(
         state.inner().session_io(),
         &request.session_id,
@@ -87,8 +97,29 @@ pub(crate) async fn send_one_key(
         origin,
         prompt_event_id.as_deref(),
         prompt_validation.as_ref(),
+        Some(&runtime_id),
     )
     .await
+}
+
+pub(super) fn validate_one_key_connection_generation(
+    store: &SessionStore,
+    session_id: &str,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let Some(expected) = expected else { return Ok(()); };
+    let expected = DateTime::parse_from_rfc3339(expected)
+        .map_err(|_| "OneKey 缺少有效的连接代际".to_string())?
+        .with_timezone(&Utc);
+    let actual = store
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.session_id == session_id)
+        .and_then(|runtime| runtime.connected_since);
+    if actual != Some(expected) {
+        return Err("OneKey 连接已变化，请刷新后重试".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

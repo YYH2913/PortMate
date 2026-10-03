@@ -64,6 +64,7 @@ fn one_key_completion_writes_value_with_prompt_audit_without_readable_text() {
             "one-key-completion",
             Some(&prompt_event_id),
             Some(&validation),
+            None,
         )
         .await
         .unwrap();
