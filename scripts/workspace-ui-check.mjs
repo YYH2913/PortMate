@@ -5150,10 +5150,11 @@ Host staging
   await selectSessionSection(advancedSessionDialog, "公钥");
   const authOrderSelect = page.locator(".session-settings-dialog .dialog-field", { hasText: "顺序:(O)" }).locator("select");
   const authOrderOptions = await authOrderSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
-  assert(authOrderOptions.length === 15
-    && new Set(authOrderOptions).size === 15
+  assert(authOrderOptions.length === 16
+    && new Set(authOrderOptions).size === 16
     && authOrderOptions.includes("keyboard-interactive>public-key")
-    && authOrderOptions.includes("password>keyboard-interactive>public-key"),
+    && authOrderOptions.includes("password>keyboard-interactive>public-key")
+    && authOrderOptions.includes("none"),
   `SSH authentication orders are incomplete: ${JSON.stringify(authOrderOptions)}`);
   await authOrderSelect.selectOption("keyboard-interactive>public-key");
   assert(await authOrderSelect.inputValue() === "keyboard-interactive>public-key",
@@ -6514,6 +6515,13 @@ Host staging
   await page.evaluate(() => window.__pendingMcpApprovalResponses.shift().resolve());
   await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("停止指定转发或代理"));
   await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
+  const approvalEscapeFocus = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName ?? null,
+    text: document.activeElement?.textContent?.trim().slice(0, 80) ?? null,
+    inside: Boolean(document.activeElement?.closest(".mcp-approval-dialog")),
+  }));
+  assert(approvalEscapeFocus.inside,
+    `MCP approval Escape focus left the dialog: ${JSON.stringify(approvalEscapeFocus)}`);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => window.__pendingMcpApprovalResponses.length === 1);
   await page.evaluate(() => {

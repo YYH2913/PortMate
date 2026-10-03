@@ -66,6 +66,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - MCP SDK compatibility checks now resolve bridge binaries and per-SDK workspaces from configured `CARGO_TARGET_DIR` values and explicit `CARGO_BUILD_TARGET` output directories.
 - Tmux compatibility checks now locate their Cargo probe under configured target directories and explicit target-triple output paths.
 - Tmux browser workflow checks now pin the locale used by their selectors, so compatibility validation is deterministic on non-Chinese hosts.
+- Workspace UI regression checks now include the explicit SSH `none` authentication preset in their expected settings matrix.
 - MCP grant management now preserves an unsaved grant draft when another window removes the grant being edited.
 - CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
 - Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
