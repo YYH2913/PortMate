@@ -416,6 +416,7 @@ function TerminalCanvas({
   const freeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const lastSizeRef = useRef("");
+  const resizeRetryRef = useRef(0);
   const focusedRef = useRef(focused);
   const fitAndReportRef = useRef<() => void>(() => {});
   const mouseReportingRef = useRef(mouseReporting);
@@ -1995,13 +1996,26 @@ function TerminalCanvas({
           return;
         }
         if (displayModeRef.current === "hex" || lastSizeRef.current === settledSize) return;
-        lastSizeRef.current = settledSize;
+        if (resizeRetryRef.current >= 3) return;
         if (isBackendAvailable()) {
+          const requestSize = settledSize;
           void invokeBackend("resize_session", {
             sessionId: active.profile.id,
             cols: term.cols,
             rows: term.rows,
-          }).catch(() => {});
+          }).then(() => {
+            if (!terminalDisposed) {
+              lastSizeRef.current = requestSize;
+              resizeRetryRef.current = 0;
+            }
+          }).catch(() => {
+            if (!terminalDisposed && resizeRetryRef.current < 3) {
+              resizeRetryRef.current += 1;
+              resizeReportTimer = window.setTimeout(reportStableSize, TERMINAL_RESIZE_SETTLE_MS);
+            }
+          });
+        } else {
+          lastSizeRef.current = settledSize;
         }
       };
       resizeReportTimer = window.setTimeout(reportStableSize, TERMINAL_RESIZE_SETTLE_MS);
@@ -2813,6 +2827,7 @@ function TerminalCanvas({
     if (focused && displayMode !== "hex") {
       // Another view of this session may have resized the shared PTY while this view was inactive.
       lastSizeRef.current = "";
+      resizeRetryRef.current = 0;
       scheduleTerminalSurfaceFocus();
       fitAndReportRef.current();
     } else if (!focused) {
@@ -2821,7 +2836,7 @@ function TerminalCanvas({
       localNavigationRef.current = null;
       clearDocumentSelectionWithin(host?.closest(".terminal-canvas") ?? null);
     }
-  }, [active?.profile.id, displayMode, focused]);
+  }, [active?.profile.id, active?.runtime.connectedSince, active?.runtime.status, displayMode, focused]);
 
   useEffect(() => {
     if (!focused && gotoLineOpen) closeTerminalGotoLine(true, false);
