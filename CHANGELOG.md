@@ -28,6 +28,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Sidecar preparation now selects the target-specific Cargo artifact when `CARGO_BUILD_TARGET` explicitly names the host target.
 - YModem sends now propagate receiver cancellation and CRC handshake failures before sending more file data.
 - Modem upload and download paths now reject trailing directory separators before starting the remote protocol.
+- YModem receives now refuse to finalize files shorter than the sender's declared size.
 - Desktop builds, AppImage smoke/finalization, and Linux, Windows, and macOS package checks now honor relative and absolute `CARGO_TARGET_DIR` values.
 - CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
 - Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.

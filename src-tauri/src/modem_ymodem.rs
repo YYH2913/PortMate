@@ -152,6 +152,14 @@ pub(super) async fn ymodem_receive_file(
                     }
                 }
             }
+            if let Some(expected_size) = expected_size {
+                let expected_size = expected_size as u64;
+                if bytes_written != expected_size {
+                    return Err(format!(
+                        "YModem file size mismatch: received {bytes_written}, expected {expected_size}"
+                    ));
+                }
+            }
             break;
         }
         let packet = modem_read_packet(&mut reader, marker).await?;
