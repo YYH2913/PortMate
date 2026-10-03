@@ -249,8 +249,21 @@ pub(super) async fn batch_target_kind(
 ) -> Result<BatchTargetKind, String> {
     if remote {
         let sftp = sftp.ok_or_else(|| "远端目标检查缺少 SFTP session".to_string())?;
-        let Ok(metadata) = sftp.symlink_metadata(path.to_string()).await else {
-            return Ok(BatchTargetKind::Missing);
+        let metadata = match sftp.symlink_metadata(path.to_string()).await {
+            Ok(metadata) => metadata,
+            Err(metadata_error) => match sftp.try_exists(path.to_string()).await {
+                Ok(false) => return Ok(BatchTargetKind::Missing),
+                Ok(true) => {
+                    return Err(format!(
+                        "无法确认远端批次目标 {path}: {metadata_error}"
+                    ));
+                }
+                Err(exists_error) => {
+                    return Err(format!(
+                        "无法确认远端批次目标 {path}: {metadata_error}; existence check failed: {exists_error}"
+                    ));
+                }
+            },
         };
         Ok(if metadata.is_symlink() {
             BatchTargetKind::Other
