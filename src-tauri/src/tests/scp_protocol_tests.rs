@@ -105,7 +105,8 @@ fn remote_copy_command_polls_progress_and_cleans_background_copy() {
     assert!(command.contains("src=$(portable_path \"$src\")"));
     assert!(command.contains("head -c \"$current\" \"$src\" | cmp -s - \"$part\""));
     assert!(command.contains("tail -c +$((offset + 1)) \"$src\" >> \"$part\""));
-    assert!(command.contains("mv -f \"$part\" \"$target\""));
+    assert!(command.contains("ln \"$part\" \"$target\" && rm \"$part\""));
+    assert!(command.contains("reject_path_components"));
     assert!(!command.contains(" -- \"$src\""));
     assert!(!command.contains("mv -f --"));
     assert!(command.contains("src='/tmp/source file.bin'"));
@@ -123,6 +124,7 @@ fn remote_copy_command_verifies_existing_part_file_prefix() {
 
     for (prefix, expected_resume) in [(b"abc".as_slice(), 3), (b"xyz".as_slice(), 0)] {
         fs::write(&part, prefix).unwrap();
+        let _ = fs::remove_file(&target);
         let command = remote_copy_command(source.to_str().unwrap(), target.to_str().unwrap());
         let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
         assert!(
@@ -222,7 +224,7 @@ fn scp_upload_command_uses_resume_receiver() {
     assert!(command.contains("cat >> \"$part\" || exit 1"));
     assert!(command.contains("portable_path()"));
     assert!(command.contains("target=$(portable_path \"$target\")"));
-    assert!(command.contains("mv -f \"$part\" \"$target\""));
+    assert!(command.contains("ln \"$part\" \"$target\" && rm \"$part\""));
     assert!(!command.contains("mv -f --"));
     assert!(command.contains("final_target=$(file_size \"$target\")"));
 }
@@ -456,7 +458,7 @@ fn scp_download_command_rejects_symbolic_sources() {
     std::os::unix::fs::symlink(&protected, &source_link).unwrap();
 
     let command = scp_download_command(source_link.to_str().unwrap());
-    assert!(command.contains("[ -L \"$source\" ]"));
+    assert!(command.contains("reject_path_components \"$source\""));
     assert!(command.contains("exec scp -f \"$source\""));
     let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
     assert!(!output.status.success());

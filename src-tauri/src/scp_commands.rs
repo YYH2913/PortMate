@@ -12,9 +12,10 @@ pub(super) fn scp_upload_command(remote_destination: &str, file_name: &str, tota
             "portable_path() {{ case \"$1\" in -*) printf './%s\\n' \"$1\" ;; *) printf '%s\\n' \"$1\" ;; esac; }}; ",
             "target=$(portable_path \"$target\") || exit 1; part=$(portable_path \"$part\") || exit 1; ",
             "reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; ",
+            "reject_path_components() {{ path=\"$1\"; case \"$path\" in /*) current=/; rest=\"${{path#/}}\" ;; *) current=.; rest=\"$path\" ;; esac; while [ -n \"$rest\" ]; do component=\"${{rest%%/*}}\"; if [ \"$rest\" = \"$component\" ]; then rest=; else rest=\"${{rest#*/}}\"; fi; [ -z \"$component\" ] && continue; if [ \"$current\" = / ] || [ \"$current\" = . ]; then current=\"$current$component\"; else current=\"$current/$component\"; fi; if ! reject_link \"$current\"; then return 1; fi; done; }}; ",
             "file_size() {{ value=$(wc -c < \"$1\") || return 1; value=$(printf '%s' \"$value\" | tr -d '[:space:]') || return 1; case \"$value\" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\\n' \"$value\"; }}; ",
             "part_sha256() {{ if command -v sha256sum >/dev/null 2>&1; then value=$(sha256sum < \"$1\") || return 1; elif command -v shasum >/dev/null 2>&1; then value=$(shasum -a 256 < \"$1\") || return 1; elif command -v sha256 >/dev/null 2>&1; then value=$(sha256 -q \"$1\") || return 1; else printf 'PortMate SCP upload has no SHA-256 tool\\n' >&2; return 1; fi; value=${{value%% *}}; [ -n \"$value\" ] || return 1; printf '%s\\n' \"$value\"; }}; ",
-            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
+            "if ! reject_path_components \"$target\" || ! reject_path_components \"$part\"; then exit 1; fi; ",
             "printf '__PORTMATE_SIZE__%s\\n' \"$total\"; ",
             "offset=0; ",
             "if [ -e \"$part\" ]; then ",
@@ -39,8 +40,8 @@ pub(super) fn scp_upload_command(remote_destination: &str, file_name: &str, tota
             "if [ \"$final\" -ne \"$total\" ]; then ",
             "printf 'PortMate SCP upload size mismatch: %s of %s\\n' \"$final\" \"$total\" >&2; exit 1; ",
             "fi; ",
-            "if ! reject_link \"$part\" || ! reject_link \"$target\"; then exit 1; fi; ",
-            "mv -f \"$part\" \"$target\" || exit 1; ",
+            "if ! reject_path_components \"$target\" || ! reject_path_components \"$part\"; then exit 1; fi; ",
+            "ln \"$part\" \"$target\" && rm \"$part\" || exit 1; ",
             "final_target=$(file_size \"$target\") || exit 1; printf '__PORTMATE_DONE__%s\\n' \"$final_target\""
         ),
         shell_quote(remote_destination),
@@ -51,7 +52,7 @@ pub(super) fn scp_upload_command(remote_destination: &str, file_name: &str, tota
 
 pub(super) fn scp_download_command(remote_source: &str) -> String {
     format!(
-        "source={}; if [ -L \"$source\" ] || [ ! -f \"$source\" ]; then printf 'PortMate refuses symbolic link or non-file source: %s\\n' \"$source\" >&2; exit 1; fi; exec scp -f \"$source\"",
+        "source={}; reject_link() {{ if [ -L \"$1\" ]; then printf 'PortMate refuses symbolic link: %s\\n' \"$1\" >&2; return 1; fi; }}; reject_path_components() {{ path=\"$1\"; case \"$path\" in /*) current=/; rest=\"${{path#/}}\" ;; *) current=.; rest=\"$path\" ;; esac; while [ -n \"$rest\" ]; do component=\"${{rest%%/*}}\"; if [ \"$rest\" = \"$component\" ]; then rest=; else rest=\"${{rest#*/}}\"; fi; [ -z \"$component\" ] && continue; if [ \"$current\" = / ] || [ \"$current\" = . ]; then current=\"$current$component\"; else current=\"$current/$component\"; fi; reject_link \"$current\" || return 1; done; }}; if ! reject_path_components \"$source\" || [ ! -f \"$source\" ]; then printf 'PortMate refuses symbolic link or non-file source: %s\\n' \"$source\" >&2; exit 1; fi; exec scp -f \"$source\"",
         shell_quote(remote_source)
     )
 }

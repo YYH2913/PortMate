@@ -5,6 +5,7 @@ pub(crate) async fn sftp_resume_offset(
     path: &str,
     total: u64,
 ) -> Result<u64, String> {
+    reject_remote_symlink_components(sftp, path, false, "SFTP 断点文件路径").await?;
     let Some(size) = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await? else {
         return Ok(0);
     };
@@ -202,6 +203,7 @@ pub(crate) async fn sftp_open_resume_writer(
     path: &str,
     offset: u64,
 ) -> Result<SftpBackendFile, String> {
+    reject_remote_symlink_components(sftp, path, false, "SFTP 断点文件路径").await?;
     let _ = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await?;
     let flags = if offset == 0 {
         OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
@@ -225,6 +227,8 @@ pub(crate) async fn sftp_finalize_resume_file(
     temp: &str,
     target: &str,
 ) -> Result<(), String> {
+    reject_remote_symlink_components(sftp, temp, false, "SFTP 断点文件路径").await?;
+    reject_remote_symlink_components(sftp, target, false, "SFTP 目标文件路径").await?;
     if sftp_regular_file_size(sftp, temp, "SFTP 断点文件")
         .await?
         .is_none()
@@ -235,11 +239,9 @@ pub(crate) async fn sftp_finalize_resume_file(
         .await?
         .is_some()
     {
-        sftp.remove_file(target.to_string())
-            .await
-            .map_err(|error| format!("SFTP 删除旧目标文件失败 {target}: {error}"))?;
+        return Err(format!("SFTP 目标文件已存在，拒绝覆盖: {target}"));
     }
-    sftp.rename(temp.to_string(), target.to_string())
+    sftp.rename_without_overwrite(temp.to_string(), target.to_string())
         .await
-        .map_err(|error| format!("SFTP 重命名断点文件失败 {temp} -> {target}: {error}"))
+        .map_err(|error| format!("SFTP 原子提交断点文件失败 {temp} -> {target}: {error}"))
 }

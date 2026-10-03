@@ -326,6 +326,46 @@ impl SftpBackendSession {
         }
     }
 
+    pub(super) async fn rename_without_overwrite(
+        &self,
+        old_path: String,
+        new_path: String,
+    ) -> Result<(), String> {
+        match self {
+            Self::Russh(session) => {
+                let linked = session
+                    .hardlink(old_path.clone(), new_path.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if !linked {
+                    return Err("SFTP 服务端不支持安全的禁止覆盖文件移动".to_string());
+                }
+                session
+                    .remove_file(old_path)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            Self::Libssh(session) => {
+                let session = Arc::clone(session);
+                run_libssh_sftp_operation_with_timeout(
+                    session,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh SFTP no-replace rename",
+                    move |session, _| {
+                        session
+                            .hardlink(&old_path, &new_path)
+                            .map_err(|error| error.to_string())?;
+                        session
+                            .remove_file(&old_path)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     pub(super) async fn rename(&self, old_path: String, new_path: String) -> Result<(), String> {
         match self {
             Self::Russh(session) => session

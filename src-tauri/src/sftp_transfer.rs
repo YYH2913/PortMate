@@ -83,6 +83,7 @@ pub(super) async fn sftp_download(
     local_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    reject_remote_symlink_components(sftp, remote_source, false, "SFTP 远端源路径").await?;
     let total = sftp_regular_file_size(sftp, remote_source, "SFTP 远端源文件")
         .await?
         .ok_or_else(|| format!("SFTP 远端源文件不存在: {remote_source}"))?;
@@ -149,6 +150,7 @@ pub(super) async fn sftp_remote_copy(
         .map_err(|error| format!("SFTP 打开远端源文件失败 {remote_source}: {error}"))?;
     let file_name = remote_file_name(remote_source);
     let target = sftp_destination_file_path(sftp, remote_destination, &file_name).await?;
+    reject_remote_symlink_components(sftp, &target, false, "SFTP 远端目标路径").await?;
     let temp_target = remote_resume_part_path(&target);
     let mut copied = sftp_resume_offset_matching_sftp_source(
         sftp,
@@ -220,9 +222,11 @@ pub(super) async fn sftp_destination_file_path(
     if destination.trim().is_empty() {
         return Err("SFTP 远端目标路径不能为空".to_string());
     }
+    reject_remote_symlink_components(sftp, destination, false, "SFTP 远端目标路径").await?;
 
     if destination.ends_with('/') {
         sftp_create_dir_all(sftp, destination).await?;
+        reject_remote_symlink_components(sftp, destination, false, "SFTP 远端目标路径").await?;
         return Ok(remote_join_path(destination, source_name));
     }
 
@@ -251,6 +255,7 @@ pub(super) async fn sftp_destination_file_path(
             sftp_create_dir_all(sftp, &parent).await?;
         }
     }
+    reject_remote_symlink_components(sftp, destination, false, "SFTP 远端目标路径").await?;
     Ok(destination.to_string())
 }
 

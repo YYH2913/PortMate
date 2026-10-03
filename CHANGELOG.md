@@ -25,6 +25,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - ZModem receives now use the same parent-component and temporary-file protections as other local transfer protocols.
 - Local no-overwrite moves now use platform-specific atomic exclusive rename primitives, and fail closed where the platform cannot provide them.
 - Remote batch conflict checks now treat only a confirmed missing target as absent; permission, timeout, and transport errors abort planning.
+- SCP and remote-copy commands now reject symbolic links in every path component and use no-clobber hard-link commits for completed remote files.
+- SFTP transfer and file-rename commits now reject symlinked path components and use atomic no-replace hard-link commits for regular files; directory moves fail closed when the server cannot provide that guarantee.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

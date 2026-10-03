@@ -334,7 +334,10 @@ pub(super) async fn move_paths_inner(
         let result = async {
             let plan = prepare_remote_move_paths(&sftp, &request.paths, &request.destination).await?;
             for (completed, item) in plan.into_iter().enumerate() {
-                sftp.rename(item.source.clone(), item.target.clone())
+                if item.source_is_dir {
+                    return Err("SFTP 目录移动无法提供禁止覆盖的原子提交".to_string());
+                }
+                sftp.rename_without_overwrite(item.source.clone(), item.target.clone())
                     .await
                     .map_err(|error| {
                         format!(
@@ -388,9 +391,16 @@ pub(super) async fn rename_path_inner(
             reject_remote_symlink_components(&sftp, &old_path, true, "远端重命名源路径").await?;
             reject_remote_symlink_components(&sftp, &new_path, false, "远端重命名目标路径").await?;
             ensure_remote_path_missing(&sftp, &new_path, "远端重命名目标路径").await?;
-            sftp.rename(old_path.clone(), new_path.clone())
+            let old_metadata = sftp
+                .symlink_metadata(old_path.clone())
                 .await
-                .map_err(|error| format!("SFTP 重命名失败 {} -> {}: {error}", old_path, new_path))
+                .map_err(|error| format!("SFTP 读取重命名源属性失败 {old_path}: {error}"))?;
+            if old_metadata.is_dir() {
+                return Err("SFTP 目录重命名无法提供禁止覆盖的原子提交".to_string());
+            }
+            sftp.rename_without_overwrite(old_path.clone(), new_path.clone())
+                .await
+                .map_err(|error| format!("SFTP 原子重命名失败 {} -> {}: {error}", old_path, new_path))
         }
         .await;
         drop(sftp);

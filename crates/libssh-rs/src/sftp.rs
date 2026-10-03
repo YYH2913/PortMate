@@ -238,6 +238,15 @@ impl Sftp {
         SftpError::result(sftp, res, ())
     }
 
+    /// Create a hard link without replacing an existing destination.
+    pub fn hardlink(&self, filename: &str, new_name: &str) -> SshResult<()> {
+        let filename = CString::new(filename)?;
+        let new_name = CString::new(new_name)?;
+        let (_sess, sftp) = self.lock_session();
+        let res = unsafe { sys::sftp_hardlink(sftp, filename.as_ptr(), new_name.as_ptr()) };
+        SftpError::result(sftp, res, ())
+    }
+
     /// Remove a file or an empty directory
     pub fn remove_file(&self, filename: &str) -> SshResult<()> {
         let filename = CString::new(filename)?;
