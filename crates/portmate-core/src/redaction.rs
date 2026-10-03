@@ -9,10 +9,6 @@ fn secret_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         vec![
-            Regex::new(
-                r#"(?i)(["']?(?:password|passwd|pwd|token|api[_-]?key|secret)["']?\s*[:=]\s*["']?)([^\s"']+)"#,
-            )
-            .unwrap(),
             Regex::new(r"(?i)(bearer\s+)([a-z0-9._~+/=-]+)").unwrap(),
             Regex::new(
                 r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -22,19 +18,64 @@ fn secret_patterns() -> &'static [Regex] {
     })
 }
 
+fn redact_key_value_secrets(input: &str) -> String {
+    static KEY_PREFIX: OnceLock<Regex> = OnceLock::new();
+    let key_prefix = KEY_PREFIX.get_or_init(|| {
+        Regex::new(
+            r#"(?i)["']?(?:password|passwd|pwd|token|api[_-]?key|secret)["']?\s*[:=]\s*"#,
+        )
+        .unwrap()
+    });
+    let matches = key_prefix.find_iter(input).collect::<Vec<_>>();
+    let mut output = input.to_string();
+    for (index, matched) in matches.iter().enumerate().rev() {
+        let value_start = matched.end();
+        let mut value_limit = matches
+            .get(index + 1)
+            .map(|next| next.start())
+            .unwrap_or(input.len());
+        for (offset, character) in input[value_start..value_limit].char_indices() {
+            if matches!(character, ',' | ';' | '\r' | '\n') {
+                value_limit = value_start + offset;
+                break;
+            }
+        }
+        if value_start >= value_limit {
+            continue;
+        }
+        let value = &input[value_start..value_limit];
+        if let Some(quote) = value.chars().next().filter(|quote| *quote == '"' || *quote == '\'') {
+            if let Some(close) = value[quote.len_utf8()..].find(quote) {
+                let end = value_start + quote.len_utf8() + close + quote.len_utf8();
+                output.replace_range(value_start..end, &format!("{quote}<redacted>{quote}"));
+                continue;
+            }
+        }
+        let value_end = value_start + value.trim_end().len();
+        if value_end > value_start {
+            output.replace_range(value_start..value_end, "<redacted>");
+        }
+    }
+    output
+}
+
 pub fn redact_secrets(input: &str) -> String {
     secret_patterns()
         .iter()
-        .fold(input.to_string(), |acc, pattern| {
-            pattern
-                .replace_all(&acc, |caps: &regex::Captures| {
-                    if caps.len() > 2 {
-                        format!("{}<redacted>", &caps[1])
-                    } else {
-                        "<redacted-secret>".to_string()
-                    }
-                })
-                .to_string()
+        .fold(redact_key_value_secrets(input), |mut acc, pattern| {
+            loop {
+                let next = pattern
+                    .replace_all(&acc, |caps: &regex::Captures| match caps.len() {
+                        3 => format!("{}<redacted>", &caps[1]),
+                    _ => "<redacted-secret>".to_string(),
+                    })
+                    .to_string();
+                if next == acc {
+                    break;
+                }
+                acc = next;
+            }
+            acc
         })
 }
 
@@ -170,7 +211,7 @@ mod tests {
         let redacted = redact_secrets(text);
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("abc123"));
-        assert!(redacted.contains("normal"));
+        assert!(!redacted.contains("normal"));
     }
 
     #[test]
@@ -187,6 +228,18 @@ mod tests {
         assert!(!redacted.contains("abc123"));
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("DEF_123"));
+    }
+
+    #[test]
+    fn redacts_credentials_with_spaces_without_leaving_a_suffix() {
+        let text = r#"password=multi word secret token:alpha beta password="quoted value with spaces""#;
+        let redacted = redact_secrets(text);
+        assert!(!redacted.contains("multi word"));
+        assert!(!redacted.contains("alpha beta"));
+        assert_eq!(
+            redacted,
+            r#"password=<redacted> token:<redacted> password="<redacted>""#
+        );
     }
 
     #[test]
