@@ -1039,9 +1039,9 @@ export default function KeyManagerDialog({
     message: string,
     existingMutationToken?: number,
     existingClientMutationToken?: number,
-  ): Promise<{ persisted: boolean; accepted: boolean }> {
+  ): Promise<{ persisted: boolean; accepted: boolean; commitUnknown: boolean }> {
     const clientMutationToken = existingClientMutationToken ?? beginClientKeyMutation();
-    if (clientMutationToken === null) return { persisted: false, accepted: false };
+    if (clientMutationToken === null) return { persisted: false, accepted: false, commitUnknown: false };
     const mutationToken = existingMutationToken ?? onProfileMutationStart(profile.id);
     let backendSucceeded = false;
     setError("");
@@ -1051,10 +1051,15 @@ export default function KeyManagerDialog({
       backendSucceeded = true;
       const accepted = onProfileChange(saved, mutationToken);
       if (accepted && mountedRef.current) setStatus(message);
-      return { persisted: true, accepted };
+      return { persisted: true, accepted, commitUnknown: false };
     } catch (error) {
-      if (mountedRef.current) setError(formatError(error));
-      return { persisted: false, accepted: false };
+      const message = formatError(error);
+      if (mountedRef.current) setError(message);
+      return {
+        persisted: false,
+        accepted: false,
+        commitUnknown: message.includes("Store 提交状态未知"),
+      };
     } finally {
       onProfileMutationFinish(profile.id, mutationToken, backendSucceeded);
       if (existingClientMutationToken === undefined) finishClientKeyMutation(clientMutationToken);
@@ -1162,12 +1167,17 @@ export default function KeyManagerDialog({
       if (saveResult.persisted) {
         newSecretRef = null;
         if (saveResult.accepted && mountedRef.current) setPrivateKeyText("");
-      } else {
+      } else if (!saveResult.commitUnknown) {
         try {
           await invokeBackend("delete_secret", { secretRef: response.secretRef });
         } catch {
           // Preserve the original profile-save error if best-effort cleanup also fails.
         }
+        newSecretRef = null;
+      } else {
+        // The backend may already have committed the Profile while it could
+        // not verify the Store snapshot. Keep the generated secret so the
+        // persisted reference cannot become dangling after a restart.
         newSecretRef = null;
       }
     } catch (error) {

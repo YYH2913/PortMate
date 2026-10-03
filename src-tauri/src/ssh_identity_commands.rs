@@ -129,10 +129,13 @@ pub(crate) fn rotate_client_identity(
     });
     let new_secret_ref = write_new_secret(storage, &private_key)?;
 
-    let result = (|| {
-        let mut store = state.store.lock().map_err(|error| error.to_string())?;
+    let result: Result<_, StoreCommitError> = (|| {
+        let mut store = state
+            .store
+            .lock()
+            .map_err(|error| StoreCommitError::not_committed(error.to_string()))?;
         let (summary, old_secret_ref) =
-            commit_store_mutation(&mut store, &state.store_path, |next_store| {
+            commit_store_mutation_state(&mut store, &state.store_path, |next_store| {
                 let current =
                     find_client_identity(next_store, &request.profile_id, &request.identity_id)?;
                 if current.source != IdentitySource::ProfileVault {
@@ -160,10 +163,16 @@ pub(crate) fn rotate_client_identity(
         ))
     })();
 
-    if result.is_err() {
-        let _ = delete_secret_from_store(&new_secret_ref);
+    if let Err(error) = &result {
+        if error.state == StoreCommitState::NotCommitted {
+            let _ = delete_secret_from_store(&new_secret_ref);
+        } else {
+            return Err(format!(
+                "{error}；Store 提交状态未知，新私钥 secret 已保留，请重启应用核验"
+            ));
+        }
     }
-    result
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]

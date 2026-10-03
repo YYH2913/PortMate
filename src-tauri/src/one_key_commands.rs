@@ -232,7 +232,7 @@ pub(crate) fn save_one_key(
     let retained_refs = one_key_secret_refs(&one_key)
         .into_iter()
         .collect::<HashSet<_>>();
-    if let Err(error) = commit_store_mutation(&mut store, &state.store_path, |next_store| {
+    if let Err(error) = commit_store_mutation_state(&mut store, &state.store_path, |next_store| {
         if let Some(index) = next_store
             .one_keys
             .iter()
@@ -244,8 +244,14 @@ pub(crate) fn save_one_key(
         }
         Ok(())
     }) {
-        cleanup_generated_one_key_secrets(&generated);
-        return Err(error);
+        if error.state == StoreCommitState::NotCommitted {
+            cleanup_generated_one_key_secrets(&generated);
+        } else {
+            return Err(format!(
+                "{error}；Store 提交状态未知，OneKey 新 secret 已保留，请重启应用核验"
+            ));
+        }
+        return Err(error.to_string());
     }
     cleanup_replaced_one_key_secrets(&store, old_refs, &retained_refs);
     Ok(OneKeyMutationResponse {
