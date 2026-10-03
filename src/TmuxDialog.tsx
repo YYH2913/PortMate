@@ -104,6 +104,23 @@ export default function TmuxDialog({
     });
   }
 
+  function reconcileControlRuntimes(nextState: TmuxState, expectedSessionId: string) {
+    const liveTargets = new Set(nextState.sessions.map((item) => item.name));
+    const staleRuntimes = [...controlRuntimesRef.current].filter(([target]) => !liveTargets.has(target));
+    if (!staleRuntimes.length) return;
+    for (const [target, runtimeId] of staleRuntimes) {
+      controlOwnedTargetsRef.current.delete(target);
+      controlRequestedTargetsRef.current.delete(target);
+      controlRuntimesRef.current.delete(target);
+      void invokeBackend<TmuxControlStatus>("stop_tmux_control", {
+        sessionId: expectedSessionId,
+        target,
+        runtimeId,
+      }).catch(() => {});
+    }
+    publishControlRuntimes();
+  }
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -199,6 +216,7 @@ export default function TmuxDialog({
       const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId });
       if (!isCurrentStateRequest(sessionId, token)) return;
       setState(nextState);
+      reconcileControlRuntimes(nextState, sessionId);
       setTarget((current) => current || nextState.sessions[0]?.name || "portmate");
     } catch (error) {
       if (!isCurrentStateRequest(sessionId, token)) return;
@@ -226,7 +244,10 @@ export default function TmuxDialog({
         const token = gate.replace("state");
         try {
           const nextState = await invokeBackend<TmuxState>("list_tmux_state", { sessionId: expectedSessionId });
-          if (isCurrentStateRequest(expectedSessionId, token)) setState(nextState);
+          if (isCurrentStateRequest(expectedSessionId, token)) {
+            setState(nextState);
+            reconcileControlRuntimes(nextState, expectedSessionId);
+          }
         } catch (error) {
           if (isCurrentStateRequest(expectedSessionId, token)) {
             setError(formatTmuxError(error));

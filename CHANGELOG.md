@@ -45,6 +45,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Copy-on-select now resets its duplicate guard when the terminal selection is cleared, allowing the same text to be copied again after it changes externally.
 - Startup SSH sessions now wait for the Stronghold status check and retry after vault unlock instead of silently failing before credentials are available.
 - Tmux list parsing now uses a non-printable field separator excluded from valid names, preventing delimiter collisions from truncating names or shifting mutation targets.
+- Tmux control watchers now stop and disappear when a session is renamed or removed, preventing a stale session name from orphaning live monitoring.
 - Host script launch now rejects parameter/environment combinations that would exceed the Windows process environment block instead of failing at process creation.
 - Profile Vault private-key rotation now applies the same 1 MiB, NUL, and empty-secret validation as other secret writes before parsing or storing the key.
 - Profile, private-key rotation, and OneKey saves now retain newly created secrets when Store persistence cannot be verified, preventing committed references from pointing to deleted credentials.

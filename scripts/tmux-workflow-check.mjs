@@ -635,6 +635,41 @@ try {
   await page.getByText("lab 已开启 control-mode 实时监听", { exact: true }).waitFor();
   await page.getByRole("button", { name: "实时监听 session build", exact: true }).click();
   await page.getByText("build 已开启 control-mode 实时监听", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__tmuxState = {
+      ...window.__tmuxState,
+      sessions: window.__tmuxState.sessions.map((item) => item.name === "lab" ? { ...item, name: "lab-renamed" } : item),
+      windows: window.__tmuxState.windows.map((item) => item.session === "lab" ? { ...item, session: "lab-renamed" } : item),
+      panes: window.__tmuxState.panes.map((item) => item.session === "lab" ? { ...item, session: "lab-renamed" } : item),
+    };
+    window.__emitTauriEvent("portmate-tmux-control-event", {
+      sessionId: "ssh-tmux",
+      target: "lab",
+      kind: "state-changed",
+      active: true,
+      runtimeId: window.__tmuxControlRuntimes.lab,
+      protocolEvent: "session-renamed",
+      error: null,
+    });
+  });
+  await page.getByRole("button", { name: "实时监听 session lab-renamed", exact: true }).waitFor();
+  await page.waitForFunction(() => window.__invokeCalls.some((call) => (
+    call.command === "stop_tmux_control"
+      && call.args.target === "lab"
+      && call.args.runtimeId === "control-4"
+  )));
+  assert(await page.getByRole("button", { name: "停止实时监听 session lab-renamed", exact: true }).count() === 0,
+    "a session rename left the control watcher attached to the new row");
+  await page.evaluate(() => {
+    window.__tmuxState = {
+      ...window.__tmuxState,
+      sessions: window.__tmuxState.sessions.map((item) => item.name === "lab-renamed" ? { ...item, name: "lab" } : item),
+      windows: window.__tmuxState.windows.map((item) => item.session === "lab-renamed" ? { ...item, session: "lab" } : item),
+      panes: window.__tmuxState.panes.map((item) => item.session === "lab-renamed" ? { ...item, session: "lab" } : item),
+    };
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByRole("button", { name: "实时监听 session lab", exact: true }).waitFor();
   await page.getByRole("button", { name: "关闭 Tmux", exact: true }).click();
   await page.locator(".tmux-dialog").waitFor({ state: "detached" });
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => (
