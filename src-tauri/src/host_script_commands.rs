@@ -382,21 +382,44 @@ fn prepare_command(
             command.env(name, value);
         }
     }
-    command.env(
-        "PORTMATE_INPUT_JSON",
-        serde_json::to_string(parameters).map_err(|e| e.to_string())?,
-    );
+    let mut environment_entries = environment
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| ((*name).to_string(), value)));
+    let input_json = serde_json::to_string(parameters).map_err(|e| e.to_string())?;
+    let mut parameter_entries = Vec::new();
     for (key, value) in parameters
         .as_object()
         .ok_or("parameters must be an object")?
     {
-        command.env(
+        parameter_entries.push((
             format!("PORTMATE_PARAM_{key}"),
             value
                 .as_str()
                 .map(str::to_string)
                 .unwrap_or_else(|| value.to_string()),
-        );
+        ));
+    }
+    if cfg!(windows) {
+        let environment_chars = environment_entries
+            .by_ref()
+            .map(|(key, value)| key.encode_utf16().count() + value.to_string_lossy().encode_utf16().count() + 2)
+            .chain(std::iter::once(
+                "PORTMATE_INPUT_JSON".encode_utf16().count() + input_json.encode_utf16().count() + 2,
+            ))
+            .chain(parameter_entries.iter().map(|(key, value)| {
+                key.encode_utf16().count() + value.encode_utf16().count() + 2
+            }))
+            .sum::<usize>();
+        if environment_chars > 28 * 1024 {
+            return Err("host script parameters and environment exceed the Windows process environment limit".into());
+        }
+    }
+    command.env(
+        "PORTMATE_INPUT_JSON",
+        input_json,
+    );
+    for (key, value) in parameter_entries {
+        command.env(key, value);
     }
     command
         .current_dir(cwd)
