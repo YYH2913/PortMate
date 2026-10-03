@@ -6,6 +6,15 @@ export function resolveCargoTargetDirectory(projectRoot, environment = process.e
   return isAbsolute(configured) ? resolve(configured) : resolve(projectRoot, configured);
 }
 
+export function resolveCargoProfileDirectory(projectRoot, profile, environment = process.env) {
+  if (typeof profile !== "string" || !/^[A-Za-z0-9_-]+$/.test(profile)) {
+    throw new Error("Cargo profile must be a simple directory name");
+  }
+  const target = environment.CARGO_BUILD_TARGET?.trim();
+  const targetRoot = resolveCargoTargetDirectory(projectRoot, environment);
+  return resolve(targetRoot, ...(target ? [target] : []), profile);
+}
+
 export function resolveMcpBinary(projectRoot, environment = process.env) {
   const configured = environment.PORTMATE_MCP_BINARY?.trim();
   if (configured) return resolve(configured);

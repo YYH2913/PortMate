@@ -8,6 +8,7 @@ import {
   filterCompatibilityEntries,
   prepareCompatibilityImage,
 } from "./compat-docker-images.mjs";
+import { resolveCargoProfileDirectory } from "./mcp-binary-path.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The tmux version matrix currently requires a Linux Docker host");
@@ -24,7 +25,10 @@ const matrix = filterCompatibilityEntries(allEntries);
 
 run("docker", ["info", "--format", "{{.ServerVersion}}"], { quiet: true });
 run("cargo", ["build", "--locked", "-p", "portmate", "--bin", "tmux-compat-probe"]);
-const probe = resolve(projectRoot, "target/debug", process.platform === "win32" ? "tmux-compat-probe.exe" : "tmux-compat-probe");
+const probe = resolve(
+  resolveCargoProfileDirectory(projectRoot, "debug"),
+  process.platform === "win32" ? "tmux-compat-probe.exe" : "tmux-compat-probe",
+);
 const results = [];
 
 for (const entry of matrix) {

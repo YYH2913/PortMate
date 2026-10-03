@@ -63,6 +63,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - YModem receives now refuse to finalize files shorter than the sender's declared size.
 - Desktop builds, AppImage smoke/finalization, and Linux, Windows, and macOS package checks now honor relative and absolute `CARGO_TARGET_DIR` values.
 - MCP SDK compatibility checks now resolve bridge binaries and per-SDK workspaces from configured `CARGO_TARGET_DIR` values and explicit `CARGO_BUILD_TARGET` output directories.
+- Tmux compatibility checks now locate their Cargo probe under configured target directories and explicit target-triple output paths.
 - CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
 - Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
