@@ -2767,7 +2767,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function openLocalTerminal() {
-    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell" && session.profile.name === "local-terminal");
+    const localTerminalTag = "portmate-local-terminal";
+    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell"
+      && (session.profile.tags.includes(localTerminalTag)
+        || session.profile.name === "local-terminal"));
     if (existing) {
       activateSession(existing.profile.id);
       if (!["connected", "connecting", "reconnecting"].includes(existing.runtime.status)) {
@@ -2779,6 +2782,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ...createSessionDraft(),
       name: t("local-terminal"),
       kind: "shell",
+      tags: [...createSessionDraft().tags, localTerminalTag],
       connection: createShellConnection(),
     });
     try {
