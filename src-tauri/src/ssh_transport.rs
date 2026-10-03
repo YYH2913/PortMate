@@ -55,7 +55,7 @@ pub(super) async fn establish_ssh_runtime(
         passphrase,
         SSH_CONNECT_TIMEOUT,
         None,
-        false,
+        true,
     )
     .await
 }
