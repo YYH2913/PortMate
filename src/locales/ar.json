@@ -151,6 +151,7 @@
   "swap-panes": "الألواح المبدلة",
   "there-is-no-pane-to-swap-in-that-direction": "لا يوجد شاشة لتبادل في هذا الاتجاه.",
   "failed-to-save-session": "فشلت في حفظ الجلسة",
+  "failed-to-load-sessions": "فشل تحميل الجلسات",
   "failed-to-clean-up-new-credentials": "{0}؛ فشلت في تنظيف الإثباتات الجديدة: {1}",
   "failed-to-save-credentials": "فشلت في حفظ أوراق الاعتماد",
   "connection-failed": "فشل الاتصال",

@@ -151,6 +151,7 @@
   "swap-panes": "Panneaux d'échange",
   "there-is-no-pane-to-swap-in-that-direction": "Il n'y a pas de fenêtre à échanger dans cette direction.",
   "failed-to-save-session": "Pas réussi à enregistrer la session",
+  "failed-to-load-sessions": "Échec du chargement des sessions",
   "failed-to-clean-up-new-credentials": "{0}; n'a pas réussi à nettoyer de nouvelles informations d'identification: {1}",
   "failed-to-save-credentials": "Échec de sauvegarde des identifiants",
   "connection-failed": "Faillite de connexion",

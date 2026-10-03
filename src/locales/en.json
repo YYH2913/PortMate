@@ -151,6 +151,7 @@
   "swap-panes": "Swap panes",
   "there-is-no-pane-to-swap-in-that-direction": "There is no pane to swap in that direction.",
   "failed-to-save-session": "Failed to save session",
+  "failed-to-load-sessions": "Failed to load sessions",
   "failed-to-clean-up-new-credentials": "{0}; failed to clean up new credentials: {1}",
   "failed-to-save-credentials": "Failed to save credentials",
   "connection-failed": "Connection failed",

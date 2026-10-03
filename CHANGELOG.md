@@ -24,6 +24,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.
+- Initial session-list IPC failures now remain visible and retry with a bounded startup timer instead of becoming a silent empty workspace.
 - Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a

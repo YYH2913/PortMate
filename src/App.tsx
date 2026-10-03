@@ -308,6 +308,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [portableVaultStatus, setPortableVaultStatus] = useState<PortableVaultStatus | null>(null);
+  const sessionRefreshRetryRef = useRef<number | null>(null);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const serialPortsRef = useRef(serialPorts);
   serialPortsRef.current = serialPorts;
@@ -1140,6 +1141,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     void refresh();
     void refreshPortableVaultStatus();
+    return () => {
+      if (sessionRefreshRetryRef.current !== null) {
+        window.clearTimeout(sessionRefreshRetryRef.current);
+        sessionRefreshRetryRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -1808,7 +1815,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       hydrateStartupValue("serial-ports", () => readStartupValue("list_serial_ports", []), setSerialPorts, true),
     ]);
     try {
-      const nextSessions = await callBackend("list_sessions", {}, emptySessions);
+      const nextSessions = isBackendAvailable()
+        ? await invokeBackend<SessionSummary[]>("list_sessions", {})
+        : emptySessions;
       if (gate.isCurrent("summaries", token)) {
         restoreTerminalInputSessions(nextSessions);
         sessionsSignatureRef.current = sessionsSignature(nextSessions);
@@ -1837,6 +1846,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       for (const session of nextSessions) {
         if (!gate.isCurrent("summaries", token)) return;
         await refreshActiveLog(session.profile.id, 160);
+      }
+    } catch (error) {
+      if (gate.isCurrent("summaries", token)) {
+        setNotice({ diagnostic: true, title: t("failed-to-load-sessions"), message: formatError(error) });
+        if (isBackendAvailable()) {
+          if (sessionRefreshRetryRef.current !== null) window.clearTimeout(sessionRefreshRetryRef.current);
+          sessionRefreshRetryRef.current = window.setTimeout(() => {
+            sessionRefreshRetryRef.current = null;
+            void refresh();
+          }, 1_000);
+        }
       }
     } finally {
       gate.finish("summaries", token);

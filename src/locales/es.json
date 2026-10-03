@@ -151,6 +151,7 @@
   "swap-panes": "Pantallas de intercambio",
   "there-is-no-pane-to-swap-in-that-direction": "No hay ventana para cambiar en esa dirección.",
   "failed-to-save-session": "No logró guardar la sesión",
+  "failed-to-load-sessions": "No se pudieron cargar las sesiones",
   "failed-to-clean-up-new-credentials": "{0}; no limpió las nuevas credenciales: {1}",
   "failed-to-save-credentials": "No logró guardar las credenciales",
   "connection-failed": "Fallo de conexión",

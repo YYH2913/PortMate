@@ -151,6 +151,7 @@
   "swap-panes": "交换窗格",
   "there-is-no-pane-to-swap-in-that-direction": "该方向没有可交换的窗格。",
   "failed-to-save-session": "保存会话失败",
+  "failed-to-load-sessions": "加载会话失败",
   "failed-to-clean-up-new-credentials": "{0}；新凭据清理失败: {1}",
   "failed-to-save-credentials": "保存凭据失败",
   "connection-failed": "连接失败",

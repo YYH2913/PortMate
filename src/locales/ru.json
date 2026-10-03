@@ -151,6 +151,7 @@
   "swap-panes": "Переменные панели",
   "there-is-no-pane-to-swap-in-that-direction": "В этом направлении нельзя переключаться.",
   "failed-to-save-session": "Не удалось сохранить сессию",
+  "failed-to-load-sessions": "Не удалось загрузить сеансы",
   "failed-to-clean-up-new-credentials": "{0}; не удалось очистить новые удостоверения: {1}",
   "failed-to-save-credentials": "Не удалось сохранить удостоверения",
   "connection-failed": "Подключение не удалось",
