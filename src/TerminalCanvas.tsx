@@ -2297,7 +2297,11 @@ function TerminalCanvas({
       if (keyModeRef.current !== "remote") return;
       if (!copyOnSelectRef.current) return;
       const selected = term.getSelection();
-      if (!selected || selected === lastCopiedSelectionRef.current) return;
+      if (!selected) {
+        lastCopiedSelectionRef.current = "";
+        return;
+      }
+      if (selected === lastCopiedSelectionRef.current) return;
       lastCopiedSelectionRef.current = selected;
       void navigator.clipboard?.writeText(selected).catch(() => {});
     });

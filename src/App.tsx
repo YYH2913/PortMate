@@ -308,6 +308,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [hostKeys, setHostKeys] = useState<HostKeyStore>(emptyHostKeys);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [portableVaultStatus, setPortableVaultStatus] = useState<PortableVaultStatus | null>(null);
+  const [portableVaultStatusReady, setPortableVaultStatusReady] = useState(false);
   const sessionRefreshRetryRef = useRef<number | null>(null);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
   const serialPortsRef = useRef(serialPorts);
@@ -1259,8 +1260,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }, [screenLock, terminalPrefs.lockOnIdle, terminalPrefs.lockScreenTimeoutMinutes]);
 
   useEffect(() => {
-    if (workspaceWindowId || startupAppliedRef.current || !sessions.length) return;
-    startupAppliedRef.current = true;
+    if (workspaceWindowId || startupAppliedRef.current || !portableVaultStatusReady || !sessions.length) return;
     const prefs = terminalPrefs;
     const workspace = reconcileWorkspaceSnapshot({
       version: 4,
@@ -1273,6 +1273,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ? prefs.startupMode
       : "last";
     const targets = resolveStartupSessionIds(mode, prefs.startupSessions, workspace, sessions.map((session) => session.profile.id));
+    startupAppliedRef.current = true;
     void (async () => {
       for (const sessionId of targets) {
         const session = sessions.find((item) => item.profile.id === sessionId);
@@ -1281,7 +1282,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }
       }
     })();
-  }, [sessions, workspaceWindowId]);
+  }, [sessions, workspaceWindowId, portableVaultStatusReady]);
 
   useEffect(() => {
     if (!workspaceStorageKey) return;
@@ -1868,12 +1869,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function refreshPortableVaultStatus() {
-    if (!isBackendAvailable()) return;
+    if (!isBackendAvailable()) {
+      setPortableVaultStatusReady(true);
+      return;
+    }
     try {
       const next = await invokeBackend<PortableVaultStatus>("portable_vault_status", {});
       setPortableVaultStatus(next);
     } catch {
       // The key manager remains the authoritative retryable surface.
+    } finally {
+      setPortableVaultStatusReady(true);
     }
   }
 
@@ -4288,7 +4294,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function runQuickCommand(command: QuickCommand) {
-    if (!active) {
+    if (!active || active.runtime.status !== "connected") {
       setNotice({ title: t("quick-commands"), message: t("open-a-terminal-session-first") });
       return;
     }
@@ -4788,6 +4794,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <QuickCommandBar
           commands={quickCommands}
           activeSessionName={active?.profile.name ?? ""}
+          activeSessionConnected={active?.runtime.status === "connected"}
           onRun={runQuickCommand}
           onManage={() => setUtilityDialog("quick-commands")}
           onClose={() => setQuickBarVisible(false)}
@@ -5652,12 +5659,14 @@ function WorkspaceDock({
 function QuickCommandBar({
   commands,
   activeSessionName,
+  activeSessionConnected,
   onRun,
   onManage,
   onClose,
 }: {
   commands: QuickCommand[];
   activeSessionName: string;
+  activeSessionConnected: boolean;
   onRun: (command: QuickCommand) => void;
   onManage: () => void;
   onClose: () => void;
@@ -5674,7 +5683,7 @@ function QuickCommandBar({
             className="quick-command-run"
             title={`${command.label} · ${command.appendEnter ? t("run") : t("insert")}\n${command.command}`}
             aria-label={t("quick-command", [command.appendEnter ? t("run") : t("insert"), command.label])}
-            disabled={!activeSessionName}
+            disabled={!activeSessionConnected}
             onClick={() => onRun(command)}
           >
             {command.appendEnter ? <Play size={11} /> : <Pencil size={11} />}

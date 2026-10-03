@@ -37,6 +37,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 - SSH tunnel pipes now cancel the opposite direction when either side closes or fails, releasing half-open local sockets promptly.
 - MCP resumable-upload quota accounting now removes expired malformed upload directories and never charges invalid metadata as a full 512 MiB upload.
 - SSH credential prompts now queue concurrent connection requests instead of silently cancelling the second request; disconnect and profile deletion remove only requests for the affected session.
+- Proxy password drafts in session settings are now scoped to the Profile and protocol, so switching protocols preserves the correct draft without leaking it into another Profile.
+- Quick commands are now disabled for non-connected sessions and report a connection prompt instead of silently dropping their input.
+- Copy-on-select now resets its duplicate guard when the terminal selection is cleared, allowing the same text to be copied again after it changes externally.
+- Startup SSH sessions now wait for the Stronghold status check and retry after vault unlock instead of silently failing before credentials are available.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

@@ -130,7 +130,7 @@ export default function SessionSettingsDialog({
   const [surface, setSurface] = useState<"quick" | "advanced">(() => (
     mode === "create" && initialSection === "session" ? "quick" : "advanced"
   ));
-  const [proxyPasswordUpdate, setProxyPasswordUpdate] = useState<ProxyPasswordUpdate>(null);
+  const [proxyPasswordUpdates, setProxyPasswordUpdates] = useState<Record<string, ProxyPasswordUpdate>>({});
   const [writeBusy, setWriteBusy] = useState(false);
   const [secretCleanupError, setSecretCleanupError] = useState("");
   const [selectedIdentityId, setSelectedIdentityId] = useState("");
@@ -154,6 +154,16 @@ export default function SessionSettingsDialog({
   const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft, locale]);
   const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
+  const proxyPasswordKey = `${draft.id}:${activeProtocol}`;
+  const proxyPasswordUpdate = proxyPasswordUpdates[proxyPasswordKey] ?? null;
+  const setProxyPasswordUpdate = (update: ProxyPasswordUpdate) => {
+    setProxyPasswordUpdates((current) => {
+      const next = { ...current };
+      if (update === null) delete next[proxyPasswordKey];
+      else next[proxyPasswordKey] = update;
+      return next;
+    });
+  };
 
   const refreshSerialPorts = useCallback(async () => {
     if (!onRefreshSerialPorts) {
@@ -246,7 +256,6 @@ export default function SessionSettingsDialog({
     setActiveProtocol(tab);
     setActiveSection(surface === "advanced" ? protocolSettingsSection(tab) : "session");
     setSectionQuery("");
-    setProxyPasswordUpdate(null);
     onDraftChange(nextDraft);
   }
 
