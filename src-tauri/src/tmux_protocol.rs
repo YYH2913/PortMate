@@ -6,7 +6,10 @@ use super::{
 };
 
 pub(super) const MAX_TMUX_CONTROL_LINE_BYTES: usize = 64 * 1024;
-pub(super) const TMUX_FIELD_SEPARATOR: &str = "|PORTMATE:8f41c2d7:|";
+// Tmux names are already validated to reject control characters. A unit
+// separator therefore cannot occur in a valid field and keeps printable names
+// lossless without relying on tmux format escaping support versions.
+pub(super) const TMUX_FIELD_SEPARATOR: &str = "\x1f";
 
 pub(super) fn bounded_tmux_control_error(error: &str) -> String {
     const MAX_ERROR_CHARS: usize = 512;
