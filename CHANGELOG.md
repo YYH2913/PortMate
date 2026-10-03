@@ -49,6 +49,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Key Manager private-key import now preserves the generated secret when Profile persistence reports an unknown Store commit, preventing the UI cleanup path from deleting a possibly committed credential.
 - OneKey sends and SSH logins now carry the observed connection generation through to the backend write, preventing credentials from crossing a reconnect or endpoint change.
 - libssh setup, SFTP, and channel blocking workers now retain ownership through timeout or cancellation and are reaped asynchronously instead of being silently detached.
+- SSH-agent identity listing and signing now run as cancellable async operations with an independent deadline, so an unresponsive agent cannot leave detached threads behind.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

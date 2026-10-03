@@ -3,6 +3,8 @@ use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::agent::AgentIdentity;
 use russh::keys::HashAlg;
 
+const SSH_AGENT_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[derive(Clone)]
 struct AgentIdentityFilter {
@@ -124,23 +126,14 @@ pub(super) async fn authenticate_with_agent<H: client::Handler>(
 pub(super) async fn list_ssh_agent_identities_on_thread(
     socket_path: Option<PathBuf>,
 ) -> Result<Vec<AgentIdentity>, String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("portmate-ssh-agent-list".to_string())
-        .spawn(move || {
-            let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
-                agent
-                    .request_identities()
-                    .await
-                    .map_err(|error| format!("读取 ssh-agent identities 失败: {error}"))
-            });
-            let _ = sender.send(result);
-        })
-        .map_err(|error| format!("启动 ssh-agent 查询线程失败: {error}"))?;
-    receiver
-        .await
-        .map_err(|error| format!("ssh-agent 查询线程未返回: {error}"))?
+    run_agent_operation("查询 ssh-agent identities", async {
+        let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
+        agent
+            .request_identities()
+            .await
+            .map_err(|error| format!("读取 ssh-agent identities 失败: {error}"))
+    })
+    .await
 }
 
 async fn sign_with_ssh_agent_on_thread(
@@ -149,33 +142,28 @@ async fn sign_with_ssh_agent_on_thread(
     data: Vec<u8>,
     socket_path: Option<PathBuf>,
 ) -> Result<Vec<u8>, String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("portmate-ssh-agent-sign".to_string())
-        .spawn(move || {
-            let result = run_agent_runtime(async {
-                let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
-                agent
-                    .sign_request(&identity, hash_alg, data)
-                    .await
-                    .map_err(|error| format!("ssh-agent 签名失败: {error}"))
-            });
-            let _ = sender.send(result);
-        })
-        .map_err(|error| format!("启动 ssh-agent 签名线程失败: {error}"))?;
-    receiver
-        .await
-        .map_err(|error| format!("ssh-agent 签名线程未返回: {error}"))?
+    run_agent_operation("ssh-agent 签名", async {
+        let mut agent = connect_ssh_agent(socket_path.as_deref()).await?;
+        agent
+            .sign_request(&identity, hash_alg, data)
+            .await
+            .map_err(|error| format!("ssh-agent 签名失败: {error}"))
+    })
+    .await
 }
 
-fn run_agent_runtime<T>(
-    future: impl std::future::Future<Output = Result<T, String>>,
+async fn run_agent_operation<T>(
+    label: &str,
+    operation: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("创建 ssh-agent runtime 失败: {error}"))?
-        .block_on(future)
+    tokio::time::timeout(SSH_AGENT_OPERATION_TIMEOUT, operation)
+        .await
+        .map_err(|_| {
+            format!(
+                "{label}超时（{} ms）",
+                SSH_AGENT_OPERATION_TIMEOUT.as_millis()
+            )
+        })?
 }
 
 fn agent_identity_matches(identity: &AgentIdentity, refs: &[AgentIdentityFilter]) -> bool {
@@ -252,6 +240,19 @@ async fn connect_ssh_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_operations_drop_unresponsive_futures_at_their_deadline() {
+        tauri::async_runtime::block_on(async {
+            let started = Instant::now();
+            let result = run_agent_operation("test ssh-agent", async {
+                std::future::pending::<Result<(), String>>().await
+            })
+            .await;
+            assert!(result.unwrap_err().contains("超时"));
+            assert!(started.elapsed() < Duration::from_secs(6));
+        });
+    }
 
     #[test]
     fn agent_identity_path_matches_exact_comment_bytes() {
