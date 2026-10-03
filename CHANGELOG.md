@@ -36,6 +36,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - MCP UDP tunnel requests now apply one absolute deadline across DNS, bind, connect, send, and receive phases.
 - SSH tunnel pipes now cancel the opposite direction when either side closes or fails, releasing half-open local sockets promptly.
 - MCP resumable-upload quota accounting now removes expired malformed upload directories and never charges invalid metadata as a full 512 MiB upload.
+- SSH credential prompts now queue concurrent connection requests instead of silently cancelling the second request; disconnect and profile deletion remove only requests for the affected session.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

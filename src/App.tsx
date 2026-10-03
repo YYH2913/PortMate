@@ -418,6 +418,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     sessionId: string;
     resolve: (credentials: ConnectionCredentials | null) => void;
   } | null>(null);
+  const credentialQueueRef = useRef<Array<{
+    profile: SessionProfile;
+    resolve: (credentials: ConnectionCredentials | null) => void;
+  }>>([]);
   const credentialRequestIdRef = useRef(0);
   const startupAppliedRef = useRef(false);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
@@ -2512,12 +2516,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       next.delete(profileId);
       return next;
     });
-    const credentialRequest = credentialResolverRef.current;
-    if (credentialRequest?.sessionId === profileId) {
-      credentialResolverRef.current = null;
-      setCredentialPrompt(null);
-      credentialRequest.resolve(null);
-    }
+    cancelCredentialRequestsForSession(profileId);
     if (hostKeyPromptRef.current?.profile.id === profileId) {
       hostKeyPromptOperationGateRef.current.invalidateAll();
       setHostKeyPrompt(null);
@@ -3926,12 +3925,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const closeIsCurrent = () => connectionCloseGateRef.current.isCurrent(sessionId, closeToken);
     try {
       connectionAttemptGateRef.current.invalidate(sessionId);
-      const credentialRequest = credentialResolverRef.current;
-      if (credentialRequest?.sessionId === sessionId) {
-        credentialResolverRef.current = null;
-        setCredentialPrompt(null);
-        credentialRequest.resolve(null);
-      }
+      cancelCredentialRequestsForSession(sessionId);
       const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
       if (!session) return null;
       if (isBackendAvailable() && session.runtime.status === "disconnected") return session;
@@ -4421,17 +4415,24 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!isSshLikeProfile(profile)) {
       return Promise.resolve({ username: null, password: null, passphrase: null, oneKeyId: null, savePassword: false, savePassphrase: false });
     }
-    if (credentialResolverRef.current) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      credentialQueueRef.current.push({ profile, resolve });
+      presentNextCredentialPrompt();
+    });
+  }
 
-    const ssh = profile.connection;
-    const target = describeProfileEndpoint(profile) || profile.name || "SSH";
+  function presentNextCredentialPrompt() {
+    if (credentialResolverRef.current || !credentialQueueRef.current.length) return;
+    const next = credentialQueueRef.current.shift()!;
+    const ssh = next.profile.connection as Extract<ConnectionConfig, { kind: "ssh" | "tmux" }>;
+    const target = describeProfileEndpoint(next.profile) || next.profile.name || "SSH";
     const hasPrivateKey = ssh.identityRefs.some((identity) => Boolean(identity.path) || Boolean(identity.secretRef));
     const requestId = ++credentialRequestIdRef.current;
     const prompt: CredentialPromptState = {
       requestId,
       target,
       initialUsername: ssh.username || "",
-      oneKeys: sshOneKeysForSession(oneKeys, profile.id),
+      oneKeys: sshOneKeysForSession(oneKeys, next.profile.id),
       hasIdentityFiles: hasPrivateKey,
       hasSavedPassword: Boolean(ssh.passwordSecretRef),
       hasSavedPassphrase: Boolean(ssh.passphraseSecretRef),
@@ -4441,11 +4442,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         ? portableVaultStatus.unlocked ? "unlocked" : portableVaultStatus.exists ? "locked" : "not-created"
         : "unknown",
     };
+    credentialResolverRef.current = { requestId, sessionId: next.profile.id, resolve: next.resolve };
+    setCredentialPrompt(prompt);
+  }
 
-    return new Promise((resolve) => {
-      credentialResolverRef.current = { requestId, sessionId: profile.id, resolve };
-      setCredentialPrompt(prompt);
-    });
+  function cancelCredentialRequestsForSession(sessionId: string) {
+    const current = credentialResolverRef.current;
+    if (current?.sessionId === sessionId) {
+      credentialResolverRef.current = null;
+      setCredentialPrompt(null);
+      current.resolve(null);
+    }
+    const queued = credentialQueueRef.current.filter((request) => request.profile.id === sessionId);
+    credentialQueueRef.current = credentialQueueRef.current.filter((request) => request.profile.id !== sessionId);
+    queued.forEach((request) => request.resolve(null));
+    presentNextCredentialPrompt();
   }
 
   function completeCredentialPrompt(requestId: number, credentials: ConnectionCredentials | null) {
@@ -4454,6 +4465,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     credentialResolverRef.current = null;
     setCredentialPrompt(null);
     credentialRequest.resolve(credentials);
+    presentNextCredentialPrompt();
   }
 
   async function setSerialLine(sessionId: string, line: "dtr" | "rts", value: boolean) {
