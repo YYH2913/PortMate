@@ -49,15 +49,11 @@ pub(crate) fn has_json_http_content_type(request: &HttpRequest) -> bool {
 }
 
 pub(crate) fn accepts_json_http_response(request: &HttpRequest) -> bool {
-    accepts_http_media_type(request, true, |media_type| {
-        matches!(media_type, "*/*" | "application/*" | "application/json")
-    })
+    accepts_http_media_type(request, true, "application/json")
 }
 
 pub(crate) fn accepts_sse_http_response(request: &HttpRequest) -> bool {
-    accepts_http_media_type(request, false, |media_type| {
-        media_type == "text/event-stream"
-    })
+    accepts_http_media_type(request, false, "text/event-stream")
 }
 
 pub(crate) fn is_sse_stream_request(request: &HttpRequest) -> bool {
@@ -67,14 +63,20 @@ pub(crate) fn is_sse_stream_request(request: &HttpRequest) -> bool {
 fn accepts_http_media_type(
     request: &HttpRequest,
     default_when_missing: bool,
-    matches_media_type: impl Fn(&str) -> bool,
+    offered_media_type: &str,
 ) -> bool {
     let Some(accept) = request.headers.get("accept") else {
         return default_when_missing;
     };
-    accept.split(',').any(|item| {
+    let Some((offered_type, offered_subtype)) = offered_media_type.split_once('/') else {
+        return false;
+    };
+    accept
+        .split(',')
+        .filter_map(|item| {
         let mut parts = item.split(';');
         let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let (range_type, range_subtype) = media_type.split_once('/')?;
         let mut quality = 1.0_f32;
         for parameter in parts {
             let Some((name, value)) = parameter.trim().split_once('=') else {
@@ -84,6 +86,15 @@ fn accepts_http_media_type(
                 quality = value.trim().parse::<f32>().unwrap_or(0.0);
             }
         }
-        (0.0..=1.0).contains(&quality) && quality > 0.0 && matches_media_type(&media_type)
+        if !(0.0..=1.0).contains(&quality)
+            || (range_type != "*" && range_type != offered_type)
+            || (range_subtype != "*" && range_subtype != offered_subtype)
+        {
+            return None;
+        }
+        let specificity = u8::from(range_type != "*") + u8::from(range_subtype != "*");
+        Some((specificity, quality))
     })
+    .max_by_key(|(specificity, _)| *specificity)
+    .is_some_and(|(_, quality)| quality > 0.0)
 }

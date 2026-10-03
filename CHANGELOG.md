@@ -12,6 +12,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Secret redaction now consumes complete quoted and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
 - SSH settings now expose an explicit `none` authentication preset for devices that accept protocol-level none authentication.
 - Remote Sysmon now recognizes MSYS2/Git Bash and Cygwin `uname` labels as Windows and reaches the PowerShell collector.
+- MCP HTTP Accept negotiation now honors the most specific media range, including explicit `q=0` exclusions and type wildcards.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.
 - TCP readers stop after local disconnect even when the peer keeps its socket open.

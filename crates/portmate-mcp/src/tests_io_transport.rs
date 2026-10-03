@@ -677,3 +677,26 @@ fn http_accept_respects_zero_quality_values() {
     assert!(!accepts_json_http_response(&request));
     assert!(accepts_sse_http_response(&request));
 }
+
+#[test]
+fn http_accept_specific_zero_quality_overrides_wildcard() {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "accept".to_string(),
+        "application/json;q=0, */*;q=1".to_string(),
+    );
+    let request = test_http_request(headers);
+
+    assert!(!accepts_json_http_response(&request));
+    assert!(accepts_sse_http_response(&request));
+}
+
+#[test]
+fn http_accept_type_wildcards_match_the_offered_representation() {
+    let mut headers = HashMap::new();
+    headers.insert("accept".to_string(), "text/*".to_string());
+    let request = test_http_request(headers);
+
+    assert!(!accepts_json_http_response(&request));
+    assert!(accepts_sse_http_response(&request));
+}
