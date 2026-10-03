@@ -112,6 +112,13 @@ pub(super) async fn plan_remote_file_batch(
                     .await
                     .map_err(|error| format!("SFTP 读取远端目录失败 {source}: {error}"))?
                     .collect::<Vec<_>>();
+                let after_read = sftp
+                    .symlink_metadata(source.clone())
+                    .await
+                    .map_err(|error| format!("SFTP 复核远端目录失败 {source}: {error}"))?;
+                if !same_remote_directory_metadata(&metadata, &after_read) {
+                    return Err(format!("SFTP 远端目录在枚举期间发生变化: {source}"));
+                }
                 children.sort_by_key(|entry| entry.file_name());
                 for child in children.into_iter().rev() {
                     let name = child.file_name();
@@ -143,6 +150,19 @@ pub(super) async fn plan_remote_file_batch(
     }
     validate_file_batch_plan(&mut plan)?;
     Ok(plan)
+}
+
+fn same_remote_directory_metadata(
+    before: &SftpBackendMetadata,
+    after: &SftpBackendMetadata,
+) -> bool {
+    before.is_dir()
+        && after.is_dir()
+        && !before.is_symlink()
+        && !after.is_symlink()
+        && before.len() == after.len()
+        && before.permissions == after.permissions
+        && before.mtime == after.mtime
 }
 
 pub(super) fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), String> {

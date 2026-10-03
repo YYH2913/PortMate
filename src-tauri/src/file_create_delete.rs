@@ -19,6 +19,13 @@ pub(super) async fn sftp_remove_recursive(
                 .read_dir(current.clone())
                 .await
                 .map_err(|error| format!("SFTP 读取远端目录失败 {current}: {error}"))?;
+            let after_read = sftp
+                .symlink_metadata(current.clone())
+                .await
+                .map_err(|error| format!("SFTP 复核远端目录失败 {current}: {error}"))?;
+            if !same_remote_directory_metadata(&metadata, &after_read) {
+                return Err(format!("SFTP 远端目录在删除期间发生变化: {current}"));
+            }
             for entry in entries {
                 stack.push((remote_join_path(&current, &entry.file_name()), false));
             }
@@ -26,6 +33,13 @@ pub(super) async fn sftp_remove_recursive(
         }
 
         if is_directory {
+            let before_remove = sftp
+                .symlink_metadata(current.clone())
+                .await
+                .map_err(|error| format!("SFTP 复核远端目录失败 {current}: {error}"))?;
+            if !same_remote_directory_metadata(&metadata, &before_remove) {
+                return Err(format!("SFTP 远端目录在删除期间发生变化: {current}"));
+            }
             sftp.remove_dir(current.clone())
                 .await
                 .map_err(|error| format!("SFTP 删除远端目录失败 {current}: {error}"))?;
@@ -37,6 +51,19 @@ pub(super) async fn sftp_remove_recursive(
     }
 
     Ok(())
+}
+
+fn same_remote_directory_metadata(
+    before: &SftpBackendMetadata,
+    after: &SftpBackendMetadata,
+) -> bool {
+    before.is_dir()
+        && after.is_dir()
+        && !before.is_symlink()
+        && !after.is_symlink()
+        && before.len() == after.len()
+        && before.permissions == after.permissions
+        && before.mtime == after.mtime
 }
 
 pub(super) enum FileOperation {

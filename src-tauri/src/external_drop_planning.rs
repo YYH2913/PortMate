@@ -178,6 +178,11 @@ pub(super) fn plan_external_drop(
                     .map_err(|error| format!("读取拖放目录失败 {}: {error}", source.display()))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| format!("读取拖放目录项失败 {}: {error}", source.display()))?;
+                let after_read = fs::symlink_metadata(&source)
+                    .map_err(|error| format!("复核拖放目录失败 {}: {error}", source.display()))?;
+                if !same_local_directory_identity(&metadata, &after_read) {
+                    return Err(format!("拖放目录在枚举期间发生变化: {}", source.display()));
+                }
                 children.sort_by_key(|entry| entry.file_name());
                 for child in children.into_iter().rev() {
                     stack.push((child.path(), relative.join(child.file_name())));
@@ -242,6 +247,24 @@ pub(super) fn plan_external_drop(
     plan.skipped.sort();
     plan.skipped.dedup();
     Ok(plan)
+}
+
+fn same_local_directory_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if before.file_type().is_symlink() || after.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.is_dir()
+            && after.is_dir()
+            && before.dev() == after.dev()
+            && before.ino() == after.ino();
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir() && after.is_dir()
+    }
 }
 
 pub(super) fn external_relative_remote_path(path: &Path) -> Result<String, String> {

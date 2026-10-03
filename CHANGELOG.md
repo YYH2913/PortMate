@@ -28,6 +28,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - SCP and remote-copy commands now reject symbolic links in every path component and use no-clobber hard-link commits for completed remote files.
 - SFTP transfer and file-rename commits now reject symlinked path components and use atomic no-replace hard-link commits for regular files; directory moves fail closed when the server cannot provide that guarantee.
 - Remote file-manager mutations now carry the connection generation observed with the listing and are rejected before a reconnect can retarget the operation.
+- Local and remote batch planners now recheck directory identity after enumeration, and recursive SFTP deletion aborts when a directory changes between listing and removal.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.
