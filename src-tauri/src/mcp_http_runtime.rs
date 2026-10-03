@@ -4,6 +4,7 @@ const MCP_HTTP_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MCP_HTTP_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MCP_HTTP_READY_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 const MCP_HTTP_READY_IO_TIMEOUT: Duration = Duration::from_millis(250);
+const MCP_HTTP_READY_TOTAL_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_MCP_HTTP_READY_RESPONSE_BYTES: usize = 4 * 1024;
 const MAX_MCP_HTTP_PROCESS_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const MAX_MCP_HTTP_PROCESS_MESSAGE_CHARACTERS: usize = 1_024;
@@ -72,6 +73,9 @@ impl McpHttpProcessFailure {
 pub(super) fn mcp_http_runtime_status_inner(
     state: &AppState,
 ) -> Result<McpHttpRuntimeStatus, String> {
+    if invalidate_expired_mcp_http_runtime(state)? {
+        return Ok(stopped_mcp_http_runtime_status());
+    }
     let pending_probe = {
         let mut registry = state
             .mcp_http_process
@@ -116,6 +120,9 @@ pub(super) fn mcp_http_runtime_status_for_owner(
     state: &AppState,
     owner: McpHttpProcessOwner,
 ) -> Result<Option<McpHttpRuntimeStatus>, String> {
+    if invalidate_expired_mcp_http_runtime(state)? {
+        return Ok(None);
+    }
     let pending_probe = {
         let mut registry = state
             .mcp_http_process
@@ -168,6 +175,42 @@ pub(super) fn mcp_http_runtime_status_for_owner(
     Ok(None)
 }
 
+fn invalidate_expired_mcp_http_runtime(state: &AppState) -> Result<bool, String> {
+    let mut registry = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let client_id = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        store.mcp_http_settings.client_id.clone()
+    };
+    if client_id.trim().is_empty() {
+        return Ok(false);
+    }
+    if !has_secret_ref(MCP_HTTP_TOKEN_REF) {
+        return Ok(false);
+    }
+    let active = {
+        let store = state.store.lock().map_err(|error| error.to_string())?;
+        mcp_http_client_has_active_grant(&store, &client_id, Utc::now())
+    };
+    if active {
+        return Ok(false);
+    }
+    registry.failure = None;
+    if let Some(process) = registry.process.take() {
+        if let Err(error) = stop_mcp_http_process(process) {
+            eprintln!("PortMate: failed to stop expired MCP HTTP sidecar: {error}");
+        }
+    }
+    if has_secret_ref(MCP_HTTP_TOKEN_REF) {
+        if let Err(error) = delete_secret_from_store(MCP_HTTP_TOKEN_REF) {
+            eprintln!("PortMate: failed to delete expired MCP HTTP token: {error}");
+        }
+    }
+    Ok(true)
+}
+
 pub(super) async fn start_mcp_http_runtime_inner(
     state: &AppState,
 ) -> Result<McpHttpRuntimeStatus, String> {
@@ -184,6 +227,13 @@ pub(super) async fn start_mcp_http_runtime_with_settings(
         let Some(status) = mcp_http_runtime_status_for_owner(state, owner)? else {
             return Err("MCP HTTP sidecar 启动已被停止或新的托管实例替换".to_string());
         };
+        if Instant::now() >= deadline {
+            let _ = stop_mcp_http_runtime_if_owned(state, owner);
+            return Err(format!(
+                "MCP HTTP sidecar 未能在 {} 秒内开始监听",
+                MCP_HTTP_STARTUP_TIMEOUT.as_secs()
+            ));
+        }
         match status.phase {
             McpHttpRuntimePhase::Running => return Ok(status),
             McpHttpRuntimePhase::Failed => {
@@ -195,13 +245,6 @@ pub(super) async fn start_mcp_http_runtime_with_settings(
                 return Err("MCP HTTP sidecar 在启动期间停止".to_string());
             }
             McpHttpRuntimePhase::Starting => {}
-        }
-        if Instant::now() >= deadline {
-            let _ = stop_mcp_http_runtime_if_owned(state, owner);
-            return Err(format!(
-                "MCP HTTP sidecar 未能在 {} 秒内开始监听",
-                MCP_HTTP_STARTUP_TIMEOUT.as_secs()
-            ));
         }
         tokio::time::sleep(MCP_HTTP_READY_POLL_INTERVAL).await;
     }
@@ -544,6 +587,7 @@ fn mcp_http_failure_message(failure: &McpHttpProcessFailure) -> String {
 }
 
 pub(super) fn probe_mcp_http_ready(connect_address: std::net::SocketAddr) -> bool {
+    let deadline = Instant::now() + MCP_HTTP_READY_TOTAL_TIMEOUT;
     let Ok(mut stream) =
         std::net::TcpStream::connect_timeout(&connect_address, MCP_HTTP_READY_CONNECT_TIMEOUT)
     else {
@@ -568,6 +612,16 @@ pub(super) fn probe_mcp_http_ready(connect_address: std::net::SocketAddr) -> boo
     let mut response = Vec::with_capacity(512);
     let mut chunk = [0_u8; 512];
     while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        if stream
+            .set_read_timeout(Some(remaining.min(MCP_HTTP_READY_IO_TIMEOUT)))
+            .is_err()
+        {
+            return false;
+        }
         let read = match stream.read(&mut chunk) {
             Ok(0) | Err(_) => return false,
             Ok(read) => read,
