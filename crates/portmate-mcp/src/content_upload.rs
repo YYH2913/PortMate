@@ -480,7 +480,7 @@ fn upload_usage(uploads_root: &Path) -> Result<(usize, u64)> {
         count = count.saturating_add(1);
         let declared = read_upload_metadata(&entry.path())
             .map(|metadata| metadata.size_bytes)
-            .unwrap_or(MAX_MCP_CONTENT_UPLOAD_BYTES);
+            .unwrap_or(0);
         bytes = bytes.saturating_add(declared.min(MAX_MCP_CONTENT_UPLOAD_BYTES));
     }
     Ok((count, bytes))
@@ -494,21 +494,45 @@ fn cleanup_expired_uploads(uploads_root: &Path, now: u64) -> Result<()> {
             continue;
         }
         let upload_dir = entry.path();
-        let Ok(metadata) = read_upload_metadata(&upload_dir) else {
-            continue;
+        let metadata = match read_upload_metadata(&upload_dir) {
+            Ok(metadata) => Some(metadata),
+            Err(_) => None,
         };
-        if now.saturating_sub(metadata.created_at_unix_seconds) <= MCP_CONTENT_UPLOAD_EXPIRY_SECONDS
-        {
+        let expired = metadata.as_ref().is_some_and(|metadata| {
+            now.saturating_sub(metadata.created_at_unix_seconds) > MCP_CONTENT_UPLOAD_EXPIRY_SECONDS
+        }) || metadata.is_none() && upload_directory_is_expired(&upload_dir, now);
+        if !expired {
             continue;
         }
         let lock = open_upload_lock(&upload_dir)?;
         if lock.try_lock_exclusive().is_ok() {
-            remove_upload_content_files(&upload_dir);
+            if metadata.is_some() {
+                remove_upload_content_files(&upload_dir);
+            } else if let Err(error) = fs::remove_dir_all(&upload_dir) {
+                eprintln!(
+                    "PortMate MCP: orphan upload cleanup failed for {}: {error}",
+                    upload_dir.display()
+                );
+                continue;
+            }
             drop(lock);
-            finish_upload_directory_cleanup(&upload_dir, &metadata.upload_id);
+            if let Some(metadata) = metadata {
+                finish_upload_directory_cleanup(&upload_dir, &metadata.upload_id);
+            } else {
+                let _ = fs::remove_file(upload_dir.join(CONTENT_UPLOAD_LOCK_FILE));
+                let _ = fs::remove_dir(&upload_dir);
+            }
         }
     }
     Ok(())
+}
+
+fn upload_directory_is_expired(upload_dir: &Path, now: u64) -> bool {
+    fs::metadata(upload_dir)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .is_some_and(|modified| now.saturating_sub(modified.as_secs()) > MCP_CONTENT_UPLOAD_EXPIRY_SECONDS)
 }
 
 fn unix_seconds_now() -> u64 {

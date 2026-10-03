@@ -675,6 +675,30 @@ fn content_upload_rejects_oversized_chunks_and_declared_size_quota() {
 }
 
 #[test]
+fn orphan_content_upload_directories_do_not_consume_declared_quota() {
+    let root = std::env::temp_dir().join(format!("portmate-content-orphan-{}", Uuid::new_v4()));
+    let uploads = root
+        .join(MCP_CONTENT_UPLOAD_STAGING_DIRECTORY)
+        .join(MCP_CONTENT_UPLOADS_DIRECTORY);
+    fs::create_dir_all(&uploads).unwrap();
+    for _ in 0..2 {
+        fs::create_dir(uploads.join(Uuid::new_v4().to_string())).unwrap();
+    }
+    let server = content_upload_server(&root, "orphan-owner");
+    let result = server.begin_content_upload(&json!({
+        "sessionId": "refresh-session",
+        "protocol": "sftp",
+        "fileName": "orphan-recovery.bin",
+        "sizeBytes": 1,
+        "sha256": "0".repeat(64),
+        "destination": "remote:/tmp/orphan-recovery.bin"
+    }));
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(fs::read_dir(&uploads).unwrap().count(), 3);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn concurrent_content_upload_appends_serialize_the_expected_offset() {
     let root = std::env::temp_dir().join(format!("portmate-content-race-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
