@@ -373,7 +373,19 @@ pub(super) fn local_transfer_entry(
         Ok(metadata) if !metadata.is_file() => {
             Err(format!("{label}不是普通文件: {}", path.display()))
         }
-        Ok(metadata) => Ok(Some(metadata)),
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() != 1 {
+                    return Err(format!(
+                        "{label}不能是硬链接: {}",
+                        path.display()
+                    ));
+                }
+            }
+            Ok(Some(metadata))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("检查{label}失败 {}: {error}", path.display())),
     }
