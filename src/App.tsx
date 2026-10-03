@@ -93,7 +93,7 @@ import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSes
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
 import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
-import { useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
+import { sysmonSnapshotForDisplay, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, formatDirectInput, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputCandidate, SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
 import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
@@ -6427,7 +6427,7 @@ function SysmonApplet({ session, onOpen }: { session: SessionSummary; onOpen: ()
   const canWatch = !remote || session.runtime.status === "connected";
   const live = useSysmonLiveState(session.profile.id);
   useSysmonLivePolling(session.profile.id, watching && canWatch);
-  const snapshot = watching ? live.snapshot : null;
+  const snapshot = watching ? sysmonSnapshotForDisplay(live.snapshot, canWatch) : null;
   const busy = watching && live.busy;
   const error = watching ? live.error : "";
 

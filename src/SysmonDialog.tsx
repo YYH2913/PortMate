@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw, X } from "lucide-react";
 import { formatBytes, formatEventClock } from "./display-formatters";
 import { sysmonTrendMax, sysmonTrendValue } from "./sysmon-history";
-import { loadSysmonLiveHistory, refreshSysmonLive, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
+import { loadSysmonLiveHistory, refreshSysmonLive, sysmonHistoryForDisplay, sysmonSnapshotForDisplay, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { formatSysmonNetworkAddresses, orderedSysmonNetworkAddresses } from "./sysmon-network-addresses";
 import type { SysmonTrendMode } from "./sysmon-history";
 import type { SessionSummary, SysmonSnapshot } from "./types";
@@ -22,16 +22,18 @@ export default function SysmonDialog({
   const canSample = !remote || session.runtime.status === "connected";
   const { snapshot, history, busy, historyBusy, error, historyError } = useSysmonLiveState(session.profile.id);
   useSysmonLivePolling(session.profile.id, canSample);
+  const displaySnapshot = sysmonSnapshotForDisplay(snapshot, canSample);
+  const displayHistory = sysmonHistoryForDisplay(history, canSample);
 
   useEffect(() => {
     void loadSysmonLiveHistory(session.profile.id, 120);
   }, [session.profile.id]);
 
-  const processes = snapshot?.processes ?? [];
-  const disks = snapshot?.disks ?? [];
-  const interfaces = snapshot?.networkInterfaces ?? [];
-  const loadAverage = snapshot?.loadAverage ?? [0, 0, 0];
-  const memoryUsed = snapshot ? Math.max(0, snapshot.memoryTotalBytes - snapshot.memoryAvailableBytes) : 0;
+  const processes = displaySnapshot?.processes ?? [];
+  const disks = displaySnapshot?.disks ?? [];
+  const interfaces = displaySnapshot?.networkInterfaces ?? [];
+  const loadAverage = displaySnapshot?.loadAverage ?? [0, 0, 0];
+  const memoryUsed = displaySnapshot ? Math.max(0, displaySnapshot.memoryTotalBytes - displaySnapshot.memoryAvailableBytes) : 0;
   const scope = remote ? t("remote-host") : t("local-host");
 
   return (
@@ -47,16 +49,16 @@ export default function SysmonDialog({
         </header>
         <div className="sysmon-content">
           <dl className="sysmon-summary">
-            <div><dt>CPU</dt><dd>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : "-"}</dd></div>
+            <div><dt>CPU</dt><dd>{displaySnapshot ? `${displaySnapshot.cpuPercent.toFixed(1)}%` : "-"}</dd></div>
             <div>
               <dt>{t("memory")}</dt>
-              <dd>{snapshot ? `${snapshot.memoryPercent.toFixed(1)}%` : "-"}</dd>
-              <small>{snapshot?.memoryTotalBytes ? `${formatBytes(memoryUsed)} / ${formatBytes(snapshot.memoryTotalBytes)}` : "-"}</small>
+              <dd>{displaySnapshot ? `${displaySnapshot.memoryPercent.toFixed(1)}%` : "-"}</dd>
+              <small>{displaySnapshot?.memoryTotalBytes ? `${formatBytes(memoryUsed)} / ${formatBytes(displaySnapshot.memoryTotalBytes)}` : "-"}</small>
             </div>
-            <div><dt>{t("load")}</dt><dd>{snapshot ? loadAverage.map((value) => value.toFixed(2)).join(" · ") : "-"}</dd></div>
-            <div><dt>{t("receive")}</dt><dd>{snapshot ? `${snapshot.rxKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
-            <div><dt>{t("send")}</dt><dd>{snapshot ? `${snapshot.txKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
-            <div><dt>{t("uptime")}</dt><dd>{snapshot ? formatSysmonUptime(snapshot.uptimeSeconds) : "-"}</dd></div>
+            <div><dt>{t("load")}</dt><dd>{displaySnapshot ? loadAverage.map((value) => value.toFixed(2)).join(" · ") : "-"}</dd></div>
+            <div><dt>{t("receive")}</dt><dd>{displaySnapshot ? `${displaySnapshot.rxKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>{t("send")}</dt><dd>{displaySnapshot ? `${displaySnapshot.txKbps.toFixed(1)} KiB/s` : "-"}</dd></div>
+            <div><dt>{t("uptime")}</dt><dd>{displaySnapshot ? formatSysmonUptime(displaySnapshot.uptimeSeconds) : "-"}</dd></div>
           </dl>
 
           <nav className="sysmon-tabs" aria-label={t("sysmon-details")}>
@@ -68,7 +70,7 @@ export default function SysmonDialog({
 
           <div className="sysmon-table-wrap">
             {tab === "trends" ? (
-              <SysmonTrendView history={history} mode={trendMode} onModeChange={setTrendMode} error={historyError} loading={historyBusy} />
+              <SysmonTrendView history={displayHistory} mode={trendMode} onModeChange={setTrendMode} error={historyError} loading={historyBusy} />
             ) : null}
             {tab === "processes" ? (
               <table className="sysmon-table sysmon-process-table">
@@ -109,16 +111,16 @@ export default function SysmonDialog({
                 </tbody>
               </table>
             ) : null}
-            {snapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
+            {displaySnapshot && ((tab === "processes" && !processes.length) || (tab === "disks" && !disks.length) || (tab === "network" && !interfaces.length)) ? (
               <div className="sysmon-empty">{t("the-current-sample-has-no-available")}{tab === "processes" ? t("processes") : tab === "disks" ? t("disks") : t("network-interfaces")}{t("details")}</div>
             ) : null}
-            {!snapshot && canSample && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />{t("sampling")}</div> : null}
-            {!snapshot && !canSample && tab !== "trends" ? <div className="sysmon-empty">{t("remote-session-disconnected")}</div> : null}
+            {!displaySnapshot && canSample && !error && tab !== "trends" ? <div className="sysmon-empty loading"><LoaderCircle size={18} />{t("sampling")}</div> : null}
+            {!displaySnapshot && !canSample && tab !== "trends" ? <div className="sysmon-empty">{t("remote-session-disconnected")}</div> : null}
           </div>
           {error ? <div className="utility-error">{localizeDiagnostic(error)}</div> : null}
         </div>
         <footer className="sysmon-actions">
-          <span>{snapshot ? t("sampled-at", [formatDateTime(snapshot.ts)]) : scope}</span>
+          <span>{displaySnapshot ? t("sampled-at", [formatDateTime(displaySnapshot.ts)]) : scope}</span>
           <button type="button" onClick={() => void refreshSysmonLive(session.profile.id)} disabled={busy || !canSample}>
             <RefreshCw size={14} className={busy ? "sysmon-refresh-icon loading" : "sysmon-refresh-icon"} />{t("refresh")}</button>
           <button type="button" onClick={onClose}>{t("close")}</button>

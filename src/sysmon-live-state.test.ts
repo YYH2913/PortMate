@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { createSysmonLiveStore } from "./sysmon-live-state";
+import { createSysmonLiveStore, sysmonHistoryForDisplay, sysmonSnapshotForDisplay } from "./sysmon-live-state";
 import type { SysmonSnapshot } from "./types";
 
 describe("Sysmon live state", () => {
+  it("does not display a remote sample while its session cannot be sampled", () => {
+    const current = snapshot("router", "2026-08-24T10:00:00.000Z", 42);
+    expect(sysmonSnapshotForDisplay(current, false)).toBeNull();
+    expect(sysmonHistoryForDisplay([current], false)).toEqual([]);
+    expect(sysmonSnapshotForDisplay(current, true)).toBe(current);
+  });
+
   it("deduplicates concurrent refreshes and shares the resulting snapshot", async () => {
     const requests: DeferredRequest[] = [];
     const store = createSysmonLiveStore((command, args) => new Promise((resolve, reject) => {

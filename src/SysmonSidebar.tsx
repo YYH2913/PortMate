@@ -2,7 +2,7 @@ import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { useState } from "react";
 import { Activity, LoaderCircle, Maximize2, RefreshCw } from "lucide-react";
 import { formatBytes, formatEventClock } from "./display-formatters";
-import { refreshSysmonLive, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
+import { refreshSysmonLive, sysmonSnapshotForDisplay, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { formatSysmonNetworkAddresses } from "./sysmon-network-addresses";
 import type { SessionSummary } from "./types";
 
@@ -23,7 +23,7 @@ export default function SysmonSidebar({
   const canSample = Boolean(session) && (!remote || session?.runtime.status === "connected");
   const live = useSysmonLiveState(session?.profile.id);
   useSysmonLivePolling(session?.profile.id, enabled && canSample);
-  const snapshot = live.snapshot;
+  const snapshot = sysmonSnapshotForDisplay(live.snapshot, canSample);
   const busy = enabled && canSample && live.busy;
   const error = live.error;
 

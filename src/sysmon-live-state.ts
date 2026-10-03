@@ -27,6 +27,21 @@ type SysmonScheduler = {
 
 export type SysmonLiveStore = ReturnType<typeof createSysmonLiveStore>;
 
+/** Do not present a remote sample while its session is disconnected/reconnecting. */
+export function sysmonSnapshotForDisplay(
+  snapshot: SysmonSnapshot | null,
+  canSample: boolean,
+): SysmonSnapshot | null {
+  return canSample ? snapshot : null;
+}
+
+export function sysmonHistoryForDisplay(
+  history: SysmonSnapshot[],
+  canSample: boolean,
+): SysmonSnapshot[] {
+  return canSample ? history : [];
+}
+
 const emptySysmonLiveState: SysmonLiveState = {
   snapshot: null,
   history: [],
