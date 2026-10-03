@@ -28,12 +28,13 @@ function baseConnection(): SshConnection {
 }
 
 describe("SSH connection settings", () => {
-  it("offers every ordered non-empty subset of the supported authentication methods", () => {
-    expect(SSH_AUTH_ORDER_OPTIONS).toHaveLength(15);
-    expect(new Set(SSH_AUTH_ORDER_OPTIONS).size).toBe(15);
+  it("offers the supported authentication methods, including explicit none authentication", () => {
+    expect(SSH_AUTH_ORDER_OPTIONS).toHaveLength(16);
+    expect(new Set(SSH_AUTH_ORDER_OPTIONS).size).toBe(16);
     expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive>public-key");
     expect(SSH_AUTH_ORDER_OPTIONS).toContain("password>keyboard-interactive>public-key");
     expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive");
+    expect(SSH_AUTH_ORDER_OPTIONS).toContain("none");
   });
 
   it("fills health defaults for legacy profiles", () => {

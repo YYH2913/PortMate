@@ -32,6 +32,7 @@ export const SSH_AUTH_ORDER_OPTIONS = [
   "password>public-key",
   "password>keyboard-interactive",
   "password",
+  "none",
 ] as const;
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {

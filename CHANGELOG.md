@@ -10,6 +10,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 - known_hosts imports now reject bracketed entries with invalid or zero ports instead of silently assigning port 22.
 - Secret redaction now consumes complete quoted and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
+- SSH settings now expose an explicit `none` authentication preset for devices that accept protocol-level none authentication.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.
 - TCP readers stop after local disconnect even when the peer keeps its socket open.

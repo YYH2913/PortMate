@@ -2427,8 +2427,8 @@ function sshAuthenticationLabel(method: AuthMethod) {
     case "public-key": return t("public-key");
     case "keyboard-interactive": return t("keyboard-interactive");
     case "password": return t("password");
+    case "none": return t("none");
     case "gssapi-with-mic": return "GSSAPI";
-    case "none": return t("no-authentication");
   }
 }
 
