@@ -17,6 +17,7 @@ const OWNED_ENTRIES: &[&str] = &[
     "logs",
     "exports",
 ];
+const BOOTSTRAP_ONLY_ENTRIES: &[&str] = &["mediakeys"];
 
 pub(super) fn migrate_legacy_app_data_dir(
     data_root: &Path,
@@ -37,7 +38,42 @@ pub(super) fn migrate_legacy_app_data_dir(
                 current_data_dir.display()
             ));
         }
-        fs::remove_dir_all(current_data_dir).map_err(|error| {
+        if app_data_directory_has_unrecognized_entries(current_data_dir)? {
+            return Err(format!(
+                "refusing to remove unrecognized current PortMate data directory entries in {}",
+                current_data_dir.display()
+            ));
+        }
+        // Remove only the explicitly disposable bootstrap entry. If another
+        // process creates an unknown entry after the allowlist check, the
+        // non-recursive directory removal below fails and preserves it.
+        for entry in BOOTSTRAP_ONLY_ENTRIES {
+            let bootstrap_path = current_data_dir.join(entry);
+            match fs::symlink_metadata(&bootstrap_path) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    fs::remove_dir_all(&bootstrap_path).map_err(|error| {
+                        format!(
+                            "failed to remove bootstrap-only current PortMate entry {}: {error}",
+                            bootstrap_path.display()
+                        )
+                    })?;
+                }
+                Ok(_) => fs::remove_file(&bootstrap_path).map_err(|error| {
+                    format!(
+                        "failed to remove bootstrap-only current PortMate entry {}: {error}",
+                        bootstrap_path.display()
+                    )
+                })?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect bootstrap-only current PortMate entry {}: {error}",
+                        bootstrap_path.display()
+                    ));
+                }
+            }
+        }
+        fs::remove_dir(current_data_dir).map_err(|error| {
             format!(
                 "failed to remove bootstrap-only current PortMate data directory {}: {error}",
                 current_data_dir.display()
@@ -60,6 +96,30 @@ pub(super) fn migrate_legacy_app_data_dir(
             current_data_dir.display()
         )
     })
+}
+
+fn app_data_directory_has_unrecognized_entries(path: &Path) -> Result<bool, String> {
+    for entry in fs::read_dir(path).map_err(|error| {
+        format!(
+            "failed to inspect current PortMate data directory {}: {error}",
+            path.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect current PortMate data directory {}: {error}",
+                path.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !OWNED_ENTRIES.iter().any(|owned| *owned == name)
+            && !BOOTSTRAP_ONLY_ENTRIES.iter().any(|owned| *owned == name)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn validate_app_data_directory(path: &Path, label: &str) -> Result<(), String> {

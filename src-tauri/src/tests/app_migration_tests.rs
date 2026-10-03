@@ -34,3 +34,21 @@ fn legacy_app_identifier_migration_refuses_to_merge_two_live_stores() {
     assert_eq!(fs::read(legacy.join(STORE_FILE_NAME)).unwrap(), b"legacy");
     assert_eq!(fs::read(current.join(STORE_FILE_NAME)).unwrap(), b"current");
 }
+
+#[test]
+fn legacy_app_identifier_migration_preserves_unknown_current_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
+    let current = root.path().join("dev.portmate.desktop");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(&current).unwrap();
+    fs::write(legacy.join(STORE_FILE_NAME), b"legacy").unwrap();
+    let unknown = current.join("unrecognized-user-data.json");
+    fs::write(&unknown, b"keep me").unwrap();
+
+    let error = migrate_legacy_app_data_dir(root.path(), &current).unwrap_err();
+
+    assert!(error.contains("unrecognized current"), "{error}");
+    assert_eq!(fs::read(&unknown).unwrap(), b"keep me");
+    assert!(legacy.exists());
+}
