@@ -4,7 +4,7 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sha256File, verifyMacAppBundle } from "./native-package-layout.mjs";
@@ -28,9 +28,10 @@ const expectedMetadata = {
   CFBundleExecutable: "portmate",
   LSApplicationCategoryType: expectedCategory,
 };
-const bundleRoot = join(projectRoot, "target", "release", "bundle");
-const sourceMain = join(projectRoot, "target", "release", "portmate");
-const sourceSidecar = join(projectRoot, "target", "release", "portmate-mcp");
+const targetRoot = resolveTargetDirectory(projectRoot);
+const bundleRoot = join(targetRoot, "release", "bundle");
+const sourceMain = join(targetRoot, "release", "portmate");
+const sourceSidecar = join(targetRoot, "release", "portmate-mcp");
 const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const app = findSingleBundle(join(bundleRoot, "macos"));
@@ -237,4 +238,10 @@ function run(command, args) {
   if (result.status !== 0) {
     throw new Error(`${basename(command)} failed with exit code ${result.status ?? 1}`);
   }
+}
+
+function resolveTargetDirectory(root) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(root, "target");
+  return isAbsolute(configured) ? configured : resolve(root, configured);
 }

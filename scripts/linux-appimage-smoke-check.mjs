@@ -8,7 +8,7 @@ import {
   renameSync,
   statSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { smokePackagedApplicationLegacyConflict } from "./native-packaged-smoke.mjs";
@@ -20,9 +20,10 @@ if (!process.env.DISPLAY?.trim()) throw new Error("The AppImage smoke check requ
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
 const architecture = process.arch === "x64" ? "amd64" : process.arch;
+const targetRoot = resolveTargetDirectory(projectRoot);
 const appImage = resolve(
   process.env.PORTMATE_APPIMAGE_PATH?.trim()
-    ?? join(projectRoot, "target", "release", "bundle", "appimage", `PortMate_${packageJson.version}_${architecture}.AppImage`),
+    ?? join(targetRoot, "release", "bundle", "appimage", `PortMate_${packageJson.version}_${architecture}.AppImage`),
 );
 assertExecutable(appImage);
 
@@ -141,6 +142,12 @@ function assertExecutable(path) {
   const metadata = statSync(path);
   if (!metadata.isFile()) throw new Error(`Expected executable file: ${path}`);
   accessSync(path, constants.X_OK);
+}
+
+function resolveTargetDirectory(root) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(root, "target");
+  return isAbsolute(configured) ? configured : resolve(root, configured);
 }
 
 function run(command, args, options = {}) {

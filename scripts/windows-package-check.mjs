@@ -4,7 +4,7 @@ import {
   mkdirSync,
   readdirSync,
 } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -22,9 +22,10 @@ if (process.platform !== "win32") {
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const bundleRoot = join(projectRoot, "target", "release", "bundle");
-const sourceMain = join(projectRoot, "target", "release", "portmate.exe");
-const sourceSidecar = join(projectRoot, "target", "release", "portmate-mcp.exe");
+const targetRoot = resolveTargetDirectory(projectRoot);
+const bundleRoot = join(targetRoot, "release", "bundle");
+const sourceMain = join(targetRoot, "release", "portmate.exe");
+const sourceSidecar = join(targetRoot, "release", "portmate-mcp.exe");
 const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
 const releaseBinary = verifyWindowsReleaseBinary({
@@ -192,4 +193,10 @@ function run(command, args) {
   if (result.status !== 0) {
     throw new Error(`${basename(command)} failed with exit code ${result.status ?? 1}`);
   }
+}
+
+function resolveTargetDirectory(root) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(root, "target");
+  return isAbsolute(configured) ? configured : resolve(root, configured);
 }

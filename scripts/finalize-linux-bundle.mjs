@@ -10,7 +10,7 @@ import {
   rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { cachedAppImagePluginPath, copyAppImageRuntime } from "./appimage-runtime.mjs";
@@ -21,10 +21,10 @@ if (process.platform === "linux") finalizeLinuxAppImage();
 function finalizeLinuxAppImage() {
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { version } = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
+  const targetRoot = resolveTargetDirectory(projectRoot);
   const packageArchitecture = process.arch === "x64" ? "amd64" : process.arch;
   const appImage = join(
-    projectRoot,
-    "target",
+    targetRoot,
     "release",
     "bundle",
     "appimage",
@@ -55,6 +55,12 @@ function finalizeLinuxAppImage() {
   } finally {
     rmSync(workRoot, { recursive: true, force: true });
   }
+}
+
+function resolveTargetDirectory(projectRoot) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(projectRoot, "target");
+  return isAbsolute(configured) ? configured : resolve(projectRoot, configured);
 }
 
 function normalizeTreePermissions(path) {

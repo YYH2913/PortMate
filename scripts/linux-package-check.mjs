@@ -37,7 +37,7 @@ const productionCsp = verifyTauriSecurityConfiguration(
 );
 const architecture = process.arch === "x64" ? "amd64" : process.arch;
 const rpmArchitecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
-const bundleRoot = join(projectRoot, "target", "release", "bundle");
+const bundleRoot = join(resolveTargetDirectory(projectRoot), "release", "bundle");
 const deb = join(bundleRoot, "deb", `PortMate_${version}_${architecture}.deb`);
 const rpm = join(bundleRoot, "rpm", `PortMate-${version}-1.${rpmArchitecture}.rpm`);
 const appImage = join(bundleRoot, "appimage", `PortMate_${version}_${architecture}.AppImage`);
@@ -49,6 +49,12 @@ const auditRoot = packageWorkspace.root;
 const packageEnvironment = packageWorkspace.environment;
 const runtimeSmokes = [];
 const sidecarWatchdogSmokes = [];
+
+function resolveTargetDirectory(root) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(root, "target");
+  return isAbsolute(configured) ? configured : resolve(root, configured);
+}
 
 try {
   const debRoot = join(auditRoot, "deb");

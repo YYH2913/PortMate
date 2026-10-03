@@ -1,11 +1,12 @@
 import { chmodSync, existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { prepareAppImageBuildEnvironment } from "./appimage-runtime.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-rmSync(join(projectRoot, "target", "release", "bundle"), { recursive: true, force: true });
+const targetRoot = resolveTargetDirectory(projectRoot);
+rmSync(join(targetRoot, "release", "bundle"), { recursive: true, force: true });
 if (process.platform !== "win32") {
   process.umask(0o022);
   chmodSync(join(projectRoot, "LICENSE"), 0o644);
@@ -14,13 +15,13 @@ if (process.platform !== "win32") {
     if (lstatSync(path).isFile()) chmodSync(path, 0o644);
   }
   for (const binary of ["portmate", "portmate-mcp"]) {
-    const path = join(projectRoot, "target", "release", binary);
+    const path = join(targetRoot, "release", binary);
     if (existsSync(path)) chmodSync(path, 0o755);
   }
 }
 
 const appImageRuntime = prepareAppImageBuildEnvironment(process.env, {
-  tempRoot: join(projectRoot, "target"),
+  tempRoot: targetRoot,
 });
 if (appImageRuntime.source === "tauri-cache") {
   console.log(`Reusing the cached Tauri AppImage runtime: ${appImageRuntime.runtimeFile}`);
@@ -66,4 +67,10 @@ function run(command, args, env) {
     error.exitCode = result.status ?? 1;
     throw error;
   }
+}
+
+function resolveTargetDirectory(root) {
+  const configured = process.env.CARGO_TARGET_DIR;
+  if (!configured) return join(root, "target");
+  return isAbsolute(configured) ? configured : resolve(root, configured);
 }
