@@ -173,7 +173,9 @@ impl HostKeyStore {
             .inspect(|line| {
                 if let Ok(fingerprint) = compute_ssh_sha256_fingerprint(&line.public_key_base64) {
                     for host in &line.hosts {
-                        let (alias, port) = split_known_host(host);
+                        let Some((alias, port)) = split_known_host(host) else {
+                            continue;
+                        };
                         self.keys.push(TrustedHostKey {
                             id: Uuid::new_v4().to_string(),
                             profile_id: Some(profile_id.to_string()),
@@ -293,13 +295,18 @@ pub fn compute_ssh_sha256_fingerprint(public_key_base64: &str) -> Result<String,
     Ok(format!("SHA256:{encoded}"))
 }
 
-fn split_known_host(host: &str) -> (String, u16) {
+fn split_known_host(host: &str) -> Option<(String, u16)> {
     if let Some(rest) = host.strip_prefix('[') {
         if let Some((name, port)) = rest.split_once("]:") {
-            return (name.to_string(), port.parse().unwrap_or(22));
+            let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+            if name.is_empty() {
+                return None;
+            }
+            return Some((name.to_string(), port));
         }
+        return None;
     }
-    (host.to_string(), 22)
+    (!host.is_empty()).then(|| (host.to_string(), 22))
 }
 
 fn format_known_host(alias: &str, port: u16) -> String {
@@ -444,6 +451,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.keys.len(), 2);
+    }
+
+    #[test]
+    fn known_hosts_rejects_invalid_or_zero_ports_instead_of_using_port_22() {
+        let key = general_purpose::STANDARD.encode(b"known-host-key");
+        let mut store = HostKeyStore::new();
+        let imported = store.import_known_hosts(
+            "profile",
+            &format!(
+                "[router.example]:not-a-port ssh-ed25519 {key}\n\
+                 [router.example]:0 ssh-ed25519 {key}\n\
+                 [router.example]:2222 ssh-ed25519 {key}\n"
+            ),
+        );
+
+        assert_eq!(imported.len(), 3);
+        assert_eq!(store.keys.len(), 1);
+        assert_eq!(store.keys[0].port, 2222);
     }
 
     #[test]
