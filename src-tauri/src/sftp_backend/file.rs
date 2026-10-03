@@ -97,15 +97,16 @@ where
     let worker = tokio::task::spawn_blocking(move || {
         run_libssh_sftp_file_operation(&session, &mut file, deadline, &worker_label, operation)
     });
-    tokio::time::timeout(remaining, worker)
-        .await
-        .map_err(|_| {
-            sftp_file_operation_error(
-                std::io::ErrorKind::TimedOut,
-                format!("{label} timed out after {} ms", timeout.as_millis()),
-            )
-        })?
-        .map_err(|error| std::io::Error::other(format!("{label} worker failed: {error}")))?
+    match wait_reapable_blocking_worker(worker, remaining, label).await {
+        Ok(result) => result,
+        Err(BlockingWorkerWaitError::TimedOut) => Err(sftp_file_operation_error(
+            std::io::ErrorKind::TimedOut,
+            format!("{label} timed out after {} ms", timeout.as_millis()),
+        )),
+        Err(BlockingWorkerWaitError::Failed(error)) => {
+            Err(std::io::Error::other(format!("{label} worker failed: {error}")))
+        }
+    }
 }
 
 pub(crate) enum SftpBackendFile {

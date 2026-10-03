@@ -47,6 +47,22 @@ fn run_libssh_runtime_operation<T>(
     result.map_err(|error| format!("{label} libssh operation gate failed: {error}"))?
 }
 
+async fn wait_libssh_worker<T: Send + 'static>(
+    worker: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    label: &str,
+) -> Result<T, String> {
+    match wait_reapable_blocking_worker(worker, timeout, label).await {
+        Ok(value) => Ok(value),
+        Err(BlockingWorkerWaitError::TimedOut) => {
+            Err(format!("{label} timed out after {} ms", timeout.as_millis()))
+        }
+        Err(BlockingWorkerWaitError::Failed(error)) => {
+            Err(format!("{label} worker failed: {error}"))
+        }
+    }
+}
+
 impl<H> SshBackendSession<H>
 where
     H: client::Handler,
@@ -69,7 +85,7 @@ where
                 let session = session.clone();
                 let command = command.to_string();
                 let term = term.to_string();
-                let channel = tokio::task::spawn_blocking(move || {
+                let worker = tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(&session, Instant::now() + SSH_RUNTIME_OPERATION_TIMEOUT, "tmux terminal", || {
                         let channel = session.new_channel().map_err(|e| e.to_string())?;
                         channel.open_session().map_err(|e| e.to_string())?;
@@ -77,7 +93,13 @@ where
                         channel.request_exec(&command).map_err(|e| e.to_string())?;
                         Ok(channel)
                     })
-                }).await.map_err(|e| e.to_string())??;
+                });
+                let channel = wait_libssh_worker(
+                    worker,
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh tmux terminal",
+                )
+                .await??;
                 Ok(SshBackendChannel::from_libssh(channel).split())
             }
         }
@@ -112,9 +134,12 @@ where
                 .map_err(|error| error.to_string()),
             Self::Libssh(session) => {
                 let session = session.clone();
-                tokio::task::spawn_blocking(move || session.disconnect())
-                    .await
-                    .map_err(|error| format!("libssh disconnect worker failed: {error}"))?;
+                wait_libssh_worker(
+                    tokio::task::spawn_blocking(move || session.disconnect()),
+                    SSH_RUNTIME_OPERATION_TIMEOUT,
+                    "libssh disconnect",
+                )
+                .await?;
                 Ok(())
             }
         }
@@ -126,16 +151,15 @@ where
             Self::Libssh(session) => {
                 let session = session.clone();
                 let deadline = libssh_operation_deadline(timeout, "SSH keepalive")?;
-                tokio::task::spawn_blocking(move || {
+                wait_libssh_worker(tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(
                         &session,
                         deadline,
                         "SSH keepalive",
                         || session.send_keepalive().map_err(|error| error.to_string()),
                     )
-                })
-                    .await
-                    .map_err(|error| format!("libssh keepalive worker failed: {error}"))?
+                }), timeout, "libssh keepalive")
+                .await?
             }
         }
     }
@@ -146,7 +170,7 @@ where
         };
         let session = session.clone();
         let deadline = libssh_operation_deadline(timeout, "SFTP health probe")?;
-        tokio::task::spawn_blocking(move || {
+        wait_libssh_worker(tokio::task::spawn_blocking(move || {
             run_libssh_runtime_operation(&session, deadline, "SFTP health probe", || {
                 let sftp = session
                     .sftp()
@@ -157,9 +181,8 @@ where
                     .map_err(|error| format!("libssh SFTP read_dir failed: {error}"))?;
                 Ok(())
             })
-        })
-        .await
-        .map_err(|error| format!("libssh SFTP health worker failed: {error}"))?
+        }), timeout, "libssh SFTP health")
+        .await?
     }
 
     pub(super) async fn open_libssh_sftp(
@@ -171,16 +194,15 @@ where
         };
         let session = session.clone();
         let deadline = libssh_operation_deadline(timeout, "SFTP setup")?;
-        tokio::task::spawn_blocking(move || {
+        wait_libssh_worker(tokio::task::spawn_blocking(move || {
             run_libssh_runtime_operation(&session, deadline, "SFTP setup", || {
                 session
                     .sftp()
                     .map(SftpBackendSession::from_libssh)
                     .map_err(|error| format!("SFTP 初始化失败: {error}"))
             })
-        })
-        .await
-        .map_err(|error| format!("libssh SFTP setup worker failed: {error}"))?
+        }), timeout, "libssh SFTP setup")
+        .await?
     }
 
     pub(super) async fn open_exec(
@@ -206,7 +228,7 @@ where
                 let command = command.to_string();
                 let deadline = libssh_operation_deadline(timeout, label)?;
                 let worker_label = label.to_string();
-                let channel = tokio::task::spawn_blocking(move || {
+                let worker = tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(&session, deadline, &worker_label, || {
                         let channel = session
                             .new_channel()
@@ -219,10 +241,10 @@ where
                             .map_err(|error| error.to_string())?;
                         Ok(channel)
                     })
-                })
-                .await
-                .map_err(|error| format!("{label} libssh worker failed: {error}"))?
-                .map_err(|error| format!("{label} libssh setup failed: {error}"))?;
+                });
+                let channel = wait_libssh_worker(worker, timeout, label)
+                    .await?
+                    .map_err(|error| format!("{label} libssh setup failed: {error}"))?;
                 Ok(SshBackendChannel::from_libssh(channel))
             }
         }
@@ -250,7 +272,7 @@ where
             Self::Libssh(session) => {
                 let session = session.clone();
                 let deadline = libssh_operation_deadline(timeout, "direct-tcpip open")?;
-                let channel = tokio::task::spawn_blocking(move || {
+                let worker = tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(
                         &session,
                         deadline,
@@ -270,10 +292,10 @@ where
                             Ok(channel)
                         },
                     )
-                })
-                .await
-                .map_err(|error| format!("libssh direct-tcpip worker failed: {error}"))?
-                .map_err(|error| format!("libssh direct-tcpip open failed: {error}"))?;
+                });
+                let channel = wait_libssh_worker(worker, timeout, "libssh direct-tcpip")
+                    .await?
+                    .map_err(|error| format!("libssh direct-tcpip open failed: {error}"))?;
                 Ok(SshBackendChannel::from_libssh_forward(channel))
             }
         }
@@ -302,7 +324,7 @@ where
             Self::Libssh(session) => {
                 let session = session.clone();
                 let deadline = libssh_operation_deadline(timeout, "remote forward request")?;
-                tokio::task::spawn_blocking(move || {
+                wait_libssh_worker(tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(
                         &session,
                         deadline,
@@ -313,10 +335,9 @@ where
                                 .map_err(|error| error.to_string())
                         },
                     )
-                })
+                }), timeout, "libssh remote forward request")
                 .await
-                .map_err(|error| format!("libssh remote forward worker failed: {error}"))?
-                .map_err(|error| format!("libssh remote forward request failed: {error}"))
+                .and_then(|result| result.map_err(|error| format!("libssh remote forward request failed: {error}")))
             }
         }
     }
@@ -335,7 +356,7 @@ where
             Self::Libssh(session) => {
                 let session = session.clone();
                 let deadline = libssh_operation_deadline(timeout, "remote forward cancel")?;
-                tokio::task::spawn_blocking(move || {
+                wait_libssh_worker(tokio::task::spawn_blocking(move || {
                     run_libssh_runtime_operation(
                         &session,
                         deadline,
@@ -346,9 +367,8 @@ where
                                 .map_err(|error| error.to_string())
                         },
                     )
-                })
-                .await
-                .map_err(|error| format!("libssh remote forward cancel worker failed: {error}"))?
+                }), timeout, "libssh remote forward cancel")
+                .await?
             }
         }
     }

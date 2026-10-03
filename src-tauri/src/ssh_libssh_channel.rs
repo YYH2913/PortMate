@@ -1,5 +1,79 @@
 use super::*;
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum BlockingWorkerWaitError {
+    TimedOut,
+    Failed(String),
+}
+
+struct ReapableBlockingWorker<T: Send + 'static> {
+    handle: Option<tokio::task::JoinHandle<T>>,
+    label: String,
+}
+
+impl<T: Send + 'static> ReapableBlockingWorker<T> {
+    fn new(handle: tokio::task::JoinHandle<T>, label: impl Into<String>) -> Self {
+        Self {
+            handle: Some(handle),
+            label: label.into(),
+        }
+    }
+
+    fn reap(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let label = self.label.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = handle.await {
+                    eprintln!("PortMate: {label} blocking worker reaper failed: {error}");
+                }
+            });
+        } else {
+            // There is no executor left to drive a reaper during process
+            // shutdown. Abort before dropping the handle; running blocking
+            // work cannot be force-stopped, but it is never silently detached
+            // while an executor is available.
+            handle.abort();
+            eprintln!("PortMate: {label} blocking worker aborted during runtime shutdown");
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for ReapableBlockingWorker<T> {
+    fn drop(&mut self) {
+        self.reap();
+    }
+}
+
+pub(super) async fn wait_reapable_blocking_worker<T: Send + 'static>(
+    handle: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    label: &str,
+) -> Result<T, BlockingWorkerWaitError> {
+    let mut worker = ReapableBlockingWorker::new(handle, label);
+    let Some(handle) = worker.handle.as_mut() else {
+        return Err(BlockingWorkerWaitError::Failed(
+            "blocking worker handle was missing".to_string(),
+        ));
+    };
+    match tokio::time::timeout(timeout, handle).await {
+        Ok(Ok(value)) => {
+            worker.handle.take();
+            Ok(value)
+        }
+        Ok(Err(error)) => {
+            worker.handle.take();
+            Err(BlockingWorkerWaitError::Failed(error.to_string()))
+        }
+        Err(_) => {
+            worker.reap();
+            Err(BlockingWorkerWaitError::TimedOut)
+        }
+    }
+}
+
 fn run_libssh_channel_operation<T>(
     channel: &libssh_rs::Channel,
     deadline: Instant,
@@ -49,10 +123,15 @@ where
     let worker = tokio::task::spawn_blocking(move || {
         run_libssh_channel_operation(&channel, deadline, &worker_label, operation)
     });
-    tokio::time::timeout(remaining, worker)
-        .await
-        .map_err(|_| format!("{label} timed out after {} ms", timeout.as_millis()))?
-        .map_err(|error| format!("{label} worker failed: {error}"))?
+    match wait_reapable_blocking_worker(worker, remaining, label).await {
+        Ok(result) => result,
+        Err(BlockingWorkerWaitError::TimedOut) => {
+            Err(format!("{label} timed out after {} ms", timeout.as_millis()))
+        }
+        Err(BlockingWorkerWaitError::Failed(error)) => {
+            Err(format!("{label} worker failed: {error}"))
+        }
+    }
 }
 
 pub(super) struct LibsshChannelReader {
@@ -111,12 +190,24 @@ impl LibsshChannelReader {
 
             let channel = Arc::clone(&self.channel);
             let collect_exit_metadata = self.collect_exit_metadata;
-            let polled = tokio::task::spawn_blocking(move || {
+            let polled_worker = tokio::task::spawn_blocking(move || {
                 poll_libssh_channel(channel, collect_exit_metadata)
-            })
+            });
+            let polled = match wait_reapable_blocking_worker(
+                polled_worker,
+                SSH_RUNTIME_OPERATION_TIMEOUT,
+                "libssh read",
+            )
             .await
-            .map_err(|error| format!("libssh read worker failed: {error}"))
-            .and_then(|result| result);
+            {
+                Ok(result) => result,
+                Err(BlockingWorkerWaitError::TimedOut) => {
+                    Err("libssh read worker timed out".to_string())
+                }
+                Err(BlockingWorkerWaitError::Failed(error)) => {
+                    Err(format!("libssh read worker failed: {error}"))
+                }
+            };
             match polled {
                 Ok(LibsshChannelPoll::Data(data)) => return Some(SshBackendMessage::Data(data)),
                 Ok(LibsshChannelPoll::ExtendedData(data)) => {
@@ -213,4 +304,64 @@ fn poll_libssh_channel(
         });
     }
     Ok(LibsshChannelPoll::Pending)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timed_out_blocking_workers_are_reaped() {
+        tauri::async_runtime::block_on(async {
+            let finished = Arc::new(AtomicBool::new(false));
+            let finished_in_worker = Arc::clone(&finished);
+            let worker = tokio::task::spawn_blocking(move || {
+                std::thread::sleep(Duration::from_millis(40));
+                finished_in_worker.store(true, Ordering::SeqCst);
+                7_u8
+            });
+
+            assert_eq!(
+                wait_reapable_blocking_worker(worker, Duration::from_millis(1), "test worker")
+                    .await,
+                Err(BlockingWorkerWaitError::TimedOut)
+            );
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !finished.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("timed-out worker was not reaped");
+        });
+    }
+
+    #[test]
+    fn cancelled_wait_futures_keep_ownership_of_blocking_workers() {
+        tauri::async_runtime::block_on(async {
+            let finished = Arc::new(AtomicBool::new(false));
+            let finished_in_worker = Arc::clone(&finished);
+            let worker = tokio::task::spawn_blocking(move || {
+                std::thread::sleep(Duration::from_millis(40));
+                finished_in_worker.store(true, Ordering::SeqCst);
+            });
+            let waiting = wait_reapable_blocking_worker(
+                worker,
+                Duration::from_secs(1),
+                "cancelled worker",
+            );
+            tokio::pin!(waiting);
+            tokio::select! {
+                _ = &mut waiting => panic!("worker completed before cancellation"),
+                _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !finished.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cancelled worker was detached instead of reaped");
+        });
+    }
 }

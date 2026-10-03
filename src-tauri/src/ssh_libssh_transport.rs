@@ -203,9 +203,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         }
     };
     let agent_socket_available = identity_agent.is_some();
-    let connected = tokio::time::timeout(
-        remaining_connect_timeout,
-        tokio::task::spawn_blocking(move || {
+    let connected_worker = tokio::task::spawn_blocking(move || {
             let session = libssh_rs::Session::new()
                 .map_err(|error| format!("libssh session 初始化失败: {error}"))?;
             session
@@ -259,12 +257,16 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                     .map_err(|error| format!("libssh 导出 host key 失败: {error}"))?,
             };
             Ok::<_, String>((session, observation))
-        }),
+        });
+    let connected = wait_reapable_blocking_worker(
+        connected_worker,
+        remaining_connect_timeout,
+        "libssh connection",
     )
     .await;
     let (session, observation) = match connected {
-        Ok(Ok(Ok(connected))) => connected,
-        Ok(Ok(Err(error))) => {
+        Ok(Ok(connected)) => connected,
+        Ok(Err(error)) => {
             cleanup_failed_libssh_runtime(
                 None,
                 &jump_sessions,
@@ -275,7 +277,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             .await;
             return Err(error);
         }
-        Ok(Err(error)) => {
+        Err(BlockingWorkerWaitError::Failed(error)) => {
             cleanup_failed_libssh_runtime(
                 None,
                 &jump_sessions,
@@ -286,7 +288,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             .await;
             return Err(format!("libssh 连接 worker 失败: {error}"));
         }
-        Err(_) => {
+        Err(BlockingWorkerWaitError::TimedOut) => {
             cleanup_failed_libssh_runtime(
                 None,
                 &jump_sessions,
@@ -437,9 +439,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         ));
     };
     let auth_session = session.clone();
-    let auth = match tokio::time::timeout(
-        remaining_auth_timeout,
-        tokio::task::spawn_blocking(move || {
+    let auth_worker = tokio::task::spawn_blocking(move || {
             auth_session
                 .set_option(libssh_rs::SshOption::Timeout(remaining_auth_timeout))
                 .map_err(|error| format!("libssh 设置认证超时失败: {error}"))?;
@@ -452,13 +452,19 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 offer_agent_before,
                 offer_agent_after,
             )
-        }),
+        });
+    let auth = match wait_reapable_blocking_worker(
+        auth_worker,
+        remaining_auth_timeout,
+        "libssh SSH 认证",
     )
     .await
     {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => Err(format!("libssh SSH 认证 worker 失败: {error}")),
-        Err(_) => Err(format!(
+        Ok(result) => result,
+        Err(BlockingWorkerWaitError::Failed(error)) => {
+            Err(format!("libssh SSH 认证 worker 失败: {error}"))
+        }
+        Err(BlockingWorkerWaitError::TimedOut) => Err(format!(
             "libssh SSH 认证超时（{} ms）",
             connect_timeout.as_millis()
         )),
@@ -551,9 +557,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             connect_timeout.as_millis()
         ));
     };
-    let channel = tokio::time::timeout(
-        remaining_terminal_timeout,
-        tokio::task::spawn_blocking(move || {
+    let channel_worker = tokio::task::spawn_blocking(move || {
             terminal_session
                 .set_option(libssh_rs::SshOption::Timeout(remaining_terminal_timeout))
                 .map_err(|error| format!("libssh 设置终端 setup 超时失败: {error}"))?;
@@ -604,12 +608,16 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                 ))
                 .map_err(|error| format!("libssh 设置运行期 I/O 超时失败: {error}"))?;
             Ok::<_, String>(channel)
-        }),
+        });
+    let channel = wait_reapable_blocking_worker(
+        channel_worker,
+        remaining_terminal_timeout,
+        "libssh 终端 setup",
     )
     .await;
     let channel = match channel {
-        Ok(Ok(Ok(channel))) => channel,
-        Ok(Ok(Err(error))) => {
+        Ok(Ok(channel)) => channel,
+        Ok(Err(error)) => {
             cleanup_failed_libssh_runtime(
                 Some(&session),
                 &jump_sessions,
@@ -620,7 +628,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             .await;
             return Err(error);
         }
-        Ok(Err(error)) => {
+        Err(BlockingWorkerWaitError::Failed(error)) => {
             cleanup_failed_libssh_runtime(
                 Some(&session),
                 &jump_sessions,
@@ -631,7 +639,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             .await;
             return Err(format!("libssh 终端 worker 失败: {error}"));
         }
-        Err(_) => {
+        Err(BlockingWorkerWaitError::TimedOut) => {
             cleanup_failed_libssh_runtime(
                 Some(&session),
                 &jump_sessions,

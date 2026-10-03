@@ -57,10 +57,15 @@ where
     let worker = tokio::task::spawn_blocking(move || {
         run_libssh_sftp_operation(&session, deadline, &worker_label, operation)
     });
-    tokio::time::timeout(remaining, worker)
-        .await
-        .map_err(|_| format!("{label} timed out after {} ms", timeout.as_millis()))?
-        .map_err(|error| format!("{label} worker failed: {error}"))?
+    match wait_reapable_blocking_worker(worker, remaining, label).await {
+        Ok(result) => result,
+        Err(BlockingWorkerWaitError::TimedOut) => {
+            Err(format!("{label} timed out after {} ms", timeout.as_millis()))
+        }
+        Err(BlockingWorkerWaitError::Failed(error)) => {
+            Err(format!("{label} worker failed: {error}"))
+        }
+    }
 }
 
 pub(super) enum SftpBackendSession {
