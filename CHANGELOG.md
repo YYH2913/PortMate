@@ -176,6 +176,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Queued transfers can be cancelled individually or together with running transfers.
   Script deletion or refresh selecting another script clears the previous parameters
   and result. Delayed sysmon responses no longer replace newer samples.
+- Transfer queue commits now recheck that the Profile still exists, so a session
+  deletion racing with a transfer start cannot leave an orphan queued task.
 - Asynchronously initialized detached terminals correctly publish their ready state
   in development without assuming a second Strict Mode initialization.
 - Detached native windows no longer replace live backend session state with another

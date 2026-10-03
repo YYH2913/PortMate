@@ -198,6 +198,7 @@ async fn start_transfer_inner_with_context(
     let queue_result = match state.store.lock() {
         Ok(mut store) => {
             commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                ensure_transfer_profile_exists(next_store, &request.session_id)?;
                 ensure_transfer_queue_capacity(next_store, &request.session_id, 1)?;
                 next_store.record_transfer(task.clone());
                 let event_ids = next_store
@@ -256,6 +257,16 @@ async fn start_transfer_inner_with_context(
     });
 
     Ok(task)
+}
+
+pub(crate) fn ensure_transfer_profile_exists(
+    store: &SessionStore,
+    session_id: &str,
+) -> Result<(), String> {
+    if store.profile(session_id).is_none() {
+        return Err(format!("unknown session: {session_id}"));
+    }
+    Ok(())
 }
 
 fn transfer_ssh_runtime_id(

@@ -117,6 +117,18 @@ fn transfer_queue_capacity_bounds_session_app_and_overflow_counts() {
 }
 
 #[test]
+fn transfer_queue_commit_rejects_a_profile_deleted_after_preflight() {
+    let profile = test_shell_profile();
+    let mut store = SessionStore::default();
+    store.upsert_profile(profile.clone());
+    store.delete_profile(&profile.id).unwrap();
+
+    let error = crate::transfer_runtime::ensure_transfer_profile_exists(&store, &profile.id)
+        .unwrap_err();
+    assert_eq!(error, format!("unknown session: {}", profile.id));
+}
+
+#[test]
 fn transfer_runner_saturation_rejects_before_queue_side_effects() {
     tauri::async_runtime::block_on(async {
         let root =
