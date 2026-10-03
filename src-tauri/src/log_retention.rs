@@ -45,7 +45,13 @@ pub(super) fn maybe_prune_expired_log_shards(
         }
         checks.insert(key, (retention_days, Instant::now()));
     }
-    prune_expired_log_shards_for_profile(store_path, profile, SystemTime::now()).map(|_| ())
+    match prune_expired_log_shards_for_profile(store_path, profile, SystemTime::now()) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            clear_log_retention_check(store_path, &profile.id);
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn clear_log_retention_check(store_path: &Path, profile_id: &str) {
