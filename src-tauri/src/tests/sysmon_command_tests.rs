@@ -1,3 +1,15 @@
+#[test]
+fn native_linux_addresses_disable_global_fallback_inference() {
+    let native = BTreeMap::from([
+        ("lo".to_string(), vec!["127.0.0.1/8".to_string()]),
+        ("eth0".to_string(), vec!["192.0.2.42/24".to_string()]),
+        ("docker0".to_string(), vec!["172.17.0.1/16".to_string()]),
+    ]);
+    assert!(has_usable_linux_network_addresses(&native));
+    assert_eq!(native.get("eth0").unwrap(), &["192.0.2.42/24"]);
+    assert_eq!(native.get("docker0").unwrap(), &["172.17.0.1/16"]);
+}
+
 #[tokio::test]
 async fn local_sysmon_command_capture_enforces_exit_timeout_and_stream_bounds() {
     assert_eq!(

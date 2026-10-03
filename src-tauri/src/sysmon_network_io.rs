@@ -17,12 +17,17 @@ pub(super) fn read_network_interfaces() -> Option<BTreeMap<String, (u64, u64)>> 
 #[cfg(target_os = "linux")]
 pub(super) fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
     let mut addresses = read_linux_network_addresses_from_getifaddrs();
+    // getifaddrs is the only local source that preserves interface ownership. A
+    // kernel/hostname fallback has only a global address list and assigns it to
+    // the default route, which can mislabel Docker/VPN addresses when native
+    // enumeration already succeeded. Use those fallbacks only when native
+    // enumeration produced no usable address at all.
+    if has_usable_linux_network_addresses(&addresses) {
+        return addresses;
+    }
+
     merge_linux_network_address_maps(&mut addresses, read_local_linux_kernel_network_addresses());
-    if addresses
-        .values()
-        .flatten()
-        .any(|address| is_usable_sysmon_network_address(address))
-    {
+    if has_usable_linux_network_addresses(&addresses) {
         return addresses;
     }
 
@@ -30,11 +35,7 @@ pub(super) fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
         &mut addresses,
         read_local_linux_hostname_network_addresses(),
     );
-    if addresses
-        .values()
-        .flatten()
-        .any(|address| is_usable_sysmon_network_address(address))
-    {
+    if has_usable_linux_network_addresses(&addresses) {
         return addresses;
     }
 
@@ -52,6 +53,15 @@ pub(super) fn read_network_addresses() -> BTreeMap<String, Vec<String>> {
         ),
     );
     addresses
+}
+
+pub(super) fn has_usable_linux_network_addresses(
+    addresses: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    addresses
+        .values()
+        .flatten()
+        .any(|address| is_usable_sysmon_network_address(address))
 }
 
 #[cfg(target_os = "linux")]

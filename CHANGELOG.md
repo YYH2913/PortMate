@@ -12,6 +12,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Secret redaction now consumes complete quoted and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
 - SSH settings now expose an explicit `none` authentication preset for devices that accept protocol-level none authentication.
 - Remote Sysmon now recognizes MSYS2/Git Bash and Cygwin `uname` labels as Windows and reaches the PowerShell collector.
+- Linux Sysmon now preserves interface ownership from `getifaddrs` and only uses global kernel address fallbacks when native enumeration has no usable address.
 - MCP HTTP Accept negotiation now honors the most specific media range, including explicit `q=0` exclusions and type wildcards.
 - Managed MCP HTTP readiness probes now enforce a cumulative read deadline and check the startup deadline before accepting `Running`.
 - MCP approval responses now fail closed when the request has expired, and approval waits use the request's absolute expiry deadline.
