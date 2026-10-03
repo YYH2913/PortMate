@@ -39,6 +39,30 @@ pub(super) enum StoreSnapshotVersion {
 pub(super) static STORE_SNAPSHOT_VERSIONS: OnceLock<Mutex<HashMap<PathBuf, StoreSnapshotVersion>>> =
     OnceLock::new();
 
+pub(super) fn validate_store_path_entry(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("failed to inspect {label} {}: {error}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("{label} must be a regular file: {}", path.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(format!(
+                "{label} must not be a hard link: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) struct PortableStronghold {
     inner: IotaStronghold,
     pub(super) path: SnapshotPath,
@@ -213,6 +237,7 @@ pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<fs::File, String>
         }
     }
     let lock_path = store_lock_path(store_path);
+    validate_store_path_entry(&lock_path, "PortMate store 文件锁")?;
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -226,6 +251,7 @@ pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<fs::File, String>
 }
 
 pub(super) fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotVersion, String> {
+    validate_store_path_entry(store_path, "PortMate SQLite store")?;
     if store_path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
         if !store_path.exists() {
             return Ok(StoreSnapshotVersion::Missing);

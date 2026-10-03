@@ -19,6 +19,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Failed log-retention pruning no longer suppresses retries for the full hourly check interval.
 - Log shard append now rejects hard-linked targets before writing through an unrelated inode.
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
+- SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.
