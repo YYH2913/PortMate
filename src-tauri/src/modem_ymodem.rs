@@ -34,7 +34,9 @@ pub(super) async fn ymodem_send_file(
     )
     .await
     .map_err(|error| format!("YModem metadata block failed: {error}"))?;
-    let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
+    modem_wait_for_crc_request(&mut reader, Duration::from_secs(10))
+        .await
+        .map_err(|error| format!("YModem metadata CRC handshake failed: {error}"))?;
 
     let mut block_no = 1_u8;
     let mut bytes_done = 0_u64;
@@ -67,7 +69,9 @@ pub(super) async fn ymodem_send_file(
     modem_finish_eot(state, session_id, &mut reader)
         .await
         .map_err(|error| format!("YModem EOT handshake failed: {error}"))?;
-    let _ = modem_wait_for_crc_request(&mut reader, Duration::from_secs(10)).await;
+    modem_wait_for_crc_request(&mut reader, Duration::from_secs(10))
+        .await
+        .map_err(|error| format!("YModem EOT CRC handshake failed: {error}"))?;
     if auto_remote_receiver {
         modem_finish_auto_remote_ymodem_batch(state, session_id, &mut reader)
             .await
