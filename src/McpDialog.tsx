@@ -90,7 +90,7 @@ export default function McpDialog({
       ? grants.find((grant) => grant.clientId === editingClientId)
       : undefined;
     const next = selected ?? grants[0] ?? null;
-    if (selected && mcpGrantDraftHasUnsavedChanges(draft, loadedGrantRef.current)) return;
+    if (mcpGrantDraftHasUnsavedChanges(draft, loadedGrantRef.current)) return;
     loadedGrantRef.current = next;
     setDraft(next);
     setEditingClientId(next?.clientId ?? null);
