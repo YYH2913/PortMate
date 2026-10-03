@@ -95,7 +95,18 @@ pub(crate) async fn detect_remote_sysmon_platform(
     .await
     {
         if let Some(platform) = remote_sysmon_platform_label(&output) {
-            return Ok(platform);
+            if matches!(platform.as_str(), "Linux" | "Darwin" | "FreeBSD" | "Windows") {
+                return Ok(platform);
+            }
+            if platform
+                .get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("MINGW"))
+                || platform
+                    .get(..6)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("CYGWIN"))
+            {
+                return Ok("Windows".to_string());
+            }
         }
     }
 

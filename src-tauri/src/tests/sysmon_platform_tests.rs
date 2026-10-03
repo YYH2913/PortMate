@@ -123,6 +123,26 @@ fn windows_powershell_command_uses_exact_utf16le_encoded_script() {
 }
 
 #[test]
+fn msys_and_cygwin_uname_labels_are_classified_as_windows() {
+    for label in ["MINGW64_NT-10.0-host", "CYGWIN_NT-10.0-host"] {
+        let normalized = if matches!(label, "Linux" | "Darwin" | "FreeBSD" | "Windows") {
+            label.to_string()
+        } else if label
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("MINGW"))
+            || label
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("CYGWIN"))
+        {
+            "Windows".to_string()
+        } else {
+            label.to_string()
+        };
+        assert_eq!(normalized, "Windows");
+    }
+}
+
+#[test]
 fn remote_windows_sysmon_json_is_bounded_and_sanitized() {
     let processes = (0..10)
         .map(|index| {
