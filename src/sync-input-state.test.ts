@@ -107,6 +107,22 @@ describe("sync input state", () => {
     expect(calls).toEqual(["first", "second"]);
   });
 
+  it("skips a queued target whose input epoch changed before dispatch", async () => {
+    const dispatcher = new SyncInputDispatcher();
+    const calls: string[] = [];
+    const result = await dispatcher.enqueue({
+      sourceId: "source",
+      text: "stale-command",
+      broadcastEnabled: false,
+      applyAffixes: false,
+      settings: defaultSyncInputSettings,
+      candidates: [{ id: "source", kind: "ssh", connected: true }],
+      targetEpochs: { source: 1 },
+    }, async (sessionId) => { calls.push(sessionId); }, () => false, (_sessionId, epoch) => epoch === 2);
+    expect(calls).toEqual([]);
+    expect(result).toEqual({ succeeded: [], failed: [], skipped: ["source"] });
+  });
+
   it("reports failures and cancels delayed extra targets without dropping the source", async () => {
     let enabled = true;
     const waits: number[] = [];

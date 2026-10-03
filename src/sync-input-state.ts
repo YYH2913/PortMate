@@ -25,6 +25,7 @@ export interface SyncInputBatch {
   applyAffixes: boolean;
   settings: SyncInputSettings;
   candidates: SyncInputCandidate[];
+  targetEpochs?: Record<string, number | null>;
 }
 
 export interface SyncInputDispatchResult {
@@ -121,9 +122,10 @@ export class SyncInputDispatcher {
     batch: SyncInputBatch,
     send: (sessionId: string, text: string) => void | Promise<void>,
     isBroadcastEnabled: () => boolean,
+    isTargetCurrent?: (sessionId: string, epoch: number | null) => boolean,
   ): Promise<SyncInputDispatchResult> {
     const generation = this.broadcastGeneration;
-    return this.enqueueOperation(() => this.dispatch(batch, send, isBroadcastEnabled, generation));
+    return this.enqueueOperation(() => this.dispatch(batch, send, isBroadcastEnabled, generation, isTargetCurrent));
   }
 
   enqueueOperation<Result>(operation: () => Promise<Result>): Promise<Result> {
@@ -135,6 +137,7 @@ export class SyncInputDispatcher {
     send: (sessionId: string, text: string) => void | Promise<void>,
     isBroadcastEnabled: () => boolean,
     generation: number,
+    isTargetCurrent?: (sessionId: string, epoch: number | null) => boolean,
   ): Promise<SyncInputDispatchResult> {
     const targets = batch.broadcastEnabled
       ? resolveSyncInputTargets(batch.sourceId, batch.candidates, batch.settings)
@@ -145,6 +148,11 @@ export class SyncInputDispatcher {
       if (index > 0 && (!isBroadcastEnabled() || generation !== this.broadcastGeneration)) {
         result.skipped.push(...targets.slice(index));
         break;
+      }
+      const expectedEpoch = batch.targetEpochs?.[sessionId];
+      if (expectedEpoch !== undefined && isTargetCurrent && !isTargetCurrent(sessionId, expectedEpoch)) {
+        result.skipped.push(sessionId);
+        continue;
       }
       const candidate = batch.candidates.find((item) => item.id === sessionId);
       const payload = batch.broadcastEnabled

@@ -16,6 +16,10 @@ export type TerminalInputSendOptions = {
   /** Cancellable acknowledged sender-panel operation in this session's lane. */
   signal?: AbortSignal;
   executeWrite?: () => Promise<void>;
+  /** Reject clipboard/input work that completed after the observed connection. */
+  expectedConnectedSince?: string | null;
+  /** App-level terminal epoch captured before an asynchronous input source. */
+  expectedInputEpoch?: number | null;
 };
 
 type PendingTerminalInput = {

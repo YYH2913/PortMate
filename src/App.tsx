@@ -2475,8 +2475,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function pasteFromClipboardIntoContext(sessionId?: string | null) {
     const session = contextSession(sessionId);
     if (!session) return;
+    const expectedConnectedSince = session.runtime.connectedSince ?? null;
     const text = await navigator.clipboard?.readText().catch(() => "");
-    if (text) await routeTerminalInput(session.profile.id, text, "atomic");
+    if (text) await routeTerminalInput(session.profile.id, text, "atomic", { expectedConnectedSince });
   }
 
   async function closeSessionsByIds(ids: string[]) {
@@ -2729,15 +2730,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void runTerminalSelectionAction("copy", t("copy"), target);
         return;
       case "paste":
+        {
+        const expectedConnectedSince = current.session.runtime.connectedSince ?? null;
         void navigator.clipboard?.readText().then((text) => {
           if (text && currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
-            return routeTerminalInput(target.sessionId, text, "atomic");
+            return routeTerminalInput(target.sessionId, text, "atomic", { expectedConnectedSince });
           }
         }).catch((error) => {
           if (currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
             setNotice({ title: t("paste"), message: formatError(error) });
           }
         });
+        }
         return;
       case "find":
         window.requestAnimationFrame(() => {
@@ -3968,6 +3972,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const currentSessions = sessionsRef.current;
     const sourceSession = currentSessions.find((session) => session.profile.id === sessionId);
     if (!sourceSession) return;
+    if (options?.expectedConnectedSince !== undefined
+      && (sourceSession.runtime.connectedSince ?? null) !== options.expectedConnectedSince) {
+      return;
+    }
     const broadcastEnabled = syncInputRef.current;
     // Mouse reports are addressed to the pane that received the pointer
     // event. Keep them source-local even when synchronized input is enabled.
@@ -4000,6 +4008,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         }, ...candidates];
       }
     }
+    const targetEpochs: Record<string, number | null> = {};
+    for (const candidate of candidates) {
+      if (candidate.connected) targetEpochs[candidate.id] = captureTerminalInputEpoch(candidate.id);
+    }
+    targetEpochs[sessionId] = captureTerminalInputEpoch(sessionId);
     return syncInputDispatcherRef.current.enqueue({
       sourceId: sessionId,
       text,
@@ -4007,6 +4020,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       applyAffixes: origin !== "interactive",
       settings,
       candidates,
+      targetEpochs,
     }, async (targetId, payload) => {
       const inputEpoch = captureTerminalInputEpoch(targetId);
       const connectedSince = sessionsRef.current.find(s => s.profile.id === targetId)?.runtime.connectedSince;
@@ -4031,7 +4045,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           terminalPaneOnCommandSubmit, targetId, command, "sync-broadcast",
         );
       }
-    }, () => syncInputRef.current).then((result) => {
+    }, () => syncInputRef.current, (targetId, expectedEpoch) => (
+      expectedEpoch !== null && terminalInputIsCurrent(targetId, expectedEpoch)
+    )).then((result) => {
       if (!result.failed.length && !result.skipped.length) return;
       const failedNames = result.failed.map((targetId) => (
         sessionsRef.current.find((session) => session.profile.id === targetId)?.profile.name ?? targetId

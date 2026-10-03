@@ -2253,6 +2253,7 @@ function TerminalCanvas({
       }
     };
     let pasteInput = false;
+    let pasteInputExpectedConnectedSince: string | null | undefined;
     const inputDisposable = term.onData((text) => {
       // Device replies (DSR/DA, etc.) also arrive here. Block background user
       // events at the DOM boundary, without dropping terminal protocol replies.
@@ -2273,11 +2274,14 @@ function TerminalCanvas({
         : "interactive";
       // The App-level registry is the single ordering queue for this session.
       // Bypassing the view-local pump removes a second IPC batching window.
+      const inputOptions = sensitive
+        ? { sensitive: true, ...(pasteInput ? { expectedConnectedSince: pasteInputExpectedConnectedSince } : {}) }
+        : (pasteInput ? { expectedConnectedSince: pasteInputExpectedConnectedSince } : undefined);
       void onInputRef.current(
         active.profile.id,
         text,
         inputOrigin,
-        sensitive ? { sensitive: true } : undefined,
+        inputOptions,
       );
       trackCommandSubmission(text, pasteInput ? "paste" : "interactive", sensitive);
       updateCompletionInput(text, sensitive);
@@ -2306,7 +2310,9 @@ function TerminalCanvas({
           // xterm normalizes line endings and honors bracketed paste. Its
           // synchronous onData event is the only input/history dispatch path.
           pasteInput = true;
+          pasteInputExpectedConnectedSince = active.runtime.connectedSince ?? null;
           try { term.paste(text); } finally { pasteInput = false; }
+          pasteInputExpectedConnectedSince = undefined;
         }
       }).catch(() => {});
     };
