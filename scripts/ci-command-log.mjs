@@ -30,17 +30,46 @@ export async function runLoggedCommand(argv, options = {}) {
   const { logPath, command, args } = parseLoggedCommandArguments(argv);
   mkdirSync(dirname(logPath), { recursive: true });
   const log = createWriteStream(logPath, { flags: "w", mode: 0o600 });
+  let logFailure = null;
   const child = crossSpawn(command, args, {
     cwd: options.cwd ?? process.cwd(),
     env: options.env ?? process.env,
     stdio: ["inherit", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     windowsHide: true,
   });
+  let terminationTimer = null;
+  const terminateChildTree = (signal) => {
+    if (child.pid == null || child.exitCode !== null || child.signalCode !== null) return false;
+    if (process.platform === "win32") {
+      const killer = crossSpawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.once("error", () => child.kill(signal));
+    } else {
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        child.kill(signal);
+      }
+    }
+    return true;
+  };
+  const noteLogFailure = (error) => {
+    if (logFailure) return;
+    logFailure = error instanceof Error ? error : new Error(String(error));
+    if (terminateChildTree("SIGTERM")) {
+      terminationTimer = setTimeout(() => terminateChildTree("SIGKILL"), 2_000);
+      terminationTimer.unref();
+    }
+  };
+  log.on("error", noteLogFailure);
 
   const signalHandlers = ["SIGINT", "SIGTERM"].map((signal) => [
     signal,
     () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+      terminateChildTree(signal);
     },
   ]);
   for (const [signal, handler] of signalHandlers) process.once(signal, handler);
@@ -51,7 +80,7 @@ export async function runLoggedCommand(argv, options = {}) {
   ]) {
     stream.on("data", (chunk) => {
       destination.write(chunk);
-      log.write(chunk);
+      if (!logFailure) log.write(chunk, (error) => error && noteLogFailure(error));
     });
   }
 
@@ -64,6 +93,7 @@ export async function runLoggedCommand(argv, options = {}) {
       });
       child.once("close", (code, signal) => resolveResult({ code, signal, error: spawnError }));
     });
+    if (logFailure && !result.error) result = { ...result, error: logFailure };
     if (result.error) {
       const diagnostic = `Failed to start ${command}: ${result.error.message}\n`;
       process.stderr.write(diagnostic);
@@ -71,8 +101,14 @@ export async function runLoggedCommand(argv, options = {}) {
     }
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+    if (terminationTimer) clearTimeout(terminationTimer);
     log.end();
-    await finished(log);
+    try {
+      await finished(log);
+    } catch (error) {
+      noteLogFailure(error);
+      if (result && !result.error) result = { ...result, error: logFailure };
+    }
   }
   return result;
 }
