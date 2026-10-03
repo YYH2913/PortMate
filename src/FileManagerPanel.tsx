@@ -98,6 +98,7 @@ type FileOperationContext = {
   requestSessionId: string | null;
   remoteSessionId: string;
   remoteConnectionKey: string;
+  expectedConnectedSince: string | null;
 };
 
 type ExternalDropState = {
@@ -294,6 +295,7 @@ export default function FileManagerPanel({
       requestSessionId: active?.profile.id ?? null,
       remoteSessionId,
       remoteConnectionKey: activeFileConnectionKeyRef.current,
+      expectedConnectedSince: active?.runtime.connectedSince ?? null,
     };
     activeFileOperationsRef.current.add(operation);
     return operation;
@@ -402,12 +404,12 @@ export default function FileManagerPanel({
   async function runFileMutation(
     remote: boolean,
     refreshPath: string,
-    mutate: (sessionId: string | null) => Promise<boolean>,
+    mutate: (sessionId: string | null, expectedConnectedSince: string | null) => Promise<boolean>,
   ) {
     const operation = beginFileOperation([remote]);
     if (!operation) return;
     try {
-      if (!await mutate(operation.requestSessionId)) return;
+      if (!await mutate(operation.requestSessionId, operation.expectedConnectedSince)) return;
       if (!releaseCurrentFileOperation(operation)) return;
       await loadFiles(remote, refreshPath, "preserve");
     } catch (error) {
@@ -421,11 +423,11 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId) => {
+    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
       const name = exactNonBlankPathInput(window.prompt(t("directory-name")));
       if (name === null) return false;
       const nextPath = joinFilePath(directory, name, remote);
-      await invokeBackend("create_directory", { request: { sessionId, path: nextPath, remote } });
+      await invokeBackend("create_directory", { request: { sessionId, expectedConnectedSince, path: nextPath, remote } });
       return true;
     });
   }
@@ -434,11 +436,11 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId) => {
+    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
       const name = exactNonBlankPathInput(window.prompt(t("file-name")));
       if (name === null) return false;
       const nextPath = joinFilePath(directory, name, remote);
-      await invokeBackend("create_file", { request: { sessionId, path: nextPath, remote } });
+      await invokeBackend("create_file", { request: { sessionId, expectedConnectedSince, path: nextPath, remote } });
       return true;
     });
   }
@@ -446,11 +448,12 @@ export default function FileManagerPanel({
   async function deleteSelected(remote: boolean) {
     const panel = remote ? remotePanel : localPanel;
     if (!panel.selected.length || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId) => {
+    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
       if (!window.confirm(t("delete-selected-items", [panel.selected.length]))) return false;
       await invokeBackend("delete_paths", {
         request: {
           sessionId,
+          expectedConnectedSince,
           paths: panel.selected.map((entry) => entry.path),
           remote,
         },
@@ -463,11 +466,11 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId) => {
+    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
       const nextName = exactNonBlankPathInput(window.prompt(t("new-name"), selected.name));
       if (nextName === null) return false;
       const nextPath = joinFilePath(parentPath(selected.path, remote), nextName, remote);
-      await invokeBackend("rename_path", { request: { sessionId, oldPath: selected.path, newPath: nextPath, remote } });
+      await invokeBackend("rename_path", { request: { sessionId, expectedConnectedSince, oldPath: selected.path, newPath: nextPath, remote } });
       return true;
     });
   }
@@ -476,7 +479,7 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (!panel.selected.length || panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId) => {
+    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
       const suggestedDestination = parentPath(directory, remote);
       const destination = exactNonBlankPathInput(window.prompt(
         t("move-to-directory"),
@@ -486,6 +489,7 @@ export default function FileManagerPanel({
       await invokeBackend("move_paths", {
         request: {
           sessionId,
+          expectedConnectedSince,
           paths: panel.selected.map((entry) => entry.path),
           destination,
           remote,
@@ -512,11 +516,11 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId) => {
+    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
       const modeText = window.prompt(t("octal-permissions"), "0644");
       if (!modeText?.trim()) return false;
       const mode = parseFilePermissionMode(modeText);
-      await invokeBackend("chmod_path", { request: { sessionId, path: selected.path, mode, remote } });
+      await invokeBackend("chmod_path", { request: { sessionId, expectedConnectedSince, path: selected.path, mode, remote } });
       return true;
     });
   }

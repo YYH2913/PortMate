@@ -73,6 +73,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: default_remote_path,
             remote: true,
         },
@@ -87,6 +88,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_nested.display().to_string(),
             remote: true,
         },
@@ -122,6 +124,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_new_file.display().to_string(),
             remote: true,
         },
@@ -135,6 +138,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_new_file.display().to_string(),
             remote: true,
         },
@@ -160,6 +164,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         MovePathsRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             paths: vec![
                 sftp_move_file.display().to_string(),
                 sftp_move_directory.display().to_string(),
@@ -194,6 +199,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         MovePathsRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             paths: vec![
                 sftp_move_first.display().to_string(),
                 sftp_move_collision.display().to_string(),
@@ -227,6 +233,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         DeletePathsRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             paths: vec![
                 sftp_delete_file.display().to_string(),
                 sftp_delete_directory.display().to_string(),
@@ -248,6 +255,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_directory_link
                 .join("new-file.txt")
                 .display()
@@ -264,6 +272,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_directory_link.join("nested").display().to_string(),
             remote: true,
         },
@@ -281,6 +290,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         ChmodPathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: linked_path.display().to_string(),
             mode: 0o600,
             remote: true,
@@ -297,6 +307,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         RenamePathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             old_path: linked_path.display().to_string(),
             new_path: sftp_directory_link
                 .join("renamed.bin")
@@ -312,6 +323,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: linked_path.display().to_string(),
             remote: true,
         },
@@ -327,6 +339,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         RenamePathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             old_path: sftp_directory_link.display().to_string(),
             new_path: renamed_directory_link.display().to_string(),
             remote: true,
@@ -343,6 +356,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: renamed_directory_link.display().to_string(),
             remote: true,
         },
@@ -433,6 +447,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         RenamePathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             old_path: uploaded_sftp_file.display().to_string(),
             new_path: existing_rename_target.display().to_string(),
             remote: true,
@@ -453,6 +468,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         RenamePathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             old_path: uploaded_sftp_file.display().to_string(),
             new_path: renamed_sftp_file.display().to_string(),
             remote: true,
@@ -464,6 +480,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         ChmodPathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: renamed_sftp_file.display().to_string(),
             mode: 0o640,
             remote: true,
@@ -496,6 +513,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         ChmodPathRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: chmod_link.display().to_string(),
             mode: 0o600,
             remote: true,
@@ -570,6 +588,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_empty.display().to_string(),
             remote: true,
         },
@@ -647,6 +666,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
             path: sftp_root.display().to_string(),
             remote: true,
         },

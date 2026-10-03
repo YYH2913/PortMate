@@ -59,6 +59,7 @@ fn local_file_manager_never_trims_an_enumerated_path() {
         &state,
         RenamePathRequest {
             session_id: None,
+            expected_connected_since: None,
             old_path: spaced.display().to_string(),
             new_path: renamed.display().to_string(),
             remote: false,
@@ -73,6 +74,7 @@ fn local_file_manager_never_trims_an_enumerated_path() {
         &state,
         FileOperationRequest {
             session_id: None,
+            expected_connected_since: None,
             path: renamed.display().to_string(),
             remote: false,
         },
@@ -97,6 +99,7 @@ fn file_manager_local_file_creation_is_exclusive() {
             &state,
             FileOperationRequest {
                 session_id: None,
+            expected_connected_since: None,
                 path: file.display().to_string(),
                 remote: false,
             },
@@ -111,6 +114,7 @@ fn file_manager_local_file_creation_is_exclusive() {
             &state,
             FileOperationRequest {
                 session_id: None,
+            expected_connected_since: None,
                 path: file.display().to_string(),
                 remote: false,
             },
@@ -141,6 +145,7 @@ fn file_manager_local_batch_delete_removes_files_and_directories() {
         &state,
         DeletePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![file.display().to_string(), directory.display().to_string()],
             remote: false,
         },
@@ -167,6 +172,7 @@ fn file_manager_local_batch_delete_preflights_directory_children() {
         &state,
         DeletePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![directory.display().to_string(), child.display().to_string()],
             remote: false,
         },
@@ -195,6 +201,7 @@ fn file_manager_local_batch_delete_removes_a_final_symlink_only() {
         &state,
         DeletePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![link.display().to_string()],
             remote: false,
         },
@@ -225,6 +232,7 @@ fn file_manager_local_move_moves_multiple_selected_paths() {
         &state,
         MovePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![file.display().to_string(), directory.display().to_string()],
             destination: destination.display().to_string(),
             remote: false,
@@ -262,6 +270,7 @@ fn file_manager_local_move_rejects_collisions_before_any_mutation() {
         &state,
         MovePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![first.display().to_string(), second.display().to_string()],
             destination: destination.display().to_string(),
             remote: false,
@@ -296,6 +305,7 @@ fn file_manager_local_move_rejects_a_directory_destination_inside_the_source() {
         &state,
         MovePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![directory.display().to_string()],
             destination: nested_destination.display().to_string(),
             remote: false,
@@ -326,6 +336,7 @@ fn file_manager_local_move_rejects_a_selected_directory_and_its_child() {
         &state,
         MovePathsRequest {
             session_id: None,
+            expected_connected_since: None,
             paths: vec![directory.display().to_string(), child.display().to_string()],
             destination: destination.display().to_string(),
             remote: false,
@@ -356,6 +367,7 @@ fn file_manager_local_rename_refuses_to_replace_an_existing_target() {
         &state,
         RenamePathRequest {
             session_id: None,
+            expected_connected_since: None,
             old_path: source.display().to_string(),
             new_path: target.display().to_string(),
             remote: false,
@@ -393,6 +405,7 @@ fn local_directory_creation_rejects_symlink_components() {
         &state,
         FileOperationRequest {
             session_id: None,
+            expected_connected_since: None,
             path: link.join("new-file.txt").display().to_string(),
             remote: false,
         },
@@ -406,6 +419,7 @@ fn local_directory_creation_rejects_symlink_components() {
             &state,
             RenamePathRequest {
                 session_id: None,
+            expected_connected_since: None,
                 old_path: link.display().to_string(),
                 new_path: renamed_link.display().to_string(),
                 remote: false,
@@ -423,6 +437,7 @@ fn local_directory_creation_rejects_symlink_components() {
             &state,
             FileOperationRequest {
                 session_id: None,
+            expected_connected_since: None,
                 path: renamed_link.display().to_string(),
                 remote: false,
             },
@@ -458,6 +473,7 @@ fn local_file_listing_and_chmod_do_not_follow_symbolic_links() {
         &state,
         ChmodPathRequest {
             session_id: None,
+            expected_connected_since: None,
             path: link.display().to_string(),
             mode: 0o600,
             remote: false,

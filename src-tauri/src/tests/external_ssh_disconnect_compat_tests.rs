@@ -73,6 +73,7 @@ fn external_ssh_server_active_transfer_disconnect() {
             &state,
             FileOperationRequest {
                 session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
                 path: remote_root.clone(),
                 remote: true,
             },

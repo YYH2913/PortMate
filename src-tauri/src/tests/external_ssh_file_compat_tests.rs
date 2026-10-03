@@ -101,6 +101,7 @@ fn external_ssh_server_sftp_scp_compatibility() {
             &state,
             FileOperationRequest {
                 session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
                 path: remote_root.clone(),
                 remote: true,
             },
@@ -196,6 +197,7 @@ fn external_ssh_server_sftp_scp_compatibility() {
             &state,
             RenamePathRequest {
                 session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
                 old_path: copied,
                 new_path: renamed.clone(),
                 remote: true,
@@ -207,6 +209,7 @@ fn external_ssh_server_sftp_scp_compatibility() {
             &state,
             ChmodPathRequest {
                 session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
                 path: renamed.clone(),
                 mode: 0o640,
                 remote: true,
@@ -231,6 +234,7 @@ fn external_ssh_server_sftp_scp_compatibility() {
             &state,
             FileOperationRequest {
                 session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
                 path: remote_root,
                 remote: true,
             },

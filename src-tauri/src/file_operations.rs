@@ -329,7 +329,11 @@ pub(super) async fn move_paths_inner(
             .as_deref()
             .ok_or_else(|| "remote move requires sessionId".to_string())?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        auxiliary.ensure_current(state, "远端移动")?;
+        auxiliary.ensure_expected_connected_since(
+            state,
+            request.expected_connected_since.as_deref(),
+            "远端移动",
+        )?;
         let sftp = auxiliary.sftp().await?;
         let result = async {
             let plan = prepare_remote_move_paths(&sftp, &request.paths, &request.destination).await?;
@@ -385,7 +389,11 @@ pub(super) async fn rename_path_inner(
             return Ok(());
         }
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        auxiliary.ensure_current(state, "远端重命名")?;
+        auxiliary.ensure_expected_connected_since(
+            state,
+            request.expected_connected_since.as_deref(),
+            "远端重命名",
+        )?;
         let sftp = auxiliary.sftp().await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &old_path, true, "远端重命名源路径").await?;
@@ -442,7 +450,11 @@ pub(super) async fn chmod_path_inner(
             .ok_or_else(|| "remote chmod requires sessionId".to_string())?;
         let path = validate_remote_mutating_path(&request.path)?;
         let auxiliary = ssh_auxiliary_lease(state, session_id)?;
-        auxiliary.ensure_current(state, "远端权限修改")?;
+        auxiliary.ensure_expected_connected_since(
+            state,
+            request.expected_connected_since.as_deref(),
+            "远端权限修改",
+        )?;
         let sftp = auxiliary.sftp().await?;
         let result = async {
             reject_remote_symlink_components(&sftp, &path, false, "远端 chmod 路径").await?;

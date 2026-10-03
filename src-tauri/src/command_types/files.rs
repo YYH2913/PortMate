@@ -47,6 +47,7 @@ pub struct FilePropertiesRequest {
 #[serde(rename_all = "camelCase")]
 pub struct FileOperationRequest {
     pub session_id: Option<String>,
+    pub expected_connected_since: Option<String>,
     pub path: String,
     pub remote: bool,
 }
@@ -55,6 +56,7 @@ pub struct FileOperationRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeletePathsRequest {
     pub session_id: Option<String>,
+    pub expected_connected_since: Option<String>,
     pub paths: Vec<String>,
     pub remote: bool,
 }
@@ -63,6 +65,7 @@ pub struct DeletePathsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RenamePathRequest {
     pub session_id: Option<String>,
+    pub expected_connected_since: Option<String>,
     pub old_path: String,
     pub new_path: String,
     pub remote: bool,
@@ -72,6 +75,7 @@ pub struct RenamePathRequest {
 #[serde(rename_all = "camelCase")]
 pub struct MovePathsRequest {
     pub session_id: Option<String>,
+    pub expected_connected_since: Option<String>,
     pub paths: Vec<String>,
     pub destination: String,
     pub remote: bool,
@@ -81,6 +85,7 @@ pub struct MovePathsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ChmodPathRequest {
     pub session_id: Option<String>,
+    pub expected_connected_since: Option<String>,
     pub path: String,
     pub mode: u32,
     pub remote: bool,

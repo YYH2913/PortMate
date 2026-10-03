@@ -71,6 +71,34 @@ impl SshAuxiliaryLease {
         self.ensure_current(state, operation)
     }
 
+    pub(super) fn ensure_expected_connected_since(
+        &self,
+        state: &AppState,
+        expected: Option<&str>,
+        operation: &str,
+    ) -> Result<(), String> {
+        let Some(expected) = expected else {
+            return self.ensure_current(state, operation);
+        };
+        let expected = chrono::DateTime::parse_from_rfc3339(expected)
+            .map_err(|_| format!("{operation}缺少有效的连接代际"))?
+            .with_timezone(&chrono::Utc);
+        let actual = {
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            store
+                .summaries()
+                .into_iter()
+                .find(|summary| summary.profile.id == self.session_id)
+                .and_then(|summary| summary.runtime.connected_since)
+        };
+        if actual != Some(expected) {
+            return Err(format!(
+                "SSH runtime 在{operation}排队后已变化，请刷新后重试"
+            ));
+        }
+        self.ensure_current(state, operation)
+    }
+
     pub(super) fn handle(&self) -> Arc<tokio::sync::Mutex<SshBackendSession>> {
         Arc::clone(&self.handle)
     }
