@@ -141,6 +141,7 @@ pub(super) async fn sftp_remote_copy(
     remote_destination: &str,
     progress: &TransferProgressContext,
 ) -> Result<u64, String> {
+    reject_remote_symlink_components(sftp, remote_source, false, "SFTP 远端源路径").await?;
     let total = sftp_regular_file_size(sftp, remote_source, "SFTP 远端源文件")
         .await?
         .ok_or_else(|| format!("SFTP 远端源文件不存在: {remote_source}"))?;

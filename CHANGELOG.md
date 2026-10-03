@@ -29,6 +29,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Remote batch conflict checks now treat only a confirmed missing target as absent; permission, timeout, and transport errors abort planning.
 - SCP and remote-copy commands now reject symbolic links in every path component and use no-clobber hard-link commits for completed remote files.
 - SFTP transfer and file-rename commits now reject symlinked path components and use atomic no-replace hard-link commits for regular files; directory moves fail closed when the server cannot provide that guarantee.
+- SFTP remote-copy sources now reject symlinked parent path components before reading, matching the download and destination-path guards.
 - Remote file-manager mutations now carry the connection generation observed with the listing and are rejected before a reconnect can retarget the operation.
 - Local and remote batch planners now recheck directory identity after enumeration, and recursive SFTP deletion aborts when a directory changes between listing and removal.
 - Manual SSH opens now enforce the same profile snapshot used by reconnects, so endpoint and host-key policy edits during a handshake fail before trust data is persisted.
