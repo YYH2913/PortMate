@@ -297,9 +297,23 @@ pub(super) fn search_log_shards_inner(
         let mut buffer = Vec::new();
         let mut line = 0_u64;
         let mut byte_offset = 0_u64;
+        let mut file_bytes_scanned = 0_u64;
         loop {
             buffer.clear();
+            let remaining_file = MAX_LOG_SHARD_SEARCH_FILE_BYTES.saturating_sub(file_bytes_scanned);
+            let remaining_total = MAX_LOG_SHARD_SEARCH_TOTAL_BYTES.saturating_sub(bytes_scanned);
+            let remaining = remaining_file.min(remaining_total);
+            if remaining == 0 {
+                warnings.push(format!(
+                    "{}: search stopped at the live scan limit",
+                    shard.path
+                ));
+                truncated = true;
+                break 'files;
+            }
             let read = reader
+                .by_ref()
+                .take(remaining.saturating_add(1))
                 .read_until(b'\n', &mut buffer)
                 .map_err(|error| format!("failed to search log shard {}: {error}", shard.path))?;
             if read == 0 {
@@ -307,6 +321,15 @@ pub(super) fn search_log_shards_inner(
             }
             line += 1;
             bytes_scanned += read as u64;
+            file_bytes_scanned += read as u64;
+            if read as u64 > remaining {
+                warnings.push(format!(
+                    "{}: search stopped at the live scan limit",
+                    shard.path
+                ));
+                truncated = true;
+                break 'files;
+            }
             let text = String::from_utf8_lossy(&buffer);
             if text.to_lowercase().contains(&normalized_query) {
                 matches.push(LogShardSearchMatch {
