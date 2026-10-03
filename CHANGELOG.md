@@ -17,6 +17,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - MCP approval responses now fail closed when the request has expired, and approval waits use the request's absolute expiry deadline.
 - MCP HTTP runtime status checks now stop the managed bridge and retire its bearer token when the bound grant expires.
 - Failed log-retention pruning no longer suppresses retries for the full hourly check interval.
+- Log shard append now rejects hard-linked targets before writing through an unrelated inode.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.
 - TCP readers stop after local disconnect even when the peer keeps its socket open.

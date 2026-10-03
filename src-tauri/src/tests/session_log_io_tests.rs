@@ -41,6 +41,25 @@ fn append_log_bytes_rejects_symlink_targets() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn append_log_bytes_rejects_hard_link_targets() {
+    let root = std::env::temp_dir().join(format!("portmate-log-hardlink-{}", Uuid::new_v4()));
+    let store_path = root.join("portmate-store.sqlite3");
+    let profile = test_shell_profile();
+    let raw_path = log_shard_path(&store_path, &profile, "raw").unwrap();
+    fs::create_dir_all(raw_path.parent().unwrap()).unwrap();
+    let protected = root.join("protected.raw");
+    fs::write(&protected, b"protected").unwrap();
+    fs::hard_link(&protected, &raw_path).unwrap();
+
+    let error = append_log_bytes(&store_path, &profile, "raw", b"should not write").unwrap_err();
+    assert!(error.contains("hard-link"), "unexpected error: {error}");
+    assert_eq!(fs::read(&protected).unwrap(), b"protected");
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn text_log_events_include_microsecond_metadata_on_every_line() {
     let event = SessionEvent {

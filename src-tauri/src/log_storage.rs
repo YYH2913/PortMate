@@ -33,6 +33,19 @@ pub(super) fn append_log_bytes(
     let mut file = options
         .open(&path)
         .map_err(|error| format!("failed to open log shard {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("failed to inspect log shard {}: {error}", path.display()))?;
+        if metadata.nlink() != 1 {
+            return Err(format!(
+                "log shard target has unexpected hard-link count: {}",
+                path.display()
+            ));
+        }
+    }
     let offset = file
         .seek(std::io::SeekFrom::End(0))
         .map_err(|error| format!("failed to seek log shard {}: {error}", path.display()))?;
