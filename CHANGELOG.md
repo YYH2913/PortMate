@@ -67,6 +67,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Tmux compatibility checks now locate their Cargo probe under configured target directories and explicit target-triple output paths.
 - Tmux browser workflow checks now pin the locale used by their selectors, so compatibility validation is deterministic on non-Chinese hosts.
 - Workspace UI regression checks now include the explicit SSH `none` authentication preset in their expected settings matrix.
+- macOS native keyring probes now attempt every cleanup step and report cleanup failures without leaving later keychain or temporary-directory cleanup unattempted.
 - MCP grant management now preserves an unsaved grant draft when another window removes the grant being edited.
 - CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
 - Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.

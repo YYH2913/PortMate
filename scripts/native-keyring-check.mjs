@@ -190,6 +190,7 @@ function verifyIsolatedMacOSKeychain() {
   };
   let keychainCreated = false;
   let defaultReplaced = false;
+  let probeFailure;
   try {
     run("security", ["create-keychain", "-p", password, keychain], { stdio: "pipe" });
     keychainCreated = true;
@@ -203,28 +204,71 @@ function verifyIsolatedMacOSKeychain() {
     runProbePhase("verify-locked", environment);
     run("security", ["unlock-keychain", "-p", password, keychain], { stdio: "pipe" });
     runProbePhase("verify-delete", environment);
-    console.log("PortMate native keyring fault probe passed on macos (isolated default keychain and locked provider)");
+  } catch (error) {
+    probeFailure = error;
   } finally {
-    if (keychainCreated) {
-      try {
-        run("security", ["unlock-keychain", "-p", password, keychain], { stdio: "pipe" });
-      } catch {
-        // The restore below is still required if the temporary keychain stayed locked.
+    const cleanupFailures = cleanupMacOSKeychainProbe({
+      keychainCreated,
+      defaultReplaced,
+      keychain,
+      originalDefault,
+      password,
+      environment,
+      root,
+    });
+    if (probeFailure) {
+      if (cleanupFailures.length) {
+        throw new Error(
+          `${failureMessage(probeFailure)}\nmacOS keychain cleanup also failed: ${cleanupFailures.join("; ")}`,
+          { cause: new AggregateError([probeFailure, ...cleanupFailures.map((message) => new Error(message))]) },
+        );
       }
-      try {
-        runProbePhase("cleanup", environment);
-      } catch {
-        // The primary probe error is more useful than best-effort cleanup output.
-      }
-      if (defaultReplaced) {
-        run("security", ["default-keychain", "-s", originalDefault], { stdio: "pipe" });
-      }
-      run("security", ["delete-keychain", keychain], { stdio: "pipe" });
-      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    } else {
-      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      throw probeFailure;
+    }
+    if (cleanupFailures.length) {
+      throw new Error(`macOS keychain cleanup failed: ${cleanupFailures.join("; ")}`);
     }
   }
+  console.log("PortMate native keyring fault probe passed on macos (isolated default keychain and locked provider)");
+}
+
+export function cleanupMacOSKeychainProbe({
+  keychainCreated,
+  defaultReplaced,
+  keychain,
+  originalDefault,
+  password,
+  environment,
+  root,
+  runCommand = run,
+  runPhase = runProbePhase,
+  removeDirectory = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
+}) {
+  const failures = [];
+  const attempt = (label, operation) => {
+    try {
+      operation();
+    } catch (error) {
+      failures.push(`${label}: ${failureMessage(error)}`);
+    }
+  };
+
+  if (keychainCreated) {
+    attempt("unlock temporary keychain", () => {
+      runCommand("security", ["unlock-keychain", "-p", password, keychain], { stdio: "pipe" });
+    });
+    attempt("remove probe credential", () => runPhase("cleanup", environment));
+    if (defaultReplaced) {
+      attempt("restore default keychain", () => {
+        runCommand("security", ["default-keychain", "-s", originalDefault], { stdio: "pipe" });
+      });
+    }
+    attempt("delete temporary keychain", () => {
+      runCommand("security", ["delete-keychain", keychain], { stdio: "pipe" });
+    });
+  }
+  attempt("remove temporary directory", () => removeDirectory(root));
+  return failures;
 }
 
 function runProbe(environment) {
