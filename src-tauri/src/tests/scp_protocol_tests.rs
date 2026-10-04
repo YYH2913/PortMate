@@ -204,6 +204,44 @@ fn remote_copy_command_rejects_symbolic_sources_and_targets() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn remote_shell_transfers_reject_hard_linked_resume_files() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source.bin");
+    let protected = root.path().join("protected.bin");
+    let target = root.path().join("target.bin");
+    let part = root.path().join("target.bin.portmate-part");
+    fs::write(&source, b"payload").unwrap();
+    fs::write(&protected, b"protected").unwrap();
+    fs::hard_link(&protected, &part).unwrap();
+
+    let remote_copy = Command::new("sh")
+        .arg("-c")
+        .arg(remote_copy_command(source.to_str().unwrap(), target.to_str().unwrap()))
+        .output()
+        .unwrap();
+    assert!(!remote_copy.status.success());
+    assert_eq!(fs::read(&protected).unwrap(), b"protected");
+    assert!(!target.exists());
+
+    let upload = scp_upload_command(root.path().to_str().unwrap(), "target.bin", 7);
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(upload)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"payload").unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read(&protected).unwrap(), b"protected");
+    assert!(!target.exists());
+}
+
 #[test]
 fn scp_upload_command_uses_resume_receiver() {
     let command = scp_upload_command("/tmp/upload dir/", "local o'clock.bin", 8192);

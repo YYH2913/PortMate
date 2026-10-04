@@ -23,6 +23,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
 - SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
+- Remote SCP/SSH-copy and SFTP resume paths now fail closed around unverifiable hard-linked partial files; SFTP recreates an exclusive partial file before restarting a transfer.
 - Local transfer sources now bind the opened handle to its original file identity, and completed transfers replace the destination atomically without deleting it first.
 - ZModem receives now use the same parent-component and temporary-file protections as other local transfer protocols.
 - Local no-overwrite moves now use platform-specific atomic exclusive rename primitives, and fail closed where the platform cannot provide them.

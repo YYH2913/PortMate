@@ -9,8 +9,15 @@ pub(crate) async fn sftp_resume_offset(
     let Some(size) = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await? else {
         return Ok(0);
     };
+    // SFTP metadata does not expose a portable link count. Never append to an
+    // existing remote part: it may be a hard link to another file. Removing
+    // only the selected pathname is safe for the linked inode, and the writer
+    // below recreates it with an exclusive create before any bytes are sent.
     if size <= total {
-        Ok(size)
+        sftp.remove_file(path.to_string())
+            .await
+            .map_err(|error| format!("SFTP 删除旧断点文件失败 {path}: {error}"))?;
+        Ok(0)
     } else {
         sftp.remove_file(path.to_string())
             .await
@@ -204,12 +211,20 @@ pub(crate) async fn sftp_open_resume_writer(
     offset: u64,
 ) -> Result<SftpBackendFile, String> {
     reject_remote_symlink_components(sftp, path, false, "SFTP 断点文件路径").await?;
-    let _ = sftp_regular_file_size(sftp, path, "SFTP 断点文件").await?;
-    let flags = if offset == 0 {
-        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
-    } else {
-        OpenFlags::CREATE | OpenFlags::WRITE
-    };
+    if offset != 0 {
+        return Err(format!(
+            "SFTP 断点文件无法安全续传，拒绝复用已有远端文件: {path}"
+        ));
+    }
+    if sftp_regular_file_size(sftp, path, "SFTP 断点文件")
+        .await?
+        .is_some()
+    {
+        return Err(format!(
+            "SFTP 断点文件在独占创建前重新出现，拒绝写入: {path}"
+        ));
+    }
+    let flags = OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE;
     let mut file = sftp
         .open_with_flags(path.to_string(), flags)
         .await
