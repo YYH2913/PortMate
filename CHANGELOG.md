@@ -62,6 +62,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - YModem sends now propagate receiver cancellation and CRC handshake failures before sending more file data.
 - Modem upload and download paths now reject trailing directory separators before starting the remote protocol.
 - ZModem receive now removes its local partial file when the session is cancelled, times out, or fails before file finalization.
+- XModem receives now reject out-of-order blocks instead of acknowledging and finalizing a truncated file.
 - YModem receives now refuse to finalize files shorter than the sender's declared size.
 - Desktop builds, AppImage smoke/finalization, and Linux, Windows, and macOS package checks now honor relative and absolute `CARGO_TARGET_DIR` values.
 - MCP SDK compatibility checks now resolve bridge binaries and per-SDK workspaces from configured `CARGO_TARGET_DIR` values and explicit `CARGO_BUILD_TARGET` output directories.

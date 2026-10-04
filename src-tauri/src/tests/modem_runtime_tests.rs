@@ -70,6 +70,65 @@ fn tcp_device_loadx_transfer_sends_command_and_file_in_one_task() {
 }
 
 #[test]
+fn tcp_xmodem_receiver_rejects_a_future_block() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = b"future block payload".to_vec();
+        let packet = modem_packet_bytes(MODEM_SOH, 2, &payload, XMODEM_BLOCK_SIZE, true);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+            socket.write_all(&packet).await.unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_NAK);
+        });
+
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "portmate-xmodem-order-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let destination = root.join("received.bin");
+        let state = test_app_state(profile.clone(), root.join("portmate-store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+
+        let task = start_transfer_inner(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Xmodem,
+                source: "remote:/tmp/source.bin".to_string(),
+                destination: destination.display().to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let failed = wait_for_transfer_terminal_state(&state, &task.id).await;
+        assert_eq!(failed.status, TransferStatus::Failed, "{failed:?}");
+        assert!(failed
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("失序数据块")));
+        assert!(!destination.exists());
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("XModem future-block server timed out")
+            .expect("XModem future-block server failed");
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
 fn tcp_device_tftp_transfer_runs_one_shot_server_and_uboot_commands() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

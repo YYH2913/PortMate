@@ -114,8 +114,20 @@ pub(super) async fn xmodem_receive_file(
                 .ok_or_else(|| "XModem 接收字节数溢出".to_string())?;
             progress.update(bytes_received, 0).await?;
             expected = expected.wrapping_add(1);
+            reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
+        } else if expected != 1 && packet.block_no == expected.wrapping_sub(1) {
+            // A retransmitted block is safe to acknowledge without writing it
+            // again. Any other number means the sender and receiver have lost
+            // protocol ordering; acknowledging it would commit a truncated
+            // file while silently dropping the missing block.
+            reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
+        } else {
+            let _ = reader.write_runtime_bytes(state, &[MODEM_NAK]).await;
+            return Err(format!(
+                "XModem 收到失序数据块 {}，预期 {}",
+                packet.block_no, expected
+            ));
         }
-        reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
     }
 
     output.finish()?;
