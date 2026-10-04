@@ -62,7 +62,7 @@ pub(super) async fn zmodem_receive_files(
 ) -> Result<u64, String> {
     let mut receiver = zmodem2::Receiver::new().map_err(zmodem_error)?;
     let mut input = Vec::new();
-    let mut current_file: Option<(fs::File, PathBuf, PathBuf)> = None;
+    let mut current_file: Option<PendingLocalTransferOutput> = None;
     let mut received_files = 0;
     let mut bytes_done = 0;
     let mut session_done = false;
@@ -79,27 +79,30 @@ pub(super) async fn zmodem_receive_files(
                 if current_file.is_some() { return Err("ZModem 前一个文件尚未完成".into()); }
                 let incoming = String::from_utf8_lossy(info.name);
                 let target = zmodem_local_target_path(local_destination, &incoming, received_files)?;
-                prepare_local_transfer_target_path(&target, "ZModem 本地目标文件")?;
-                let (file, temp) = open_new_local_transfer_file(&target)?;
-                current_file = Some((file, target, temp));
+                current_file = Some(PendingLocalTransferOutput::create(
+                    &target,
+                    "ZModem 本地目标文件",
+                )?);
             }
             Action::WriteFile(bytes) => {
-                let Some((file, path, _)) = current_file.as_mut() else {
+                let Some(output) = current_file.as_mut() else {
                     return Err("ZModem 收到文件数据但还没有文件头".into());
                 };
-                file.write_all(bytes).map_err(|e| format!("写入 ZModem 本地文件失败 {}: {e}", path.display()))?;
+                let target = output.target_path().display().to_string();
+                output
+                    .file_mut()?
+                    .write_all(bytes)
+                    .map_err(|error| format!("写入 ZModem 本地文件失败 {target}: {error}"))?;
                 let length = bytes.len();
                 receiver.file_written(length).map_err(zmodem_error)?;
                 bytes_done += length as u64;
                 progress.update(bytes_done, 0).await?;
             }
             Action::Event(Event::FileCompleted) => {
-                let Some((mut file, target, temp)) = current_file.take() else {
+                let Some(output) = current_file.take() else {
                     return Err("ZModem 缺少待完成文件".into());
                 };
-                file.flush().map_err(|e| format!("刷新 ZModem 本地文件失败: {e}"))?;
-                drop(file);
-                finalize_local_resume_file(&temp, &target)?;
+                output.finish()?;
                 received_files += 1;
             }
             Action::Event(Event::SessionCompleted) => session_done = true,

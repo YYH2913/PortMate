@@ -287,6 +287,10 @@ impl PendingLocalTransferOutput {
             .ok_or_else(|| "本地传输临时文件已关闭".to_string())
     }
 
+    pub(super) fn target_path(&self) -> &Path {
+        &self.target
+    }
+
     pub(super) fn finish(mut self) -> Result<(), String> {
         let file = self
             .file
