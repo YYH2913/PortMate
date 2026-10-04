@@ -3809,5 +3809,10 @@
   "native-message-977a0fd5d542": "SFTP 目标文件已存在，拒绝覆盖: {0}",
   "native-message-4ba0c3a8026b": "SFTP 原子提交断点文件失败 {0} -> {1}: {2}",
   "native-message-d35f4eaf0786": "{0}缺少有效的连接代际",
-  "native-message-ad4a78d43fda": "{0}；Store 提交状态未知，新私钥 secret 已保留，请重启应用核验"
+  "native-message-ad4a78d43fda": "{0}；Store 提交状态未知，新私钥 secret 已保留，请重启应用核验",
+  "native-message-6dccb3ecf3bc": "XModem 收到失序数据块 {0}，预期 {1}",
+  "native-message-cafa14ce1d5f": "写入 ZModem 本地文件失败 {0}: {1}",
+  "native-message-13065866ba24": "SFTP 删除旧断点文件失败 {0}: {1}",
+  "native-message-fa78e29b866b": "SFTP 断点文件无法安全续传，拒绝复用已有远端文件: {0}",
+  "native-message-5b71c612e396": "SFTP 断点文件在独占创建前重新出现，拒绝写入: {0}"
 }

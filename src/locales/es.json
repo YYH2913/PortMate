@@ -3809,5 +3809,10 @@
   "native-message-977a0fd5d542": "SFTP target file already exists; refusing to overwrite: {0}",
   "native-message-4ba0c3a8026b": "SFTP atomic resume-file commit failed {0} -> {1}: {2}",
   "native-message-d35f4eaf0786": "{0} is missing a valid connection generation",
-  "native-message-ad4a78d43fda": "{0}; the Store commit state is unknown, so the new private-key secret was retained; restart to verify"
+  "native-message-ad4a78d43fda": "{0}; the Store commit state is unknown, so the new private-key secret was retained; restart to verify",
+  "native-message-6dccb3ecf3bc": "XModem recibió el bloque fuera de orden {0}; se esperaba {1}",
+  "native-message-cafa14ce1d5f": "No se pudo escribir el archivo ZModem local {0}: {1}",
+  "native-message-13065866ba24": "No se pudo eliminar el archivo de reanudación SFTP antiguo {0}: {1}",
+  "native-message-fa78e29b866b": "El archivo de reanudación SFTP no se puede reanudar de forma segura; se rechaza reutilizar el archivo remoto existente: {0}",
+  "native-message-5b71c612e396": "El archivo de reanudación SFTP reapareció antes de la creación exclusiva; se rechaza la escritura: {0}"
 }

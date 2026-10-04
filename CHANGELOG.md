@@ -56,6 +56,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - libssh setup, SFTP, and channel blocking workers now retain ownership through timeout or cancellation and are reaped asynchronously instead of being silently detached.
 - SSH-agent identity listing and signing now run as cancellable async operations with an independent deadline, so an unresponsive agent cannot leave detached threads behind.
 - Native diagnostic templates now cover the file-transfer, Modem, OneKey, and Store-commit messages introduced by the reliability fixes, with Vitest limited to project-owned test roots.
+- Native diagnostic catalogs now include the XModem ordering, ZModem cleanup, and SFTP resume-safety messages, keeping new reliability failures localized in every supported language.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.

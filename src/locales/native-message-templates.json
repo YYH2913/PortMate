@@ -5568,5 +5568,30 @@
     "id": "native-message-ad4a78d43fda",
     "source": "{0}；Store 提交状态未知，新私钥 secret 已保留，请重启应用核验",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-6dccb3ecf3bc",
+    "source": "XModem 收到失序数据块 {0}，预期 {1}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-cafa14ce1d5f",
+    "source": "写入 ZModem 本地文件失败 {0}: {1}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-13065866ba24",
+    "source": "SFTP 删除旧断点文件失败 {0}: {1}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-fa78e29b866b",
+    "source": "SFTP 断点文件无法安全续传，拒绝复用已有远端文件: {0}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-5b71c612e396",
+    "source": "SFTP 断点文件在独占创建前重新出现，拒绝写入: {0}",
+    "causeIndices": []
   }
 ]

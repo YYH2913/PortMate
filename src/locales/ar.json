@@ -3809,5 +3809,10 @@
   "native-message-977a0fd5d542": "SFTP target file already exists; refusing to overwrite: {0}",
   "native-message-4ba0c3a8026b": "SFTP atomic resume-file commit failed {0} -> {1}: {2}",
   "native-message-d35f4eaf0786": "{0} is missing a valid connection generation",
-  "native-message-ad4a78d43fda": "{0}; the Store commit state is unknown, so the new private-key secret was retained; restart to verify"
+  "native-message-ad4a78d43fda": "{0}; the Store commit state is unknown, so the new private-key secret was retained; restart to verify",
+  "native-message-6dccb3ecf3bc": "استقبل XModem كتلة خارج الترتيب {0}؛ المتوقع {1}",
+  "native-message-cafa14ce1d5f": "فشل في كتابة ملف ZModem المحلي {0}: {1}",
+  "native-message-13065866ba24": "فشل حذف ملف استئناف SFTP القديم {0}: {1}",
+  "native-message-fa78e29b866b": "لا يمكن استئناف ملف SFTP بأمان؛ رفض إعادة استخدام الملف البعيد الموجود: {0}",
+  "native-message-5b71c612e396": "ظهر ملف استئناف SFTP مجدداً قبل الإنشاء الحصري؛ رفض الكتابة: {0}"
 }
