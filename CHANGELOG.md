@@ -9,7 +9,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 ### Fixed
 
 - known_hosts imports now reject bracketed entries with invalid or zero ports instead of silently assigning port 22.
-- Secret redaction now consumes complete quoted and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
+- Secret redaction now consumes complete quoted, comma-containing, and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
 - SSH settings now expose an explicit `none` authentication preset for devices that accept protocol-level none authentication.
 - Remote Sysmon now recognizes MSYS2/Git Bash and Cygwin `uname` labels as Windows and reaches the PowerShell collector.
 - Linux Sysmon now preserves interface ownership from `getifaddrs` and only uses global kernel address fallbacks when native enumeration has no usable address.

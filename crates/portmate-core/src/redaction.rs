@@ -30,28 +30,62 @@ fn redact_key_value_secrets(input: &str) -> String {
     let mut output = input.to_string();
     for (index, matched) in matches.iter().enumerate().rev() {
         let value_start = matched.end();
+        let next_key = matches.get(index + 1).is_some();
         let mut value_limit = matches
             .get(index + 1)
             .map(|next| next.start())
             .unwrap_or(input.len());
-        for (offset, character) in input[value_start..value_limit].char_indices() {
-            if matches!(character, ',' | ';' | '\r' | '\n') {
-                value_limit = value_start + offset;
-                break;
-            }
+        if let Some(offset) = input[value_start..value_limit]
+            .find(['\r', '\n'])
+        {
+            value_limit = value_start + offset;
         }
         if value_start >= value_limit {
             continue;
         }
-        let value = &input[value_start..value_limit];
+        let mut content_start = value_start;
+        while content_start < value_limit {
+            let character = input[content_start..].chars().next().unwrap();
+            if !character.is_whitespace() {
+                break;
+            }
+            content_start += character.len_utf8();
+        }
+        let value = &input[content_start..value_limit];
         if let Some(quote) = value.chars().next().filter(|quote| *quote == '"' || *quote == '\'') {
-            if let Some(close) = value[quote.len_utf8()..].find(quote) {
-                let end = value_start + quote.len_utf8() + close + quote.len_utf8();
-                output.replace_range(value_start..end, &format!("{quote}<redacted>{quote}"));
+            let mut escaped = false;
+            let mut close = None;
+            for (offset, character) in value[quote.len_utf8()..].char_indices() {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == quote {
+                    close = Some(offset + quote.len_utf8());
+                    break;
+                }
+            }
+            if let Some(close) = close {
+                let content_end = content_start + close;
+                let replacement_start = content_start + quote.len_utf8();
+                output.replace_range(replacement_start..content_end, "<redacted>");
                 continue;
             }
         }
-        let value_end = value_start + value.trim_end().len();
+        let value_end = if next_key {
+            let trimmed_end = input[value_start..value_limit].trim_end().len() + value_start;
+            let delimiter_start = input[value_start..trimmed_end]
+                .char_indices()
+                .rev()
+                .find_map(|(offset, character)| {
+                    matches!(character, ',' | ';').then_some(value_start + offset)
+                })
+                .filter(|delimiter| input[*delimiter + 1..trimmed_end].trim().is_empty())
+                .unwrap_or(trimmed_end);
+            delimiter_start
+        } else {
+            value_limit
+        };
         if value_end > value_start {
             output.replace_range(value_start..value_end, "<redacted>");
         }
@@ -240,6 +274,30 @@ mod tests {
             redacted,
             r#"password=<redacted> token:<redacted> password="<redacted>""#
         );
+    }
+
+    #[test]
+    fn redacts_comma_containing_quoted_and_unquoted_values_without_suffixes() {
+        for (text, expected) in [
+            (
+                "password=\"a,b\" token=ok",
+                "password=\"<redacted>\" token=<redacted>",
+            ),
+            (
+                "password='a,b' token=ok",
+                "password='<redacted>' token=<redacted>",
+            ),
+            (
+                "password=a,b token=ok",
+                "password=<redacted> token=<redacted>",
+            ),
+            (
+                "password=foo, token=ok",
+                "password=<redacted>, token=<redacted>",
+            ),
+        ] {
+            assert_eq!(redact_secrets(text), expected);
+        }
     }
 
     #[test]
