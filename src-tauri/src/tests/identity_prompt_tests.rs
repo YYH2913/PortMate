@@ -187,3 +187,10 @@ fn one_key_prompt_completion_revalidates_field_username_and_event_freshness() {
         other => panic!("expected truncated OpenSSH password prompt, got {other:?}"),
     }
 }
+
+#[test]
+fn one_key_prompt_does_not_offer_login_password_for_password_change_prompts() {
+    assert!(detect_one_key_terminal_prompt("Current password:").is_none());
+    assert!(detect_one_key_terminal_prompt("Old password:").is_none());
+    assert!(detect_one_key_terminal_prompt("Enter new UNIX password:").is_none());
+}

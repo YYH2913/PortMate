@@ -132,7 +132,7 @@ pub(super) fn detect_one_key_terminal_prompt(raw: &str) -> Option<DetectedOneKey
     let line = one_key_prompt_line(&display)?;
     let password_change = PASSWORD_CHANGE.get_or_init(|| {
         Regex::new(
-            r"(?i)\b(?:new|retype|repeat|confirm)\s+(?:new\s+)?password(?:\s+for\s+\S+)?\s*:\s*$",
+            r"(?i)\b(?:current|old|existing|new|retype|repeat|confirm)(?:\s+(?:new|old|current|unix))*\s+password(?:\s+for\s+\S+)?\s*:\s*$",
         )
         .expect("valid OneKey regex")
     });

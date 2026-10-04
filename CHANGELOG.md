@@ -52,6 +52,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Profile, private-key rotation, and OneKey saves now retain newly created secrets when Store persistence cannot be verified, preventing committed references from pointing to deleted credentials.
 - Key Manager private-key import now preserves the generated secret when Profile persistence reports an unknown Store commit, preventing the UI cleanup path from deleting a possibly committed credential.
 - OneKey sends and SSH logins now carry the observed connection generation through to the backend write, preventing credentials from crossing a reconnect or endpoint change.
+- OneKey prompt completion now ignores current, old, and password-change prompts instead of offering the login password for those flows.
 - libssh setup, SFTP, and channel blocking workers now retain ownership through timeout or cancellation and are reaped asynchronously instead of being silently detached.
 - SSH-agent identity listing and signing now run as cancellable async operations with an independent deadline, so an unresponsive agent cannot leave detached threads behind.
 - Native diagnostic templates now cover the file-transfer, Modem, OneKey, and Store-commit messages introduced by the reliability fixes, with Vitest limited to project-owned test roots.
