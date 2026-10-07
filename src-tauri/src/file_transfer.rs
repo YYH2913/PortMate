@@ -401,10 +401,44 @@ fn replace_local_transfer_file(temp: &Path, target: &Path) -> std::io::Result<()
     }
 }
 
+pub(super) struct LocalTransferEntry {
+    metadata: fs::Metadata,
+    // Keep the checked file alive until the read handle is opened so its file
+    // index cannot be recycled between the two Windows identity queries.
+    #[cfg(windows)]
+    file: fs::File,
+}
+
+impl Deref for LocalTransferEntry {
+    type Target = fs::Metadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+#[cfg(windows)]
+fn windows_transfer_file_information(
+    file: &fs::File,
+) -> std::io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: file owns a live HANDLE and information is a valid output buffer.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(information)
+    }
+}
+
 pub(super) fn local_transfer_entry(
     path: &Path,
     label: &str,
-) -> Result<Option<fs::Metadata>, String> {
+) -> Result<Option<LocalTransferEntry>, String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err(format!("{label}不能是符号链接: {}", path.display()))
@@ -423,7 +457,42 @@ pub(super) fn local_transfer_entry(
                     ));
                 }
             }
-            Ok(Some(metadata))
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Storage::FileSystem::{
+                    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+                    FILE_READ_ATTRIBUTES,
+                };
+
+                let file = OpenOptions::new()
+                    .access_mode(FILE_READ_ATTRIBUTES)
+                    .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(path)
+                    .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
+                let opened_metadata = file
+                    .metadata()
+                    .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
+                let information = windows_transfer_file_information(&file)
+                    .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
+                if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(format!("{label}不能是符号链接: {}", path.display()));
+                }
+                if !opened_metadata.is_file() {
+                    return Err(format!("{label}不是普通文件: {}", path.display()));
+                }
+                if opened_metadata.len() != metadata.len() {
+                    return Err(format!("{label}在打开前后发生变化: {}", path.display()));
+                }
+                if information.nNumberOfLinks != 1 {
+                    return Err(format!("{label}不能是硬链接: {}", path.display()));
+                }
+                Ok(Some(LocalTransferEntry {
+                    metadata: opened_metadata,
+                    file,
+                }))
+            }
+            #[cfg(not(windows))]
+            Ok(Some(LocalTransferEntry { metadata }))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("检查{label}失败 {}: {error}", path.display())),
@@ -440,6 +509,8 @@ pub(super) fn open_local_transfer_source(
     options.read(true);
     #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     let file = options
         .open(path)
         .map_err(|error| format!("打开{label}失败 {}: {error}", path.display()))?;
@@ -448,31 +519,44 @@ pub(super) fn open_local_transfer_source(
         .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?;
     if !opened_metadata.is_file()
         || opened_metadata.len() != metadata.len()
-        || !same_local_file_identity(&metadata, &opened_metadata)
+        || !same_local_file_identity(&metadata, &file)
+            .map_err(|error| format!("检查{label}失败 {}: {error}", path.display()))?
     {
         return Err(format!("{label}在打开前后发生变化: {}", path.display()));
     }
     Ok((file, metadata.len()))
 }
 
-fn same_local_file_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+fn same_local_file_identity(before: &LocalTransferEntry, after: &fs::File) -> std::io::Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
-            && before.ino() == after.ino()
-            && before.nlink() == 1
-            && after.nlink() == 1;
+        let after = after.metadata()?;
+        Ok(
+            before.dev() == after.dev()
+                && before.ino() == after.ino()
+                && before.nlink() == 1
+                && after.nlink() == 1,
+        )
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        return before.volume_serial_number() == after.volume_serial_number()
-            && before.file_index() == after.file_index();
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        let before = windows_transfer_file_information(&before.file)?;
+        let after = windows_transfer_file_information(after)?;
+        Ok(
+            before.dwVolumeSerialNumber == after.dwVolumeSerialNumber
+                && before.nFileIndexHigh == after.nFileIndexHigh
+                && before.nFileIndexLow == after.nFileIndexLow
+                && before.nNumberOfLinks == 1
+                && after.nNumberOfLinks == 1
+                && before.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+                && after.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        )
     }
     #[cfg(not(any(unix, windows)))]
     {
-        before.len() == after.len()
+        Ok(before.len() == after.metadata()?.len())
     }
 }
 
@@ -516,4 +600,37 @@ pub(super) fn open_new_local_transfer_file(target: &Path) -> Result<(fs::File, P
         .open(&temp)
         .map_err(|error| format!("创建本地传输临时文件失败 {}: {error}", temp.display()))?;
     Ok((file, temp))
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod local_transfer_identity_tests {
+    use super::*;
+
+    #[test]
+    fn transfer_file_identity_rejects_same_size_path_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        fs::write(&source, b"first").unwrap();
+        let before = local_transfer_entry(&source, "source").unwrap().unwrap();
+        let original = fs::File::open(&source).unwrap();
+        assert!(same_local_file_identity(&before, &original).unwrap());
+
+        fs::rename(&source, root.path().join("original.bin")).unwrap();
+        fs::write(&source, b"other").unwrap();
+        let replacement = fs::File::open(&source).unwrap();
+        assert!(!same_local_file_identity(&before, &replacement).unwrap());
+        assert_eq!(before.len(), replacement.metadata().unwrap().len());
+    }
+
+    #[test]
+    fn transfer_file_identity_rejects_hard_linked_source() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        fs::write(&source, b"protected").unwrap();
+        fs::hard_link(&source, root.path().join("alias.bin")).unwrap();
+
+        let error = open_local_transfer_source(&source, "source").err().unwrap();
+        assert!(error.contains("硬链接"), "{error}");
+        assert_eq!(fs::read(&source).unwrap(), b"protected");
+    }
 }

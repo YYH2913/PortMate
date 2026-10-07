@@ -25,6 +25,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
 - Remote SCP/SSH-copy and SFTP resume paths now fail closed around unverifiable hard-linked partial files; SFTP recreates an exclusive partial file before restarting a transfer.
 - Local transfer sources now bind the opened handle to its original file identity, and completed transfers replace the destination atomically without deleting it first.
+- Windows transfer file identity now uses stable Win32 handle queries instead of
+  unstable Rust metadata APIs; checked handles are retained across source opens,
+  and multiply-linked or reparse-point files are rejected.
 - ZModem receives now use the same parent-component and temporary-file protections as other local transfer protocols.
 - Local no-overwrite moves now use platform-specific atomic exclusive rename primitives, and fail closed where the platform cannot provide them.
 - Remote batch conflict checks now treat only a confirmed missing target as absent; permission, timeout, and transport errors abort planning.
