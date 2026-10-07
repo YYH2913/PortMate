@@ -6,7 +6,7 @@
 
 <p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
-<p align="center"><code>v0.1.10</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.11</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <a href="./README.md">English</a> |
@@ -64,7 +64,7 @@ PortMate 本身不内置 AI 助手；随包提供的 `portmate-mcp` bridge 是�
 
 ## 主要功能
 
-### 界面语言（0.1.10）
+### 界面语言
 
 默认跟随操作系统语言，不支持的语言回退到英文。可通过顶部语言选择器或应用设置选择
 阿拉伯文、中文、英文、法文、俄文、西班牙文；选择立即同步到其他窗口。
@@ -157,9 +157,12 @@ SSH、Tmux、TCP、Telnet 和 Serial 的自动重连会在下一次尝试前重�
 
 SFTP 可直接在桌面应用中使用，不要求启动 MCP Bridge，也不要求配置 MCP 授权。连接一个已启用 SFTP 的 SSH 或 Tmux 会话后，可以打开 `工作区 -> 文件管理器`，使用双栏浏览、拖放和批量传输；也可以打开 `工具 -> 传输任务`，手动填写来源和目标。
 
-上传时使用本地来源路径和类似 `remote:/tmp/file.bin` 的目标；下载时使用类似 `remote:/var/log/messages` 的来源和本地目标路径。桌面传输队列支持取消、重试、进度、限速和 SFTP 断点续传。
+上传时使用本地来源路径和类似 `remote:/tmp/file.bin` 的目标；下载时使用类似 `remote:/var/log/messages` 的来源和本地目标路径。桌面传输队列支持取消、重试、进度和限速。SFTP 下载可从已校验的本地断点续传；远端 SFTP 上传和复制会安全地重新创建旧断点文件，因为该协议无法提供断点文件的硬链接计数。
 
 ## SSH 信任与凭据
+
+对于接受 SSH 协议级 `none` 认证的设备，在会话设置中选择 `none` 认证策略。
+该方式无需密码或 Client Identity，服务端 Host Key 仍会按配置验证。
 
 PortMate 将两类密钥分开管理：
 
@@ -534,7 +537,13 @@ Windows GNU x86_64 便携包：
 npm run desktop:build:windows-gnu
 ```
 
-产物位于 `target/release/bundle/`。正式发布前必须在目标平台执行 [RELEASE.md](./RELEASE.md) 中的安装、升级、回滚、签名和产物校验，不应把一次本地源码构建直接视为可发布安装包。
+原生安装包位于 `target/release/bundle/`。Windows GNU 便携构建生成
+`target/release-artifacts/PortMate-0.1.11-windows-x86_64-portable.zip`，并在同一目录
+保留解压后的文件夹；设置 `CARGO_TARGET_DIR` 时改用指定的 target 根目录。
+完整解压 ZIP 后运行 `portmate.exe`，保留同目录的 `portmate-mcp.exe`、
+`WebView2Loader.dll` 和许可文件的原有位置。Windows 需要安装 Microsoft Edge WebView2 Runtime。
+
+正式发布前必须在目标平台执行 [RELEASE.md](./RELEASE.md) 中的安装、升级、回滚、签名和产物校验，不应把一次本地源码构建直接视为可发布安装包。
 
 ## 验证
 

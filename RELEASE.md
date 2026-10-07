@@ -3,6 +3,11 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
+The local `0.1.11` Windows GNU x86-64 portable build is recorded in
+[the Windows build evidence](./tmp/windows-release-0.1.11-2026-10-07.md), including
+the source revision, payload hashes, PE/version/frontend checks, and executed tests.
+Native Windows runtime, installer, and signing acceptance remain pending.
+
 ## Version And Source
 
 - [ ] `npm run test:release-source` confirms `package.json`, both lock files, Tauri metadata, every PortMate-owned Cargo package, licenses, and the current changelog section use the intended release identity and version. Embedded upstream forks retain their upstream package versions.

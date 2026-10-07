@@ -1,8 +1,26 @@
 # PortMate 当前进度与下一阶段目标
 
-审查日期：2026-08-16
+更新日期：2026-10-07（v0.1.11；历史审查和验收保留各自日期）
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
+
+## v0.1.11 更新
+
+本补丁版归档了逐模块审查后的传输完整性、凭据处理、文件和 Store 安全、MCP 生命周期、
+界面状态、本地化及构建可靠性修复，详细条目见 [CHANGELOG.md](./CHANGELOG.md)。
+用户报告的 SSH 协议级 `none` 认证已有明确设置入口；SFTP 服务端返回超长 DATA 时会返回
+错误而非触发 panic。远端 SFTP 上传和复制会安全重建旧断点文件，本地下载仍校验断点前缀。
+
+版本元数据、npm/Cargo lockfile、Tauri 配置、六个 PortMate 自有 Cargo package 和 vcpkg
+manifest 已统一为 `0.1.11`。中英文 README 同步了使用方式、Windows GNU ZIP 输出路径和
+WebView2 Runtime 依赖。Windows 交叉构建记录与产物校验见
+[v0.1.11 Windows 构建记录](./tmp/windows-release-0.1.11-2026-10-07.md)。
+
+本轮通过 release-source、前端 142 文件/957 项测试、生产前端构建、文件身份 2 项回归、
+传输 I/O 11 项回归和历史版本升级 2 项回归。Windows GNU x86-64 release 构建与定向
+Clippy `-D warnings` 通过；25,810,031 字节便携 ZIP 的版本资源、70 个前端资源路径、
+包内 payload SHA-256 和 ZIP CRC 已核对。编译中发现的未稳定 Windows Metadata API 已改为
+Win32 句柄查询；Windows 实际启动、原生凭据、安装包和签名验证仍待原生 runner。
 
 ## 审查范围
 

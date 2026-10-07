@@ -6,11 +6,25 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-07
+
+### Added
+
+- An explicit SSH `none` authentication preset supports devices that accept a
+  connection without a password or public key. Host-key verification still applies.
+
+### Changed
+
+- Consolidated the module-by-module defect review and post-fix rechecks into this
+  patch version, including transport integrity, credential handling, storage,
+  MCP lifecycle, UI state, localization, and build reliability improvements.
+- Windows GNU portable build documentation now identifies the ZIP output and
+  its required co-located executables, WebView2 loader, and license files.
+
 ### Fixed
 
 - known_hosts imports now reject bracketed entries with invalid or zero ports instead of silently assigning port 22.
 - Secret redaction now consumes complete quoted, comma-containing, and whitespace-containing credential values without leaving their suffixes in events or diagnostics.
-- SSH settings now expose an explicit `none` authentication preset for devices that accept protocol-level none authentication.
 - Remote Sysmon now recognizes MSYS2/Git Bash and Cygwin `uname` labels as Windows and reaches the PowerShell collector.
 - Linux Sysmon now preserves interface ownership from `getifaddrs` and only uses global kernel address fallbacks when native enumeration has no usable address.
 - Sysmon dialogs and the workspace sidebar now hide the last remote sample while an SSH/Tmux session is disconnected or reconnecting.
@@ -21,6 +35,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Failed log-retention pruning no longer suppresses retries for the full hourly check interval.
 - Log shard append now rejects hard-linked targets before writing through an unrelated inode.
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
+- Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
 - SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
 - Remote SCP/SSH-copy and SFTP resume paths now fail closed around unverifiable hard-linked partial files; SFTP recreates an exclusive partial file before restarting a transfer.
@@ -62,15 +77,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Native diagnostic templates now cover the file-transfer, Modem, OneKey, and Store-commit messages introduced by the reliability fixes, with Vitest limited to project-owned test roots.
 - Native diagnostic catalogs now include the XModem ordering, ZModem cleanup, and SFTP resume-safety messages, keeping new reliability failures localized in every supported language.
 - Log search now applies file and total byte budgets to the live reader, stopping safely when shards grow during the search.
+- Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
 - Terminal resize state now updates only after a successful backend request, retries transient failures a bounded number of times, and resubmits after reconnects.
 - Local terminal profiles now carry a stable internal tag, so repeated actions and locale changes reuse the same shell session.
 - Initial session-list IPC failures now remain visible and retry with a bounded startup timer instead of becoming a silent empty workspace.
+- CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
 - Sidecar preparation now selects the target-specific Cargo artifact when `CARGO_BUILD_TARGET` explicitly names the host target.
-- YModem sends now propagate receiver cancellation and CRC handshake failures before sending more file data.
-- Modem upload and download paths now reject trailing directory separators before starting the remote protocol.
-- ZModem receive now removes its local partial file when the session is cancelled, times out, or fails before file finalization.
-- XModem receives now reject out-of-order blocks instead of acknowledging and finalizing a truncated file.
-- YModem receives now refuse to finalize files shorter than the sender's declared size.
 - Desktop builds, AppImage smoke/finalization, and Linux, Windows, and macOS package checks now honor relative and absolute `CARGO_TARGET_DIR` values.
 - MCP SDK compatibility checks now resolve bridge binaries and per-SDK workspaces from configured `CARGO_TARGET_DIR` values and explicit `CARGO_BUILD_TARGET` output directories.
 - Tmux compatibility checks now locate their Cargo probe under configured target directories and explicit target-triple output paths.
@@ -78,9 +90,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Workspace UI regression checks now include the explicit SSH `none` authentication preset in their expected settings matrix.
 - macOS native keyring probes now attempt every cleanup step and report cleanup failures without leaving later keychain or temporary-directory cleanup unattempted.
 - MCP grant management now preserves an unsaved grant draft when another window removes the grant being edited.
-- CI command logging now handles log-stream failures without unhandled errors and reaps the wrapped command tree before exiting.
-- Profile import now invalidates pending file reads before rejecting oversized files or accepting manual edits, so stale content cannot replace the latest source.
-- Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
+- YModem sends now propagate receiver cancellation and CRC handshake failures before sending more file data.
+- Modem upload and download paths now reject trailing directory separators before starting the remote protocol.
+- ZModem receive now removes its local partial file when the session is cancelled, times out, or fails before file finalization.
+- XModem receives now reject out-of-order blocks instead of acknowledging and finalizing a truncated file.
+- YModem receives now refuse to finalize files shorter than the sender's declared size.
 - SSH terminal setup now waits for PTY and shell acceptance; tmux attach uses a
   dedicated PTY exec channel instead of typing commands into the foreground app.
 - TCP readers stop after local disconnect even when the peer keeps its socket open.
@@ -96,6 +110,27 @@ or an unsigned artifact is not a production release. The complete release gates 
   detached panes, OneKey credentials, and commands after BINARY negotiation.
   Telnet option acknowledgements now settle without negotiation loops, and received
   carriage returns render immediately while NVT padding is filtered across packets.
+
+### Security
+
+- Closed credential-redaction suffix leaks, strengthened transfer/storage path
+  and hard-link checks, and preserved generated secrets after indeterminate Store
+  commits. MCP expiry checks and connection-generation fences prevent stale
+  authorization or credentials from reaching a replacement connection.
+
+### Migration
+
+- This patch requires no manual Store or vault format migration. Legacy app-data
+  cleanup now preserves unexpected or concurrently created files.
+- Remote SFTP uploads and copies restart an existing partial file through exclusive
+  creation because SFTP metadata cannot prove that the partial inode has one link.
+  Local downloads and SCP retain their separately verified resume behavior.
+
+### Known Limitations
+
+- The Linux cross-build produces an unsigned Windows x86-64 portable ZIP.
+  Native Windows installation, WebView2 startup, OS-keyring behavior, and signed
+  MSI/NSIS release acceptance still require Windows runners.
 
 ## [0.1.10] - 2026-09-17
 

@@ -6,7 +6,7 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
-<p align="center"><code>v0.1.10</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.11</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <strong>English</strong> |
@@ -66,7 +66,7 @@ To regenerate these documentation fixtures locally, run `npm run docs:screenshot
 
 ## Features
 
-### Interface language (0.1.10)
+### Interface language
 
 PortMate follows the operating system language by default, with English fallback for
 unsupported languages. Choose Arabic, Chinese, English, French, Russian, or Spanish in
@@ -162,9 +162,13 @@ SSH, Tmux, TCP, Telnet, and Serial reconnect workers reload the latest Profile b
 
 SFTP works directly in the desktop application and does not require MCP, an MCP grant, or a running MCP Bridge. Connect an SSH or Tmux session with SFTP enabled, then use either `Workspace -> File Manager` for two-pane browsing, drag and drop, and batch transfers, or `Tools -> Transfer Tasks` for an explicit source and destination.
 
-For an upload, use a local source path and a destination such as `remote:/tmp/file.bin`. For a download, use a source such as `remote:/var/log/messages` and a local destination path. The desktop transfer queue supports cancellation, retry, progress, throttling, and resumable SFTP operations.
+For an upload, use a local source path and a destination such as `remote:/tmp/file.bin`. For a download, use a source such as `remote:/var/log/messages` and a local destination path. The desktop transfer queue supports cancellation, retry, progress, and throttling. Local SFTP downloads can resume from a verified partial file; remote SFTP uploads and copies safely restart existing partial files because the protocol does not expose their hard-link count.
 
 ## SSH Trust and Credentials
+
+For devices that accept SSH protocol-level `none` authentication, select the `none`
+authentication preset in Session Settings. No password or client identity is required
+for that method; the server's host key is still verified.
 
 PortMate manages two distinct types of keys:
 
@@ -541,7 +545,14 @@ MinGW-w64 toolchain and Windows GNU `libsodium.a`:
 npm run desktop:build:windows-gnu
 ```
 
-Bundles are written below `target/release/bundle/`. Before publishing, run the installation, upgrade, rollback, signing, and artifact gates in [RELEASE.md](./RELEASE.md) on each target platform. A successful local source build is not, by itself, a releasable package.
+Native bundles are written below `target/release/bundle/`. The Windows GNU portable
+build writes `target/release-artifacts/PortMate-0.1.11-windows-x86_64-portable.zip`
+and an extracted directory beside it. With `CARGO_TARGET_DIR` set, both paths use
+that target root instead. Extract the complete ZIP and run `portmate.exe`, keeping
+`portmate-mcp.exe`, `WebView2Loader.dll`, and the license files in their original
+locations. Windows must have the Microsoft Edge WebView2 Runtime installed.
+
+Before publishing, run the installation, upgrade, rollback, signing, and artifact gates in [RELEASE.md](./RELEASE.md) on each target platform. A successful local source build is not, by itself, a releasable package.
 
 ## Verification
 
