@@ -5,6 +5,7 @@ import {
   SSH_AUTH_ORDER_OPTIONS,
   sshConnectionBounds,
   sshConnectionDefaults,
+  sshUsesNoneAuthenticationOnly,
 } from "./ssh-connection-settings";
 import type { SshConnection } from "./types";
 
@@ -28,6 +29,15 @@ function baseConnection(): SshConnection {
 }
 
 describe("SSH connection settings", () => {
+  it("identifies only the explicit none-only policy as credential-free", () => {
+    const ssh = baseConnection();
+    ssh.identityPolicy.authOrder = ["none"];
+    expect(sshUsesNoneAuthenticationOnly(ssh)).toBe(true);
+    ssh.identityPolicy.authOrder = ["password", "none"];
+    expect(sshUsesNoneAuthenticationOnly(ssh)).toBe(false);
+    ssh.identityPolicy.authOrder = [];
+    expect(sshUsesNoneAuthenticationOnly(ssh)).toBe(false);
+  });
   it("offers the supported authentication methods, including explicit none authentication", () => {
     expect(SSH_AUTH_ORDER_OPTIONS).toHaveLength(16);
     expect(new Set(SSH_AUTH_ORDER_OPTIONS).size).toBe(16);

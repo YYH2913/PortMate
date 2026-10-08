@@ -12,6 +12,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 - An explicit SSH `none` authentication preset supports devices that accept a
   connection without a password or public key. Host-key verification still applies.
+  None-only profiles with a saved username skip password prompts and do not read
+  unused password/private-key secrets from a locked vault.
 - SSH/Tmux profiles now offer **Ignore fingerprint changes on auto-reconnect**,
   disabled by default. It temporarily accepts changed host keys for previously
   trusted endpoints, including every Jump Host, during automatic reconnect only.

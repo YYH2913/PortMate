@@ -526,6 +526,12 @@ For a dynamic route, add `"targetHost"` and `"targetPort"` to select the SOCKS5 
 
 udp_request sends one UDP datagram through an existing PortMate-host route owned by the current Client and waits for one response datagram. Each datagram is limited to 65507 bytes and timeout is 100 ms to 30 s. It can carry an individual TFTP, QUIC, or DTLS packet, but does not maintain protocol connection state or implement the SOCKS5 UDP ASSOCIATE control channel; use TFTP start_transfer or resumable uploads for complete file transfers.
 
+### Passwordless SSH (0.1.11)
+
+For passwordless SSH devices, choose **none** in the profile authentication order.
+This uses protocol-level `none` authentication, not an empty password; host-key
+verification and the configured connection policies still apply.
+
 ## Build
 
 Build the production frontend:

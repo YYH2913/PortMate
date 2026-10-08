@@ -328,6 +328,39 @@ fn reconnect_host_key_bypass_rejects_settings_changed_during_establishment() {
 
 #[cfg(unix)]
 #[test]
+fn explicit_none_authentication_connects_without_password_on_both_backends() {
+    let root = canonical_test_tempdir();
+    let key = root.path().join("none-host-key");
+    generate_ed25519_test_key(&key);
+    tauri::async_runtime::block_on(async {
+        let (port, counters, server) = spawn_mixed_auth_test_server(&key, "user", "unused").await;
+        counters.allow_none_auth.store(true, Ordering::SeqCst);
+        for libssh in [false, true] {
+            if libssh && !cfg!(target_os = "linux") { continue; }
+            let mut profile = test_ssh_profile();
+            let ssh = reconnect_ssh_mut(&mut profile);
+            ssh.endpoint.host = "127.0.0.1".into();
+            ssh.endpoint.port = port;
+            ssh.username = "user".into();
+            ssh.reconnect = false;
+            ssh.password_secret_ref = Some("stronghold:unused-none-password".into());
+            ssh.passphrase_secret_ref = Some("stronghold:unused-none-passphrase".into());
+            ssh.host_key_policy.mode = HostKeyMode::TrustOnFirstUse;
+            ssh.identity_policy.auth_order = if libssh { vec![AuthMethod::GssapiWithMic, AuthMethod::None] } else { vec![AuthMethod::None] };
+            let path = root.path().join(if libssh { "none-libssh.sqlite3" } else { "none-russh.sqlite3" });
+            let state = test_app_state(profile.clone(), path);
+            let opened = establish_ssh_runtime_with_timeout(&state, &profile, None, None, SSH_CONNECT_TIMEOUT, None).await.unwrap();
+            assert_eq!(opened.auth_method, AuthMethod::None);
+            assert_eq!(opened.runtime.handle.lock().await.is_libssh(), libssh);
+            assert!(!state.store.lock().unwrap().host_keys.keys.is_empty());
+            disconnect_ssh_runtime(opened.runtime, opened.read_half, opened.reader_finished, "none auth test complete").await;
+        }
+        server.abort();
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn reconnect_host_key_bypass_establishes_real_ssh_and_tmux_runtimes_only_when_opted_in() {
     let root = canonical_test_tempdir();
     let host_key = root.path().join("new-host-key");

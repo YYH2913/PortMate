@@ -92,7 +92,7 @@ import type { ShellSessionImportCandidate } from "./shell-session-import";
 import { sessionConnectionAction, sessionRuntimeHealthDescription, transitionSessionRuntimeStatus } from "./session-runtime-state";
 import { createScreenLockMarker, decodeStoredScreenLockMarker, isScreenLockShortcut, normalizeScreenLockTimeoutMinutes, SCREEN_LOCK_STORAGE_KEY, shouldAutoLockScreen } from "./screen-lock-state";
 import type { ScreenLockReason } from "./screen-lock-state";
-import { normalizeSshConnectionSettings } from "./ssh-connection-settings";
+import { normalizeSshConnectionSettings, sshUsesNoneAuthenticationOnly } from "./ssh-connection-settings";
 import { sysmonSnapshotForDisplay, useSysmonLivePolling, useSysmonLiveState } from "./sysmon-live-state";
 import { defaultSyncInputSettings, formatDirectInput, normalizeSyncInputSettings, resolveSyncInputTargets, SyncInputDispatcher } from "./sync-input-state";
 import type { SyncInputCandidate, SyncInputOrigin, SyncInputSettings } from "./sync-input-state";
@@ -4426,6 +4426,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!isSshLikeProfile(profile)) {
       return Promise.resolve({ username: null, password: null, passphrase: null, oneKeyId: null, savePassword: false, savePassphrase: false });
     }
+    const ssh = profile.connection as Extract<ConnectionConfig, { kind: "ssh" | "tmux" }>;
+    if (sshUsesNoneAuthenticationOnly(ssh) && ssh.username.trim()) {
+      return Promise.resolve(emptyConnectionCredentials());
+    }
     return new Promise((resolve) => {
       credentialQueueRef.current.push({ profile, resolve });
       presentNextCredentialPrompt();
@@ -4444,10 +4448,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       target,
       initialUsername: ssh.username || "",
       oneKeys: sshOneKeysForSession(oneKeys, next.profile.id),
-      hasIdentityFiles: hasPrivateKey,
+      hasIdentityFiles: hasPrivateKey && !sshUsesNoneAuthenticationOnly(ssh),
       hasSavedPassword: Boolean(ssh.passwordSecretRef),
       hasSavedPassphrase: Boolean(ssh.passphraseSecretRef),
-      needsPassword: ssh.identityPolicy.authOrder.includes("password") || ssh.identityPolicy.authOrder.includes("keyboard-interactive") || !hasPrivateKey,
+      needsPassword: !sshUsesNoneAuthenticationOnly(ssh) && (ssh.identityPolicy.authOrder.includes("password") || ssh.identityPolicy.authOrder.includes("keyboard-interactive") || !hasPrivateKey),
       authOrder: ssh.identityPolicy.authOrder,
       strongholdStatus: portableVaultStatus
         ? portableVaultStatus.unlocked ? "unlocked" : portableVaultStatus.exists ? "locked" : "not-created"

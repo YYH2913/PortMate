@@ -17,6 +17,11 @@ export const sshConnectionBounds = {
 
 const defaultAuthOrder: AuthMethod[] = ["public-key", "keyboard-interactive", "password"];
 
+export function sshUsesNoneAuthenticationOnly(connection: SshConnection): boolean {
+  return connection.identityPolicy.authOrder.length > 0
+    && connection.identityPolicy.authOrder.every(method => method === "none");
+}
+
 export const SSH_AUTH_ORDER_OPTIONS = [
   "public-key>keyboard-interactive>password",
   "public-key>password>keyboard-interactive",

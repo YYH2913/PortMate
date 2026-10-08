@@ -246,7 +246,8 @@ pub(super) async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
     let auth_order = ordered_auth_methods(&ssh);
     let mut attempted = Vec::new();
     let mut key_errors = Vec::new();
-    let saved_password = if password
+    let password_needed = auth_order.iter().any(|method| matches!(method, AuthMethod::Password | AuthMethod::KeyboardInteractive));
+    let saved_password = if password_needed && password
         .as_deref()
         .filter(|value| !value.is_empty())
         .is_none()
@@ -255,7 +256,7 @@ pub(super) async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
     } else {
         None
     };
-    let saved_passphrase = if passphrase
+    let saved_passphrase = if auth_order.contains(&AuthMethod::PublicKey) && passphrase
         .as_deref()
         .filter(|value| !value.is_empty())
         .is_none()

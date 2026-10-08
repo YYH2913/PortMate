@@ -370,7 +370,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         return Err(error);
     }
 
-    let saved_password = if password
+    let saved_password = if ssh.identity_policy.auth_order.iter().any(|method| matches!(method, AuthMethod::Password | AuthMethod::KeyboardInteractive)) && password
         .as_deref()
         .filter(|value| !value.is_empty())
         .is_none()
@@ -395,7 +395,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let effective_password = password
         .filter(|value| !value.is_empty())
         .or(saved_password);
-    let saved_passphrase = if passphrase
+    let saved_passphrase = if ssh.identity_policy.auth_order.contains(&AuthMethod::PublicKey) && passphrase
         .as_deref()
         .filter(|value| !value.is_empty())
         .is_none()
