@@ -8,12 +8,14 @@ pub(super) const MAX_EXTERNAL_DROP_FILES: usize = MAX_ACTIVE_TRANSFERS_PER_SESSI
 pub(super) struct ExternalDropRoot {
     pub(super) path: PathBuf,
     pub(super) is_dir: bool,
+    pub(super) identity: fs::File,
 }
 
 #[derive(Debug)]
 pub(super) struct ExternalDropFile {
     pub(super) source: PathBuf,
     pub(super) relative: PathBuf,
+    pub(super) size: u64,
 }
 
 #[derive(Debug, Default)]
@@ -55,7 +57,7 @@ pub(super) async fn start_file_batch_inner(
     let sftp = auxiliary.sftp().await?;
     let result = async {
         let mut plan = if request.source_remote {
-            plan_remote_file_batch(&sftp, &request.paths).await?
+            plan_remote_file_batch(auxiliary.handle(), &request.paths).await?
         } else {
             plan_local_file_batch(&request.paths)?
         };

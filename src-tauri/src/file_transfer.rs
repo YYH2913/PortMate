@@ -418,7 +418,7 @@ impl Deref for LocalTransferEntry {
 }
 
 #[cfg(windows)]
-fn windows_transfer_file_information(
+pub(super) fn windows_transfer_file_information(
     file: &fs::File,
 ) -> std::io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
     use std::os::windows::io::AsRawHandle;

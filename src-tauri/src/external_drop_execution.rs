@@ -74,9 +74,7 @@ pub(super) async fn apply_external_drop_conflicts(
                 }
             }
         }
-        let size = fs::metadata(&file.source)
-            .map_err(|error| format!("读取拖放源文件失败 {}: {error}", file.source.display()))?
-            .len();
+        let size = file.size;
         total_bytes = total_bytes
             .checked_add(size)
             .ok_or_else(|| "拖放批次总大小溢出".to_string())?;
@@ -194,11 +192,13 @@ pub(super) async fn start_external_drop_inner(
             source,
             destination,
         };
-        tasks.push(if let Some(runtime_id) = planned_ssh_runtime_id.as_deref() {
-            start_transfer_inner_for_ssh_runtime(state, transfer, runtime_id).await?
-        } else {
-            start_transfer_inner(state, transfer).await?
-        });
+        tasks.push(
+            if let Some(runtime_id) = planned_ssh_runtime_id.as_deref() {
+                start_transfer_inner_for_ssh_runtime(state, transfer, runtime_id).await?
+            } else {
+                start_transfer_inner(state, transfer).await?
+            },
+        );
     }
 
     Ok(ExternalDropResult {

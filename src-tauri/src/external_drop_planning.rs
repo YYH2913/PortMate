@@ -56,6 +56,14 @@ pub(super) fn plan_external_drop(
     paths: &[String],
     local_destination: Option<&Path>,
 ) -> Result<ExternalDropPlan, String> {
+    plan_external_drop_with_hook(paths, local_destination, |_| {})
+}
+
+pub(super) fn plan_external_drop_with_hook(
+    paths: &[String],
+    local_destination: Option<&Path>,
+    mut before_children: impl FnMut(&Path),
+) -> Result<ExternalDropPlan, String> {
     if paths.is_empty() {
         return Err("拖放批次没有源路径".to_string());
     }
@@ -86,12 +94,22 @@ pub(super) fn plan_external_drop(
             ));
             continue;
         }
+        let identity = BoundDirectory::pin_entry(&source).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let opened = identity.metadata().map_err(|error| error.to_string())?;
+            if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+                return Err("batch source changed before canonicalization".into());
+            }
+        }
         let source = source
             .canonicalize()
             .map_err(|error| format!("解析拖放源路径失败 {}: {error}", source.display()))?;
         candidates.push(ExternalDropRoot {
             path: source,
             is_dir: metadata.is_dir(),
+            identity,
         });
     }
     candidates.sort_by(|left, right| {
@@ -141,6 +159,7 @@ pub(super) fn plan_external_drop(
         ..ExternalDropPlan::default()
     };
     let mut visited = 0_usize;
+    let mut bound_directories = Vec::new();
     for root in roots {
         let Some(root_name) = root.path.file_name().map(|name| name.to_os_string()) else {
             return Err(format!("拒绝拖放文件系统根路径: {}", root.path.display()));
@@ -152,8 +171,18 @@ pub(super) fn plan_external_drop(
             ));
             continue;
         }
-        let mut stack = vec![(root.path, PathBuf::from(root_name))];
-        while let Some((source, relative)) = stack.pop() {
+        let parent = BoundDirectory::open(root.path.parent().ok_or("missing source parent")?)
+            .map_err(|error| error.to_string())?;
+        let (metadata, directory) = parent
+            .child(&root_name)
+            .map_err(|error| error.to_string())?;
+        let current = BoundDirectory::pin_entry(&root.path).map_err(|error| error.to_string())?;
+        if !BoundDirectory::entry_matches(&root.identity, &current).map_err(|error| error.to_string())? {
+            return Err("batch source changed during canonicalization".into());
+        }
+        bound_directories.push(parent);
+        let mut stack = vec![(root.path, PathBuf::from(root_name), metadata, directory)];
+        while let Some((source, relative, metadata, directory)) = stack.pop() {
             visited += 1;
             if visited > MAX_EXTERNAL_DROP_ENTRIES {
                 return Err(format!(
@@ -165,28 +194,34 @@ pub(super) fn plan_external_drop(
                     .push(format!("{} (path is not valid Unicode)", source.display()));
                 continue;
             }
-            let metadata = fs::symlink_metadata(&source)
-                .map_err(|error| format!("读取拖放目录项失败 {}: {error}", source.display()))?;
-            if metadata.file_type().is_symlink() {
-                plan.skipped
-                    .push(format!("{} (symbolic link)", source.display()));
-                continue;
-            }
-            if metadata.is_dir() {
+            if let Some(directory) = directory {
                 plan.directories.push(relative.clone());
-                let mut children = fs::read_dir(&source)
-                    .map_err(|error| format!("读取拖放目录失败 {}: {error}", source.display()))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| format!("读取拖放目录项失败 {}: {error}", source.display()))?;
-                let after_read = fs::symlink_metadata(&source)
-                    .map_err(|error| format!("复核拖放目录失败 {}: {error}", source.display()))?;
-                if !same_local_directory_identity(&metadata, &after_read) {
-                    return Err(format!("拖放目录在枚举期间发生变化: {}", source.display()));
+                let mut names = directory.names().map_err(|error| error.to_string())?;
+                before_children(&source);
+                names.sort();
+                for name in names.into_iter().rev() {
+                    match directory.child(&name) {
+                        Ok((metadata, child)) => {
+                            stack.push((source.join(&name), relative.join(&name), metadata, child))
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                            plan.skipped.push(format!(
+                                "{} (symbolic link or special file)",
+                                source.join(name).display()
+                            ));
+                        }
+                        Err(error) => {
+                            return Err(format!(
+                                "safe source enumeration failed {}: {error}",
+                                source.display()
+                            ))
+                        }
+                    }
                 }
-                children.sort_by_key(|entry| entry.file_name());
-                for child in children.into_iter().rev() {
-                    stack.push((child.path(), relative.join(child.file_name())));
-                }
+                directory
+                    .ensure_current()
+                    .map_err(|error| error.to_string())?;
+                bound_directories.push(directory);
             } else if metadata.is_file() {
                 if let Some(destination) = local_destination {
                     let target = destination.join(&relative);
@@ -204,7 +239,11 @@ pub(super) fn plan_external_drop(
                         "一次最多拖放 {MAX_EXTERNAL_DROP_FILES} 个文件，请缩小批次"
                     ));
                 }
-                plan.files.push(ExternalDropFile { source, relative });
+                plan.files.push(ExternalDropFile {
+                    source,
+                    relative,
+                    size: metadata.len(),
+                });
             } else {
                 plan.skipped.push(format!(
                     "{} (not a regular file or directory)",
@@ -244,27 +283,14 @@ pub(super) fn plan_external_drop(
             ));
         }
     }
+    for directory in &bound_directories {
+        directory
+            .ensure_current()
+            .map_err(|error| error.to_string())?;
+    }
     plan.skipped.sort();
     plan.skipped.dedup();
     Ok(plan)
-}
-
-fn same_local_directory_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
-    if before.file_type().is_symlink() || after.file_type().is_symlink() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        before.is_dir()
-            && after.is_dir()
-            && before.dev() == after.dev()
-            && before.ino() == after.ino()
-    }
-    #[cfg(not(unix))]
-    {
-        before.is_dir() && after.is_dir()
-    }
 }
 
 pub(super) fn external_relative_remote_path(path: &Path) -> Result<String, String> {

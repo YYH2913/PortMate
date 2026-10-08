@@ -1,13 +1,15 @@
 use super::*;
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct FileBatchPlanFile {
     pub(super) source: String,
     pub(super) relative: String,
     pub(super) size: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct FileBatchPlan {
     pub(super) directories: Vec<String>,
     pub(super) files: Vec<FileBatchPlanFile>,
@@ -40,11 +42,7 @@ pub(super) fn plan_local_file_batch(paths: &[String]) -> Result<FileBatchPlan, S
                 Ok(FileBatchPlanFile {
                     source: source.to_string(),
                     relative: external_relative_remote_path(&file.relative)?,
-                    size: fs::metadata(&file.source)
-                        .map_err(|error| {
-                            format!("读取批次源文件失败 {}: {error}", file.source.display())
-                        })?
-                        .len(),
+                    size: file.size,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?,
@@ -53,144 +51,36 @@ pub(super) fn plan_local_file_batch(paths: &[String]) -> Result<FileBatchPlan, S
 }
 
 pub(super) async fn plan_remote_file_batch(
-    sftp: &SftpBackendSession,
+    handle: Arc<tokio::sync::Mutex<SshBackendSession>>,
     paths: &[String],
 ) -> Result<FileBatchPlan, String> {
-    let mut roots = Vec::new();
-    let mut skipped = Vec::new();
-    for raw in paths {
-        let path = normalize_remote_batch_source(raw)?;
-        if roots.iter().any(|existing: &(String, bool)| {
-            path == existing.0 || (existing.1 && remote_path_is_within(&path, &existing.0))
-        }) {
-            skipped.push(format!("{path} (already included)"));
-            continue;
+    let mut roots = paths
+        .iter()
+        .map(|path| normalize_remote_batch_source(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    roots.sort_by_key(|path| batch_path_depth(path));
+    let mut selected: Vec<String> = Vec::new();
+    for path in roots {
+        if !selected
+            .iter()
+            .any(|root| path == *root || remote_path_is_within(&path, root))
+        {
+            selected.push(path);
         }
-        let metadata = sftp
-            .symlink_metadata(path.clone())
-            .await
-            .map_err(|error| format!("SFTP 读取批次源路径失败 {path}: {error}"))?;
-        if metadata.is_symlink() {
-            skipped.push(format!("{path} (symbolic link)"));
-            continue;
-        }
-        if !metadata.is_dir() && !metadata.is_regular() {
-            skipped.push(format!("{path} (not a regular file or directory)"));
-            continue;
-        }
-        roots.push((path, metadata.is_dir()));
     }
-
-    let mut plan = FileBatchPlan {
-        skipped,
-        ..FileBatchPlan::default()
-    };
-    let mut visited = 0_usize;
-    for (root, _) in roots {
-        let root_name = remote_file_name(&root);
-        validate_batch_relative_path(&root_name)?;
-        let mut stack = vec![(root, root_name)];
-        while let Some((source, relative)) = stack.pop() {
-            visited += 1;
-            if visited > MAX_EXTERNAL_DROP_ENTRIES {
-                return Err(format!(
-                    "远端目录超过 {MAX_EXTERNAL_DROP_ENTRIES} 个条目，请缩小批次"
-                ));
-            }
-            let metadata = sftp
-                .symlink_metadata(source.clone())
-                .await
-                .map_err(|error| format!("SFTP 读取远端目录项失败 {source}: {error}"))?;
-            if metadata.is_symlink() {
-                plan.skipped.push(format!("{source} (symbolic link)"));
-                continue;
-            }
-            if metadata.is_dir() {
-                plan.directories.push(relative.clone());
-                let mut children = sftp
-                    .read_dir(source.clone())
-                    .await
-                    .map_err(|error| format!("SFTP 读取远端目录失败 {source}: {error}"))?
-                    .collect::<Vec<_>>();
-                let after_read = sftp
-                    .symlink_metadata(source.clone())
-                    .await
-                    .map_err(|error| format!("SFTP 复核远端目录失败 {source}: {error}"))?;
-                if !same_remote_directory_metadata(&metadata, &after_read) {
-                    return Err(format!("SFTP 远端目录在枚举期间发生变化: {source}"));
-                }
-                children.sort_by_key(|entry| entry.file_name());
-                for child in children.into_iter().rev() {
-                    let name = child.file_name();
-                    if matches!(name.as_str(), "." | "..") {
-                        continue;
-                    }
-                    validate_batch_relative_path(&name)?;
-                    stack.push((
-                        remote_join_path(&source, &name),
-                        remote_join_path(&relative, &name),
-                    ));
-                }
-            } else if metadata.is_regular() {
-                if plan.files.len() >= MAX_EXTERNAL_DROP_FILES {
-                    return Err(format!(
-                        "一次最多传输 {MAX_EXTERNAL_DROP_FILES} 个文件，请缩小批次"
-                    ));
-                }
-                plan.files.push(FileBatchPlanFile {
-                    source,
-                    relative,
-                    size: metadata.len(),
-                });
-            } else {
-                plan.skipped
-                    .push(format!("{source} (not a regular file or directory)"));
-            }
-        }
+    let output = remote_safe_tree(handle, "plan", &selected).await?;
+    let mut plan: FileBatchPlan = serde_json::from_str(&output)
+        .map_err(|error| format!("invalid safe remote batch response: {error}"))?;
+    if plan.files.len() > MAX_EXTERNAL_DROP_FILES
+        || plan.files.len() + plan.directories.len() > MAX_EXTERNAL_DROP_ENTRIES
+    {
+        return Err("remote batch response exceeds entry limit".into());
+    }
+    for file in &plan.files {
+        normalize_remote_batch_source(&file.source)?;
     }
     validate_file_batch_plan(&mut plan)?;
     Ok(plan)
-}
-
-fn same_remote_directory_metadata(
-    before: &SftpBackendMetadata,
-    after: &SftpBackendMetadata,
-) -> bool {
-    before.is_dir()
-        && after.is_dir()
-        && !before.is_symlink()
-        && !after.is_symlink()
-        && before.len() == after.len()
-        && before.permissions == after.permissions
-        && before.mtime == after.mtime
-}
-
-pub(super) fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), String> {
-    plan.directories.sort_by(|left, right| {
-        batch_path_depth(left)
-            .cmp(&batch_path_depth(right))
-            .then_with(|| left.cmp(right))
-    });
-    if let Some(conflict) = plan
-        .directories
-        .windows(2)
-        .find(|pair| pair[0] == pair[1])
-        .map(|pair| &pair[0])
-    {
-        return Err(format!("文件批次包含冲突的目标目录: {conflict}"));
-    }
-    plan.files
-        .sort_by(|left, right| left.relative.cmp(&right.relative));
-    let directories = plan.directories.iter().collect::<HashSet<_>>();
-    let mut files = HashSet::new();
-    for file in &plan.files {
-        if directories.contains(&file.relative) || !files.insert(file.relative.as_str()) {
-            return Err(format!("文件批次包含冲突的目标路径: {}", file.relative));
-        }
-    }
-    plan.skipped.sort();
-    plan.skipped.dedup();
-    Ok(())
 }
 
 pub(super) fn normalize_remote_batch_source(path: &str) -> Result<String, String> {
@@ -331,4 +221,32 @@ pub(super) fn batch_path_depth(path: &str) -> usize {
     path.split(['/', '\\'])
         .filter(|part| !part.is_empty())
         .count()
+}
+
+pub(super) fn validate_file_batch_plan(plan: &mut FileBatchPlan) -> Result<(), String> {
+    plan.directories.sort_by(|left, right| {
+        batch_path_depth(left)
+            .cmp(&batch_path_depth(right))
+            .then_with(|| left.cmp(right))
+    });
+    if let Some(conflict) = plan
+        .directories
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| &pair[0])
+    {
+        return Err(format!("文件批次包含冲突的目标目录: {conflict}"));
+    }
+    plan.files
+        .sort_by(|left, right| left.relative.cmp(&right.relative));
+    let directories = plan.directories.iter().collect::<HashSet<_>>();
+    let mut files = HashSet::new();
+    for file in &plan.files {
+        if directories.contains(&file.relative) || !files.insert(file.relative.as_str()) {
+            return Err(format!("文件批次包含冲突的目标路径: {}", file.relative));
+        }
+    }
+    plan.skipped.sort();
+    plan.skipped.dedup();
+    Ok(())
 }

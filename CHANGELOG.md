@@ -59,7 +59,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 - SFTP remote-copy sources now reject symlinked parent path components before reading, matching the download and destination-path guards.
 - SFTP async file reads now reject server data packets larger than the requested buffer instead of panicking on malformed responses.
 - Remote file-manager mutations now carry the connection generation observed with the listing and are rejected before a reconnect can retarget the operation.
-- Recursive remote deletion now uses POSIX descriptor-relative tree operations over SSH instead of path-based SFTP recursion.
+- Local batch enumeration is bound to directory handles, including Windows
+  reparse-point and directory-identity checks. Remote batch enumeration and
+  recursive deletion use POSIX descriptor-relative tree operations over SSH
+  instead of race-prone path-based SFTP recursion.
 - Manual SSH opens now enforce the same profile snapshot used by reconnects, so endpoint and host-key policy edits during a handshake fail before trust data is persisted.
 - Synchronized input batches now retain each target's terminal epoch and skip queued data after reconnect; delayed clipboard reads also verify the observed connection before injecting text.
 - Trigger command output-reader failures now terminate the command process group before returning, preventing background descendants from surviving a failed capture.

@@ -1,5 +1,26 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn local_batch_parent_replacement_after_listing_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let selected = root.path().join("selected");
+    let outside = root.path().join("outside");
+    let saved = root.path().join("saved");
+    fs::create_dir_all(&selected).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(selected.join("victim"), b"selected").unwrap();
+    fs::write(outside.join("victim"), b"outside").unwrap();
+    let result = plan_external_drop_with_hook(&[selected.to_str().unwrap().into()], None, |path| {
+        if path == selected {
+            fs::rename(&selected, &saved).unwrap();
+            std::os::unix::fs::symlink(&outside, &selected).unwrap();
+        }
+    });
+    assert!(result.is_err());
+    assert_eq!(fs::read(outside.join("victim")).unwrap(), b"outside");
+}
+
 #[test]
 fn file_tools_accept_only_sftp_and_scp_data_protocols() {
     for protocol in [TransferProtocol::Sftp, TransferProtocol::Scp] {
