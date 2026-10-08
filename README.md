@@ -526,7 +526,16 @@ For a dynamic route, add `"targetHost"` and `"targetPort"` to select the SOCKS5 
 
 udp_request sends one UDP datagram through an existing PortMate-host route owned by the current Client and waits for one response datagram. Each datagram is limited to 65507 bytes and timeout is 100 ms to 30 s. It can carry an individual TFTP, QUIC, or DTLS packet, but does not maintain protocol connection state or implement the SOCKS5 UDP ASSOCIATE control channel; use TFTP start_transfer or resumable uploads for complete file transfers.
 
-### Passwordless SSH (0.1.11)
+### Safe remote directory operations (0.1.11)
+
+Recursive remote deletion and remote batch enumeration require Python 3 on a
+POSIX SSH host with descriptor-relative filesystem primitives (`dir_fd`).
+Directories are opened without following links and child operations use those
+held descriptors. SFTP-only hosts, missing Python, and unsupported operating
+systems are explicitly rejected instead of falling back to path recursion.
+Single-file SFTP/SCP transfers are unchanged. Batch paths are still revalidated
+by the selected transfer protocol at execution time; the plan is not a lock on
+future remote filesystem changes.
 
 For passwordless SSH devices, choose **none** in the profile authentication order.
 This uses protocol-level `none` authentication, not an empty password; host-key

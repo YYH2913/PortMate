@@ -1,71 +1,5 @@
 use super::*;
 
-pub(super) async fn sftp_remove_recursive(
-    sftp: &SftpBackendSession,
-    path: &str,
-) -> Result<(), String> {
-    let path = validate_remote_mutating_path(path)?;
-    let mut stack = vec![(path.to_string(), false)];
-
-    while let Some((current, visited)) = stack.pop() {
-        let metadata = sftp
-            .symlink_metadata(current.clone())
-            .await
-            .map_err(|error| format!("SFTP 读取远端路径失败 {current}: {error}"))?;
-        let is_directory = metadata.is_dir() && !metadata.is_symlink();
-        if is_directory && !visited {
-            stack.push((current.clone(), true));
-            let entries = sftp
-                .read_dir(current.clone())
-                .await
-                .map_err(|error| format!("SFTP 读取远端目录失败 {current}: {error}"))?;
-            let after_read = sftp
-                .symlink_metadata(current.clone())
-                .await
-                .map_err(|error| format!("SFTP 复核远端目录失败 {current}: {error}"))?;
-            if !same_remote_directory_metadata(&metadata, &after_read) {
-                return Err(format!("SFTP 远端目录在删除期间发生变化: {current}"));
-            }
-            for entry in entries {
-                stack.push((remote_join_path(&current, &entry.file_name()), false));
-            }
-            continue;
-        }
-
-        if is_directory {
-            let before_remove = sftp
-                .symlink_metadata(current.clone())
-                .await
-                .map_err(|error| format!("SFTP 复核远端目录失败 {current}: {error}"))?;
-            if !same_remote_directory_metadata(&metadata, &before_remove) {
-                return Err(format!("SFTP 远端目录在删除期间发生变化: {current}"));
-            }
-            sftp.remove_dir(current.clone())
-                .await
-                .map_err(|error| format!("SFTP 删除远端目录失败 {current}: {error}"))?;
-        } else {
-            sftp.remove_file(current.clone())
-                .await
-                .map_err(|error| format!("SFTP 删除远端文件失败 {current}: {error}"))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn same_remote_directory_metadata(
-    before: &SftpBackendMetadata,
-    after: &SftpBackendMetadata,
-) -> bool {
-    before.is_dir()
-        && after.is_dir()
-        && !before.is_symlink()
-        && !after.is_symlink()
-        && before.len() == after.len()
-        && before.permissions == after.permissions
-        && before.mtime == after.mtime
-}
-
 pub(super) enum FileOperation {
     CreateDirectory,
     CreateFile,
@@ -113,7 +47,7 @@ pub(super) async fn file_operation_inner(
                 }
                 FileOperation::Delete => {
                     reject_remote_symlink_components(&sftp, &path, true, "远端删除路径").await?;
-                    sftp_remove_recursive(&sftp, &path).await
+                    delete_remote_tree(auxiliary.handle(), &path).await
                 }
             }
         }

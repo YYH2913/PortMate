@@ -443,7 +443,9 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         sftp.rename(copied.clone(), renamed.clone()).await.unwrap();
         assert!(!sftp.try_exists(copied).await.unwrap());
         assert!(sftp.try_exists(renamed).await.unwrap());
-        sftp_remove_recursive(&sftp, &remote_root).await.unwrap();
+        delete_remote_tree(auxiliary.handle(), &remote_root)
+            .await
+            .unwrap();
         assert!(!sftp.try_exists(remote_root).await.unwrap());
         drop(sftp);
         drop(auxiliary);

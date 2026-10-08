@@ -59,7 +59,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 - SFTP remote-copy sources now reject symlinked parent path components before reading, matching the download and destination-path guards.
 - SFTP async file reads now reject server data packets larger than the requested buffer instead of panicking on malformed responses.
 - Remote file-manager mutations now carry the connection generation observed with the listing and are rejected before a reconnect can retarget the operation.
-- Local and remote batch planners now recheck directory identity after enumeration, and recursive SFTP deletion aborts when a directory changes between listing and removal.
+- Recursive remote deletion now uses POSIX descriptor-relative tree operations over SSH instead of path-based SFTP recursion.
 - Manual SSH opens now enforce the same profile snapshot used by reconnects, so endpoint and host-key policy edits during a handshake fail before trust data is persisted.
 - Synchronized input batches now retain each target's terminal epoch and skip queued data after reconnect; delayed clipboard reads also verify the observed connection before injecting text.
 - Trigger command output-reader failures now terminate the command process group before returning, preventing background descendants from surviving a failed capture.
@@ -144,6 +144,10 @@ or an unsigned artifact is not a production release. The complete release gates 
   Local downloads and SCP retain their separately verified resume behavior.
 
 ### Known Limitations
+
+- Safe remote tree enumeration/deletion requires Python 3 and POSIX `dir_fd`
+  primitives on the remote host. SFTP-only peers or unsupported remote operating
+  systems fail closed; single-file transfers still use the selected protocol.
 
 - The Linux cross-build produces an unsigned Windows x86-64 portable ZIP.
   Native Windows installation, WebView2 startup, OS-keyring behavior, and signed

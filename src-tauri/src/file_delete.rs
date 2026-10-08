@@ -116,7 +116,7 @@ pub(super) async fn delete_paths_inner(
                         item.source
                     )
                 })?;
-                sftp_remove_recursive(&sftp, &item.source)
+                delete_remote_tree(auxiliary.handle(), &item.source)
                     .await
                     .map_err(|error| {
                         format!(
