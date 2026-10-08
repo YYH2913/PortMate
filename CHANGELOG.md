@@ -68,6 +68,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   recursive deletion use POSIX descriptor-relative tree operations over SSH
   instead of race-prone path-based SFTP recursion.
 - Manual SSH opens now enforce the same profile snapshot used by reconnects, so endpoint and host-key policy edits during a handshake fail before trust data is persisted.
+- Multi-hop SSH establishment accepts exact canonical host-key mirror additions
+  from successful TOFU hops without weakening endpoint/policy/key-change checks.
 - Synchronized input batches now retain each target's terminal epoch and skip queued data after reconnect; delayed clipboard reads also verify the observed connection before injecting text.
 - Trigger command output-reader failures now terminate the command process group before returning, preventing background descendants from surviving a failed capture.
 - Archive and signed-bundle finalization now use atomic no-replace installs, while overwrite exports preserve and restore the previous payload/checksum pair if either commit step fails.

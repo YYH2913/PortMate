@@ -194,6 +194,11 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         if let ConnectionConfig::Ssh(ssh) = &mut refused_first.connection {
             ssh.jumps[0].port = refused_first_port;
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(refused_first.clone());
         let error = open_ssh_session(&state, refused_first, None, None)
             .await
             .unwrap_err();
@@ -237,6 +242,11 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         if let ConnectionConfig::Ssh(ssh) = &mut refused_second.connection {
             ssh.jumps[1].port = refused_second_port;
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(refused_second.clone());
         let error = open_ssh_session(&state, refused_second, None, None)
             .await
             .unwrap_err();
@@ -254,6 +264,11 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         if let ConnectionConfig::Ssh(ssh) = &mut rejected_second_identity.connection {
             ssh.jumps[1].identity_ref = Some("target-client-key".to_string());
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(rejected_second_identity.clone());
         let error = open_ssh_session(&state, rejected_second_identity, None, None)
             .await
             .unwrap_err();
@@ -296,6 +311,11 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
             ssh.identity_refs
                 .retain(|identity| identity.id != "target-client-key");
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(rejected_target_identities.clone());
         let error = open_ssh_session(&state, rejected_target_identities, None, None)
             .await
             .unwrap_err();
@@ -308,6 +328,7 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         assert!(error.contains("jump two client key"), "{error}");
         assert_eq!(state.store.lock().unwrap().host_keys.keys.len(), 2);
 
+        state.store.lock().unwrap().upsert_profile(profile.clone());
         let summary = open_ssh_session(&state, profile.clone(), None, None)
             .await
             .unwrap();
@@ -465,7 +486,8 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
         .await;
 
         let trusted_before = state.store.lock().unwrap().host_keys.keys.clone();
-        let mismatch = open_ssh_session(&state, profile.clone(), None, None)
+        let current_profile = state.store.lock().unwrap().profile(&profile.id).unwrap();
+        let mismatch = open_ssh_session(&state, current_profile.clone(), None, None)
             .await
             .unwrap_err();
         assert!(mismatch.contains("alias=integration-jump-2"), "{mismatch}");
@@ -497,7 +519,17 @@ fn openssh_multi_hop_chain_and_key_mismatch_end_to_end() {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(profile_keys, trusted_after);
+        // Profile mirrors retain only keys belonging to their normalized
+        // endpoint aliases; canonical Jump Host trust remains in Store.
+        let mut expected_profile = store.profile(&profile.id).unwrap();
+        if let ConnectionConfig::Ssh(ssh) = &mut expected_profile.connection {
+            ssh.trusted_host_keys = trusted_after.clone();
+        }
+        let expected_profile = normalize_session_profile(expected_profile);
+        let ConnectionConfig::Ssh(expected_ssh) = expected_profile.connection else {
+            panic!("expected SSH");
+        };
+        assert_eq!(profile_keys, &expected_ssh.trusted_host_keys);
     });
 
     jump_one_sshd.stop();

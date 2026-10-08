@@ -159,6 +159,11 @@ fn jump_host_password_and_keyboard_interactive_mix_with_public_keys() {
         if let ConnectionConfig::Ssh(ssh) = &mut password_profile.connection {
             ssh.identity_policy.auth_order = vec![AuthMethod::Password, AuthMethod::PublicKey];
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(password_profile.clone());
         let error = open_ssh_session(
             &state,
             password_profile.clone(),
@@ -197,6 +202,11 @@ fn jump_host_password_and_keyboard_interactive_mix_with_public_keys() {
             ssh.identity_policy.auth_order =
                 vec![AuthMethod::KeyboardInteractive, AuthMethod::PublicKey];
         }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .upsert_profile(keyboard_profile.clone());
         let connected = open_ssh_session(
             &state,
             keyboard_profile,

@@ -405,3 +405,21 @@ fn jump_runtime_credentials_do_not_override_independent_secret_refs() {
     );
     assert_eq!(jump_runtime_credential(Some(""), None), None);
 }
+
+#[test]
+fn establishment_allows_only_canonical_tofu_mirror_additions() {
+    let attempt = test_ssh_profile();
+    let mut store = SessionStore::default();
+    store.upsert_profile(attempt.clone());
+    let policy = match &attempt.connection { ConnectionConfig::Ssh(ssh) => ssh.host_key_policy.clone(), _ => panic!("ssh") };
+    let observation = HostKeyObservation { host: "192.0.2.10".into(), port: 22, alias: policy.alias.clone(), algorithm: "ssh-ed25519".into(), public_key_base64: "YWJj".into() };
+    apply_persistent_host_key_decision_with_policy(&mut store, &attempt.id, &policy, &observation, HostKeyDecision::AppendToProfile).unwrap();
+    let latest = store.profile(&attempt.id).unwrap();
+    assert!(ssh_establishment_profile_matches_with_store_mirrors(&attempt, &latest, &store));
+    let mut altered = latest.clone();
+    if let ConnectionConfig::Ssh(ssh) = &mut altered.connection { ssh.endpoint.port += 1; }
+    assert!(!ssh_establishment_profile_matches_with_store_mirrors(&attempt, &altered, &store));
+    let mut injected = latest;
+    if let ConnectionConfig::Ssh(ssh) = &mut injected.connection { ssh.trusted_host_keys[0].public_key_base64 = "ZGVm".into(); }
+    assert!(!ssh_establishment_profile_matches_with_store_mirrors(&attempt, &injected, &store));
+}

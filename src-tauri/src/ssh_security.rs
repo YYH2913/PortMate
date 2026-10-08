@@ -50,7 +50,8 @@ pub(super) fn persist_observed_host_key(
         .profile(profile_id)
         .ok_or_else(|| format!("unknown session: {profile_id}"))?;
     if let Some(expected_profile) = guard.expected_profile {
-        if !ssh_establishment_profile_matches(expected_profile, &profile) {
+        if !ssh_establishment_profile_matches_with_store_mirrors(expected_profile, &profile, &store)
+        {
             return Err(format!(
                 "SSH profile changed while establishing session: {profile_id}"
             ));
@@ -159,7 +160,11 @@ pub(super) fn persist_observed_host_key_with_policy(
         let latest_profile = store
             .profile(profile_id)
             .ok_or_else(|| format!("unknown session: {profile_id}"))?;
-        if !ssh_establishment_profile_matches(expected_profile, &latest_profile) {
+        if !ssh_establishment_profile_matches_with_store_mirrors(
+            expected_profile,
+            &latest_profile,
+            &store,
+        ) {
             return Err(format!(
                 "SSH profile changed while establishing session: {profile_id}"
             ));
@@ -323,6 +328,8 @@ pub(super) fn touch_observed_host_key(
             }
         }
     }
+    let mirrors = store.host_keys.keys.iter().filter(|key| touched_key_ids.contains(&key.id)).cloned().collect::<Vec<_>>();
+    mirror_persistent_host_keys(store, &mirrors)?;
     Ok(touched)
 }
 

@@ -30,6 +30,42 @@ pub(super) fn ssh_establishment_profile_matches(
     attempt.connection == latest.connection && attempt.terminal == latest.terminal
 }
 
+pub(super) fn ssh_establishment_profile_matches_with_store_mirrors(
+    attempt: &SessionProfile,
+    latest: &SessionProfile,
+    store: &SessionStore,
+) -> bool {
+    let mut expected = attempt.clone();
+    let (ConnectionConfig::Ssh(expected_ssh) | ConnectionConfig::Tmux(expected_ssh)) =
+        &mut expected.connection
+    else {
+        return false;
+    };
+    let (ConnectionConfig::Ssh(latest_ssh) | ConnectionConfig::Tmux(latest_ssh)) =
+        &latest.connection
+    else {
+        return false;
+    };
+    // Each successful TOFU hop appends a canonical Store key and mirrors it
+    // into the Profile. Admit only exact canonical additions, not removals,
+    // replaced key material, policy/endpoint edits, or arbitrary Profile keys.
+    for key in &latest_ssh.trusted_host_keys {
+        if !expected_ssh
+            .trusted_host_keys
+            .iter()
+            .any(|old| old.id == key.id)
+            && store
+                .host_keys
+                .keys
+                .iter()
+                .any(|canonical| canonical == key)
+        {
+            expected_ssh.trusted_host_keys.push(key.clone());
+        }
+    }
+    ssh_establishment_profile_matches(&expected, latest)
+}
+
 pub(super) fn ignore_host_key_last_seen_for_establishment(profile: &mut SessionProfile) {
     let ssh = match &mut profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh,
