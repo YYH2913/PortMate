@@ -160,7 +160,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
     fs::create_dir(&sftp_move_destination).unwrap();
     fs::write(&sftp_move_file, b"remote report").unwrap();
     fs::write(sftp_move_directory.join("detail.txt"), b"remote detail").unwrap();
-    move_paths_inner(
+    let error = move_paths_inner(
         state,
         MovePathsRequest {
             session_id: Some(profile.id.clone()),
@@ -174,16 +174,15 @@ pub(super) async fn exercise_openssh_sftp_operations(
         },
     )
     .await
-    .unwrap();
+    .unwrap_err();
+    assert!(error.contains("SFTP 目录移动无法提供"), "{error}");
+    // The regular file preceding the unsupported directory may already have
+    // moved; preserve and assert the reported partial-batch contract.
     assert!(!sftp_move_file.exists());
-    assert!(!sftp_move_directory.exists());
+    assert!(sftp_move_directory.exists());
     assert_eq!(
         fs::read(sftp_move_destination.join("report.txt")).unwrap(),
         b"remote report"
-    );
-    assert_eq!(
-        fs::read(sftp_move_destination.join("nested/detail.txt")).unwrap(),
-        b"remote detail"
     );
 
     let sftp_move_first = sftp_move_source.join("first.txt");

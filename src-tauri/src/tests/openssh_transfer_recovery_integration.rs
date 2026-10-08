@@ -295,7 +295,8 @@ pub(super) async fn exercise_openssh_scp_and_transfer_recovery(
         let partial_size = fs::metadata(&disconnect_remote_part).unwrap().len();
         assert!(partial_size > 0 && partial_size < cancel_payload.len() as u64);
 
-        let reopened = open_ssh_session(state, profile.clone(), None, None)
+        let latest_profile = state.store.lock().unwrap().profile(&profile.id).unwrap();
+        let reopened = open_ssh_session(state, latest_profile, None, None)
             .await
             .unwrap();
         assert_eq!(reopened.runtime.status, SessionStatus::Connected);

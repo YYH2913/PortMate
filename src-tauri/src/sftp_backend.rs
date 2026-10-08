@@ -293,6 +293,7 @@ impl SftpBackendSession {
         }
     }
 
+    #[allow(dead_code)] // Available for non-recursive empty-directory operations.
     pub(super) async fn remove_dir(&self, path: String) -> Result<(), String> {
         match self {
             Self::Russh(session) => session

@@ -138,7 +138,7 @@ pub(super) fn open_configured_serial_port(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn open_serial_session(
     state: &AppState,
     profile: SessionProfile,

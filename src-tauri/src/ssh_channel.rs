@@ -160,7 +160,7 @@ pub(super) enum SshBackendChannelWriter {
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Channel>>),
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) async fn write_ssh_channel_bytes_with_timeout(
     writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     data: &[u8],
