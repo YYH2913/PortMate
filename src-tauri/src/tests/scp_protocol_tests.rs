@@ -1,5 +1,49 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn remote_shell_copy_commands_preserve_zsh_path_and_reserved_parameters() {
+    let Some(zsh) = ["/usr/bin/zsh", "/bin/zsh"]
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+    else {
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    fs::write(&source, b"payload").unwrap();
+    let command = remote_copy_command(source.to_str().unwrap(), target.to_str().unwrap());
+    let output = Command::new(zsh)
+        .args(["-f", "-c", &command])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(target).unwrap(), b"payload");
+    let directory = root.path().join("uploads");
+    fs::create_dir(&directory).unwrap();
+    let command = scp_upload_command(directory.to_str().unwrap(), "uploaded", 7);
+    let mut process = Command::new(zsh)
+        .args(["-f", "-c", &command])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    process.stdin.take().unwrap().write_all(b"payload").unwrap();
+    let output = process.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(directory.join("uploaded")).unwrap(), b"payload");
+}
+
 #[test]
 fn remote_copy_markers_parse_latest_size_and_done() {
     let output = b"noise\n__PORTMATE_SIZE__1024\nother\n__PORTMATE_DONE__1024\n";
@@ -218,7 +262,10 @@ fn remote_shell_transfers_reject_hard_linked_resume_files() {
 
     let remote_copy = Command::new("sh")
         .arg("-c")
-        .arg(remote_copy_command(source.to_str().unwrap(), target.to_str().unwrap()))
+        .arg(remote_copy_command(
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+        ))
         .output()
         .unwrap();
     assert!(!remote_copy.status.success());

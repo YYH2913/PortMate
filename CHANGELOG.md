@@ -57,6 +57,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Local no-overwrite moves now use platform-specific atomic exclusive rename primitives, and fail closed where the platform cannot provide them.
 - Remote batch conflict checks now treat only a confirmed missing target as absent; permission, timeout, and transport errors abort planning.
 - SCP and remote-copy commands now reject symbolic links in every path component and use no-clobber hard-link commits for completed remote files.
+- Remote SCP/copy shell helpers no longer overwrite zsh's `path`/`PATH` or
+  assign its read-only `status` variable, restoring transfers with zsh login shells.
 - SFTP transfer and file-rename commits now reject symlinked path components and use atomic no-replace hard-link commits for regular files; directory moves fail closed when the server cannot provide that guarantee.
 - SFTP remote-copy sources now reject symlinked parent path components before reading, matching the download and destination-path guards.
 - SFTP async file reads now reject server data packets larger than the requested buffer instead of panicking on malformed responses.
