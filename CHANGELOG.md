@@ -37,7 +37,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - MCP HTTP Accept negotiation now honors the most specific media range, including explicit `q=0` exclusions and type wildcards.
 - Managed MCP HTTP readiness probes now enforce a cumulative read deadline and check the startup deadline before accepting `Running`.
 - MCP approval responses now fail closed when the request has expired, and approval waits use the request's absolute expiry deadline.
-- MCP HTTP runtime status checks now stop the managed bridge and retire its bearer token when the bound grant expires.
+- A managed-instance background task stops the MCP HTTP bridge and retires its
+  bearer token when the bound grant expires, even with the dialog closed or
+  hidden; failed token retirement is retried independently of UI polling.
 - Failed log-retention pruning no longer suppresses retries for the full hourly check interval.
 - Log shard append now rejects hard-linked targets before writing through an unrelated inode.
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.

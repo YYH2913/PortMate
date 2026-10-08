@@ -15,6 +15,7 @@ type McpHttpProcessDiagnostics = Arc<Mutex<VecDeque<u8>>>;
 pub(super) struct McpHttpProcessRegistry {
     process: Option<ManagedMcpHttpProcess>,
     failure: Option<McpHttpProcessFailure>,
+    token_retirement_owner: Option<McpHttpProcessOwner>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +87,11 @@ pub(super) fn mcp_http_runtime_status_inner(
             if process.ready {
                 return Ok(active_mcp_http_runtime_status(process));
             }
-            Some((process.connect_address, process.child.id(), process.started_at))
+            Some((
+                process.connect_address,
+                process.child.id(),
+                process.started_at,
+            ))
         } else if let Some(failure) = registry.failure.as_ref() {
             return Ok(failed_mcp_http_runtime_status(failure));
         } else {
@@ -176,10 +181,40 @@ pub(super) fn mcp_http_runtime_status_for_owner(
 }
 
 fn invalidate_expired_mcp_http_runtime(state: &AppState) -> Result<bool, String> {
+    invalidate_expired_mcp_http_runtime_for_owner(state, None)
+}
+
+fn invalidate_expired_mcp_http_runtime_for_owner(
+    state: &AppState,
+    owner: Option<McpHttpProcessOwner>,
+) -> Result<bool, String> {
+    invalidate_expired_mcp_http_runtime_with(
+        state,
+        owner,
+        || has_secret_ref(MCP_HTTP_TOKEN_REF),
+        || delete_secret_from_store(MCP_HTTP_TOKEN_REF),
+    )
+}
+
+fn invalidate_expired_mcp_http_runtime_with(
+    state: &AppState,
+    owner: Option<McpHttpProcessOwner>,
+    has_token: impl Fn() -> bool,
+    delete_token: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
     let mut registry = state
         .mcp_http_process
         .lock()
         .map_err(|error| error.to_string())?;
+    if owner.is_some_and(|owner| {
+        registry
+            .process
+            .as_ref()
+            .map(|process| process.owner() != owner)
+            .unwrap_or(registry.token_retirement_owner != Some(owner))
+    }) {
+        return Ok(false);
+    }
     let client_id = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store.mcp_http_settings.client_id.clone()
@@ -187,28 +222,184 @@ fn invalidate_expired_mcp_http_runtime(state: &AppState) -> Result<bool, String>
     if client_id.trim().is_empty() {
         return Ok(false);
     }
-    if !has_secret_ref(MCP_HTTP_TOKEN_REF) {
-        return Ok(false);
-    }
     let active = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         mcp_http_client_has_active_grant(&store, &client_id, Utc::now())
     };
-    if active {
+    if active && has_token() {
+        registry.token_retirement_owner = None;
         return Ok(false);
     }
     registry.failure = None;
     if let Some(process) = registry.process.take() {
+        registry.token_retirement_owner = Some(process.owner());
         if let Err(error) = stop_mcp_http_process(process) {
             eprintln!("PortMate: failed to stop expired MCP HTTP sidecar: {error}");
         }
     }
-    if has_secret_ref(MCP_HTTP_TOKEN_REF) {
-        if let Err(error) = delete_secret_from_store(MCP_HTTP_TOKEN_REF) {
-            eprintln!("PortMate: failed to delete expired MCP HTTP token: {error}");
-        }
+    if has_token() {
+        delete_token()?;
     }
+    registry.token_retirement_owner = None;
     Ok(true)
+}
+
+fn spawn_mcp_http_expiry_worker(state: AppState, owner: McpHttpProcessOwner) {
+    spawn_mcp_http_expiry_worker_with(state, owner, invalidate_expired_mcp_http_runtime_for_owner);
+}
+
+fn spawn_mcp_http_expiry_worker_with(
+    state: AppState,
+    owner: McpHttpProcessOwner,
+    retire: impl Fn(&AppState, Option<McpHttpProcessOwner>) -> Result<bool, String>
+        + Send
+        + Sync
+        + 'static,
+) {
+    // This task belongs to one managed instance, not a mounted UI panel. Exit
+    // on replacement/manual stop. A failed token retirement is retried even
+    // after the expired process has already been removed from the registry.
+    tauri::async_runtime::spawn(async move {
+        let retire = Arc::new(retire);
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let current = state
+                .mcp_http_process
+                .lock()
+                .map(|registry| {
+                    (
+                        registry.process.as_ref().map(ManagedMcpHttpProcess::owner),
+                        registry.token_retirement_owner == Some(owner),
+                    )
+                })
+                .map_err(|_| ());
+            match current {
+                Ok((Some(current), _)) if current != owner => break,
+                Ok((None, false)) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            let probe = state.clone();
+            let retire = Arc::clone(&retire);
+            match tauri::async_runtime::spawn_blocking(move || retire(&probe, Some(owner))).await {
+                Ok(Ok(true)) => break,
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => {
+                    eprintln!("PortMate: MCP HTTP expiry cleanup will retry: {error}");
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+#[cfg(all(test, unix))]
+mod expiry_tests {
+    use super::*;
+
+    #[test]
+    fn background_expiry_retries_token_failure_after_status_removed_the_process() {
+        tauri::async_runtime::block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let state = crate::tests::test_app_state(
+                crate::tests::test_shell_profile(),
+                root.path().join("store.sqlite3"),
+            );
+            state.store.lock().unwrap().mcp_http_settings.client_id = "expired-client".into();
+            let child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+            let owner = install_mcp_http_process(
+                &mut state.mcp_http_process.lock().unwrap(),
+                child,
+                "http://127.0.0.1:1".into(),
+                "127.0.0.1:1".parse().unwrap(),
+            );
+            let failed = invalidate_expired_mcp_http_runtime_with(
+                &state,
+                None,
+                || true,
+                || Err("injected token retirement failure".into()),
+            );
+            assert!(failed.is_err());
+            assert!(state.mcp_http_process.lock().unwrap().process.is_none());
+            let token_present = Arc::new(AtomicBool::new(true));
+            let retries = Arc::new(AtomicUsize::new(0));
+            let token = Arc::clone(&token_present);
+            let attempts = Arc::clone(&retries);
+            spawn_mcp_http_expiry_worker_with(state.clone(), owner, move |state, owner| {
+                invalidate_expired_mcp_http_runtime_with(
+                    state,
+                    owner,
+                    || token.load(Ordering::SeqCst),
+                    || {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        token.store(false, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+            });
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while token_present.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(retries.load(Ordering::SeqCst), 1);
+            assert!(state
+                .mcp_http_process
+                .lock()
+                .unwrap()
+                .token_retirement_owner
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn expired_managed_process_is_stopped_without_a_status_or_ui_caller() {
+        tauri::async_runtime::block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let state = crate::tests::test_app_state(
+                crate::tests::test_shell_profile(),
+                root.path().join("store.sqlite3"),
+            );
+            {
+                let mut store = state.store.lock().unwrap();
+                store.mcp_http_settings.client_id = "expiry-client".into();
+                store.grants.push(McpGrant {
+                    client_id: "expiry-client".into(),
+                    name: "test".into(),
+                    scopes: vec![McpScope::ReadSessions],
+                    allowed_sessions: vec![],
+                    confirm_writes: false,
+                    expires_at: Some(Utc::now() + chrono::Duration::milliseconds(50)),
+                    revoked_at: None,
+                });
+            }
+            let child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+            let owner = {
+                let mut registry = state.mcp_http_process.lock().unwrap();
+                install_mcp_http_process(
+                    &mut registry,
+                    child,
+                    "http://127.0.0.1:1".into(),
+                    "127.0.0.1:1".parse().unwrap(),
+                )
+            };
+            spawn_mcp_http_expiry_worker(state.clone(), owner);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if state.mcp_http_process.lock().unwrap().process.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // No call to status/status_for_owner occurs in this test. Token
+            // providers are not mocked as real OS-keyring or HTTP validation.
+        });
+    }
 }
 
 pub(super) async fn start_mcp_http_runtime_inner(
@@ -222,6 +413,7 @@ pub(super) async fn start_mcp_http_runtime_with_settings(
     expected_settings: Option<&McpHttpSettings>,
 ) -> Result<McpHttpRuntimeStatus, String> {
     let owner = start_mcp_http_process(state, expected_settings)?;
+    spawn_mcp_http_expiry_worker(state.clone(), owner);
     let deadline = Instant::now() + MCP_HTTP_STARTUP_TIMEOUT;
     loop {
         let Some(status) = mcp_http_runtime_status_for_owner(state, owner)? else {
@@ -271,6 +463,7 @@ pub(super) fn stop_mcp_http_runtime_locked(
     registry: &mut McpHttpProcessRegistry,
 ) -> Result<McpHttpRuntimeStatus, String> {
     registry.failure = None;
+    registry.token_retirement_owner = None;
     if let Some(process) = registry.process.take() {
         stop_mcp_http_process(process)?;
     }
@@ -379,12 +572,7 @@ fn start_mcp_http_process(
             executable.display()
         ));
     }
-    let config = build_mcp_http_config_for_request(
-        true,
-        &executable,
-        &state.store_path,
-        settings,
-    )?;
+    let config = build_mcp_http_config_for_request(true, &executable, &state.store_path, settings)?;
 
     let bind_ip = config
         .settings
@@ -419,6 +607,7 @@ fn install_mcp_http_process(
     endpoint: String,
     connect_address: std::net::SocketAddr,
 ) -> McpHttpProcessOwner {
+    registry.token_retirement_owner = None;
     let diagnostics = child
         .stderr
         .take()
@@ -493,6 +682,15 @@ pub(super) fn install_test_mcp_http_process(
     endpoint: String,
     connect_address: std::net::SocketAddr,
 ) -> Result<McpHttpProcessOwner, String> {
+    // These transport/process fixtures intentionally have no grant/token.
+    // The separate expiry regression installs a normally bound instance.
+    state
+        .store
+        .lock()
+        .map_err(|error| error.to_string())?
+        .mcp_http_settings
+        .client_id
+        .clear();
     let mut registry = state
         .mcp_http_process
         .lock()
@@ -602,9 +800,8 @@ pub(super) fn probe_mcp_http_ready(connect_address: std::net::SocketAddr) -> boo
     {
         return false;
     }
-    let request = format!(
-        "OPTIONS /mcp HTTP/1.1\r\nHost: {connect_address}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("OPTIONS /mcp HTTP/1.1\r\nHost: {connect_address}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
         return false;
     }

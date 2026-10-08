@@ -462,7 +462,7 @@ fn assert_tunnel_client_closed(result: std::io::Result<usize>, label: &str) {
     }
 }
 
-fn test_shell_profile() -> SessionProfile {
+pub(crate) fn test_shell_profile() -> SessionProfile {
     SessionProfile {
         id: "session:1".to_string(),
         name: "Bench/Device".to_string(),
@@ -525,7 +525,7 @@ fn test_transfer_task(session_id: &str, status: TransferStatus) -> TransferTask 
     }
 }
 
-fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
+pub(crate) fn test_app_state(profile: SessionProfile, store_path: PathBuf) -> AppState {
     let mut store = SessionStore::default();
     store.upsert_profile(profile);
     AppState {
