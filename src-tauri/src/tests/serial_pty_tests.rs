@@ -108,7 +108,14 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
         assert_eq!(break_result["sessionId"], profile.id);
         {
             let writer = state.serial.lock().unwrap().get(&profile.id).unwrap().writer.as_ref().unwrap().clone();
-            let held = writer.lock().unwrap();
+            let (held_sender, held_receiver) = tokio::sync::oneshot::channel();
+            let (release_sender, release_receiver) = std::sync::mpsc::channel();
+            let holder = tokio::task::spawn_blocking(move || {
+                let _held = writer.lock().unwrap();
+                held_sender.send(()).unwrap();
+                let _ = release_receiver.recv();
+            });
+            held_receiver.await.unwrap();
             let break_state = state.clone();
             let id = profile.id.clone();
             let pending_break = tokio::task::spawn_blocking(move || {
@@ -116,7 +123,8 @@ fn serial_socat_loopback_round_trips_binary_bytes() {
             });
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert!(state.serial.try_lock().is_ok(), "waiting for a port writer must not lock the registry");
-            drop(held);
+            release_sender.send(()).unwrap();
+            holder.await.unwrap();
             pending_break.await.unwrap().unwrap();
         }
         {

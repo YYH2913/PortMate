@@ -256,10 +256,10 @@ fn same_local_directory_identity(before: &fs::Metadata, after: &fs::Metadata) ->
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.is_dir()
+        before.is_dir()
             && after.is_dir()
             && before.dev() == after.dev()
-            && before.ino() == after.ino();
+            && before.ino() == after.ino()
     }
     #[cfg(not(unix))]
     {
