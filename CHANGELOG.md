@@ -12,6 +12,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 - An explicit SSH `none` authentication preset supports devices that accept a
   connection without a password or public key. Host-key verification still applies.
+- SSH/Tmux profiles now offer **Ignore fingerprint changes on auto-reconnect**,
+  disabled by default. It temporarily accepts changed host keys for previously
+  trusted endpoints, including every Jump Host, during automatic reconnect only.
+  Saved trusted fingerprints remain unchanged and each bypass records a system event.
 
 ### Changed
 
@@ -113,6 +117,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Security
 
+- Enabling the reconnect fingerprint option permits server impersonation or
+  man-in-the-middle attacks during automatic reconnect. Initial/manual connections,
+  host-key scans, and unseen endpoints retain the configured verification policy.
 - Closed credential-redaction suffix leaks, strengthened transfer/storage path
   and hard-link checks, and preserved generated secrets after indeterminate Store
   commits. MCP expiry checks and connection-generation fences prevent stale
@@ -120,6 +127,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Migration
 
+- Existing SSH/Tmux profiles and cached sessions default the new
+  `reconnectIgnoreHostKeyChanges` preference to `false`.
 - This patch requires no manual Store or vault format migration. Legacy app-data
   cleanup now preserves unexpected or concurrently created files.
 - Remote SFTP uploads and copies restart an existing partial file through exclusive

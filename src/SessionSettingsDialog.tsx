@@ -1671,6 +1671,13 @@ function SshAdvancedFields({
           </select>
         </DialogField>
         <DialogToggleField label={t("auto-reconnect")} checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
+        <DialogToggleField
+          label={t("reconnect-ignore-host-key-changes")}
+          checked={ssh.reconnectIgnoreHostKeyChanges === true}
+          disabled={!ssh.reconnect}
+          onChange={(reconnectIgnoreHostKeyChanges) => updateSsh({ reconnectIgnoreHostKeyChanges })}
+        />
+        <div className="session-identity-hint" role="note">{t("reconnect-ignore-host-key-changes-hint")}</div>
         <DialogField label={t("reconnect-delay-ms")}>
           <input
             type="number"
@@ -2402,12 +2409,12 @@ function DialogField({ label, children, group = false }: { label: string; childr
   );
 }
 
-function DialogToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function DialogToggleField({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
   useLocale();
   return (
     <label className="dialog-field dialog-toggle-field">
       <span>{label}</span>
-      <button type="button" className={checked ? "switch-toggle on" : "switch-toggle"} onClick={() => onChange(!checked)} aria-pressed={checked}>
+      <button type="button" className={checked ? "switch-toggle on" : "switch-toggle"} onClick={() => onChange(!checked)} aria-pressed={checked} disabled={disabled}>
         <span />
       </button>
     </label>

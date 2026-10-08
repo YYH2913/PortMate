@@ -1,5 +1,35 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SshHostKeyVerification {
+    Standard,
+    ReconnectIgnoreChanges,
+}
+
+impl SshHostKeyVerification {
+    pub(super) fn for_establishment(ssh: &SshConnection, automatic_reconnect: bool) -> Self {
+        if automatic_reconnect && ssh.reconnect && ssh.reconnect_ignore_host_key_changes {
+            Self::ReconnectIgnoreChanges
+        } else {
+            Self::Standard
+        }
+    }
+
+    pub(super) fn ignores_change(
+        self,
+        profile_id: &str,
+        policy: &portmate_core::HostKeyPolicy,
+        host_keys: &HostKeyStore,
+        observation: &HostKeyObservation,
+        evaluation: &HostKeyEvaluation,
+    ) -> bool {
+        self == Self::ReconnectIgnoreChanges
+            && !observation.algorithm.ends_with("-cert-v01@openssh.com")
+            && !matches!(evaluation, HostKeyEvaluation::Trusted { .. })
+            && host_keys.has_trusted_endpoint(profile_id, policy, observation)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct PortMateSshHandler {
     pub(super) profile_id: String,
@@ -9,6 +39,7 @@ pub(super) struct PortMateSshHandler {
     pub(super) policy: portmate_core::HostKeyPolicy,
     pub(super) host_keys: HostKeyStore,
     pub(super) one_time_host_key_ids: Vec<String>,
+    pub(super) host_key_verification: SshHostKeyVerification,
     pub(super) observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     pub(super) host_key_error: Arc<Mutex<Option<String>>>,
     pub(super) remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
@@ -22,6 +53,7 @@ pub(super) struct SshHandlerParams {
     pub(super) policy: portmate_core::HostKeyPolicy,
     pub(super) host_keys: HostKeyStore,
     pub(super) one_time_host_key_ids: Vec<String>,
+    pub(super) host_key_verification: SshHostKeyVerification,
     pub(super) observed_key: Arc<Mutex<Option<HostKeyObservation>>>,
     pub(super) host_key_error: Arc<Mutex<Option<String>>>,
     pub(super) remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
@@ -36,6 +68,7 @@ pub(super) fn ssh_handler_for_endpoint(params: SshHandlerParams) -> PortMateSshH
         policy: params.policy,
         host_keys: params.host_keys,
         one_time_host_key_ids: params.one_time_host_key_ids,
+        host_key_verification: params.host_key_verification,
         observed_key: params.observed_key,
         host_key_error: params.host_key_error,
         remote_forwards: params.remote_forwards,
@@ -62,8 +95,14 @@ impl client::Handler for PortMateSshHandler {
     ) -> Result<bool, Self::Error> {
         // CA/principal/expiry verification is not implemented by the saved
         // host-key policy. Do not silently treat a certificate as a raw key.
-        let russh::keys::PublicKeyOrCertificate::PublicKey { key: server_public_key, .. } = server_public_key else {
-            *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some("SSH host certificates are not supported by the configured host-key policy".into());
+        let russh::keys::PublicKeyOrCertificate::PublicKey {
+            key: server_public_key,
+            ..
+        } = server_public_key
+        else {
+            *lock_ssh_handler_state(&self.host_key_error, "host key error")? = Some(
+                "SSH host certificates are not supported by the configured host-key policy".into(),
+            );
             return Ok(false);
         };
         let observation = HostKeyObservation {
@@ -82,6 +121,7 @@ impl client::Handler for PortMateSshHandler {
             &self.host_keys,
             &self.one_time_host_key_ids,
             &observation,
+            self.host_key_verification,
         );
         *lock_ssh_handler_state(&self.host_key_error, "host key error")? =
             verification.as_ref().err().cloned();
@@ -155,23 +195,32 @@ pub(super) fn verify_ssh_host_key_observation(
     host_keys: &HostKeyStore,
     one_time_host_key_ids: &[String],
     observation: &HostKeyObservation,
+    verification: SshHostKeyVerification,
 ) -> Result<(), String> {
-    match host_keys.evaluate(profile_id, policy, observation) {
-        Ok(HostKeyEvaluation::Trusted { matched_key_id, .. })
+    if observation.algorithm.ends_with("-cert-v01@openssh.com") {
+        return Err(
+            "SSH host certificates are not supported by the configured host-key policy".into(),
+        );
+    }
+    let evaluation = host_keys
+        .evaluate(profile_id, policy, observation)
+        .map_err(|error| format!("host key fingerprint 计算失败: {error}"))?;
+    if verification.ignores_change(profile_id, policy, host_keys, observation, &evaluation) {
+        return Ok(());
+    }
+    match evaluation {
+        HostKeyEvaluation::Trusted { matched_key_id, .. }
             if trusted_host_key_allowed(policy, &matched_key_id, one_time_host_key_ids) =>
         {
             Ok(())
         }
-        Ok(HostKeyEvaluation::Trusted {
+        HostKeyEvaluation::Trusted {
             fingerprint_sha256, ..
-        }) => Err(format!(
+        } => Err(format!(
             "SSH host key requires confirmation for this connection: {fingerprint_sha256}"
         )),
-        Ok(HostKeyEvaluation::Unknown { .. }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
-            Ok(())
-        }
-        Ok(other) => Err(describe_host_key_rejection(&other)),
-        Err(error) => Err(format!("host key fingerprint 计算失败: {error}")),
+        HostKeyEvaluation::Unknown { .. } if policy.mode == HostKeyMode::TrustOnFirstUse => Ok(()),
+        other => Err(describe_host_key_rejection(&other)),
     }
 }
 

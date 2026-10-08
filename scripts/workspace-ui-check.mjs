@@ -16,6 +16,7 @@ import { checkI18n } from "./i18n-regressions.mjs";
 import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
 import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
 import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regressions.mjs";
+import { checkSshReconnectSettings } from "./ssh-reconnect-settings-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -153,6 +154,7 @@ const sessions = [
     username: "admin",
     reconnect: true,
     reconnectDelayMs: 1000,
+    reconnectIgnoreHostKeyChanges: false,
     keepaliveEnabled: true,
     keepaliveIntervalSeconds: 30,
     keepaliveMaxMissed: 3,
@@ -1962,6 +1964,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_SSH_RECONNECT_ONLY === "1") {
+    await checkSshReconnectSettings(context, appUrl);
+    console.log("SSH reconnect fingerprint settings regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_DRAG_OVERFLOW_ONLY === "1") {
     await checkWorkspaceDragOverflow(context, appUrl);
     console.log("Overflow tab auto-scroll and keyboard activation regressions passed");
@@ -2437,6 +2445,17 @@ Host staging
   const jumpHostDialog = page.locator(".session-settings-dialog");
   await jumpHostDialog.waitFor();
   await jumpHostDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
+  const reconnectToggle = jumpHostDialog.locator(".dialog-field", { hasText: /^自动重连:$/ }).getByRole("button");
+  const ignoreFingerprintToggle = jumpHostDialog.locator(".dialog-field", { hasText: "自动重连时忽略指纹变化:" }).getByRole("button");
+  assert(await ignoreFingerprintToggle.getAttribute("aria-pressed") === "false",
+    "automatic reconnect fingerprint bypass must default to off");
+  await reconnectToggle.click();
+  assert(await ignoreFingerprintToggle.isDisabled(), "fingerprint bypass must be disabled when automatic reconnect is off");
+  await reconnectToggle.click();
+  await ignoreFingerprintToggle.click();
+  assert(await ignoreFingerprintToggle.getAttribute("aria-pressed") === "true"
+    && (await jumpHostDialog.textContent()).includes("可能连接到冒充服务器"),
+  "reconnect fingerprint bypass did not enable with its risk hint");
   const jumpGroup = jumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
   await jumpGroup.getByRole("button", { name: "添加跳板", exact: true }).click();
@@ -2463,6 +2482,7 @@ Host staging
   await jumpHostDialog.getByRole("button", { name: "保存", exact: true }).click();
   await jumpHostDialog.waitFor({ state: "detached" });
   const savedJumpState = await page.evaluate(({ firstSecretRef, secondSecretRef }) => ({
+    reconnectIgnoreHostKeyChanges: window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.reconnectIgnoreHostKeyChanges,
     jumps: window.__sessions.find((session) => session.profile.id === "edge-router")?.profile.connection.jumps ?? [],
     retainedSecrets: Object.keys(window.__secrets),
     deletedRefs: window.__invokeCalls
@@ -2471,7 +2491,8 @@ Host staging
     firstSecretRef,
     secondSecretRef,
   }), { firstSecretRef: firstJumpSecretRef, secondSecretRef: secondJumpSecretRef });
-  assert(savedJumpState.jumps.length === 1
+  assert(savedJumpState.reconnectIgnoreHostKeyChanges === true
+    && savedJumpState.jumps.length === 1
     && savedJumpState.jumps[0].host === "jump-two.example.test"
     && savedJumpState.jumps[0].passwordSecretRef === secondJumpSecretRef
     && savedJumpState.retainedSecrets.includes(secondJumpSecretRef)
@@ -2485,6 +2506,10 @@ Host staging
   const reopenedJumpHostDialog = page.locator(".session-settings-dialog");
   await reopenedJumpHostDialog.waitFor();
   await reopenedJumpHostDialog.getByRole("treeitem", { name: "SSH", exact: true }).click();
+  const restoredIgnoreFingerprintToggle = reopenedJumpHostDialog.locator(".dialog-field", { hasText: "自动重连时忽略指纹变化:" }).getByRole("button");
+  assert(await restoredIgnoreFingerprintToggle.getAttribute("aria-pressed") === "true",
+    "saved reconnect fingerprint preference was not restored");
+  await restoredIgnoreFingerprintToggle.click();
   const reopenedJumpGroup = reopenedJumpHostDialog.getByRole("group", { name: "跳板主机:", exact: true });
   assert(await reopenedJumpGroup.locator(".jump-hop").count() === 1
     && await reopenedJumpGroup.locator("input[placeholder=\"主机\"]").inputValue() === "jump-two.example.test",

@@ -1168,6 +1168,8 @@
   "unanswered-limit-0-no-automatic-disconnect": "未响应上限 (0=不自动断开):",
   "system-default": "系统默认",
   "auto-reconnect": "自动重连:",
+  "reconnect-ignore-host-key-changes": "自动重连时忽略指纹变化:",
+  "reconnect-ignore-host-key-changes-hint": "默认关闭。仅自动重连可放行已信任端点（含 Jump Host）的指纹变化，不更新已保存的指纹。可能连接到冒充服务器。",
   "reconnect-delay-ms": "重连延迟(ms):",
   "added-to-profile-draft-takes-effect-after-saving-the": "已加入 Profile 草稿 {0}，保存会话后生效",
   "rotation-r": "轮换:(R)",
@@ -3814,5 +3816,6 @@
   "native-message-cafa14ce1d5f": "写入 ZModem 本地文件失败 {0}: {1}",
   "native-message-13065866ba24": "SFTP 删除旧断点文件失败 {0}: {1}",
   "native-message-fa78e29b866b": "SFTP 断点文件无法安全续传，拒绝复用已有远端文件: {0}",
-  "native-message-5b71c612e396": "SFTP 断点文件在独占创建前重新出现，拒绝写入: {0}"
+  "native-message-5b71c612e396": "SFTP 断点文件在独占创建前重新出现，拒绝写入: {0}",
+  "native-message-4c7ca32f268b": "PortMate: {0} 自动重连临时放行变化的主机密钥（{1}，{2}）；已保存的信任记录未变更"
 }

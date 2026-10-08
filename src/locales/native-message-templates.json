@@ -5593,5 +5593,10 @@
     "id": "native-message-5b71c612e396",
     "source": "SFTP 断点文件在独占创建前重新出现，拒绝写入: {0}",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-4c7ca32f268b",
+    "source": "PortMate: {0} 自动重连临时放行变化的主机密钥（{1}，{2}）；已保存的信任记录未变更",
+    "causeIndices": []
   }
 ]

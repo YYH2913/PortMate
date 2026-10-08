@@ -1168,6 +1168,8 @@
   "unanswered-limit-0-no-automatic-disconnect": "Unanswered limit (0 = no automatic disconnect):",
   "system-default": "System default",
   "auto-reconnect": "Auto-reconnect:",
+  "reconnect-ignore-host-key-changes": "Ignore fingerprint changes on auto-reconnect:",
+  "reconnect-ignore-host-key-changes-hint": "Off by default. Allows changed fingerprints for trusted endpoints, including Jump Hosts, during auto-reconnect only. Saved fingerprints stay unchanged. This can connect you to an impersonated server.",
   "reconnect-delay-ms": "Reconnect delay (ms):",
   "added-to-profile-draft-takes-effect-after-saving-the": "Added to profile draft {0}. Takes effect after saving the session.",
   "rotation-r": "Rotation: (R)",
@@ -3814,5 +3816,6 @@
   "native-message-cafa14ce1d5f": "Failed to write local ZModem file {0}: {1}",
   "native-message-13065866ba24": "Failed to delete old SFTP resume file {0}: {1}",
   "native-message-fa78e29b866b": "SFTP resume file cannot be safely resumed; refusing to reuse existing remote file: {0}",
-  "native-message-5b71c612e396": "SFTP resume file reappeared before exclusive creation; refusing to write: {0}"
+  "native-message-5b71c612e396": "SFTP resume file reappeared before exclusive creation; refusing to write: {0}",
+  "native-message-4c7ca32f268b": "PortMate: {0} changed host key accepted for automatic reconnect only ({1}, {2}); saved trust unchanged"
 }

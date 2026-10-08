@@ -133,6 +133,8 @@ pub struct SshConnection {
     pub reconnect: bool,
     #[serde(default = "default_ssh_reconnect_delay_ms")]
     pub reconnect_delay_ms: u64,
+    #[serde(default)]
+    pub reconnect_ignore_host_key_changes: bool,
     #[serde(default = "default_true")]
     pub keepalive_enabled: bool,
     #[serde(default = "default_ssh_keepalive_interval_seconds")]

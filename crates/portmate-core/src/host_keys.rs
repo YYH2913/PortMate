@@ -166,6 +166,24 @@ impl HostKeyStore {
         }
     }
 
+    /// Whether this endpoint has a trusted key in the applicable trust scope,
+    /// including keys using an algorithm different from the observed key.
+    pub fn has_trusted_endpoint(
+        &self,
+        profile_id: &str,
+        policy: &HostKeyPolicy,
+        observation: &HostKeyObservation,
+    ) -> bool {
+        !self
+            .candidates(
+                profile_id,
+                policy,
+                observation.target_alias(policy),
+                observation,
+            )
+            .is_empty()
+    }
+
     pub fn import_known_hosts(&mut self, profile_id: &str, contents: &str) -> Vec<KnownHostsLine> {
         contents
             .lines()

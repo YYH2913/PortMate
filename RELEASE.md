@@ -6,6 +6,8 @@ or reviewer record. Do not use a successful source build as evidence that an ins
 The local `0.1.11` Windows GNU x86-64 portable build is recorded in
 [the Windows build evidence](./tmp/windows-release-0.1.11-2026-10-07.md), including
 the source revision, payload hashes, PE/version/frontend checks, and executed tests.
+The latest rebuild includes the optional SSH/Tmux automatic reconnect fingerprint bypass;
+its function-by-function recheck is in [the feature review](./tmp/reconnect-host-key-review-0.1.11-2026-10-07.md).
 Native Windows runtime, installer, and signing acceptance remain pending.
 
 ## Version And Source

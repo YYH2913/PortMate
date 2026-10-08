@@ -53,9 +53,9 @@ fn short_unix_socket_tempdir() -> tempfile::TempDir {
 mod app_migration_tests;
 #[path = "archive_tests.rs"]
 mod archive_tests;
+mod command_history_tests;
 #[path = "command_type_tests.rs"]
 mod command_type_tests;
-mod command_history_tests;
 #[path = "connection_config_tests.rs"]
 mod connection_config_tests;
 #[path = "custom_script_tests.rs"]
@@ -157,6 +157,7 @@ mod shell_runtime_tests;
 mod ssh_health_profile_tests;
 #[path = "ssh_policy_tests.rs"]
 mod ssh_policy_tests;
+mod ssh_reconnect_host_key_tests;
 #[path = "ssh_runtime_tests.rs"]
 mod ssh_runtime_tests;
 #[cfg(unix)]
@@ -699,6 +700,7 @@ fn test_ssh_profile() -> SessionProfile {
             username: "root".to_string(),
             reconnect: true,
             reconnect_delay_ms: portmate_core::DEFAULT_SSH_RECONNECT_DELAY_MS,
+            reconnect_ignore_host_key_changes: false,
             keepalive_enabled: true,
             keepalive_interval_seconds: portmate_core::DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
             keepalive_max_missed: portmate_core::DEFAULT_SSH_KEEPALIVE_MAX_MISSED,

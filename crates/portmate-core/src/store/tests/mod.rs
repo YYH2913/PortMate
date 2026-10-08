@@ -70,6 +70,7 @@ fn sensitive_ssh_connection() -> SshConnection {
         username: "operator".to_string(),
         reconnect: true,
         reconnect_delay_ms: DEFAULT_SSH_RECONNECT_DELAY_MS,
+        reconnect_ignore_host_key_changes: false,
         keepalive_enabled: true,
         keepalive_interval_seconds: DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS,
         keepalive_max_missed: DEFAULT_SSH_KEEPALIVE_MAX_MISSED,

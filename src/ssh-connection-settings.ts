@@ -2,6 +2,7 @@ import type { AuthMethod, SshConnection } from "./types";
 
 export const sshConnectionDefaults = {
   reconnectDelayMs: 1_000,
+  reconnectIgnoreHostKeyChanges: false,
   keepaliveEnabled: true,
   keepaliveIntervalSeconds: 30,
   keepaliveMaxMissed: 3,
@@ -49,6 +50,7 @@ export function normalizeSshConnectionSettings<T extends SshConnection>(connecti
   return {
     ...connection,
     reconnect: typeof connection.reconnect === "boolean" ? connection.reconnect : true,
+    reconnectIgnoreHostKeyChanges: connection.reconnectIgnoreHostKeyChanges === true,
     reconnectDelayMs: boundedInteger(
       connection.reconnectDelayMs,
       sshConnectionDefaults.reconnectDelayMs,

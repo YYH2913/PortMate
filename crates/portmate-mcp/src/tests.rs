@@ -951,6 +951,7 @@ fn sensitive_snapshot_store() -> SessionStore {
             username: "operator".to_string(),
             reconnect: true,
             reconnect_delay_ms: 1_000,
+            reconnect_ignore_host_key_changes: false,
             keepalive_enabled: true,
             keepalive_interval_seconds: 30,
             keepalive_max_missed: 3,

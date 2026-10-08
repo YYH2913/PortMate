@@ -58,6 +58,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     remote_forwards: Arc<Mutex<HashMap<String, TunnelForwardTarget>>>,
     agent_socket_path: Option<PathBuf>,
     enforce_profile_snapshot: bool,
+    host_key_verification: SshHostKeyVerification,
 ) -> Result<EstablishedSshRuntime, String> {
     let setup_deadline = LibsshSetupDeadline::new(connect_timeout)?;
     let agent_socket_path = agent_socket_path
@@ -105,6 +106,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                     password: password.as_deref(),
                     passphrase: passphrase.as_deref(),
                     enforce_profile_snapshot,
+                    host_key_verification,
                 },
                 remaining_jump_timeout,
                 agent_socket_path.as_deref(),
@@ -334,6 +336,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         &host_keys,
         &one_time_host_key_ids,
         &observation,
+        host_key_verification,
     );
     let verification_state_error = {
         match host_key_error.lock() {
@@ -504,6 +507,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         HostKeyPersistenceGuard {
             profile_id: &profile.id,
             expected_profile: enforce_profile_snapshot.then_some(profile),
+            host_key_verification,
         },
         &observed_key,
         &one_time_host_keys,

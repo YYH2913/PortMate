@@ -11,14 +11,21 @@
 用户报告的 SSH 协议级 `none` 认证已有明确设置入口；SFTP 服务端返回超长 DATA 时会返回
 错误而非触发 panic。远端 SFTP 上传和复制会安全重建旧断点文件，本地下载仍校验断点前缀。
 
+SSH/Tmux 连接页新增「自动重连时忽略指纹变化」，默认关闭。开启后仅在自动重连时临时
+放行已信任端点（含各级 Jump Host）的变化，不更新已保存指纹，并记录实际指纹的系统事件。
+首次/手动连接及扫描保持原校验。已完成真实 russh/libssh、SSH/Tmux、两级 Jump Host 和
+设置保存/恢复回归；逐函数复审及命令记录见
+[自动重连指纹选项审查](./tmp/reconnect-host-key-review-0.1.11-2026-10-07.md)。
+
 版本元数据、npm/Cargo lockfile、Tauri 配置、六个 PortMate 自有 Cargo package 和 vcpkg
 manifest 已统一为 `0.1.11`。中英文 README 同步了使用方式、Windows GNU ZIP 输出路径和
 WebView2 Runtime 依赖。Windows 交叉构建记录与产物校验见
 [v0.1.11 Windows 构建记录](./tmp/windows-release-0.1.11-2026-10-07.md)。
 
-本轮通过 release-source、前端 142 文件/957 项测试、生产前端构建、文件身份 2 项回归、
-传输 I/O 11 项回归和历史版本升级 2 项回归。Windows GNU x86-64 release 构建与定向
-Clippy `-D warnings` 通过；25,810,031 字节便携 ZIP 的版本资源、70 个前端资源路径、
+本轮新增选项后通过 release-source、前端 142 文件/960 项测试、核心库 83 项、SSH 重连
+6 项、SSH policy 11 项、Host Key 17 项、设置浏览器专项及历史版本升级 2 项回归。
+前次文件身份 2 项和传输 I/O 11 项记录保留于构建说明。Linux all-targets 与 Windows GNU
+release Clippy `-D warnings` 通过；重新编译的 25,824,532 字节便携 ZIP 的版本资源、70 个前端资源路径、
 包内 payload SHA-256 和 ZIP CRC 已核对。编译中发现的未稳定 Windows Metadata API 已改为
 Win32 句柄查询；Windows 实际启动、原生凭据、安装包和签名验证仍待原生 runner。
 

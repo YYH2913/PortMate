@@ -24,7 +24,11 @@ impl client::Handler for HostKeyScanHandler {
         &mut self,
         server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let russh::keys::PublicKeyOrCertificate::PublicKey { key: server_public_key, .. } = server_public_key else {
+        let russh::keys::PublicKeyOrCertificate::PublicKey {
+            key: server_public_key,
+            ..
+        } = server_public_key
+        else {
             return Ok(false);
         };
         *lock_ssh_handler_state(&self.observed_key, "host key scan observation")? =
@@ -191,6 +195,7 @@ async fn scan_ssh_host_key_via_jump(
             policy: jump_ssh.host_key_policy.clone(),
             host_keys: host_keys.clone(),
             one_time_host_key_ids: one_time_host_key_ids.clone(),
+            host_key_verification: SshHostKeyVerification::Standard,
             observed_key: Arc::clone(&observed_jump_key),
             host_key_error: Arc::clone(&jump_key_error),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),

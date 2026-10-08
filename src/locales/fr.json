@@ -1168,6 +1168,8 @@
   "unanswered-limit-0-no-automatic-disconnect": "Limite non répondue (0 = aucune déconnexion automatique):",
   "system-default": "Système par défaut",
   "auto-reconnect": "Réconnexion automatique:",
+  "reconnect-ignore-host-key-changes": "Ignorer les changements d’empreinte lors de la reconnexion automatique :",
+  "reconnect-ignore-host-key-changes-hint": "Désactivé par défaut. Autorise les changements d’empreinte des serveurs approuvés, y compris les hôtes de rebond, uniquement lors de la reconnexion automatique. Les empreintes enregistrées restent inchangées. Vous pourriez vous connecter à un serveur usurpé.",
   "reconnect-delay-ms": "Délais de réconnexion (ms):",
   "added-to-profile-draft-takes-effect-after-saving-the": "Ajouté au projet de profil {0}. Prend effet après avoir enregistré la séance.",
   "rotation-r": "Retour: (R)",
@@ -3814,5 +3816,6 @@
   "native-message-cafa14ce1d5f": "Échec de l’écriture du fichier ZModem local {0} : {1}",
   "native-message-13065866ba24": "Échec de la suppression de l’ancien fichier de reprise SFTP {0} : {1}",
   "native-message-fa78e29b866b": "Le fichier de reprise SFTP ne peut pas être repris en toute sécurité ; réutilisation du fichier distant existant refusée : {0}",
-  "native-message-5b71c612e396": "Le fichier de reprise SFTP est réapparu avant la création exclusive ; écriture refusée : {0}"
+  "native-message-5b71c612e396": "Le fichier de reprise SFTP est réapparu avant la création exclusive ; écriture refusée : {0}",
+  "native-message-4c7ca32f268b": "PortMate : clé d’hôte modifiée de {0} acceptée uniquement pour la reconnexion automatique ({1}, {2}) ; confiance enregistrée inchangée"
 }

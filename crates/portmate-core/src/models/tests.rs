@@ -142,6 +142,12 @@ fn ssh_connection_deserializes_legacy_health_defaults_and_clamps_values() {
     .expect("legacy SSH connection should deserialize");
 
     assert_eq!(legacy.reconnect_delay_ms, DEFAULT_SSH_RECONNECT_DELAY_MS);
+    assert!(!legacy.reconnect_ignore_host_key_changes);
+    legacy.reconnect_ignore_host_key_changes = true;
+    let persisted = serde_json::to_value(&legacy).unwrap();
+    assert_eq!(persisted["reconnectIgnoreHostKeyChanges"], true);
+    let restored: SshConnection = serde_json::from_value(persisted).unwrap();
+    assert!(restored.reconnect_ignore_host_key_changes);
     assert!(legacy.keepalive_enabled);
     assert_eq!(
         legacy.keepalive_interval_seconds,

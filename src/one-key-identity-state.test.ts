@@ -24,6 +24,7 @@ function session(
       username: "operator",
       reconnect: false,
       reconnectDelayMs: 1_000,
+      reconnectIgnoreHostKeyChanges: false,
       keepaliveEnabled: true,
       keepaliveIntervalSeconds: 30,
       keepaliveMaxMissed: 3,

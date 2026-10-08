@@ -67,6 +67,7 @@ fn external_sftp_server_compatibility() {
                 password: Some(&password),
                 passphrase: None,
                 enforce_profile_snapshot: false,
+                host_key_verification: SshHostKeyVerification::Standard,
             },
             SSH_CONNECT_TIMEOUT,
             None,

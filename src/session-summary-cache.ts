@@ -61,6 +61,7 @@ function normalizeCachedSessionSummary(session: SessionSummary): SessionSummary 
         ...session.profile,
         connection: {
           ...connection,
+          reconnectIgnoreHostKeyChanges: connection.reconnectIgnoreHostKeyChanges === true,
           tcpKeepaliveEnabled: (connection as { tcpKeepaliveEnabled?: boolean | null }).tcpKeepaliveEnabled ?? null,
           tunnels: connection.tunnels.map((tunnel) => ({ ...tunnel, routeRules: tunnel.routeRules ?? [] })),
         },
@@ -163,6 +164,7 @@ function isConnection(value: unknown, expectedKind: unknown): boolean {
         && isFiniteNumber(endpoint.port)
         && isString(connection.username)
         && isBoolean(connection.reconnect)
+        && (connection.reconnectIgnoreHostKeyChanges === undefined || isBoolean(connection.reconnectIgnoreHostKeyChanges))
         && isFiniteNumber(connection.reconnectDelayMs)
         && isBoolean(connection.keepaliveEnabled)
         && isFiniteNumber(connection.keepaliveIntervalSeconds)

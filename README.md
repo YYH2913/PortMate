@@ -181,7 +181,9 @@ To initialize the vault, click the `Stronghold` status control in the top-right 
 
 During SSH setup, plaintext credentials stay inside the desktop backend after the trusted credential prompt. Frontend calls receive only a short-lived, one-use handle bound to the requesting window, session, and current SSH configuration; MCP requests cannot supply passwords, passphrases, or credential handles. See [SECURITY.md](./SECURITY.md) for the exact trust boundary and its limitations.
 
-A changed host key blocks the connection by default. Use one-time trust, append, or replacement only after confirming a device replacement, OS rebuild, or legitimate key rotation. Do not disable verification merely to remove a warning.
+A changed host key blocks the connection by default. Use one-time trust, append, or replacement after confirming a device replacement, OS rebuild, or legitimate key rotation.
+
+Since 0.1.11, the SSH/Tmux connection page in Session Settings includes **Ignore fingerprint changes on auto-reconnect**. It is off by default and requires automatic reconnect to be enabled. When enabled, automatic reconnect temporarily accepts a changed key for a previously trusted endpoint, including Jump Hosts; it keeps the saved fingerprints and records the observed fingerprint in a system event. Initial/manual connections and host-key scans still use the configured policy, as do previously unseen endpoints. This option can connect you to an impersonated server or expose the connection to a man-in-the-middle attack.
 
 ## MCP Bridge
 

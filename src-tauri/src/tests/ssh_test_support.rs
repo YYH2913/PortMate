@@ -146,6 +146,7 @@ pub(super) async fn wait_for_openssh_test_agent(
 #[cfg(unix)]
 #[derive(Default)]
 pub(super) struct MixedAuthTestCounters {
+    pub(super) allow_none_auth: AtomicBool,
     pub(super) reject_pty: AtomicBool,
     pub(super) reject_shell: AtomicBool,
     pub(super) terminal_input_bytes: AtomicU64,
@@ -184,18 +185,54 @@ pub(super) struct MixedAuthTestServer {
 impl russh::server::Handler for MixedAuthTestServer {
     type Error = russh::Error;
 
-    async fn pty_request(&mut self, channel: russh::ChannelId, _term: &str,
-        _cols: u32, _rows: u32, _width: u32, _height: u32,
-        _modes: &[(russh::Pty, u32)], session: &mut russh::server::Session,
+    async fn auth_none(&mut self, user: &str) -> Result<russh::server::Auth, Self::Error> {
+        if self.counters.allow_none_auth.load(Ordering::SeqCst) && user == self.username {
+            Ok(russh::server::Auth::Accept)
+        } else {
+            Ok(russh::server::Auth::reject())
+        }
+    }
+
+    async fn env_request(
+        &mut self,
+        channel: russh::ChannelId,
+        _name: &str,
+        _value: &str,
+        session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
-        if self.counters.reject_pty.load(Ordering::SeqCst) { session.channel_failure(channel)?; }
-        else { session.channel_success(channel)?; }
+        session.channel_success(channel)?;
         Ok(())
     }
 
-    async fn shell_request(&mut self, channel: russh::ChannelId, session: &mut russh::server::Session) -> Result<(), Self::Error> {
-        if self.counters.reject_shell.load(Ordering::SeqCst) { session.channel_failure(channel)?; }
-        else { session.channel_success(channel)?; }
+    async fn pty_request(
+        &mut self,
+        channel: russh::ChannelId,
+        _term: &str,
+        _cols: u32,
+        _rows: u32,
+        _width: u32,
+        _height: u32,
+        _modes: &[(russh::Pty, u32)],
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.counters.reject_pty.load(Ordering::SeqCst) {
+            session.channel_failure(channel)?;
+        } else {
+            session.channel_success(channel)?;
+        }
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: russh::ChannelId,
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.counters.reject_shell.load(Ordering::SeqCst) {
+            session.channel_failure(channel)?;
+        } else {
+            session.channel_success(channel)?;
+        }
         Ok(())
     }
 
@@ -330,7 +367,9 @@ impl russh::server::Handler for MixedAuthTestServer {
         session.channel_success(channel)?;
         match data {
             command if command.starts_with(b"if tmux has-session") => {
-                self.counters.tmux_exec_requests.fetch_add(1, Ordering::SeqCst);
+                self.counters
+                    .tmux_exec_requests
+                    .fetch_add(1, Ordering::SeqCst);
                 session.data(channel, b"\x1b[2J\x1b[HTMUX-READY".to_vec())?;
             }
             b"__PORTMATE_TEST_EXEC_SUCCESS__" => {
@@ -479,7 +518,9 @@ impl russh::server::Handler for MixedAuthTestServer {
         data: &[u8],
         _session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
-        self.counters.terminal_input_bytes.fetch_add(data.len() as u64, Ordering::SeqCst);
+        self.counters
+            .terminal_input_bytes
+            .fetch_add(data.len() as u64, Ordering::SeqCst);
         if self.active_scp_uploads.lock().unwrap().contains(&channel) {
             self.counters
                 .scp_upload_bytes

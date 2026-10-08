@@ -1168,6 +1168,8 @@
   "unanswered-limit-0-no-automatic-disconnect": "Límites sin respuesta (0 = sin desconexión automática):",
   "system-default": "Por defecto del sistema",
   "auto-reconnect": "Reconexión automática:",
+  "reconnect-ignore-host-key-changes": "Ignorar cambios de huella al reconectar automáticamente:",
+  "reconnect-ignore-host-key-changes-hint": "Desactivado por defecto. Permite cambios de huella en destinos de confianza, incluidos los servidores de salto, solo al reconectar automáticamente. Las huellas guardadas no cambian. Puede conectarte a un servidor suplantado.",
   "reconnect-delay-ms": "Retraso de reconexión (ms):",
   "added-to-profile-draft-takes-effect-after-saving-the": "Añadido al proyecto de perfil {0}. Entrará en vigor después de guardar la sesión.",
   "rotation-r": "Rotación: (R)",
@@ -3814,5 +3816,6 @@
   "native-message-cafa14ce1d5f": "No se pudo escribir el archivo ZModem local {0}: {1}",
   "native-message-13065866ba24": "No se pudo eliminar el archivo de reanudación SFTP antiguo {0}: {1}",
   "native-message-fa78e29b866b": "El archivo de reanudación SFTP no se puede reanudar de forma segura; se rechaza reutilizar el archivo remoto existente: {0}",
-  "native-message-5b71c612e396": "El archivo de reanudación SFTP reapareció antes de la creación exclusiva; se rechaza la escritura: {0}"
+  "native-message-5b71c612e396": "El archivo de reanudación SFTP reapareció antes de la creación exclusiva; se rechaza la escritura: {0}",
+  "native-message-4c7ca32f268b": "PortMate: clave de host modificada de {0} aceptada solo para la reconexión automática ({1}, {2}); confianza guardada sin cambios"
 }

@@ -210,6 +210,7 @@ fn tmux_mutation_reuses_one_ssh_auxiliary_lease_for_state_refresh() {
             },
             host_keys: state.store.lock().unwrap().host_keys.clone(),
             one_time_host_key_ids: Vec::new(),
+            host_key_verification: SshHostKeyVerification::Standard,
             observed_key: Arc::new(Mutex::new(None)),
             host_key_error: Arc::new(Mutex::new(None)),
             remote_forwards: Arc::clone(&remote_forwards),

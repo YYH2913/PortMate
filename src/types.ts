@@ -87,6 +87,7 @@ export interface SshConnection {
   username: string;
   reconnect: boolean;
   reconnectDelayMs: number;
+  reconnectIgnoreHostKeyChanges: boolean;
   keepaliveEnabled: boolean;
   keepaliveIntervalSeconds: number;
   keepaliveMaxMissed: number;

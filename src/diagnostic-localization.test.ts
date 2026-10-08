@@ -32,6 +32,14 @@ describe("native diagnostic presentation", () => {
     expect(localize("从 中文源 到 العربية target")).toBe("Source 中文源; target العربية target");
   });
 
+  it("translates reconnect fingerprint bypass events while preserving their endpoint and fingerprint", () => {
+    const english = createDiagnosticLocalizer(templates, (id, values = []) => (
+      (en as Record<string, string>)[id].replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)]))
+    ));
+    expect(english("PortMate: Jump Host #2 自动重连临时放行变化的主机密钥（ssh-ed25519，SHA256:observed）；已保存的信任记录未变更"))
+      .toBe("PortMate: Jump Host #2 changed host key accepted for automatic reconnect only (ssh-ed25519, SHA256:observed); saved trust unchanged");
+  });
+
   it("only recurses into explicitly identified error causes", () => {
     expect(localize("请求失败: 会话尚未连接")).toBe("Request failed: Session is not connected");
     expect(localize("无法读取 会话尚未连接")).toBe("Cannot read 会话尚未连接");

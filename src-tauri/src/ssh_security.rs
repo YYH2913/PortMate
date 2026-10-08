@@ -61,67 +61,76 @@ pub(super) fn persist_observed_host_key(
         _ => return Err(format!("profile is not SSH-backed: {profile_id}")),
     };
     commit_tracked_store_mutation(&mut store, store_path, |next_store| {
-        let message =
-            if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                format!(
-                    "PortMate: SSH host key trusted for this connection only ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else if profile_trusts_observation(next_store, profile_id, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                touch_observed_host_key(next_store, profile_id, &policy, &observation, Utc::now())?;
-                format!(
-                    "PortMate: SSH host key verified by profile trust ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else {
-                match next_store.evaluate_host_key(profile_id, &observation)? {
-                    HostKeyEvaluation::Trusted {
-                        fingerprint_sha256, ..
-                    } => {
-                        touch_observed_host_key(
-                            next_store,
-                            profile_id,
-                            &policy,
-                            &observation,
-                            Utc::now(),
-                        )?;
-                        format!(
-                            "PortMate: SSH host key verified ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    HostKeyEvaluation::Unknown {
-                        fingerprint_sha256, ..
-                    } => {
-                        if policy.mode != HostKeyMode::TrustOnFirstUse {
-                            return Err(format!(
-                                "SSH host key 未受信任: {} {}",
-                                observation.algorithm, fingerprint_sha256
-                            ));
-                        }
-                        apply_persistent_host_key_decision_with_policy(
-                            next_store,
-                            profile_id,
-                            &policy,
-                            &observation,
-                            HostKeyDecision::AppendToProfile,
-                        )?;
-                        format!(
-                            "PortMate: SSH host key trusted for this profile ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    mismatch @ HostKeyEvaluation::Mismatch { .. } => {
-                        return Err(describe_host_key_rejection(&mismatch));
-                    }
+        let message = if let Some(message) = reconnect_host_key_change_message(
+            next_store,
+            guard,
+            &policy,
+            &observation,
+            one_time_host_keys,
+            "SSH",
+        )? {
+            message
+        } else if one_time_trusts_observation(one_time_host_keys, profile_id, &policy, &observation)
+        {
+            let fingerprint = observation
+                .fingerprint_sha256()
+                .map_err(|error| error.to_string())?;
+            format!(
+                "PortMate: SSH host key trusted for this connection only ({}, {})",
+                observation.algorithm, fingerprint
+            )
+        } else if profile_trusts_observation(next_store, profile_id, &observation) {
+            let fingerprint = observation
+                .fingerprint_sha256()
+                .map_err(|error| error.to_string())?;
+            touch_observed_host_key(next_store, profile_id, &policy, &observation, Utc::now())?;
+            format!(
+                "PortMate: SSH host key verified by profile trust ({}, {})",
+                observation.algorithm, fingerprint
+            )
+        } else {
+            match next_store.evaluate_host_key(profile_id, &observation)? {
+                HostKeyEvaluation::Trusted {
+                    fingerprint_sha256, ..
+                } => {
+                    touch_observed_host_key(
+                        next_store,
+                        profile_id,
+                        &policy,
+                        &observation,
+                        Utc::now(),
+                    )?;
+                    format!(
+                        "PortMate: SSH host key verified ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    )
                 }
-            };
+                HostKeyEvaluation::Unknown {
+                    fingerprint_sha256, ..
+                } => {
+                    if policy.mode != HostKeyMode::TrustOnFirstUse {
+                        return Err(format!(
+                            "SSH host key 未受信任: {} {}",
+                            observation.algorithm, fingerprint_sha256
+                        ));
+                    }
+                    apply_persistent_host_key_decision_with_policy(
+                        next_store,
+                        profile_id,
+                        &policy,
+                        &observation,
+                        HostKeyDecision::AppendToProfile,
+                    )?;
+                    format!(
+                        "PortMate: SSH host key trusted for this profile ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    )
+                }
+                mismatch @ HostKeyEvaluation::Mismatch { .. } => {
+                    return Err(describe_host_key_rejection(&mismatch));
+                }
+            }
+        };
         let event_ids = next_store
             .record_system_event_tracked(profile_id, message)
             .into_iter()
@@ -157,60 +166,111 @@ pub(super) fn persist_observed_host_key_with_policy(
         }
     }
     commit_tracked_store_mutation(&mut store, store_path, |next_store| {
-        let message =
-            if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation) {
-                let fingerprint = observation
-                    .fingerprint_sha256()
-                    .map_err(|error| error.to_string())?;
-                format!(
-                    "PortMate: {label} host key trusted for this connection only ({}, {})",
-                    observation.algorithm, fingerprint
-                )
-            } else {
-                match next_store
-                    .host_keys
-                    .evaluate(profile_id, policy, &observation)
-                {
-                    Ok(HostKeyEvaluation::Trusted {
-                        fingerprint_sha256, ..
-                    }) => {
-                        touch_observed_host_key(
-                            next_store,
-                            profile_id,
-                            policy,
-                            &observation,
-                            Utc::now(),
-                        )?;
-                        format!(
-                            "PortMate: {label} host key verified ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    Ok(HostKeyEvaluation::Unknown {
-                        fingerprint_sha256, ..
-                    }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
-                        apply_persistent_host_key_decision_with_policy(
-                            next_store,
-                            profile_id,
-                            policy,
-                            &observation,
-                            HostKeyDecision::AppendToProfile,
-                        )?;
-                        format!(
-                            "PortMate: {label} host key trusted for this profile ({}, {})",
-                            observation.algorithm, fingerprint_sha256
-                        )
-                    }
-                    Ok(other) => return Err(describe_host_key_rejection(&other)),
-                    Err(error) => return Err(error.to_string()),
+        let message = if let Some(message) = reconnect_host_key_change_message(
+            next_store,
+            guard,
+            policy,
+            &observation,
+            one_time_host_keys,
+            label,
+        )? {
+            message
+        } else if one_time_trusts_observation(one_time_host_keys, profile_id, policy, &observation)
+        {
+            let fingerprint = observation
+                .fingerprint_sha256()
+                .map_err(|error| error.to_string())?;
+            format!(
+                "PortMate: {label} host key trusted for this connection only ({}, {})",
+                observation.algorithm, fingerprint
+            )
+        } else {
+            match next_store
+                .host_keys
+                .evaluate(profile_id, policy, &observation)
+            {
+                Ok(HostKeyEvaluation::Trusted {
+                    fingerprint_sha256, ..
+                }) => {
+                    touch_observed_host_key(
+                        next_store,
+                        profile_id,
+                        policy,
+                        &observation,
+                        Utc::now(),
+                    )?;
+                    format!(
+                        "PortMate: {label} host key verified ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    )
                 }
-            };
+                Ok(HostKeyEvaluation::Unknown {
+                    fingerprint_sha256, ..
+                }) if policy.mode == HostKeyMode::TrustOnFirstUse => {
+                    apply_persistent_host_key_decision_with_policy(
+                        next_store,
+                        profile_id,
+                        policy,
+                        &observation,
+                        HostKeyDecision::AppendToProfile,
+                    )?;
+                    format!(
+                        "PortMate: {label} host key trusted for this profile ({}, {})",
+                        observation.algorithm, fingerprint_sha256
+                    )
+                }
+                Ok(other) => return Err(describe_host_key_rejection(&other)),
+                Err(error) => return Err(error.to_string()),
+            }
+        };
         let event_ids = next_store
             .record_system_event_tracked(profile_id, message)
             .into_iter()
             .collect();
         Ok(((), event_ids))
     })
+}
+
+fn reconnect_host_key_change_message(
+    store: &SessionStore,
+    guard: HostKeyPersistenceGuard<'_>,
+    policy: &portmate_core::HostKeyPolicy,
+    observation: &HostKeyObservation,
+    one_time_host_keys: &[TrustedHostKey],
+    label: &str,
+) -> Result<Option<String>, String> {
+    if guard.host_key_verification != SshHostKeyVerification::ReconnectIgnoreChanges {
+        return Ok(None);
+    }
+    // Reevaluate the current trust set after authentication. The snapshot guard
+    // above has already rejected policy edits made while the handshake was in flight.
+    let mut host_keys = store.host_keys.clone();
+    if let Some(profile) = store.profile(guard.profile_id) {
+        if let ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) = &profile.connection {
+            host_keys.keys.extend(ssh.trusted_host_keys.clone());
+        }
+    }
+    host_keys.keys.extend_from_slice(one_time_host_keys);
+    let evaluation = host_keys
+        .evaluate(guard.profile_id, policy, observation)
+        .map_err(|error| error.to_string())?;
+    if !guard.host_key_verification.ignores_change(
+        guard.profile_id,
+        policy,
+        &host_keys,
+        observation,
+        &evaluation,
+    ) {
+        return Ok(None);
+    }
+    let fingerprint = observation
+        .fingerprint_sha256()
+        .map_err(|error| error.to_string())?;
+    // Never append, replace or touch trusted keys when a change was ignored.
+    Ok(Some(format!(
+        "PortMate: {label} 自动重连临时放行变化的主机密钥（{}，{}）；已保存的信任记录未变更",
+        observation.algorithm, fingerprint
+    )))
 }
 
 pub(super) fn touch_observed_host_key(

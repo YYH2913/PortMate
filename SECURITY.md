@@ -30,6 +30,16 @@ attacker who controls the current OS account, injects or debugs the PortMate pro
 trusted PortMate binary, or controls the kernel. Use OS account isolation, full-disk encryption, and
 trusted release artifacts for those threats.
 
+## SSH Host-Key Boundary
+
+SSH/Tmux host-key changes are blocked by default. The per-profile
+`reconnectIgnoreHostKeyChanges` option defaults to `false`; enabling it temporarily
+accepts changed keys for previously trusted endpoints during automatic reconnect,
+including Jump Hosts, without replacing saved trust. Each bypass records its observed
+fingerprint. Initial/manual connections, host-key scans, and unseen endpoints retain
+the configured policy. This opt-in removes protection against server impersonation
+and man-in-the-middle attacks for changed keys during automatic reconnect.
+
 ## MCP Transfer And Route Boundary
 
 - File-transfer and forwarding mutations require an explicit session-scoped grant and are written

@@ -40,6 +40,7 @@ describe("SSH connection settings", () => {
   it("fills health defaults for legacy profiles", () => {
     const legacy = baseConnection() as Partial<SshConnection>;
     delete legacy.reconnectDelayMs;
+    delete legacy.reconnectIgnoreHostKeyChanges;
     delete legacy.keepaliveEnabled;
     delete legacy.keepaliveIntervalSeconds;
     delete legacy.keepaliveMaxMissed;
@@ -59,6 +60,15 @@ describe("SSH connection settings", () => {
     expect(normalized.reconnectDelayMs).toBe(sshConnectionBounds.reconnectDelayMs.min);
     expect(normalized.keepaliveIntervalSeconds).toBe(sshConnectionBounds.keepaliveIntervalSeconds.max);
     expect(normalized.keepaliveMaxMissed).toBe(4);
+  });
+
+  it("requires an explicit boolean opt-in for ignoring reconnect host-key changes", () => {
+    for (const value of [undefined, null, 1, "true", "false", false]) {
+      const connection = { ...baseConnection(), reconnectIgnoreHostKeyChanges: value } as unknown as SshConnection;
+      expect(normalizeSshConnectionSettings(connection).reconnectIgnoreHostKeyChanges).toBe(false);
+    }
+    const connection = { ...baseConnection(), reconnectIgnoreHostKeyChanges: true };
+    expect(normalizeSshConnectionSettings(connection).reconnectIgnoreHostKeyChanges).toBe(true);
   });
 
   it("preserves disabled keepalive and valid custom values", () => {

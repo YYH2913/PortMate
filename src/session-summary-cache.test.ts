@@ -27,6 +27,21 @@ describe("session summary cache", () => {
     expect(cached.profile.connection).toMatchObject({ tcpKeepaliveEnabled: null });
   });
 
+  it("defaults legacy reconnect fingerprint bypass to off and preserves a boolean opt-in", () => {
+    for (const kind of ["ssh", "tmux"] as const) {
+      const summary = createSummary(`${kind}-a`, kind);
+      if (summary.profile.connection.kind !== "ssh" && summary.profile.connection.kind !== "tmux") throw new Error("expected SSH-backed profile");
+      delete (summary.profile.connection as { reconnectIgnoreHostKeyChanges?: boolean }).reconnectIgnoreHostKeyChanges;
+      const [legacy] = parseSessionSummaryCache(JSON.stringify([summary]));
+      expect(legacy.profile.connection).toMatchObject({ reconnectIgnoreHostKeyChanges: false });
+      summary.profile.connection.reconnectIgnoreHostKeyChanges = true;
+      expect(parseSessionSummaryCache(JSON.stringify([summary]))).toEqual([summary]);
+      const malformed = JSON.parse(JSON.stringify(summary));
+      malformed.profile.connection.reconnectIgnoreHostKeyChanges = "true";
+      expect(parseSessionSummaryCache(JSON.stringify([malformed]))).toEqual([]);
+    }
+  });
+
   it("rejects malformed, partial, inconsistent and duplicate snapshots as a whole", () => {
     const valid = createSummary("shell-a");
     expect(parseSessionSummaryCache("{")).toEqual([]);
@@ -222,6 +237,7 @@ function createConnection(kind: SessionKind): ConnectionConfig {
         username: "operator",
         reconnect: true,
         reconnectDelayMs: 1000,
+        reconnectIgnoreHostKeyChanges: false,
         keepaliveEnabled: true,
         keepaliveIntervalSeconds: 30,
         keepaliveMaxMissed: 3,

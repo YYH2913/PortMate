@@ -17,12 +17,20 @@ pub(super) struct SshConnectRequest<'a> {
     pub(super) password: Option<&'a str>,
     pub(super) passphrase: Option<&'a str>,
     pub(super) enforce_profile_snapshot: bool,
+    pub(super) host_key_verification: SshHostKeyVerification,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SshEstablishmentOptions {
+    pub(super) enforce_profile_snapshot: bool,
+    pub(super) automatic_reconnect: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct HostKeyPersistenceGuard<'a> {
     pub(super) profile_id: &'a str,
     pub(super) expected_profile: Option<&'a SessionProfile>,
+    pub(super) host_key_verification: SshHostKeyVerification,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,7 +63,10 @@ pub(super) async fn establish_ssh_runtime(
         passphrase,
         SSH_CONNECT_TIMEOUT,
         None,
-        true,
+        SshEstablishmentOptions {
+            enforce_profile_snapshot: true,
+            automatic_reconnect: false,
+        },
     )
     .await
 }
@@ -71,7 +82,10 @@ pub(super) async fn establish_ssh_reconnect_runtime(
         None,
         SSH_CONNECT_TIMEOUT,
         None,
-        true,
+        SshEstablishmentOptions {
+            enforce_profile_snapshot: true,
+            automatic_reconnect: true,
+        },
     )
     .await
 }
@@ -92,7 +106,10 @@ pub(super) async fn establish_ssh_runtime_with_timeout(
         passphrase,
         connect_timeout,
         agent_socket_path,
-        false,
+        SshEstablishmentOptions {
+            enforce_profile_snapshot: false,
+            automatic_reconnect: false,
+        },
     )
     .await
 }
@@ -104,13 +121,16 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
     passphrase: Option<String>,
     connect_timeout: Duration,
     agent_socket_path: Option<PathBuf>,
-    enforce_profile_snapshot: bool,
+    options: SshEstablishmentOptions,
 ) -> Result<EstablishedSshRuntime, String> {
     let mut ssh = match &profile.connection {
         ConnectionConfig::Ssh(ssh) | ConnectionConfig::Tmux(ssh) => ssh.clone(),
         _ => return Err("profile is not SSH-backed".to_string()),
     };
     ssh.normalize_health_settings();
+    let enforce_profile_snapshot = options.enforce_profile_snapshot;
+    let host_key_verification =
+        SshHostKeyVerification::for_establishment(&ssh, options.automatic_reconnect);
 
     let host = ssh.endpoint.host.trim().to_string();
     if host.is_empty() {
@@ -148,6 +168,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             remote_forwards,
             agent_socket_path,
             enforce_profile_snapshot,
+            host_key_verification,
         )
         .await;
     }
@@ -169,6 +190,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
             password: password.as_deref(),
             passphrase: passphrase.as_deref(),
             enforce_profile_snapshot,
+            host_key_verification,
         },
         connect_timeout,
         agent_socket_path.as_deref(),
@@ -224,6 +246,7 @@ pub(super) async fn establish_ssh_runtime_with_timeout_mode(
         HostKeyPersistenceGuard {
             profile_id: &profile.id,
             expected_profile: enforce_profile_snapshot.then_some(profile),
+            host_key_verification,
         },
         &observed_key,
         &one_time_host_keys,

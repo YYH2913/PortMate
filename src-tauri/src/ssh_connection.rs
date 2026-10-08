@@ -31,6 +31,7 @@ pub(super) async fn connect_ssh_target(
         password,
         passphrase,
         enforce_profile_snapshot,
+        host_key_verification,
     } = request;
     let one_time_host_key_ids = one_time_host_keys
         .iter()
@@ -58,6 +59,7 @@ pub(super) async fn connect_ssh_target(
         policy: ssh.host_key_policy.clone(),
         host_keys: host_keys.clone(),
         one_time_host_key_ids: one_time_host_key_ids.clone(),
+        host_key_verification,
         observed_key: Arc::clone(&observed_key),
         host_key_error: Arc::clone(&host_key_error),
         remote_forwards: Arc::clone(&remote_forwards),
@@ -115,6 +117,7 @@ pub(super) async fn connect_ssh_target(
             policy: jump_ssh.host_key_policy.clone(),
             host_keys: host_keys.clone(),
             one_time_host_key_ids: one_time_host_key_ids.clone(),
+            host_key_verification,
             observed_key: Arc::clone(&observed_jump_key),
             host_key_error: Arc::clone(&jump_key_error),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
@@ -256,6 +259,7 @@ pub(super) async fn connect_ssh_target(
             HostKeyPersistenceGuard {
                 profile_id: &profile.id,
                 expected_profile: enforce_profile_snapshot.then_some(profile),
+                host_key_verification,
             },
             &jump_policy,
             &observed_jump_key,
@@ -433,6 +437,7 @@ pub(super) fn jump_ssh_connection(
         username: jump.username.trim().to_string(),
         reconnect: ssh.reconnect,
         reconnect_delay_ms: ssh.reconnect_delay_ms,
+        reconnect_ignore_host_key_changes: ssh.reconnect_ignore_host_key_changes,
         keepalive_enabled: ssh.keepalive_enabled,
         keepalive_interval_seconds: ssh.keepalive_interval_seconds,
         keepalive_max_missed: ssh.keepalive_max_missed,
