@@ -4,10 +4,11 @@ Every release is blocked until each applicable gate below has an attached comman
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
 The local `0.1.11` Windows GNU x86-64 portable build is recorded in
-[the Windows build evidence](./tmp/windows-release-0.1.11-2026-10-07.md), including
-the source revision, payload hashes, PE/version/frontend checks, and executed tests.
+`tmp/windows-release-0.1.11-2026-10-07.md`, including the source revision, payload
+hashes, PE/version/frontend checks, and executed tests. Files under `tmp/` are local
+review and build records, are ignored by Git, and are not included in commits.
 The latest rebuild includes the optional SSH/Tmux automatic reconnect fingerprint bypass;
-its function-by-function recheck is in [the feature review](./tmp/reconnect-host-key-review-0.1.11-2026-10-07.md).
+its local function-by-function recheck is in `tmp/reconnect-host-key-review-0.1.11-2026-10-07.md`.
 Native Windows runtime, installer, and signing acceptance remain pending.
 
 ## Version And Source
