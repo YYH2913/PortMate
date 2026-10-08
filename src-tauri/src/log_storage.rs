@@ -30,6 +30,8 @@ pub(super) fn append_log_bytes(
     options.create(true).append(true).read(true);
     #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     let mut file = options
         .open(&path)
         .map_err(|error| format!("failed to open log shard {}: {error}", path.display()))?;
@@ -42,6 +44,20 @@ pub(super) fn append_log_bytes(
         if metadata.nlink() != 1 {
             return Err(format!(
                 "log shard target has unexpected hard-link count: {}",
+                path.display()
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        let information = windows_transfer_file_information(&file)
+            .map_err(|error| format!("failed to inspect log shard {}: {error}", path.display()))?;
+        if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || information.nNumberOfLinks != 1
+        {
+            return Err(format!(
+                "log shard target is a reparse point or has unexpected hard-link count: {}",
                 path.display()
             ));
         }

@@ -41,7 +41,7 @@ fn append_log_bytes_rejects_symlink_targets() {
     let _ = fs::remove_dir_all(root);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn append_log_bytes_rejects_hard_link_targets() {
     let root = std::env::temp_dir().join(format!("portmate-log-hardlink-{}", Uuid::new_v4()));

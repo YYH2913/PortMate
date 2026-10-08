@@ -41,7 +41,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   bearer token when the bound grant expires, even with the dialog closed or
   hidden; failed token retirement is retried independently of UI polling.
 - Failed log-retention pruning no longer suppresses retries for the full hourly check interval.
-- Log shard append now rejects hard-linked targets before writing through an unrelated inode.
+- Log shard append now checks the opened file's link count on Unix and Windows,
+  and rejects Windows reparse points before writing through an unrelated inode.
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
 - SQLite stores and locks now use no-follow native opens, retained directory/file
