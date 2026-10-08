@@ -76,7 +76,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   starts credential-free sessions immediately, and consumes each target only once.
 - Tmux list parsing now uses a non-printable field separator excluded from valid names, preventing delimiter collisions from truncating names or shifting mutation targets.
 - Tmux control watchers now stop and disappear when a session is renamed or removed, preventing a stale session name from orphaning live monitoring.
-- Host script launch now rejects parameter/environment combinations that would exceed the Windows process environment block instead of failing at process creation.
+- Host scripts retain the validated 16 KiB parameter range on Windows Unicode
+  process launches; the incorrectly applied ANSI/legacy total environment-block
+  limit has been removed.
 - Profile Vault private-key rotation now applies the same 1 MiB, NUL, and empty-secret validation as other secret writes before parsing or storing the key.
 - Profile, private-key rotation, and OneKey saves now retain newly created secrets when Store persistence cannot be verified, preventing committed references from pointing to deleted credentials.
 - Key Manager private-key import now preserves the generated secret when Profile persistence reports an unknown Store commit, preventing the UI cleanup path from deleting a possibly committed credential.
