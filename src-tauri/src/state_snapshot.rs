@@ -11,7 +11,7 @@ use std::{
 
 pub(super) use iota_stronghold::SnapshotPath;
 use iota_stronghold::{KeyProvider, Stronghold as IotaStronghold};
-use rusqlite::{params, Connection as SqliteConnection};
+use rusqlite::params;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -60,7 +60,8 @@ pub(super) fn validate_store_path_entry(path: &Path, label: &str) -> Result<(), 
             ));
         }
     }
-    Ok(())
+    let (file, _parent) = super::open_store_file(path, false)?;
+    super::validate_single_link_file(&file, label)
 }
 
 pub(super) struct PortableStronghold {
@@ -225,7 +226,12 @@ fn store_lock_path(store_path: &Path) -> PathBuf {
     store_path.with_file_name(format!("{file_name}.lock"))
 }
 
-pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<fs::File, String> {
+pub(super) struct StoreSnapshotLock {
+    _file: fs::File,
+    _parent: super::BoundDirectory,
+}
+
+pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<StoreSnapshotLock, String> {
     if let Some(parent) = store_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|error| {
@@ -238,16 +244,10 @@ pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<fs::File, String>
     }
     let lock_path = store_lock_path(store_path);
     validate_store_path_entry(&lock_path, "PortMate store 文件锁")?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|error| format!("无法打开 PortMate store 文件锁: {error}"))?;
+    let (lock, parent) = super::open_store_file(&lock_path, true)?;
     lock.lock()
         .map_err(|error| format!("无法获取 PortMate store 文件锁: {error}"))?;
-    Ok(lock)
+    Ok(StoreSnapshotLock { _file: lock, _parent: parent })
 }
 
 pub(super) fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotVersion, String> {
@@ -256,7 +256,7 @@ pub(super) fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotV
         if !store_path.exists() {
             return Ok(StoreSnapshotVersion::Missing);
         }
-        let connection = SqliteConnection::open(store_path).map_err(|error| {
+        let connection = crate::open_store_sqlite(store_path).map_err(|error| {
             format!(
                 "无法打开 PortMate SQLite store 读取版本 {}: {error}",
                 store_path.display()

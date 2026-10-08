@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn read_persisted_store_for_migration(path: &Path) -> Result<SessionStore, String> {
     let raw = if path.extension().and_then(|value| value.to_str()) == Some("sqlite3") {
-        let connection = SqliteConnection::open(path).map_err(|error| {
+        let connection = crate::open_store_sqlite(path).map_err(|error| {
             format!(
                 "failed to open PortMate SQLite store {}: {error}",
                 path.display()

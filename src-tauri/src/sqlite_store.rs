@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use portmate_core::SessionStore;
-use rusqlite::{params, Connection as SqliteConnection};
+use rusqlite::params;
 use uuid::Uuid;
 
 use super::{
@@ -13,7 +13,7 @@ pub(super) const STORE_KEY: &str = "session-store";
 
 pub(super) fn load_store_sqlite(path: &Path) -> Result<SessionStore, String> {
     super::state_snapshot::validate_store_path_entry(path, "PortMate SQLite store")?;
-    let connection = SqliteConnection::open(path).map_err(|error| {
+    let connection = crate::open_store_sqlite(path).map_err(|error| {
         format!(
             "failed to open PortMate SQLite store {}: {error}",
             path.display()
@@ -49,7 +49,7 @@ pub(super) fn save_store_sqlite_with_profile_secret_migration_checkpoint(
         })?;
     }
     super::state_snapshot::validate_store_path_entry(path, "PortMate SQLite store")?;
-    let connection = SqliteConnection::open(path).map_err(|error| {
+    let connection = crate::open_store_sqlite(path).map_err(|error| {
         format!(
             "failed to open PortMate SQLite store {}: {error}",
             path.display()

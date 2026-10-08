@@ -451,7 +451,7 @@ pub(super) fn export_profile_secret_migration_diagnostics_with_io<ProbeSecret>(
 where
     ProbeSecret: FnMut(&str) -> SecretProbeResult,
 {
-    let connection = SqliteConnection::open(store_path)
+    let connection = crate::open_store_sqlite(store_path)
         .map_err(|error| format!("无法打开 SQLite 导出凭据迁移诊断: {error}"))?;
     ensure_store_schema(&connection)?;
     let metadata = load_active_profile_secret_migration_journal_metadata(&connection)?

@@ -44,7 +44,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Log shard append now rejects hard-linked targets before writing through an unrelated inode.
 - Legacy app-data migration now refuses to delete current-directory entries outside the explicit PortMate/bootstrap allowlist.
 - Legacy app-data migration now removes only the explicit bootstrap entry and refuses to remove a current directory that gains new contents during the migration check.
-- SQLite stores and store locks now reject symlinked or multiply-linked filesystem entries before opening or updating them.
+- SQLite stores and locks now use no-follow native opens, retained directory/file
+  handles and post-open identity checks instead of trusting a path preflight.
 - Local transfer sources and resume files now reject hard links before reading, truncating, or appending shared inodes.
 - Remote SCP/SSH-copy and SFTP resume paths now fail closed around unverifiable hard-linked partial files; SFTP recreates an exclusive partial file before restarting a transfer.
 - Local transfer sources now bind the opened handle to its original file identity, and completed transfers replace the destination atomically without deleting it first.

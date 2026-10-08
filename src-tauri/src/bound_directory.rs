@@ -49,6 +49,46 @@ impl BoundDirectory {
             Err(std::io::Error::other("file identity unsupported"))
         }
     }
+    pub(super) fn open_regular(
+        &self,
+        name: &std::ffi::OsStr,
+        create: bool,
+    ) -> std::io::Result<fs::File> {
+        #[cfg(unix)]
+        {
+            use std::os::{
+                fd::{AsRawFd, FromRawFd},
+                unix::ffi::OsStrExt,
+            };
+            let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
+            let flags = libc::O_RDWR
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | libc::O_NONBLOCK
+                | if create { libc::O_CREAT } else { 0 };
+            let fd = unsafe { libc::openat(self.file.as_raw_fd(), name.as_ptr(), flags, 0o600) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(unsafe { fs::File::from_raw_fd(fd) })
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Storage::FileSystem::*;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(create)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.path.join(name))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (name, create);
+            Err(std::io::Error::other("safe regular-file open unavailable"))
+        }
+    }
     pub(super) fn open(path: &Path) -> std::io::Result<Self> {
         let mut parents = Vec::new();
         let mut current = PathBuf::new();

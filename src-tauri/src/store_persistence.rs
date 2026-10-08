@@ -153,7 +153,7 @@ where
         Err("PortMate store 已被另一实例修改，已拒绝陈旧写入；请重启应用加载最新数据".to_string())
     } else {
         (|| {
-            let connection = SqliteConnection::open(path)
+            let connection = crate::open_store_sqlite(path)
                 .map_err(|error| format!("无法打开 SQLite 更新迁移恢复记录: {error}"))?;
             connection
                 .execute_batch("PRAGMA synchronous = FULL;")

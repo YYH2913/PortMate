@@ -214,7 +214,7 @@ pub(super) fn load_profile_secret_migration_journal(
     if path.extension().and_then(|value| value.to_str()) != Some("sqlite3") {
         return Err("凭据迁移恢复记录只支持 SQLite SessionStore".to_string());
     }
-    let connection = SqliteConnection::open(path)
+    let connection = crate::open_store_sqlite(path)
         .map_err(|error| format!("无法打开 SQLite 读取凭据迁移恢复记录: {error}"))?;
     ensure_store_schema(&connection)?;
     load_profile_secret_migration_journal_from_connection(&connection)
