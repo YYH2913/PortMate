@@ -63,7 +63,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Trigger command output-reader failures now terminate the command process group before returning, preventing background descendants from surviving a failed capture.
 - Archive and signed-bundle finalization now use atomic no-replace installs, while overwrite exports preserve and restore the previous payload/checksum pair if either commit step fails.
 - MCP UDP tunnel requests now apply one absolute deadline across DNS, bind, connect, send, and receive phases.
-- SSH tunnel pipes now cancel the opposite direction when either side closes or fails, releasing half-open local sockets promptly.
+- SSH tunnel pipes preserve responses after a TCP/SSH write-half EOF, while
+  a full channel close or failure promptly releases the opposite direction.
 - MCP resumable-upload quota accounting now removes expired malformed upload directories and never charges invalid metadata as a full 512 MiB upload.
 - SSH credential prompts now queue concurrent connection requests instead of silently cancelling the second request; disconnect and profile deletion remove only requests for the affected session.
 - Proxy password drafts in session settings are now scoped to the Profile and protocol, so switching protocols preserves the correct draft without leaking it into another Profile.

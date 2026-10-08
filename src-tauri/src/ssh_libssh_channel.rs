@@ -114,7 +114,12 @@ where
         .ok_or_else(|| format!("{label} deadline is outside the supported range"))?;
     let channel = tokio::time::timeout(timeout, channel.lock_owned())
         .await
-        .map_err(|_| format!("{label} channel lock timed out after {} ms", timeout.as_millis()))?;
+        .map_err(|_| {
+            format!(
+                "{label} channel lock timed out after {} ms",
+                timeout.as_millis()
+            )
+        })?;
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
@@ -125,9 +130,10 @@ where
     });
     match wait_reapable_blocking_worker(worker, remaining, label).await {
         Ok(result) => result,
-        Err(BlockingWorkerWaitError::TimedOut) => {
-            Err(format!("{label} timed out after {} ms", timeout.as_millis()))
-        }
+        Err(BlockingWorkerWaitError::TimedOut) => Err(format!(
+            "{label} timed out after {} ms",
+            timeout.as_millis()
+        )),
         Err(BlockingWorkerWaitError::Failed(error)) => {
             Err(format!("{label} worker failed: {error}"))
         }
@@ -139,6 +145,7 @@ pub(super) struct LibsshChannelReader {
     pending: VecDeque<SshBackendMessage>,
     collect_exit_metadata: bool,
     completed: bool,
+    eof_reported: bool,
 }
 
 impl LibsshChannelReader {
@@ -148,6 +155,7 @@ impl LibsshChannelReader {
             pending: VecDeque::new(),
             collect_exit_metadata,
             completed: false,
+            eof_reported: false,
         }
     }
 
@@ -219,6 +227,10 @@ impl LibsshChannelReader {
                     exit_signal,
                     closed,
                 }) => {
+                    if !closed && self.eof_reported {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
                     if let Some(signal) = exit_signal {
                         self.pending.push_back(SshBackendMessage::ExitSignal {
                             signal_name: signal
@@ -237,7 +249,8 @@ impl LibsshChannelReader {
                     } else {
                         SshBackendMessage::Eof
                     });
-                    self.completed = true;
+                    self.eof_reported = true;
+                    self.completed = closed;
                 }
                 Err(error) => {
                     self.completed = true;
@@ -345,11 +358,8 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(40));
                 finished_in_worker.store(true, Ordering::SeqCst);
             });
-            let waiting = wait_reapable_blocking_worker(
-                worker,
-                Duration::from_secs(1),
-                "cancelled worker",
-            );
+            let waiting =
+                wait_reapable_blocking_worker(worker, Duration::from_secs(1), "cancelled worker");
             tokio::pin!(waiting);
             tokio::select! {
                 _ = &mut waiting => panic!("worker completed before cancellation"),

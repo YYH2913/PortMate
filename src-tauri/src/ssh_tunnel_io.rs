@@ -150,12 +150,7 @@ pub(super) fn ensure_libssh_remote_forward_acceptor(
     {
         return false;
     }
-    spawn_libssh_remote_forward_acceptor(
-        session,
-        remote_forwards,
-        runtime_closed,
-        started,
-    );
+    spawn_libssh_remote_forward_acceptor(session, remote_forwards, runtime_closed, started);
     true
 }
 
@@ -301,64 +296,60 @@ pub(super) async fn pipe_ssh_channel_to_tcp(
     let (mut remote_read, remote_write) = channel.split();
     let (mut local_read, mut local_write) = local_stream.into_split();
 
-    let upload_metrics = Arc::clone(&metrics);
-    let local_to_remote = async move {
-        let mut buffer = vec![0_u8; 16 * 1024];
-        loop {
-            let size = local_read
-                .read(&mut buffer)
-                .await
-                .map_err(|error| error.to_string())?;
-            if size == 0 {
-                remote_write
-                    .eof()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                break;
-            }
-            upload_metrics.add_tcp_to_ssh_bytes(size);
-            remote_write
-                .data(&buffer[..size])
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok::<(), String>(())
-    };
-
-    let download_metrics = Arc::clone(&metrics);
-    let remote_to_local = async move {
-        while let Some(message) = remote_read.wait().await {
-            match message {
-                SshBackendMessage::Data(data) | SshBackendMessage::ExtendedData { data, .. } => {
-                    download_metrics.add_ssh_to_tcp_bytes(data.len());
-                    local_write
-                        .write_all(&data)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                SshBackendMessage::Eof | SshBackendMessage::Close => break,
-                SshBackendMessage::Failure => {
-                    return Err("SSH tunnel channel reported failure".to_string());
-                }
-                SshBackendMessage::Error(error) => {
-                    return Err(format!("SSH tunnel channel read failed: {error}"));
-                }
-                _ => {}
-            }
-        }
-        Ok::<(), String>(())
-    };
-
     let pipe_kind = if tunnel.mode == TunnelMode::Local {
         "local tunnel"
     } else {
         "tunnel"
     };
-    tokio::pin!(local_to_remote);
-    tokio::pin!(remote_to_local);
-    let result = tokio::select! {
-        result = &mut local_to_remote => result,
-        result = &mut remote_to_local => result,
-    };
+    let result = async {
+        let mut local_eof = false;
+        let mut remote_eof = false;
+        let mut buffer = vec![0_u8; 16 * 1024];
+        while !(local_eof && remote_eof) {
+            // libssh wait owns a blocking read. Keep this future pinned across
+            // local read events: cancelling it could discard consumed data.
+            let message = remote_read.wait();
+            tokio::pin!(message);
+            loop {
+            tokio::select! {
+                read = local_read.read(&mut buffer), if !local_eof => {
+                    let size = read.map_err(|error| error.to_string())?;
+                    if size == 0 {
+                        // EOF is only a write-half close, not cancellation of
+                        // the peer's pending response.
+                        remote_write.eof().await?;
+                        local_eof = true;
+                        if remote_eof { return Ok(()); }
+                    } else {
+                        metrics.add_tcp_to_ssh_bytes(size);
+                        remote_write.data(&buffer[..size]).await?;
+                    }
+                }
+                message = &mut message => {
+                    match message {
+                        Some(SshBackendMessage::Data(data) | SshBackendMessage::ExtendedData { data, .. }) => {
+                            if remote_eof { return Err("SSH tunnel received data after EOF".to_string()); }
+                            metrics.add_ssh_to_tcp_bytes(data.len());
+                            local_write.write_all(&data).await.map_err(|error| error.to_string())?;
+                        }
+                        Some(SshBackendMessage::Eof) => {
+                            local_write.shutdown().await.map_err(|error| error.to_string())?;
+                            remote_eof = true;
+                            // Keep observing the channel: a subsequent full
+                            // Close must release a still-open local read half.
+                        }
+                        Some(SshBackendMessage::Close) | None => return Ok(()),
+                        Some(SshBackendMessage::Failure) => return Err("SSH tunnel channel reported failure".to_string()),
+                        Some(SshBackendMessage::Error(error)) => return Err(format!("SSH tunnel channel read failed: {error}")),
+                        _ => {}
+                    }
+                    break;
+                }
+            }
+            }
+        }
+        Ok::<(), String>(())
+    }.await;
+    let _ = remote_write.close().await;
     result.map_err(|error| format!("{pipe_kind} pipe failed ({}): {error}", tunnel.label))
 }
