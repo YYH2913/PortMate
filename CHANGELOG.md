@@ -69,7 +69,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Proxy password drafts in session settings are now scoped to the Profile and protocol, so switching protocols preserves the correct draft without leaking it into another Profile.
 - Quick commands are now disabled for non-connected sessions and report a connection prompt instead of silently dropping their input.
 - Copy-on-select now resets its duplicate guard when the terminal selection is cleared, allowing the same text to be copied again after it changes externally.
-- Startup SSH sessions now wait for the Stronghold status check and retry after vault unlock instead of silently failing before credentials are available.
+- Startup keeps vault-dependent targets pending until Stronghold is unlocked,
+  starts credential-free sessions immediately, and consumes each target only once.
 - Tmux list parsing now uses a non-printable field separator excluded from valid names, preventing delimiter collisions from truncating names or shifting mutation targets.
 - Tmux control watchers now stop and disappear when a session is renamed or removed, preventing a stale session name from orphaning live monitoring.
 - Host script launch now rejects parameter/environment combinations that would exceed the Windows process environment block instead of failing at process creation.

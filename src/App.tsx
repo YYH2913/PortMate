@@ -78,6 +78,7 @@ import { formatBytes } from "./display-formatters";
 import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
+import { startupCredentialsReady } from "./startup-connection-state";
 import type { QuickCommand } from "./quick-command-state";
 import LanguageSelector from "./LanguageSelector";
 import { normalizeSerialConnectionSettings } from "./serial-connection-settings";
@@ -425,6 +426,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }>>([]);
   const credentialRequestIdRef = useRef(0);
   const startupAppliedRef = useRef(false);
+  const pendingStartupRef = useRef<Set<string> | null>(null);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const terminalInputStreamsRef = useRef(new TerminalInputStreams(invokeBackend));
@@ -1273,16 +1275,28 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       ? prefs.startupMode
       : "last";
     const targets = resolveStartupSessionIds(mode, prefs.startupSessions, workspace, sessions.map((session) => session.profile.id));
-    startupAppliedRef.current = true;
+    pendingStartupRef.current ??= new Set(targets);
+    const ready: string[] = [];
+    for (const sessionId of pendingStartupRef.current) {
+      const session = sessions.find(item => item.profile.id === sessionId);
+      if (!session || sessionConnectionAction(session.runtime.status) !== "connect") {
+        pendingStartupRef.current.delete(sessionId);
+      } else if (startupCredentialsReady(session.profile, portableVaultStatus?.unlocked === true)) {
+        // Consume only ready targets, before the async effect can be rerun.
+        pendingStartupRef.current.delete(sessionId);
+        ready.push(sessionId);
+      }
+    }
+    startupAppliedRef.current = pendingStartupRef.current.size === 0;
     void (async () => {
-      for (const sessionId of targets) {
+      for (const sessionId of ready) {
         const session = sessions.find((item) => item.profile.id === sessionId);
         if (session && sessionConnectionAction(session.runtime.status) === "connect") {
           await connectSession(sessionId, undefined, true, "silent");
         }
       }
     })();
-  }, [sessions, workspaceWindowId, portableVaultStatusReady]);
+  }, [sessions, workspaceWindowId, portableVaultStatusReady, portableVaultStatus?.unlocked]);
 
   useEffect(() => {
     if (!workspaceStorageKey) return;
