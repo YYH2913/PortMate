@@ -188,6 +188,46 @@ impl RawSftpSession {
         Duration::from_secs(self.timeout.load(Ordering::Relaxed))
     }
 
+    pub(crate) fn write_acknowledgement(
+        &self,
+        mut rx: oneshot::Receiver<SftpResult<Packet>>,
+    ) -> impl std::future::Future<Output = Result<SftpResult<Packet>, oneshot::error::RecvError>>
+           + Send
+           + Sync
+           + 'static {
+        let deadline = time::Instant::now() + self.request_timeout();
+        let mut stream_error = self.stream_error.clone();
+        let tx = self.tx.clone();
+        async move {
+            let existing_error = stream_error.borrow().clone();
+            if let Some(error) = existing_error {
+                // An already received ACK wins over a subsequent stream error.
+                return tokio::select! {
+                    biased;
+                    result = &mut rx => result,
+                    _ = std::future::ready(()) => Ok(Err(error.into())),
+                };
+            }
+            tokio::select! {
+                biased;
+                result = &mut rx => result,
+                changed = stream_error.changed() => {
+                    let error = match changed {
+                        Ok(()) => stream_error.borrow().clone().map(Error::from)
+                            .unwrap_or_else(|| Error::UnexpectedBehavior("SFTP stream closed without an error".into())),
+                        Err(_) => Error::UnexpectedBehavior("SFTP stream closed while waiting for write ACK".into()),
+                    };
+                    Ok(Err(error))
+                },
+                _ = time::sleep_until(deadline) => {
+                    // Do not let late replies collide with requests from a retry.
+                    let _ = tx.send(Bytes::new());
+                    Ok(Err(Error::Timeout))
+                },
+            }
+        }
+    }
+
     /// Setting limits. For the `limits@openssh.com` extension
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;

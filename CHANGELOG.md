@@ -12,6 +12,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation
   drains pending reads before closing the handle.
+- Bound pipelined WRITE acknowledgement waits by the request timeout and
+  transport error signal. Failed or cancelled transfers reopen the SFTP
+  subsystem on retry instead of reusing a closed cached channel.
 - SFTP uploads, downloads and remote copies now use 256 KiB application
   buffers so russh-sftp can fill its existing bounded write window more
   efficiently. Server-advertised packet limits still cap each request.

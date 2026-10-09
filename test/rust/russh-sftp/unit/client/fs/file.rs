@@ -50,6 +50,41 @@ fn test_file(session: Arc<RawSftpSession>, read_limit: Option<u64>) -> File {
 }
 
 #[tokio::test]
+async fn pipelined_write_acks_fail_promptly_on_timeout_and_stream_disconnect() {
+    for timeout in [false, true] {
+        let (client, mut server) = duplex(4096);
+        let session = Arc::new(RawSftpSession::new(client));
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            initialize(&mut server).await;
+            assert!(matches!(
+                receive_packet(&mut server).await,
+                Packet::Write(_)
+            ));
+            if timeout {
+                let _ = release_rx.await;
+            }
+            // No STATUS is returned: either disconnect, or withhold the ACK.
+        });
+        session.init().await.unwrap();
+        if timeout {
+            session.set_timeout(0);
+        }
+        let mut file = test_file(session, None);
+        file.write_all(&[1, 2, 3]).await.unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), file.flush())
+            .await
+            .expect("write ACK wait ignored timeout/transport failure")
+            .unwrap_err();
+        if timeout {
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        }
+        let _ = release_tx.send(());
+        server_task.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn pipelined_reads_fill_short_replies_in_order_and_preserve_seek_and_eof() {
     let (client, mut server) = duplex(256 * 1024);
     let session = Arc::new(RawSftpSession::new(client));

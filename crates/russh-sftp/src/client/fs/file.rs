@@ -19,6 +19,7 @@ use crate::{
 };
 
 type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
+type WriteAck = Pin<Box<dyn Future<Output = io::Result<()>> + Send + Sync + 'static>>;
 
 mod read_pipeline;
 
@@ -35,7 +36,7 @@ struct FileState {
     f_seek: StateFn<u64>,
     f_flush: StateFn<()>,
     f_shutdown: StateFn<()>,
-    write_acks: VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+    write_acks: VecDeque<WriteAck>,
 }
 
 /// Provides high-level methods for interaction with a remote file.
@@ -194,26 +195,30 @@ fn check_write_result(
         Ok(Ok(Packet::Status(s))) if s.status_code == StatusCode::Ok => Ok(()),
         Ok(Ok(Packet::Status(s))) => Err(io::Error::other(s.error_message)),
         Ok(Ok(_)) => Err(io::Error::other("unexpected response packet")),
+        Ok(Err(Error::Timeout)) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "SFTP write timed out",
+        )),
         Ok(Err(e)) => Err(io::Error::other(e.to_string())),
     }
 }
 
 fn poll_oldest_write(
-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+    pending: &mut VecDeque<WriteAck>,
     cx: &mut Context<'_>,
 ) -> Option<Poll<io::Result<()>>> {
     let rx = pending.front_mut()?;
-    Some(match Pin::new(rx).poll(cx) {
+    Some(match rx.as_mut().poll(cx) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(r) => {
             pending.pop_front();
-            Poll::Ready(check_write_result(r))
+            Poll::Ready(r)
         }
     })
 }
 
 fn poll_drain_writes(
-    pending: &mut VecDeque<oneshot::Receiver<SftpResult<Packet>>>,
+    pending: &mut VecDeque<WriteAck>,
     cx: &mut Context<'_>,
 ) -> Poll<io::Result<()>> {
     while let Some(poll) = poll_oldest_write(pending, cx) {
@@ -402,7 +407,10 @@ impl AsyncWrite for File {
         match self.session.write_nowait(handle, offset, data) {
             Ok(rx) => {
                 self.pos += len as u64;
-                self.state.write_acks.push_back(rx);
+                let ack = self.session.write_acknowledgement(rx);
+                self.state
+                    .write_acks
+                    .push_back(Box::pin(async move { check_write_result(ack.await) }));
                 Poll::Ready(Ok(len))
             }
             Err(e) => Poll::Ready(Err(io::Error::other(e.to_string()))),
