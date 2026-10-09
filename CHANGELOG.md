@@ -8,6 +8,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- SFTP uploads, downloads and remote copies now use 256 KiB application
+  buffers so russh-sftp can fill its existing bounded write window more
+  efficiently. Server-advertised packet limits still cap each request.
 - Enable TCP_NODELAY before direct libssh connections to avoid delayed-ACK
   stalls during SFTP uploads on low-latency networks.
 - Poll libssh terminal channels without blocking the shared SSH session mutex,

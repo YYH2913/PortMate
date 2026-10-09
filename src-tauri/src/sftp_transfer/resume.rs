@@ -111,8 +111,8 @@ pub(crate) async fn compare_sftp_and_local_prefix(
     length: u64,
     progress: &TransferProgressContext,
 ) -> Result<bool, String> {
-    let mut remote_buffer = vec![0_u8; 64 * 1024];
-    let mut local_buffer = vec![0_u8; 64 * 1024];
+    let mut remote_buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
+    let mut local_buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
     let mut compared = 0_u64;
     while compared < length {
         progress.check_cancelled()?;
@@ -140,8 +140,8 @@ pub(crate) async fn compare_sftp_prefixes(
     length: u64,
     progress: &TransferProgressContext,
 ) -> Result<bool, String> {
-    let mut left_buffer = vec![0_u8; 64 * 1024];
-    let mut right_buffer = vec![0_u8; 64 * 1024];
+    let mut left_buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
+    let mut right_buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
     let mut compared = 0_u64;
     while compared < length {
         progress.check_cancelled()?;

@@ -4,6 +4,11 @@ mod resume;
 
 pub(super) use resume::*;
 
+// Keep a full russh-sftp packet in flight per write request. The backend still
+// caps each packet to the server-advertised write limit, while larger buffers
+// reduce read, allocation and wake-up overhead for high-throughput transfers.
+pub(super) const SFTP_TRANSFER_BUFFER_SIZE: usize = 256 * 1024;
+
 pub(super) async fn sftp_upload(
     sftp: &SftpBackendSession,
     local_source: &str,
@@ -38,7 +43,7 @@ pub(super) async fn sftp_upload(
     let mut remote_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
 
     let copy_result: Result<u64, String> = async {
-        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
         loop {
             progress.check_cancelled()?;
             let read = local_file
@@ -108,7 +113,7 @@ pub(super) async fn sftp_download(
     }
     let mut local_file = open_local_resume_writer(&temp_target, copied)
         .map_err(|error| format!("创建本地目标文件失败 {}: {error}", temp_target.display()))?;
-    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
     loop {
         progress.check_cancelled()?;
         let read = remote_file
@@ -173,7 +178,7 @@ pub(super) async fn sftp_remote_copy(
     let mut target_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
 
     let copy_result: Result<u64, String> = async {
-        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
         loop {
             progress.check_cancelled()?;
             let read = source_file
