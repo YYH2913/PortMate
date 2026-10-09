@@ -113,9 +113,7 @@ pub(super) fn normalize_tunnel_request(
     match request.egress {
         TunnelEgress::Ssh => {
             if request.allow_remote_bind {
-                return Err(
-                    "allowRemoteBind is only valid for PortMate host egress".to_string(),
-                );
+                return Err("allowRemoteBind is only valid for PortMate host egress".to_string());
             }
         }
         TunnelEgress::PortmateHost => {

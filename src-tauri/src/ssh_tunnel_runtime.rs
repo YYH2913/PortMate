@@ -139,44 +139,44 @@ pub(super) async fn start_tunnel_runtime_with_validation(
         let install_result = commit_validation
             .map_or(Ok(()), |validate| validate())
             .and_then(|()| {
-            let connections = state.ssh.lock().map_err(|error| error.to_string())?;
-            if connections
-                .get(session_id)
-                .is_none_or(|runtime| runtime.runtime_id != ssh_runtime_id)
-            {
-                return Err("SSH runtime changed while creating tunnel".to_string());
-            }
-            let store = state.store.lock().map_err(|error| error.to_string())?;
-            if !store.runtimes.iter().any(|runtime| {
-                runtime.session_id == session_id && runtime.status == SessionStatus::Connected
-            }) {
-                return Err("SSH session disconnected while creating tunnel".to_string());
-            }
-            let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-            ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
-            let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
-            ensure_remote_forward_route_slot(&forwards, &tunnel, &metrics)?;
-            let target = TunnelForwardTarget {
-                spec: tunnel.clone(),
-                metrics: Arc::clone(&metrics),
-                connection_slots: Arc::clone(&state.tunnel_connection_slots),
-            };
-            forwards.insert(
-                remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
-                target.clone(),
-            );
-            forwards.insert(remote_forward_port_key(tunnel.bind_port), target);
-            tunnels.insert(
-                tunnel.id.clone(),
-                TunnelRuntime {
-                    session_id: session_id.to_string(),
-                    ssh_runtime_id: ssh_runtime_id.clone(),
+                let connections = state.ssh.lock().map_err(|error| error.to_string())?;
+                if connections
+                    .get(session_id)
+                    .is_none_or(|runtime| runtime.runtime_id != ssh_runtime_id)
+                {
+                    return Err("SSH runtime changed while creating tunnel".to_string());
+                }
+                let store = state.store.lock().map_err(|error| error.to_string())?;
+                if !store.runtimes.iter().any(|runtime| {
+                    runtime.session_id == session_id && runtime.status == SessionStatus::Connected
+                }) {
+                    return Err("SSH session disconnected while creating tunnel".to_string());
+                }
+                let mut tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
+                ensure_tunnel_runtime_slot(&tunnels, &tunnel.id)?;
+                let mut forwards = remote_forwards.lock().map_err(|error| error.to_string())?;
+                ensure_remote_forward_route_slot(&forwards, &tunnel, &metrics)?;
+                let target = TunnelForwardTarget {
                     spec: tunnel.clone(),
                     metrics: Arc::clone(&metrics),
-                    closed: Arc::clone(&closed),
-                    listener_worker: TunnelListenerWorker::completed(),
-                },
-            );
+                    connection_slots: Arc::clone(&state.tunnel_connection_slots),
+                };
+                forwards.insert(
+                    remote_forward_key(&tunnel.bind_host, tunnel.bind_port),
+                    target.clone(),
+                );
+                forwards.insert(remote_forward_port_key(tunnel.bind_port), target);
+                tunnels.insert(
+                    tunnel.id.clone(),
+                    TunnelRuntime {
+                        session_id: session_id.to_string(),
+                        ssh_runtime_id: ssh_runtime_id.clone(),
+                        spec: tunnel.clone(),
+                        metrics: Arc::clone(&metrics),
+                        closed: Arc::clone(&closed),
+                        listener_worker: TunnelListenerWorker::completed(),
+                    },
+                );
                 Ok::<(), String>(())
             });
         if let Err(error) = install_result {
@@ -425,9 +425,7 @@ pub(super) fn record_tunnel_client_failure_if_owned(
         session_id,
         format!("PortMate: SSH tunnel client failed: {error}"),
     );
-    if let Err(error) =
-        persist_applied_store(&store, store_path, "tunnel client failure event")
-    {
+    if let Err(error) = persist_applied_store(&store, store_path, "tunnel client failure event") {
         eprintln!("PortMate: failed to persist tunnel client error: {error}");
     }
     Ok(true)

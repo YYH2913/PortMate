@@ -5,8 +5,7 @@ pub(super) fn ensure_supported_profile_secret_migration_request(
 ) -> Result<(), String> {
     if request.target_storage != SecretStorage::Portable {
         return Err(
-            "新的凭据迁移仅支持从系统密钥库迁移到 Stronghold；旧迁移记录仍可恢复"
-                .to_string(),
+            "新的凭据迁移仅支持从系统密钥库迁移到 Stronghold；旧迁移记录仍可恢复".to_string(),
         );
     }
     Ok(())

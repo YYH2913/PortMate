@@ -133,14 +133,7 @@ pub(super) async fn finalize_remote_modem_upload(
         Some("finalize_remote_modem"),
     )
     .await?;
-    wait_for_remote_modem_finalize(
-        receiver,
-        &completion_token,
-        progress,
-        session_id,
-        binding,
-    )
-    .await
+    wait_for_remote_modem_finalize(receiver, &completion_token, progress, session_id, binding).await
 }
 
 pub(super) async fn wait_for_remote_modem_finalize(

@@ -30,7 +30,10 @@ impl<R> HashingReader<R> {
     }
 
     fn finish(self) -> (String, u64) {
-        (portmate_core::encode_hex(&self.digest.finalize()), self.bytes_read)
+        (
+            portmate_core::encode_hex(&self.digest.finalize()),
+            self.bytes_read,
+        )
     }
 }
 
@@ -123,8 +126,7 @@ pub(super) fn write_atomic_export_with_checksum_policy(
 
     let nonce = Uuid::new_v4().simple().to_string();
     let temp_path = final_path.with_file_name(format!(".{file_name}.{nonce}.part"));
-    let checksum_temp_path =
-        final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.part"));
+    let checksum_temp_path = final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.part"));
     let backup_path = final_path.with_file_name(format!(".{file_name}.{nonce}.backup"));
     let checksum_backup_path =
         final_path.with_file_name(format!(".{file_name}.sha256.{nonce}.backup"));
@@ -174,7 +176,9 @@ pub(super) fn write_atomic_export_with_checksum_policy(
                     let _ = restore_export_backups(&backups);
                     let _ = fs::remove_file(&temp_path);
                     let _ = fs::remove_file(&checksum_temp_path);
-                    return Err(format!("failed to preserve existing {label} artifact: {error}"));
+                    return Err(format!(
+                        "failed to preserve existing {label} artifact: {error}"
+                    ));
                 }
                 backups.push((backup.clone(), path.to_path_buf()));
             }
@@ -301,9 +305,7 @@ fn move_export_artifact_windows(
         } else {
             0
         };
-    let result = unsafe {
-        MoveFileExW(source.as_ptr(), destination.as_ptr(), flags)
-    };
+    let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
     if result == 0 {
         Err(std::io::Error::last_os_error())
     } else {

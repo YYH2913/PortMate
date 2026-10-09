@@ -289,9 +289,8 @@ fn reconnect_serial_session(
                                                 SerialRuntime {
                                                     runtime_id: runtime_id.clone(),
                                                     writer: Some(Arc::clone(&writer)),
-                                                    abort: abort.map(|abort| {
-                                                        Arc::new(Mutex::new(abort))
-                                                    }),
+                                                    abort: abort
+                                                        .map(|abort| Arc::new(Mutex::new(abort))),
                                                     tap: tap.clone(),
                                                     closed: Arc::clone(&next_closed),
                                                     capture: Arc::clone(&capture),
@@ -299,9 +298,7 @@ fn reconnect_serial_session(
                                             );
                                             SerialReconnectInstallDecision::Installed
                                         }
-                                        Err(error) => {
-                                            SerialReconnectInstallDecision::Failed(error)
-                                        }
+                                        Err(error) => SerialReconnectInstallDecision::Failed(error),
                                     }
                                 }
                             }

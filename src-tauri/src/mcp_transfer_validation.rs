@@ -13,7 +13,9 @@ pub(super) fn validate_mcp_transfer_route(request: &StartTransferRequest) -> Res
         }
     }
     if has_load_receiver_prefix(&request.source) {
-        return Err("MCP load: endpoint is only permitted as a Modem upload destination".to_string());
+        return Err(
+            "MCP load: endpoint is only permitted as a Modem upload destination".to_string(),
+        );
     }
     let load_receiver = validate_load_receiver_endpoint(&request.destination, &request.protocol)?;
     if load_receiver && has_remote_transfer_prefix(&request.source) {

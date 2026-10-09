@@ -1,5 +1,5 @@
-use serde::Serialize;
 use crate::AppHandle;
+use serde::Serialize;
 use tauri::Emitter;
 
 pub(super) const TERMINAL_LIVE_EVENT: &str = "portmate-terminal-live";
@@ -40,7 +40,11 @@ pub(super) fn publish_terminal_live_event(
         .is_some_and(|text| text.chars().count() > MAX_TERMINAL_LIVE_TEXT_CHARACTERS)
     {
         if let Some(text) = live_event.text.as_ref() {
-            live_event.text = Some(text.chars().take(MAX_TERMINAL_LIVE_TEXT_CHARACTERS).collect());
+            live_event.text = Some(
+                text.chars()
+                    .take(MAX_TERMINAL_LIVE_TEXT_CHARACTERS)
+                    .collect(),
+            );
         }
         live_event
             .annotations

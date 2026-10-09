@@ -32,10 +32,7 @@ fn run_libssh_agent_channel_operation<T>(
 }
 
 #[cfg(unix)]
-fn write_libssh_agent_channel(
-    channel: &libssh_rs::Channel,
-    mut data: &[u8],
-) -> Result<(), String> {
+fn write_libssh_agent_channel(channel: &libssh_rs::Channel, mut data: &[u8]) -> Result<(), String> {
     run_libssh_agent_channel_operation(
         channel,
         LIBSSH_AGENT_CHANNEL_IO_TIMEOUT,
@@ -163,10 +160,9 @@ pub(super) fn start_libssh_agent_forwarder(
                         "PortMate: rejected libssh agent forward channel at the {} channel limit",
                         MAX_LIBSSH_AGENT_FORWARD_CHANNELS
                     );
-                    let closed = tokio::task::spawn_blocking(move || {
-                        close_libssh_agent_channel(&channel)
-                    })
-                    .await;
+                    let closed =
+                        tokio::task::spawn_blocking(move || close_libssh_agent_channel(&channel))
+                            .await;
                     report_libssh_agent_bridge_result(closed);
                 }
                 Ok(Some(channel)) => {
@@ -184,10 +180,9 @@ pub(super) fn start_libssh_agent_forwarder(
             }
         }
         let disable_session = session.clone();
-        if let Err(error) = tokio::task::spawn_blocking(move || {
-            disable_session.enable_accept_agent_forward(false)
-        })
-        .await
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || disable_session.enable_accept_agent_forward(false))
+                .await
         {
             eprintln!("PortMate: libssh agent forward disable worker failed: {error}");
         }

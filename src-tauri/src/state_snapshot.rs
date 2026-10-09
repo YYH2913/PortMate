@@ -44,11 +44,17 @@ pub(super) fn validate_store_path_entry(path: &Path, label: &str) -> Result<(), 
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(format!("failed to inspect {label} {}: {error}", path.display()));
+            return Err(format!(
+                "failed to inspect {label} {}: {error}",
+                path.display()
+            ));
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!("{label} must be a regular file: {}", path.display()));
+        return Err(format!(
+            "{label} must be a regular file: {}",
+            path.display()
+        ));
     }
     #[cfg(unix)]
     {
@@ -247,7 +253,10 @@ pub(super) fn lock_store_snapshot(store_path: &Path) -> Result<StoreSnapshotLock
     let (lock, parent) = super::open_store_file(&lock_path, true)?;
     lock.lock()
         .map_err(|error| format!("无法获取 PortMate store 文件锁: {error}"))?;
-    Ok(StoreSnapshotLock { _file: lock, _parent: parent })
+    Ok(StoreSnapshotLock {
+        _file: lock,
+        _parent: parent,
+    })
 }
 
 pub(super) fn store_snapshot_version(store_path: &Path) -> Result<StoreSnapshotVersion, String> {

@@ -177,7 +177,9 @@ pub(super) fn plan_external_drop_with_hook(
             .child(&root_name)
             .map_err(|error| error.to_string())?;
         let current = BoundDirectory::pin_entry(&root.path).map_err(|error| error.to_string())?;
-        if !BoundDirectory::entry_matches(&root.identity, &current).map_err(|error| error.to_string())? {
+        if !BoundDirectory::entry_matches(&root.identity, &current)
+            .map_err(|error| error.to_string())?
+        {
             return Err("batch source changed during canonicalization".into());
         }
         bound_directories.push(parent);

@@ -333,8 +333,8 @@ pub(super) fn parse_load_receiver_endpoint(
     if value.starts_with("load://") {
         return Err("load: 设备接收端点不能包含主机部分".to_string());
     }
-    let parsed = url::Url::parse(value)
-        .map_err(|error| format!("load: 设备接收端点无效: {error}"))?;
+    let parsed =
+        url::Url::parse(value).map_err(|error| format!("load: 设备接收端点无效: {error}"))?;
     if parsed.scheme() != "load" || parsed.fragment().is_some() {
         return Err("load: 设备接收端点格式无效".to_string());
     }
@@ -369,8 +369,7 @@ pub(super) fn parse_load_receiver_endpoint(
                     || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
                 {
                     return Err(
-                        "load: 加载地址必须是最多 16 位的十六进制数，可带 0x 前缀"
-                            .to_string(),
+                        "load: 加载地址必须是最多 16 位的十六进制数，可带 0x 前缀".to_string()
                     );
                 }
                 address = Some(value);

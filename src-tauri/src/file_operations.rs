@@ -104,9 +104,8 @@ fn rename_local_path_without_overwrite(source: &Path, target: &Path) -> Result<(
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect::<Vec<_>>();
-            let status = unsafe {
-                MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH)
-            };
+            let status =
+                unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
             if status == 0 {
                 Err(std::io::Error::last_os_error().to_string())
             } else {
@@ -408,7 +407,9 @@ pub(super) async fn rename_path_inner(
             }
             sftp.rename_without_overwrite(old_path.clone(), new_path.clone())
                 .await
-                .map_err(|error| format!("SFTP 原子重命名失败 {} -> {}: {error}", old_path, new_path))
+                .map_err(|error| {
+                    format!("SFTP 原子重命名失败 {} -> {}: {error}", old_path, new_path)
+                })
         }
         .await;
         drop(sftp);

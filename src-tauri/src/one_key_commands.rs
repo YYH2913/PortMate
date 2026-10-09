@@ -85,11 +85,9 @@ pub(crate) async fn send_one_key(
         };
         (value, origin, prompt_event_id, prompt_validation)
     };
-    let runtime_id = current_session_runtime_id(
-        &state.inner().session_io().runtimes,
-        &request.session_id,
-    )?
-    .ok_or_else(|| "OneKey 会话连接代际已变化，请重试".to_string())?;
+    let runtime_id =
+        current_session_runtime_id(&state.inner().session_io().runtimes, &request.session_id)?
+            .ok_or_else(|| "OneKey 会话连接代际已变化，请重试".to_string())?;
     send_one_key_value(
         state.inner().session_io(),
         &request.session_id,
@@ -107,7 +105,9 @@ pub(super) fn validate_one_key_connection_generation(
     session_id: &str,
     expected: Option<&str>,
 ) -> Result<(), String> {
-    let Some(expected) = expected else { return Ok(()); };
+    let Some(expected) = expected else {
+        return Ok(());
+    };
     let expected = DateTime::parse_from_rfc3339(expected)
         .map_err(|_| "OneKey 缺少有效的连接代际".to_string())?
         .with_timezone(&Utc);

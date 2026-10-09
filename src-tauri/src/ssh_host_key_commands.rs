@@ -56,9 +56,8 @@ pub(super) fn validate_host_key_decision_profile_snapshot(
     expected_profile: Option<&SessionProfile>,
     observation: &HostKeyObservation,
 ) -> Result<portmate_core::HostKeyPolicy, String> {
-    let expected_profile = expected_profile.ok_or_else(|| {
-        "Host Key 信任请求缺少预期 Profile 快照，请重新扫描".to_string()
-    })?;
+    let expected_profile = expected_profile
+        .ok_or_else(|| "Host Key 信任请求缺少预期 Profile 快照，请重新扫描".to_string())?;
     let expected_profile = normalize_session_profile(expected_profile.clone());
     if expected_profile.id != profile_id {
         return Err("Host Key 信任请求的 Profile 标识与预期快照不匹配，请重新扫描".to_string());
@@ -111,11 +110,8 @@ pub(crate) fn trust_scanned_host_key(
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     let profile = normalize_session_profile(request.profile);
     let profile_id = profile.id.clone();
-    let policy = validate_scanned_host_key_profile_snapshot(
-        &store,
-        &profile,
-        &request.observation,
-    )?;
+    let policy =
+        validate_scanned_host_key_profile_snapshot(&store, &profile, &request.observation)?;
     if request.decision == HostKeyDecision::TrustOnce {
         let trusted =
             temporary_trusted_host_key_for_policy(&profile_id, &policy, &request.observation)?;
@@ -156,12 +152,7 @@ pub(super) fn prepare_scanned_host_key_draft_inner(
         keys: ssh_connection(&profile)?.trusted_host_keys.clone(),
     };
     let trusted = host_keys
-        .apply_decision(
-            &profile.id,
-            &policy,
-            &request.observation,
-            request.decision,
-        )
+        .apply_decision(&profile.id, &policy, &request.observation, request.decision)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Host Key 草稿决策未生成持久信任记录".to_string())?;
     Ok(DraftHostKeyDecisionResponse {

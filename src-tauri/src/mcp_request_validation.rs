@@ -145,9 +145,7 @@ fn normalize_mcp_start_transfer_destination(
     Ok(normalized)
 }
 
-pub(super) fn decode_mcp_direct_bytes(
-    args: &serde_json::Value,
-) -> Result<Vec<u8>, String> {
+pub(super) fn decode_mcp_direct_bytes(args: &serde_json::Value) -> Result<Vec<u8>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "send_bytes arguments must be a JSON object".to_string())?;
@@ -167,7 +165,10 @@ pub(super) fn decode_mcp_direct_bytes(
     }
     let decoded = match encoding {
         "base64" => {
-            let compact: String = data.chars().filter(|character| !character.is_ascii_whitespace()).collect();
+            let compact: String = data
+                .chars()
+                .filter(|character| !character.is_ascii_whitespace())
+                .collect();
             BASE64_STANDARD
                 .decode(compact)
                 .map_err(|_| "send_bytes data is not valid standard Base64".to_string())?
@@ -244,7 +245,10 @@ pub(super) fn decode_mcp_udp_datagram_payload(
 }
 
 fn decode_mcp_hex(label: &str, data: &str) -> Result<Vec<u8>, String> {
-    let compact: String = data.chars().filter(|character| !character.is_ascii_whitespace()).collect();
+    let compact: String = data
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
     if !compact.len().is_multiple_of(2) {
         return Err(format!(
             "{label} hex data must contain an even number of digits"
@@ -366,12 +370,14 @@ impl McpWriteExecutionContext {
     pub(super) fn approval_target(&self) -> Option<McpApprovalTarget> {
         match self {
             Self::Generic => None,
-            Self::CustomScript { approval_target, .. }
-            | Self::Tunnel { approval_target }
-            | Self::TunnelExchange { approval_target, .. }
-            | Self::Described { approval_target } => {
-                Some(approval_target.clone())
+            Self::CustomScript {
+                approval_target, ..
             }
+            | Self::Tunnel { approval_target }
+            | Self::TunnelExchange {
+                approval_target, ..
+            }
+            | Self::Described { approval_target } => Some(approval_target.clone()),
         }
     }
 
@@ -386,17 +392,12 @@ impl McpWriteExecutionContext {
                 ..
             } if expected_id == script_id => Ok(*updated_at),
             _ => Err(
-                "MCP custom script execution is missing its authorized script version"
-                    .to_string(),
+                "MCP custom script execution is missing its authorized script version".to_string(),
             ),
         }
     }
 
-    pub(super) fn revalidate(
-        &self,
-        state: &AppState,
-        request: &IpcRequest,
-    ) -> Result<(), String> {
+    pub(super) fn revalidate(&self, state: &AppState, request: &IpcRequest) -> Result<(), String> {
         if let Self::TunnelExchange {
             tunnel_id,
             owner_id,
@@ -407,7 +408,10 @@ impl McpWriteExecutionContext {
             if !matches!(request.command.as_str(), "tunnel_request" | "udp_request")
                 || ipc_string_arg(&request.args, "tunnelId")? != tunnel_id
             {
-                return Err("MCP tunnel target changed after authorization; request was not executed".to_string());
+                return Err(
+                    "MCP tunnel target changed after authorization; request was not executed"
+                        .to_string(),
+                );
             }
             let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
             let current = tunnels
@@ -418,15 +422,28 @@ impl McpWriteExecutionContext {
                         && runtime.spec.egress == TunnelEgress::PortmateHost
                         && !runtime.closed.load(Ordering::SeqCst)
                 })
-                .ok_or_else(|| "MCP tunnel was stopped or replaced after authorization".to_string())?;
-            let target_host = request.args.get("targetHost").and_then(serde_json::Value::as_str);
-            let target_port = request.args.get("targetPort").and_then(serde_json::Value::as_u64);
+                .ok_or_else(|| {
+                    "MCP tunnel was stopped or replaced after authorization".to_string()
+                })?;
+            let target_host = request
+                .args
+                .get("targetHost")
+                .and_then(serde_json::Value::as_str);
+            let target_port = request
+                .args
+                .get("targetPort")
+                .and_then(serde_json::Value::as_u64);
             if current.spec.mode == TunnelMode::Dynamic {
                 if target_host.is_none() || target_port.is_none() {
-                    return Err("dynamic MCP tunnel requests require targetHost and targetPort".to_string());
+                    return Err(
+                        "dynamic MCP tunnel requests require targetHost and targetPort".to_string(),
+                    );
                 }
             } else if target_host.is_some() || target_port.is_some() {
-                return Err("fixed MCP tunnel requests must not override targetHost or targetPort".to_string());
+                return Err(
+                    "fixed MCP tunnel requests must not override targetHost or targetPort"
+                        .to_string(),
+                );
             }
             return Ok(());
         }
@@ -463,15 +480,24 @@ pub(super) fn capture_mcp_write_execution_context(
 ) -> Result<McpWriteExecutionContext, String> {
     if matches!(request.command.as_str(), "tunnel_request" | "udp_request") {
         let (tunnel_id, target_host, target_port) = if request.command == "tunnel_request" {
-            let exchange: McpTunnelExchangeRequest = serde_json::from_value(request.args.clone())
-                .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
+            let exchange: McpTunnelExchangeRequest =
+                serde_json::from_value(request.args.clone())
+                    .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
             validate_mcp_tunnel_exchange_request(&exchange)?;
-            (exchange.tunnel_id, exchange.target_host, exchange.target_port)
+            (
+                exchange.tunnel_id,
+                exchange.target_host,
+                exchange.target_port,
+            )
         } else {
             let exchange: McpUdpExchangeRequest = serde_json::from_value(request.args.clone())
                 .map_err(|error| format!("invalid UDP tunnel request: {error}"))?;
             validate_mcp_udp_exchange_request(&exchange)?;
-            (exchange.tunnel_id, exchange.target_host, exchange.target_port)
+            (
+                exchange.tunnel_id,
+                exchange.target_host,
+                exchange.target_port,
+            )
         };
         let owner_id = mcp_host_route_owner_id(&request.client_id)?;
         let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
@@ -569,7 +595,10 @@ pub(super) fn capture_mcp_write_execution_context(
         approval_target: McpApprovalTarget {
             kind: "portmate-host-script".to_string(),
             id: script.id,
-            label: format!("PortMate host: {}", bounded_approval_value(&script.name, 110)),
+            label: format!(
+                "PortMate host: {}",
+                bounded_approval_value(&script.name, 110)
+            ),
         },
     })
 }
@@ -619,7 +648,11 @@ fn described_mcp_approval_target(
                 id: bounded_approval_value(transfer_id, 128),
                 label: format!(
                     "{} transfer {}",
-                    if request.command == "cancel_transfer" { "Cancel" } else { "Retry" },
+                    if request.command == "cancel_transfer" {
+                        "Cancel"
+                    } else {
+                        "Retry"
+                    },
                     bounded_approval_value(transfer_id, 128),
                 ),
             }
@@ -653,15 +686,13 @@ fn mcp_transfer_approval_target(
         NormalizedMcpStartTransferRequest::Path(transfer) => {
             (transfer.source, transfer.destination)
         }
-        NormalizedMcpStartTransferRequest::Inline(transfer) => {
-            (format!("MCP virtual file {}", transfer.file_name), transfer.destination)
-        }
+        NormalizedMcpStartTransferRequest::Inline(transfer) => (
+            format!("MCP virtual file {}", transfer.file_name),
+            transfer.destination,
+        ),
         NormalizedMcpStartTransferRequest::Upload(upload) => {
-            let metadata = load_mcp_content_upload_metadata(
-                state,
-                &request.client_id,
-                &upload.upload_id,
-            )?;
+            let metadata =
+                load_mcp_content_upload_metadata(state, &request.client_id, &upload.upload_id)?;
             (
                 format!("MCP upload {} ({})", metadata.file_name, metadata.upload_id),
                 metadata.destination,
@@ -712,11 +743,12 @@ fn bounded_approval_host(host: &str) -> String {
 
 pub(super) fn ipc_write_scope(command: &str) -> Option<McpScope> {
     match command {
-        "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command" | "run_local_command" | "attach_tmux" => {
-            Some(McpScope::WriteInput)
-        }
+        "send_text" | "send_key" | "send_bytes" | "serial_send_break" | "run_command"
+        | "run_local_command" | "attach_tmux" => Some(McpScope::WriteInput),
         "start_transfer" | "cancel_transfer" | "retry_transfer" => Some(McpScope::Transfer),
-        "create_tunnel" | "stop_tunnel" | "tunnel_request" | "udp_request" => Some(McpScope::Tunnel),
+        "create_tunnel" | "stop_tunnel" | "tunnel_request" | "udp_request" => {
+            Some(McpScope::Tunnel)
+        }
         "run_custom_script" => Some(McpScope::RunScripts),
         "restart_mcp_http" => Some(McpScope::ManageMcp),
         _ => None,
@@ -771,8 +803,9 @@ pub(super) fn validate_ipc_write_args(
 ) -> Result<(), String> {
     match request.command.as_str() {
         "tunnel_request" => {
-            let exchange: McpTunnelExchangeRequest = serde_json::from_value(request.args.clone())
-                .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
+            let exchange: McpTunnelExchangeRequest =
+                serde_json::from_value(request.args.clone())
+                    .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
             validate_mcp_tunnel_exchange_request(&exchange)?;
             let owner_id = mcp_host_route_owner_id(&request.client_id)?;
             let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
@@ -785,18 +818,22 @@ pub(super) fn validate_ipc_write_args(
                 })
                 .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?;
             if runtime.spec.mode == TunnelMode::Dynamic {
-                let host = exchange
-                    .target_host
-                    .as_deref()
-                    .ok_or_else(|| "dynamic MCP tunnel requests require targetHost and targetPort".to_string())?;
-                let port = exchange
-                    .target_port
-                    .ok_or_else(|| "dynamic MCP tunnel requests require targetHost and targetPort".to_string())?;
+                let host = exchange.target_host.as_deref().ok_or_else(|| {
+                    "dynamic MCP tunnel requests require targetHost and targetPort".to_string()
+                })?;
+                let port = exchange.target_port.ok_or_else(|| {
+                    "dynamic MCP tunnel requests require targetHost and targetPort".to_string()
+                })?;
                 if !tunnel_route_allowed(&runtime.spec.route_rules, host, port) {
-                    return Err(format!("MCP tunnel target denied by route rules: {host}:{port}"));
+                    return Err(format!(
+                        "MCP tunnel target denied by route rules: {host}:{port}"
+                    ));
                 }
             } else if exchange.target_host.is_some() || exchange.target_port.is_some() {
-                return Err("fixed MCP tunnel requests must not override targetHost or targetPort".to_string());
+                return Err(
+                    "fixed MCP tunnel requests must not override targetHost or targetPort"
+                        .to_string(),
+                );
             }
         }
         "udp_request" => {
@@ -814,18 +851,22 @@ pub(super) fn validate_ipc_write_args(
                 })
                 .ok_or_else(|| "host route not found or owned by another MCP client".to_string())?;
             if runtime.spec.mode == TunnelMode::Dynamic {
-                let host = exchange
-                    .target_host
-                    .as_deref()
-                    .ok_or_else(|| "dynamic UDP tunnel requests require targetHost and targetPort".to_string())?;
-                let port = exchange
-                    .target_port
-                    .ok_or_else(|| "dynamic UDP tunnel requests require targetHost and targetPort".to_string())?;
+                let host = exchange.target_host.as_deref().ok_or_else(|| {
+                    "dynamic UDP tunnel requests require targetHost and targetPort".to_string()
+                })?;
+                let port = exchange.target_port.ok_or_else(|| {
+                    "dynamic UDP tunnel requests require targetHost and targetPort".to_string()
+                })?;
                 if !tunnel_route_allowed(&runtime.spec.route_rules, host, port) {
-                    return Err(format!("MCP UDP tunnel target denied by route rules: {host}:{port}"));
+                    return Err(format!(
+                        "MCP UDP tunnel target denied by route rules: {host}:{port}"
+                    ));
                 }
             } else if exchange.target_host.is_some() || exchange.target_port.is_some() {
-                return Err("fixed UDP tunnel requests must not override targetHost or targetPort".to_string());
+                return Err(
+                    "fixed UDP tunnel requests must not override targetHost or targetPort"
+                        .to_string(),
+                );
             }
         }
         "send_text" => {
@@ -850,35 +891,44 @@ pub(super) fn validate_ipc_write_args(
             bounded_mcp_terminal_text_arg(&request.args, "command")?;
         }
         "run_custom_script" => {
-            let object = request.args.as_object().ok_or("host script arguments must be an object")?;
-            if object.keys().any(|key| !matches!(key.as_str(), "scriptId" | "parameters")) {
+            let object = request
+                .args
+                .as_object()
+                .ok_or("host script arguments must be an object")?;
+            if object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "scriptId" | "parameters"))
+            {
                 return Err("host script callers may only provide scriptId and parameters".into());
             }
             let script_id = ipc_string_arg(&request.args, "scriptId")?;
             let store = state.store.lock().map_err(|error| error.to_string())?;
             let script = host_script_for_client(&store, script_id, Some(&request.client_id))?;
             portmate_core::custom_scripts::validate_host_script_parameters(
-                &script.host, request.args.get("parameters").unwrap_or(&serde_json::json!({})))?;
+                &script.host,
+                request
+                    .args
+                    .get("parameters")
+                    .unwrap_or(&serde_json::json!({})),
+            )?;
         }
-        "start_transfer" => {
-            match normalize_mcp_start_transfer_args(&request.args)? {
-                NormalizedMcpStartTransferRequest::Path(transfer) => {
-                    validate_mcp_transfer_route(&transfer)?;
-                    require_mcp_host_file_scope(state, request, &transfer)?;
-                }
-                NormalizedMcpStartTransferRequest::Inline(transfer) => {
-                    validate_mcp_content_transfer_request(&transfer)?;
-                }
-                NormalizedMcpStartTransferRequest::Upload(transfer) => {
-                    let metadata = load_mcp_content_upload_metadata(
-                        state,
-                        &request.client_id,
-                        &transfer.upload_id,
-                    )?;
-                    validate_mcp_uploaded_content_route(&metadata)?;
-                }
+        "start_transfer" => match normalize_mcp_start_transfer_args(&request.args)? {
+            NormalizedMcpStartTransferRequest::Path(transfer) => {
+                validate_mcp_transfer_route(&transfer)?;
+                require_mcp_host_file_scope(state, request, &transfer)?;
             }
-        }
+            NormalizedMcpStartTransferRequest::Inline(transfer) => {
+                validate_mcp_content_transfer_request(&transfer)?;
+            }
+            NormalizedMcpStartTransferRequest::Upload(transfer) => {
+                let metadata = load_mcp_content_upload_metadata(
+                    state,
+                    &request.client_id,
+                    &transfer.upload_id,
+                )?;
+                validate_mcp_uploaded_content_route(&metadata)?;
+            }
+        },
         "cancel_transfer" => {
             validate_mcp_operation_id(ipc_string_arg(&request.args, "transferId")?, "transfer")?;
         }
@@ -954,17 +1004,11 @@ pub(super) fn ipc_write_session_id(
         }
         "start_transfer" => match normalize_mcp_start_transfer_args(&request.args)? {
             NormalizedMcpStartTransferRequest::Path(transfer) => Ok(Some(transfer.session_id)),
-            NormalizedMcpStartTransferRequest::Inline(transfer) => {
-                Ok(Some(transfer.session_id))
-            }
-            NormalizedMcpStartTransferRequest::Upload(transfer) => {
-                Ok(Some(load_mcp_content_upload_metadata(
-                    state,
-                    &request.client_id,
-                    &transfer.upload_id,
-                )?
-                .session_id))
-            }
+            NormalizedMcpStartTransferRequest::Inline(transfer) => Ok(Some(transfer.session_id)),
+            NormalizedMcpStartTransferRequest::Upload(transfer) => Ok(Some(
+                load_mcp_content_upload_metadata(state, &request.client_id, &transfer.upload_id)?
+                    .session_id,
+            )),
         },
         "cancel_transfer" | "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?;
@@ -981,10 +1025,7 @@ pub(super) fn ipc_write_session_id(
         "stop_tunnel" => {
             let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?;
             validate_mcp_operation_id(tunnel_id, "tunnel")?;
-            let tunnels = state
-                .tunnels
-                .lock()
-                .map_err(|error| error.to_string())?;
+            let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
             let runtime = tunnels
                 .get(tunnel_id)
                 .filter(|runtime| !runtime.closed.load(Ordering::SeqCst))

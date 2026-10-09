@@ -1,6 +1,4 @@
-use super::transport_timing::{
-    TCP_RUNTIME_SHUTDOWN_TIMEOUT, TCP_RUNTIME_WRITE_TIMEOUT,
-};
+use super::transport_timing::{TCP_RUNTIME_SHUTDOWN_TIMEOUT, TCP_RUNTIME_WRITE_TIMEOUT};
 use super::*;
 
 pub(super) struct TcpRuntime {
@@ -40,12 +38,18 @@ pub(super) async fn write_tcp_bytes_with_timeout(
 
 pub(super) async fn write_tcp_bytes_with_cancellation(
     writer: &Arc<tokio::sync::Mutex<TcpWriteHalf>>,
-    bytes: &[u8], timeout: Duration, label: &str, cancellation: Option<&AtomicBool>,
+    bytes: &[u8],
+    timeout: Duration,
+    label: &str,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<(), String> {
     tokio::time::timeout(timeout, async {
         let mut writer = writer.lock().await;
         if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "发送已取消"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "发送已取消",
+            ));
         }
         writer.write_all(bytes).await
     })
@@ -299,7 +303,13 @@ pub(super) fn read_tcp_stream(
             }
         }
 
-        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
+        finish_channel_decoder(
+            &io,
+            &session_id,
+            &runtime_id,
+            EventStream::Stdout,
+            &mut decoder,
+        );
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| format!("{label} socket closed")),
         )

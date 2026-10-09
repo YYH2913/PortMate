@@ -103,7 +103,10 @@ async fn execute_ipc_request_inner(
                 .get("sessionId")
                 .and_then(serde_json::Value::as_str);
             let limit = bounded_mcp_transfer_query_limit(
-                request.args.get("limit").and_then(serde_json::Value::as_u64),
+                request
+                    .args
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64),
             );
             let store = state.store.lock().map_err(|error| error.to_string())?;
             require_mcp_read_scope(&store, &request, McpScope::ReadTransfers, session_id)?;
@@ -141,23 +144,27 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(redact_transfer_task(transfer)).map_err(|error| error.to_string())
         }
         "list_custom_scripts" => {
-            if !request.args.as_object().is_some_and(|object| object.is_empty()) {
-                return Err("list_custom_scripts takes no arguments; terminal scripts are unsupported".into());
+            if !request
+                .args
+                .as_object()
+                .is_some_and(|object| object.is_empty())
+            {
+                return Err(
+                    "list_custom_scripts takes no arguments; terminal scripts are unsupported"
+                        .into(),
+                );
             }
             let store = state.store.lock().map_err(|error| error.to_string())?;
             require_mcp_read_scope(&store, &request, McpScope::ReadScripts, None)?;
-            serde_json::to_value(host_script_tools(&store, &request.client_id)).map_err(|e| e.to_string())
+            serde_json::to_value(host_script_tools(&store, &request.client_id))
+                .map_err(|e| e.to_string())
         }
         "send_bytes" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let bytes = decode_mcp_direct_bytes(&request.args)?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let event = send_bytes_inner_with_context(
                 state.session_io(),
                 session_id,
@@ -173,12 +180,8 @@ async fn execute_ipc_request_inner(
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let text = ipc_string_arg(&request.args, "text")?.to_string();
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let event = send_text_inner_with_context_and_validation(
                 state.session_io(),
                 session_id.clone(),
@@ -189,7 +192,9 @@ async fn execute_ipc_request_inner(
             )
             .await?;
             if let Err(error) = super::command_history_commands::record_command_submission(
-                &state, text, Some(session_id),
+                &state,
+                text,
+                Some(session_id),
                 super::command_history_commands::CommandSubmissionSource::McpSendText,
             ) {
                 eprintln!("PortMate: MCP command history persistence failed: {error}");
@@ -204,12 +209,8 @@ async fn execute_ipc_request_inner(
                 is_telnet_session(&state.store, &session_id)?,
             )?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let event = send_text_inner_with_context_and_validation(
                 state.session_io(),
                 session_id,
@@ -223,12 +224,8 @@ async fn execute_ipc_request_inner(
         }
         "serial_send_break" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let break_state = state.clone();
             let break_session_id = session_id.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -253,12 +250,8 @@ async fn execute_ipc_request_inner(
             let command = ipc_string_arg(&request.args, "command")?.to_string();
             let text = terminate_command_for_session(command.clone(), &state.store, &session_id)?;
             let actor = mcp_audit_actor(&request.client_id);
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let event = run_command_inner_with_context_and_validation(
                 state.session_io(),
                 session_id.clone(),
@@ -269,7 +262,9 @@ async fn execute_ipc_request_inner(
             )
             .await?;
             if let Err(error) = super::command_history_commands::record_command_submission(
-                &state, command, Some(session_id),
+                &state,
+                command,
+                Some(session_id),
                 super::command_history_commands::CommandSubmissionSource::McpRunCommand,
             ) {
                 eprintln!("PortMate: MCP command history persistence failed: {error}");
@@ -279,69 +274,59 @@ async fn execute_ipc_request_inner(
         "run_custom_script" => {
             let script_id = ipc_string_arg(&request.args, "scriptId")?.to_string();
             let expected_updated_at = execution_context
-                .ok_or("missing host script authorization context")?.custom_script_updated_at(&script_id)?;
-            let validation = mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
-            let result = run_host_script_inner(&state, RunHostScriptRequest {
-                script_id, expected_updated_at, run_id: Uuid::new_v4().to_string(),
-                parameters: request.args.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({})),
-            }, &format!("mcp:{}", request.client_id), Some(&request.client_id), Some(validation)).await?;
+                .ok_or("missing host script authorization context")?
+                .custom_script_updated_at(&script_id)?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
+            let result = run_host_script_inner(
+                &state,
+                RunHostScriptRequest {
+                    script_id,
+                    expected_updated_at,
+                    run_id: Uuid::new_v4().to_string(),
+                    parameters: request
+                        .args
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                },
+                &format!("mcp:{}", request.client_id),
+                Some(&request.client_id),
+                Some(validation),
+            )
+            .await?;
             serde_json::to_value(result).map_err(|error| error.to_string())
         }
         "start_transfer" => {
             let transfer = normalize_mcp_start_transfer_args(&request.args)
                 .map_err(|error| format!("invalid transfer request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let task = execute_mcp_start_transfer(
-                &state,
-                &request.client_id,
-                transfer,
-                validation,
-            )
-            .await?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
+            let task = execute_mcp_start_transfer(&state, &request.client_id, transfer, validation)
+                .await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "cancel_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let task =
                 cancel_transfer_inner_with_validation(&state, &transfer_id, Some(validation))?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "retry_transfer" => {
             let transfer_id = ipc_string_arg(&request.args, "transferId")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
-            let task = retry_transfer_inner_with_validation(
-                &state,
-                &transfer_id,
-                Some(validation),
-            )
-            .await?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
+            let task = retry_transfer_inner_with_validation(&state, &transfer_id, Some(validation))
+                .await?;
             serde_json::to_value(redact_transfer_task(task)).map_err(|error| error.to_string())
         }
         "create_tunnel" => {
             let tunnel = serde_json::from_value::<CreateMcpTunnelRequest>(request.args.clone())
                 .map_err(|error| format!("invalid tunnel request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let spec = match normalize_mcp_tunnel_request(tunnel)? {
                 NormalizedMcpTunnelRequest::Ssh(tunnel) => {
                     create_tunnel_inner_with_validation(&state, tunnel, Some(validation)).await?
@@ -369,7 +354,8 @@ async fn execute_ipc_request_inner(
                 .and_then(serde_json::Value::as_str);
             if egress == Some("portmate-host") && session_id.is_some() {
                 return Err(
-                    "PortMate host route listing is session-independent; omit sessionId".to_string(),
+                    "PortMate host route listing is session-independent; omit sessionId"
+                        .to_string(),
                 );
             }
             if egress == Some("ssh") && session_id.is_none() {
@@ -403,17 +389,13 @@ async fn execute_ipc_request_inner(
         }
         "stop_tunnel" => {
             let tunnel_id = ipc_string_arg(&request.args, "tunnelId")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let host_route = {
                 let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-                tunnels.get(&tunnel_id).is_some_and(|runtime| {
-                    runtime.spec.egress == TunnelEgress::PortmateHost
-                })
+                tunnels
+                    .get(&tunnel_id)
+                    .is_some_and(|runtime| runtime.spec.egress == TunnelEgress::PortmateHost)
             };
             let status = if host_route {
                 stop_host_route_inner_with_validation(
@@ -432,12 +414,8 @@ async fn execute_ipc_request_inner(
         "tunnel_request" => {
             let exchange = serde_json::from_value::<McpTunnelExchangeRequest>(request.args.clone())
                 .map_err(|error| format!("invalid MCP tunnel request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let result = execute_tunnel_request_inner(
                 &state,
                 &request.client_id,
@@ -450,12 +428,8 @@ async fn execute_ipc_request_inner(
         "udp_request" => {
             let exchange = serde_json::from_value::<McpUdpExchangeRequest>(request.args.clone())
                 .map_err(|error| format!("invalid UDP tunnel request: {error}"))?;
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let result = execute_udp_tunnel_request_inner(
                 &state,
                 &request.client_id,
@@ -466,12 +440,8 @@ async fn execute_ipc_request_inner(
             serde_json::to_value(result).map_err(|error| error.to_string())
         }
         "restart_mcp_http" => {
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             validation()?;
             serde_json::to_value(restart_mcp_http_runtime_inner(&state).await?)
                 .map_err(|error| error.to_string())
@@ -488,12 +458,8 @@ async fn execute_ipc_request_inner(
         "attach_tmux" => {
             let session_id = ipc_string_arg(&request.args, "sessionId")?.to_string();
             let target = ipc_string_arg(&request.args, "target")?.to_string();
-            let validation = mcp_commit_validation(
-                &state,
-                &request,
-                execution_context,
-                authorization_context,
-            )?;
+            let validation =
+                mcp_commit_validation(&state, &request, execution_context, authorization_context)?;
             let event = attach_tmux_inner(&state, &session_id, &target, Some(validation)).await?;
             serde_json::to_value(redact_session_event(event)).map_err(|error| error.to_string())
         }
@@ -541,8 +507,7 @@ async fn execute_mcp_start_transfer(
             }
         }
         NormalizedMcpStartTransferRequest::Upload(upload) => {
-            let metadata =
-                load_mcp_content_upload_metadata(state, client_id, &upload.upload_id)?;
+            let metadata = load_mcp_content_upload_metadata(state, client_id, &upload.upload_id)?;
             let staging_state = state.clone();
             let staging_metadata = metadata.clone();
             let (source, staging_path) = tauri::async_runtime::spawn_blocking(move || {

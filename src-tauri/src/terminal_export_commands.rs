@@ -65,7 +65,10 @@ pub(super) fn validate_terminal_text_export_request(
         return Err(format!("terminal export exceeds {max_bytes} byte limit"));
     }
     for (label, path) in [
-        ("destination directory", request.destination_directory.as_deref()),
+        (
+            "destination directory",
+            request.destination_directory.as_deref(),
+        ),
         ("destination path", request.destination_path.as_deref()),
     ] {
         if let Some(path) = path {

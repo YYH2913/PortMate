@@ -2,16 +2,31 @@ use super::*;
 use zmodem2::{Action, Event, FileInfo, Position};
 
 pub(super) async fn zmodem_send_file(
-    state: &AppState, _session_id: &str, mut reader: ModemByteReader,
-    local_source: &str, remote_destination: Option<&str>, progress: &TransferProgressContext,
+    state: &AppState,
+    _session_id: &str,
+    mut reader: ModemByteReader,
+    local_source: &str,
+    remote_destination: Option<&str>,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let (mut file, total) = open_local_transfer_source(Path::new(local_source), "ZModem")?;
-    let size = u32::try_from(total).map_err(|_| "ZModem 当前状态机只支持 4 GiB 以内的单文件".to_string())?;
-    let (_, remote_name) = remote_destination.map(remote_parent_and_file_name)
+    let size = u32::try_from(total)
+        .map_err(|_| "ZModem 当前状态机只支持 4 GiB 以内的单文件".to_string())?;
+    let (_, remote_name) = remote_destination
+        .map(remote_parent_and_file_name)
         .unwrap_or_else(|| ("".to_string(), local_file_name(local_source)));
-    let file_name = if remote_name.is_empty() { local_file_name(local_source) } else { remote_name };
+    let file_name = if remote_name.is_empty() {
+        local_file_name(local_source)
+    } else {
+        remote_name
+    };
     let mut sender = zmodem2::Sender::new().map_err(zmodem_error)?;
-    sender.start_file(FileInfo::new(file_name.as_bytes(), Some(Position::new(size)))).map_err(zmodem_error)?;
+    sender
+        .start_file(FileInfo::new(
+            file_name.as_bytes(),
+            Some(Position::new(size)),
+        ))
+        .map_err(zmodem_error)?;
     let mut input = Vec::new();
     let mut file_buf = [0_u8; 1024];
     let mut session_done = false;
@@ -29,9 +44,15 @@ pub(super) async fn zmodem_send_file(
                 file.seek(std::io::SeekFrom::Start(u64::from(offset.get())))
                     .map_err(|e| format!("ZModem 本地文件 seek 失败: {e}"))?;
                 let len = max_len.min(file_buf.len());
-                let read = file.read(&mut file_buf[..len]).map_err(|e| format!("ZModem 读取文件失败: {e}"))?;
-                if read == 0 && max_len > 0 { return Err("ZModem 本地文件提前结束".into()); }
-                sender.submit_file(&file_buf[..read]).map_err(zmodem_error)?;
+                let read = file
+                    .read(&mut file_buf[..len])
+                    .map_err(|e| format!("ZModem 读取文件失败: {e}"))?;
+                if read == 0 && max_len > 0 {
+                    return Err("ZModem 本地文件提前结束".into());
+                }
+                sender
+                    .submit_file(&file_buf[..read])
+                    .map_err(zmodem_error)?;
                 bytes_done = bytes_done.max(u64::from(offset.get()) + read as u64);
                 progress.update(bytes_done.min(total), total).await?;
             }
@@ -46,7 +67,9 @@ pub(super) async fn zmodem_send_file(
                     if consumed > 0 {
                         input.drain(..consumed);
                         last_progress = Instant::now();
-                    } else { tokio::time::sleep(Duration::from_millis(5)).await; }
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
                 }
                 continue;
             }
@@ -57,8 +80,11 @@ pub(super) async fn zmodem_send_file(
 }
 
 pub(super) async fn zmodem_receive_files(
-    state: &AppState, _session_id: &str, mut reader: ModemByteReader,
-    local_destination: &str, progress: &TransferProgressContext,
+    state: &AppState,
+    _session_id: &str,
+    mut reader: ModemByteReader,
+    local_destination: &str,
+    progress: &TransferProgressContext,
 ) -> Result<u64, String> {
     let mut receiver = zmodem2::Receiver::new().map_err(zmodem_error)?;
     let mut input = Vec::new();
@@ -76,9 +102,12 @@ pub(super) async fn zmodem_receive_files(
                 receiver.wire_written(bytes.len());
             }
             Action::Event(Event::FileStarted(info)) => {
-                if current_file.is_some() { return Err("ZModem 前一个文件尚未完成".into()); }
+                if current_file.is_some() {
+                    return Err("ZModem 前一个文件尚未完成".into());
+                }
                 let incoming = String::from_utf8_lossy(info.name);
-                let target = zmodem_local_target_path(local_destination, &incoming, received_files)?;
+                let target =
+                    zmodem_local_target_path(local_destination, &incoming, received_files)?;
                 current_file = Some(PendingLocalTransferOutput::create(
                     &target,
                     "ZModem 本地目标文件",
@@ -108,7 +137,9 @@ pub(super) async fn zmodem_receive_files(
             Action::Event(Event::SessionCompleted) => session_done = true,
             Action::Event(Event::Aborted) => return Err("ZModem 远端取消接收".into()),
             Action::Idle if session_done => {
-                if current_file.is_some() { return Err("ZModem 会话结束但文件未完成".into()); }
+                if current_file.is_some() {
+                    return Err("ZModem 会话结束但文件未完成".into());
+                }
                 return Ok(bytes_done);
             }
             Action::Idle => {
@@ -118,7 +149,9 @@ pub(super) async fn zmodem_receive_files(
                     if consumed > 0 {
                         input.drain(..consumed);
                         last_progress = Instant::now();
-                    } else { tokio::time::sleep(Duration::from_millis(5)).await; }
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
                 }
                 continue;
             }
@@ -128,12 +161,22 @@ pub(super) async fn zmodem_receive_files(
     }
 }
 
-fn zmodem_error(error: zmodem2::Error) -> String { format!("ZModem 协议处理失败: {error}") }
+fn zmodem_error(error: zmodem2::Error) -> String {
+    format!("ZModem 协议处理失败: {error}")
+}
 
-async fn read_zmodem_input(reader: &mut ModemByteReader, input: &mut Vec<u8>, last_progress: Instant) -> Result<(), String> {
-    if last_progress.elapsed() > Duration::from_secs(90) { return Err("ZModem idle timeout".into()); }
+async fn read_zmodem_input(
+    reader: &mut ModemByteReader,
+    input: &mut Vec<u8>,
+    last_progress: Instant,
+) -> Result<(), String> {
+    if last_progress.elapsed() > Duration::from_secs(90) {
+        return Err("ZModem idle timeout".into());
+    }
     // Drain buffered input before reading again to bound memory under backpressure.
-    if !input.is_empty() { return Ok(()); }
+    if !input.is_empty() {
+        return Ok(());
+    }
     match reader.next_chunk(Duration::from_millis(30), 4096).await {
         Ok(bytes) => input.extend_from_slice(&bytes),
         Err(error) if is_modem_timeout(&error) => {}

@@ -166,10 +166,8 @@ pub(super) async fn close_session_under_lifecycle_lock(
     // Close registration first. This shares the worker counter mutex, so a
     // late interactive write or reconnect worker cannot start after the idle
     // wait has observed zero workers.
-    let serial_shutdown = SerialSessionShutdownGuard::new(
-        Arc::clone(&state.serial_workers),
-        session_id.clone(),
-    );
+    let serial_shutdown =
+        SerialSessionShutdownGuard::new(Arc::clone(&state.serial_workers), session_id.clone());
 
     // Stop queued keystrokes before removing the runtime. This prevents a
     // close/reconnect race from leaving an orphan worker holding old input.
@@ -224,10 +222,7 @@ pub(super) async fn close_session_under_lifecycle_lock(
     let serial_workers = Arc::clone(&state.serial_workers);
     let serial_session_id = session_id.clone();
     let remaining_serial_workers = tauri::async_runtime::spawn_blocking(move || {
-        serial_workers.wait_for_session_idle(
-            &serial_session_id,
-            SERIAL_RUNTIME_CLOSE_TIMEOUT,
-        )
+        serial_workers.wait_for_session_idle(&serial_session_id, SERIAL_RUNTIME_CLOSE_TIMEOUT)
     })
     .await
     .unwrap_or(usize::MAX);
@@ -247,7 +242,9 @@ pub(super) async fn close_session_under_lifecycle_lock(
                 Some(reason.to_string()),
             );
             store.record_system_event(&session_id, format!("PortMate: {reason}"));
-            if let Err(error) = persist_applied_store(&store, &state.store_path, "serial close timeout state") {
+            if let Err(error) =
+                persist_applied_store(&store, &state.store_path, "serial close timeout state")
+            {
                 eprintln!("PortMate: failed to persist serial close timeout state: {error}");
             }
         }

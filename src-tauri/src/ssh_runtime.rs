@@ -94,7 +94,8 @@ pub(super) async fn disconnect_registered_ssh_runtime(
         }
     } else {
         drop(writer);
-        if let Some(warning) = request_shared_backend_disconnect_with_timeout(&handle, reason).await {
+        if let Some(warning) = request_shared_backend_disconnect_with_timeout(&handle, reason).await
+        {
             eprintln!("PortMate: SSH runtime {runtime_id} disconnect warning: {warning}");
         }
         if tokio::time::timeout(SSH_READER_SHUTDOWN_TIMEOUT, reader_finished)

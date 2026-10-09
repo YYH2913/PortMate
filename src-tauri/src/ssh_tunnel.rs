@@ -97,8 +97,7 @@ impl TunnelRuntime {
 
 impl TunnelRuntimeOwner {
     pub(super) fn owns(&self, runtime: &TunnelRuntime) -> bool {
-        runtime.ssh_runtime_id == self.ssh_runtime_id
-            && Arc::ptr_eq(&runtime.closed, &self.closed)
+        runtime.ssh_runtime_id == self.ssh_runtime_id && Arc::ptr_eq(&runtime.closed, &self.closed)
     }
 }
 

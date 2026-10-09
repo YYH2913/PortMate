@@ -271,9 +271,7 @@ pub(super) fn fail_pending_tcp_reconnect_install(
     let mut store = match state.store.lock() {
         Ok(store) => store,
         Err(lock_error) => {
-            eprintln!(
-                "PortMate: failed to record {label} reconnect install failure: {lock_error}"
-            );
+            eprintln!("PortMate: failed to record {label} reconnect install failure: {lock_error}");
             return;
         }
     };
@@ -288,8 +286,6 @@ pub(super) fn fail_pending_tcp_reconnect_install(
         &state.store_path,
         "failed TCP/Telnet reconnect install state",
     ) {
-        eprintln!(
-            "PortMate: failed to persist {label} reconnect install failure: {save_error}"
-        );
+        eprintln!("PortMate: failed to persist {label} reconnect install failure: {save_error}");
     }
 }

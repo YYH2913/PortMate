@@ -189,9 +189,10 @@ pub(super) fn ensure_tunnel_runtime_current(
 ) -> Result<(), String> {
     let owner = expected.owner();
     let tunnels = state.tunnels.lock().map_err(|error| error.to_string())?;
-    if tunnels.get(tunnel_id).is_some_and(|runtime| {
-        owner.owns(runtime) && !runtime.closed.load(Ordering::SeqCst)
-    }) {
+    if tunnels
+        .get(tunnel_id)
+        .is_some_and(|runtime| owner.owns(runtime) && !runtime.closed.load(Ordering::SeqCst))
+    {
         Ok(())
     } else {
         Err(format!(
@@ -208,13 +209,7 @@ pub(super) async fn probe_remote_tunnel_health(
     if runtime.closed.load(Ordering::SeqCst) {
         return Err("tunnel closed before listener probe".to_string());
     }
-    let (
-        handle,
-        remote_forwards,
-        remote_forward_acceptor_started,
-        ssh_runtime_closed,
-        ssh_backend,
-    ) = {
+    let (handle, remote_forwards, remote_forward_acceptor_started, ssh_runtime_closed, ssh_backend) = {
         let connections = state.ssh.lock().map_err(|error| error.to_string())?;
         connections
             .get(&runtime.session_id)

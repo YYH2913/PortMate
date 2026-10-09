@@ -43,9 +43,7 @@ pub(super) fn stage_mcp_content_transfer(
     if let Err(error) = file.write_all(&content).and_then(|_| file.sync_all()) {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&task_dir);
-        return Err(format!(
-            "failed to write MCP content staging file: {error}"
-        ));
+        return Err(format!("failed to write MCP content staging file: {error}"));
     }
     Ok((path.display().to_string(), path))
 }
@@ -173,9 +171,7 @@ pub(super) fn stage_mcp_content_upload(
     Ok((staged_path.display().to_string(), staged_path))
 }
 
-fn validate_mcp_content_upload_metadata(
-    metadata: &McpContentUploadMetadata,
-) -> Result<(), String> {
+fn validate_mcp_content_upload_metadata(metadata: &McpContentUploadMetadata) -> Result<(), String> {
     if metadata.version != MCP_CONTENT_UPLOAD_METADATA_VERSION
         || Uuid::parse_str(&metadata.upload_id).is_err()
         || metadata.size_bytes == 0
@@ -192,9 +188,10 @@ fn validate_mcp_content_upload_metadata(
     if metadata.file_name.is_empty()
         || metadata.file_name.len() > 255
         || matches!(metadata.file_name.as_str(), "." | "..")
-        || metadata.file_name.chars().any(|character| {
-            character.is_control() || matches!(character, '\0' | '/' | '\\' | ':')
-        })
+        || metadata
+            .file_name
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\0' | '/' | '\\' | ':'))
     {
         return Err("invalid MCP content upload file name".to_string());
     }
@@ -222,8 +219,9 @@ fn ensure_mcp_content_staging_root(state: &AppState) -> Result<PathBuf, String> 
     let parent = staging_root
         .parent()
         .ok_or_else(|| "MCP content staging directory is unavailable".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create MCP content staging parent directory: {error}"))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!("failed to create MCP content staging parent directory: {error}")
+    })?;
     match fs::create_dir(&staging_root) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

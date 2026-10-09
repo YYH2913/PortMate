@@ -494,10 +494,7 @@ fn cleanup_expired_uploads(uploads_root: &Path, now: u64) -> Result<()> {
             continue;
         }
         let upload_dir = entry.path();
-        let metadata = match read_upload_metadata(&upload_dir) {
-            Ok(metadata) => Some(metadata),
-            Err(_) => None,
-        };
+        let metadata = read_upload_metadata(&upload_dir).ok();
         let expired = metadata.as_ref().is_some_and(|metadata| {
             now.saturating_sub(metadata.created_at_unix_seconds) > MCP_CONTENT_UPLOAD_EXPIRY_SECONDS
         }) || metadata.is_none() && upload_directory_is_expired(&upload_dir, now);
@@ -532,7 +529,9 @@ fn upload_directory_is_expired(upload_dir: &Path, now: u64) -> bool {
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .is_some_and(|modified| now.saturating_sub(modified.as_secs()) > MCP_CONTENT_UPLOAD_EXPIRY_SECONDS)
+        .is_some_and(|modified| {
+            now.saturating_sub(modified.as_secs()) > MCP_CONTENT_UPLOAD_EXPIRY_SECONDS
+        })
 }
 
 fn unix_seconds_now() -> u64 {

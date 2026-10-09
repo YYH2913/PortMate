@@ -98,9 +98,7 @@ async fn start_device_modem(
 ) -> Result<DeviceModemSession, String> {
     let binding = transfer_modem_binding(state, session_id, progress).await?;
     let tap_receiver = binding.subscribe();
-    let baud_restore_receiver = receiver
-        .baud_rate
-        .map(|_| binding.subscribe());
+    let baud_restore_receiver = receiver.baud_rate.map(|_| binding.subscribe());
     let original_baud_rate = receiver
         .baud_rate
         .map(|_| current_serial_runtime_baud(state, session_id, binding.runtime_id()))
@@ -209,9 +207,9 @@ async fn finish_device_modem<T>(
         (Ok(value), None) => Ok(value),
         (Ok(_), Some(error)) => Err(format!("文件已发送，但恢复 load 串口波特率失败: {error}")),
         (Err(error), None) => Err(error),
-        (Err(error), Some(cleanup_error)) => {
-            Err(format!("{error}; 恢复 load 串口波特率失败: {cleanup_error}"))
-        }
+        (Err(error), Some(cleanup_error)) => Err(format!(
+            "{error}; 恢复 load 串口波特率失败: {cleanup_error}"
+        )),
     }
 }
 
@@ -291,8 +289,7 @@ async fn wait_for_device_output_marker(
                 String::from_utf8_lossy(marker)
             ));
         }
-        match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv())
-            .await
+        match tokio::time::timeout(remaining.min(MODEM_CANCEL_POLL_INTERVAL), receiver.recv()).await
         {
             Ok(Ok(bytes)) => {
                 buffered.extend_from_slice(&bytes);

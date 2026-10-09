@@ -73,10 +73,7 @@ fn prepare_runtime_secret(
     Ok(Some(Zeroizing::new(value)))
 }
 
-fn prune_expired_session_credentials(
-    registry: &mut SessionCredentialRegistry,
-    now: Instant,
-) {
+fn prune_expired_session_credentials(registry: &mut SessionCredentialRegistry, now: Instant) {
     registry
         .entries
         .retain(|_, credentials| credentials.expires_at > now);

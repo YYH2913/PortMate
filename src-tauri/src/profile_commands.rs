@@ -247,12 +247,11 @@ pub(crate) fn save_session_profile(
                     "内部保留 secretRef 不能用作 Profile 凭据".to_string(),
                 ));
             }
-            read_secret_from_store(secret_ref)
-                .map_err(|error| {
-                    StoreCommitError::not_committed(format!(
-                        "新增 Profile secretRef 无法读取 ({secret_ref}): {error}"
-                    ))
-                })?;
+            read_secret_from_store(secret_ref).map_err(|error| {
+                StoreCommitError::not_committed(format!(
+                    "新增 Profile secretRef 无法读取 ({secret_ref}): {error}"
+                ))
+            })?;
         }
         commit_store_mutation_state(&mut store, &state.store_path, |next_store| {
             next_store.validate_profile_capacity(&profile.id)?;

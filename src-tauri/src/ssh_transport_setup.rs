@@ -118,17 +118,16 @@ pub(super) async fn request_shared_ssh_disconnect_with_timeout<H: client::Handle
     handle: &Arc<tokio::sync::Mutex<client::Handle<H>>>,
     disconnect_description: &str,
 ) -> Option<String> {
-    let handle = match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock())
-        .await
-    {
-        Ok(handle) => handle,
-        Err(_) => {
-            return Some(format!(
-                "SSH handle lock timed out after {} ms",
-                SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
-            ));
-        }
-    };
+    let handle =
+        match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock()).await {
+            Ok(handle) => handle,
+            Err(_) => {
+                return Some(format!(
+                    "SSH handle lock timed out after {} ms",
+                    SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+                ));
+            }
+        };
     request_ssh_disconnect_with_timeout(&handle, disconnect_description).await
 }
 
@@ -136,17 +135,16 @@ pub(super) async fn request_shared_backend_disconnect_with_timeout<H: client::Ha
     handle: &Arc<tokio::sync::Mutex<SshBackendSession<H>>>,
     disconnect_description: &str,
 ) -> Option<String> {
-    let handle = match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock())
-        .await
-    {
-        Ok(handle) => handle,
-        Err(_) => {
-            return Some(format!(
-                "SSH backend handle lock timed out after {} ms",
-                SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
-            ));
-        }
-    };
+    let handle =
+        match tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, handle.lock()).await {
+            Ok(handle) => handle,
+            Err(_) => {
+                return Some(format!(
+                    "SSH backend handle lock timed out after {} ms",
+                    SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT.as_millis()
+                ));
+            }
+        };
     request_backend_disconnect_with_timeout(&handle, disconnect_description).await
 }
 
@@ -291,10 +289,16 @@ pub(super) async fn open_ssh_terminal_channel_with_timeout<H: client::Handler>(
                 .map_err(|error| format!("SSH 请求 agent forwarding 失败: {error}"))?;
         }
         if matches!(profile.connection, ConnectionConfig::Tmux(_)) {
-            channel.exec(true, "exec tmux new-session -A -s portmate").await.map_err(|error| error.to_string())?;
+            channel
+                .exec(true, "exec tmux new-session -A -s portmate")
+                .await
+                .map_err(|error| error.to_string())?;
             await_ssh_terminal_reply(&mut channel, &mut pending, "tmux exec").await?;
         } else {
-            channel.request_shell(true).await.map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
+            channel
+                .request_shell(true)
+                .await
+                .map_err(|error| format!("SSH 请求 shell 失败: {error}"))?;
             await_ssh_terminal_reply(&mut channel, &mut pending, "shell").await?;
         }
         Ok::<_, String>((channel, pending))

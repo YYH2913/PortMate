@@ -52,9 +52,7 @@ pub(crate) fn finish_transfer_task(
     message: String,
     bytes: Option<u64>,
 ) {
-    finish_transfer_task_for_runtime(
-        state, task_id, session_id, status, message, bytes, None,
-    );
+    finish_transfer_task_for_runtime(state, task_id, session_id, status, message, bytes, None);
 }
 
 pub(crate) fn finish_transfer_task_for_runtime(
@@ -122,9 +120,7 @@ pub(crate) fn finish_transfer_task_for_generations(
     } else {
         None
     };
-    let ssh_runtimes = if status == TransferStatus::Completed
-        && expected_ssh_runtime_id.is_some()
-    {
+    let ssh_runtimes = if status == TransferStatus::Completed && expected_ssh_runtime_id.is_some() {
         match state.ssh.lock() {
             Ok(runtimes) => Some(runtimes),
             Err(error) => {
@@ -153,8 +149,7 @@ pub(crate) fn finish_transfer_task_for_generations(
                 if !runtime_current {
                     status = TransferStatus::Failed;
                     bytes = None;
-                    message =
-                        "Modem runtime 在传输完成提交前已变化或断开，请重试".to_string();
+                    message = "Modem runtime 在传输完成提交前已变化或断开，请重试".to_string();
                 }
             }
             if let Some(expected_runtime_id) = expected_ssh_runtime_id {
@@ -164,15 +159,13 @@ pub(crate) fn finish_transfer_task_for_generations(
                             && !runtime.closed.load(Ordering::SeqCst)
                     })
                 }) && store.runtimes.iter().any(|runtime| {
-                    runtime.session_id == session_id
-                        && runtime.status == SessionStatus::Connected
+                    runtime.session_id == session_id && runtime.status == SessionStatus::Connected
                 });
                 if !runtime_current {
                     status = TransferStatus::Failed;
                     bytes = None;
                     message =
-                        "SSH runtime 在文件传输完成提交前已变化或断开，请刷新后重试"
-                            .to_string();
+                        "SSH runtime 在文件传输完成提交前已变化或断开，请刷新后重试".to_string();
                 }
             }
         }

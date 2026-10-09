@@ -45,11 +45,7 @@ async fn run_libssh_sftp_file_operation_with_timeout<T, F>(
 ) -> std::io::Result<T>
 where
     T: Send + 'static,
-    F: FnOnce(
-            &libssh_rs::Sftp,
-            &mut Option<libssh_rs::SftpFile>,
-            Instant,
-        ) -> std::io::Result<T>
+    F: FnOnce(&libssh_rs::Sftp, &mut Option<libssh_rs::SftpFile>, Instant) -> std::io::Result<T>
         + Send
         + 'static,
 {
@@ -64,7 +60,10 @@ where
         .map_err(|_| {
             sftp_file_operation_error(
                 std::io::ErrorKind::TimedOut,
-                format!("{label} SFTP lock timed out after {} ms", timeout.as_millis()),
+                format!(
+                    "{label} SFTP lock timed out after {} ms",
+                    timeout.as_millis()
+                ),
             )
         })?;
     let remaining = deadline
@@ -81,7 +80,10 @@ where
         .map_err(|_| {
             sftp_file_operation_error(
                 std::io::ErrorKind::TimedOut,
-                format!("{label} file lock timed out after {} ms", timeout.as_millis()),
+                format!(
+                    "{label} file lock timed out after {} ms",
+                    timeout.as_millis()
+                ),
             )
         })?;
     let remaining = deadline
@@ -103,9 +105,9 @@ where
             std::io::ErrorKind::TimedOut,
             format!("{label} timed out after {} ms", timeout.as_millis()),
         )),
-        Err(BlockingWorkerWaitError::Failed(error)) => {
-            Err(std::io::Error::other(format!("{label} worker failed: {error}")))
-        }
+        Err(BlockingWorkerWaitError::Failed(error)) => Err(std::io::Error::other(format!(
+            "{label} worker failed: {error}"
+        ))),
     }
 }
 
@@ -213,12 +215,7 @@ impl SftpBackendFile {
                     file,
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP flush",
-                    |_, file, _| {
-                        file
-                        .as_mut()
-                        .ok_or_else(sftp_file_closed_error)?
-                        .flush()
-                    },
+                    |_, file, _| file.as_mut().ok_or_else(sftp_file_closed_error)?.flush(),
                 )
                 .await
             }
@@ -265,10 +262,9 @@ impl SftpBackendFile {
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP seek",
                     move |_, file, _| {
-                        file
-                        .as_mut()
-                        .ok_or_else(sftp_file_closed_error)?
-                        .seek(position)
+                        file.as_mut()
+                            .ok_or_else(sftp_file_closed_error)?
+                            .seek(position)
                     },
                 )
                 .await

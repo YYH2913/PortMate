@@ -74,27 +74,27 @@ fn accepts_http_media_type(
     accept
         .split(',')
         .filter_map(|item| {
-        let mut parts = item.split(';');
-        let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
-        let (range_type, range_subtype) = media_type.split_once('/')?;
-        let mut quality = 1.0_f32;
-        for parameter in parts {
-            let Some((name, value)) = parameter.trim().split_once('=') else {
-                continue;
-            };
-            if name.trim().eq_ignore_ascii_case("q") {
-                quality = value.trim().parse::<f32>().unwrap_or(0.0);
+            let mut parts = item.split(';');
+            let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+            let (range_type, range_subtype) = media_type.split_once('/')?;
+            let mut quality = 1.0_f32;
+            for parameter in parts {
+                let Some((name, value)) = parameter.trim().split_once('=') else {
+                    continue;
+                };
+                if name.trim().eq_ignore_ascii_case("q") {
+                    quality = value.trim().parse::<f32>().unwrap_or(0.0);
+                }
             }
-        }
-        if !(0.0..=1.0).contains(&quality)
-            || (range_type != "*" && range_type != offered_type)
-            || (range_subtype != "*" && range_subtype != offered_subtype)
-        {
-            return None;
-        }
-        let specificity = u8::from(range_type != "*") + u8::from(range_subtype != "*");
-        Some((specificity, quality))
-    })
-    .max_by_key(|(specificity, _)| *specificity)
-    .is_some_and(|(_, quality)| quality > 0.0)
+            if !(0.0..=1.0).contains(&quality)
+                || (range_type != "*" && range_type != offered_type)
+                || (range_subtype != "*" && range_subtype != offered_subtype)
+            {
+                return None;
+            }
+            let specificity = u8::from(range_type != "*") + u8::from(range_subtype != "*");
+            Some((specificity, quality))
+        })
+        .max_by_key(|(specificity, _)| *specificity)
+        .is_some_and(|(_, quality)| quality > 0.0)
 }

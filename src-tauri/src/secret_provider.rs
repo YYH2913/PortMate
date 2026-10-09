@@ -52,8 +52,7 @@ pub(super) fn ensure_user_secret_ref_is_writable(secret_ref: &str) -> Result<(),
     }
     if secret_ref.starts_with("keychain:") {
         return Err(
-            "系统密钥库中的旧用户凭据只支持读取、删除和迁移，不能通过通用凭据接口写入"
-                .to_string(),
+            "系统密钥库中的旧用户凭据只支持读取、删除和迁移，不能通过通用凭据接口写入".to_string(),
         );
     }
     Err("用户 secretRef 必须使用 stronghold: 前缀".to_string())

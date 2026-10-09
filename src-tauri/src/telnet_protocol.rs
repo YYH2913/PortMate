@@ -153,10 +153,15 @@ impl TelnetNegotiator {
                 }
                 TelnetState::SubnegotiationIac => {
                     if *byte == TELNET_SE {
-                        if let Some(reply) = (!self.subnegotiation_overflow).then(|| telnet_subnegotiation_reply(
-                            &self.subnegotiation,
-                            &self.runtime.terminal_type,
-                        )).flatten() {
+                        if let Some(reply) = (!self.subnegotiation_overflow)
+                            .then(|| {
+                                telnet_subnegotiation_reply(
+                                    &self.subnegotiation,
+                                    &self.runtime.terminal_type,
+                                )
+                            })
+                            .flatten()
+                        {
                             replies.push(reply);
                         }
                         self.subnegotiation.clear();

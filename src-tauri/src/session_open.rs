@@ -192,14 +192,8 @@ pub(super) async fn open_reserved_session_inner(
     credentials: SessionOpenCredentials,
     cancellation: Arc<SessionOpenCancellation>,
 ) -> Result<SessionSummary, String> {
-    open_reserved_session_inner_with_validation(
-        state,
-        session_id,
-        credentials,
-        cancellation,
-        None,
-    )
-    .await
+    open_reserved_session_inner_with_validation(state, session_id, credentials, cancellation, None)
+        .await
 }
 
 async fn open_reserved_session_inner_with_validation(
@@ -408,9 +402,7 @@ pub(super) fn ensure_session_can_open(state: &AppState, session_id: &str) -> Res
     if state.serial_workers.is_session_shutting_down(session_id)
         || state.serial_workers.active_for_session(session_id) > 0
     {
-        return Err(
-            "串口会话仍在释放旧句柄，请等待关闭完成后再重新连接".to_string(),
-        );
+        return Err("串口会话仍在释放旧句柄，请等待关闭完成后再重新连接".to_string());
     }
     let status = {
         let store = state.store.lock().map_err(|error| error.to_string())?;

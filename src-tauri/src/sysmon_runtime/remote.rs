@@ -95,7 +95,10 @@ pub(crate) async fn detect_remote_sysmon_platform(
     .await
     {
         if let Some(platform) = remote_sysmon_platform_label(&output) {
-            if matches!(platform.as_str(), "Linux" | "Darwin" | "FreeBSD" | "Windows") {
+            if matches!(
+                platform.as_str(),
+                "Linux" | "Darwin" | "FreeBSD" | "Windows"
+            ) {
                 return Ok(platform);
             }
             if platform

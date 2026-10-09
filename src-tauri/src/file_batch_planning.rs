@@ -164,9 +164,7 @@ pub(super) async fn batch_target_kind(
             Err(metadata_error) => match sftp.try_exists(path.to_string()).await {
                 Ok(false) => return Ok(BatchTargetKind::Missing),
                 Ok(true) => {
-                    return Err(format!(
-                        "无法确认远端批次目标 {path}: {metadata_error}"
-                    ));
+                    return Err(format!("无法确认远端批次目标 {path}: {metadata_error}"));
                 }
                 Err(exists_error) => {
                     return Err(format!(

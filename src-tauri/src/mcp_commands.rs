@@ -216,7 +216,9 @@ pub(super) fn finish_mcp_grant_change_with(
             warnings.push(format!("授权已失效，但停止 HTTP Bridge 失败：{error}"));
         }
         if let Err(error) = delete_token() {
-            warnings.push(format!("授权已失效，但清除旧 Token 失败：{error}。重新绑定前请重试。"));
+            warnings.push(format!(
+                "授权已失效，但清除旧 Token 失败：{error}。重新绑定前请重试。"
+            ));
         }
     }
     McpGrantMutationResponse {
@@ -234,9 +236,13 @@ fn mutate_mcp_grant(
 ) -> Result<McpGrantMutationResponse, String> {
     // Same lock order as start/save/token rotation. Keep the binding stable
     // until cleanup finishes; another window cannot rebind during revocation.
-    let mut runtime = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let mut runtime = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
-    if enables_access && store.mcp_http_settings.client_id == client_id
+    if enables_access
+        && store.mcp_http_settings.client_id == client_id
         && !mcp_http_client_has_active_grant(&store, client_id, Utc::now())
     {
         // Recreating/renewing an invalid bound identity must not resurrect a
@@ -261,8 +267,12 @@ pub(crate) fn save_mcp_grant(
     let grant = normalize_mcp_grant(grant)?;
     let client_id = grant.client_id.clone();
     let enables_access = grant.revoked_at.is_none()
-        && !grant.expires_at.is_some_and(|expires| expires <= Utc::now());
-    mutate_mcp_grant(state.inner(), &client_id, enables_access, |store| upsert_mcp_grant_in_store(store, grant))
+        && !grant
+            .expires_at
+            .is_some_and(|expires| expires <= Utc::now());
+    mutate_mcp_grant(state.inner(), &client_id, enables_access, |store| {
+        upsert_mcp_grant_in_store(store, grant)
+    })
 }
 
 #[tauri::command]
@@ -271,12 +281,17 @@ pub(crate) fn revoke_mcp_grant(
     client_id: String,
 ) -> Result<McpGrantMutationResponse, String> {
     let client_id = normalize_mcp_client_id(&client_id)?;
-    mutate_mcp_grant(state.inner(), &client_id, false, |store| Ok(revoke_mcp_grant_from_store(store, &client_id)))
+    mutate_mcp_grant(state.inner(), &client_id, false, |store| {
+        Ok(revoke_mcp_grant_from_store(store, &client_id))
+    })
 }
 
 #[tauri::command]
 pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfig, String> {
-    let _runtime_guard = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let _runtime_guard = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
     let settings = read_mcp_http_settings(state.inner())?;
     let active_client = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -294,7 +309,10 @@ pub(crate) fn mcp_http_config(state: State<'_, AppState>) -> Result<McpHttpConfi
 pub(crate) fn mcp_http_access_config(
     state: State<'_, AppState>,
 ) -> Result<McpHttpAccessResponse, String> {
-    let _runtime_guard = state.mcp_http_process.lock().map_err(|error| error.to_string())?;
+    let _runtime_guard = state
+        .mcp_http_process
+        .lock()
+        .map_err(|error| error.to_string())?;
     let settings = read_mcp_http_settings(state.inner())?;
     let active_client = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -432,9 +450,7 @@ pub(crate) async fn restart_mcp_http(
 }
 
 #[tauri::command]
-pub(crate) fn stop_mcp_http(
-    state: State<'_, AppState>,
-) -> Result<McpHttpRuntimeStatus, String> {
+pub(crate) fn stop_mcp_http(state: State<'_, AppState>) -> Result<McpHttpRuntimeStatus, String> {
     stop_mcp_http_runtime_inner(state.inner())
 }
 

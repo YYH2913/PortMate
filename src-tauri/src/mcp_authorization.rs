@@ -221,8 +221,8 @@ pub(super) fn revalidate_ipc_write_target(
         );
     }
     let store = state.store.lock().map_err(|error| error.to_string())?;
-    let still_allowed = !trusted_bootstrap
-        && store.mcp_can(&request.client_id, scope, authorized_session_id);
+    let still_allowed =
+        !trusted_bootstrap && store.mcp_can(&request.client_id, scope, authorized_session_id);
     if !still_allowed {
         return Err("MCP grant changed after authorization; request was not executed".to_string());
     }
@@ -542,7 +542,10 @@ pub(super) async fn handle_ipc_request(
         }
         Err(error) => Err(error),
     };
-    let decision = if result.as_ref().is_ok_and(|value| value.get("failure").is_none_or(serde_json::Value::is_null)) {
+    let decision = if result
+        .as_ref()
+        .is_ok_and(|value| value.get("failure").is_none_or(serde_json::Value::is_null))
+    {
         "succeeded"
     } else {
         "failed"

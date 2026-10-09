@@ -142,9 +142,7 @@ pub(super) fn stop_session_tunnel_runtimes(
     Ok(removed)
 }
 
-pub(super) async fn await_tunnel_listener_shutdowns(
-    runtimes: &[TunnelRuntime],
-) -> Vec<String> {
+pub(super) async fn await_tunnel_listener_shutdowns(runtimes: &[TunnelRuntime]) -> Vec<String> {
     let deadline = tokio::time::Instant::now() + TUNNEL_LISTENER_SHUTDOWN_TIMEOUT;
     let mut timed_out = Vec::new();
     for runtime in runtimes {
@@ -281,13 +279,8 @@ pub(super) async fn stop_tunnel_runtime_effects(
     };
     if let Some((handle, remote_forwards)) = remote_forward {
         warnings.extend(
-            cancel_remote_tunnel_forward(
-                handle,
-                remote_forwards,
-                &runtime.spec,
-                &runtime.metrics,
-            )
-            .await,
+            cancel_remote_tunnel_forward(handle, remote_forwards, &runtime.spec, &runtime.metrics)
+                .await,
         );
     } else if warnings.is_empty() {
         warnings.push("SSH runtime unavailable during remote cancel".to_string());
@@ -385,8 +378,8 @@ pub(super) fn ensure_remote_forward_route_slot(
         remote_forward_port_key(tunnel.bind_port),
     ] {
         if let Some(existing) = forwards.get(&key) {
-            let owned = existing.spec.id == tunnel.id
-                && Arc::ptr_eq(&existing.metrics, route_owner);
+            let owned =
+                existing.spec.id == tunnel.id && Arc::ptr_eq(&existing.metrics, route_owner);
             if !owned {
                 return Err(format!(
                     "remote tunnel route already registered for {}:{}",

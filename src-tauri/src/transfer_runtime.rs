@@ -42,10 +42,7 @@ impl TransferCancellation {
         changed.await;
     }
 
-    pub(super) fn bind_modem_runtime(
-        &self,
-        binding: ModemRuntimeBinding,
-    ) -> Result<(), String> {
+    pub(super) fn bind_modem_runtime(&self, binding: ModemRuntimeBinding) -> Result<(), String> {
         *self
             .modem_binding
             .lock()
@@ -80,7 +77,10 @@ pub(super) async fn retry_transfer_inner_with_validation(
             .transfer_by_id(transfer_id)
             .ok_or_else(|| format!("unknown transfer: {transfer_id}"))?
     };
-    if !matches!(previous.status, TransferStatus::Failed | TransferStatus::Cancelled) {
+    if !matches!(
+        previous.status,
+        TransferStatus::Failed | TransferStatus::Cancelled
+    ) {
         return Err(format!(
             "transfer {transfer_id} is not retryable while it is {:?}; only failed or cancelled transfers can be retried",
             previous.status
@@ -131,14 +131,8 @@ pub(super) async fn start_transfer_inner_for_ssh_runtime(
     request: StartTransferRequest,
     expected_ssh_runtime_id: &str,
 ) -> Result<TransferTask, String> {
-    start_transfer_inner_with_context(
-        state,
-        request,
-        None,
-        Some(expected_ssh_runtime_id),
-        None,
-    )
-    .await
+    start_transfer_inner_with_context(state, request, None, Some(expected_ssh_runtime_id), None)
+        .await
 }
 
 async fn start_transfer_inner_with_context(
@@ -289,16 +283,13 @@ fn transfer_ssh_runtime_id(
         if current_runtime_id.as_deref() != Some(required_runtime_id)
             || !ssh_runtime_connected(state, &request.session_id, required_runtime_id)
         {
-            return Err(
-                "SSH runtime 在文件批次规划后已变化或断开，请刷新目录后重试".to_string(),
-            );
+            return Err("SSH runtime 在文件批次规划后已变化或断开，请刷新目录后重试".to_string());
         }
         return Ok(Some(required_runtime_id.to_string()));
     }
 
-    Ok(current_runtime_id.filter(|runtime_id| {
-        ssh_runtime_connected(state, &request.session_id, runtime_id)
-    }))
+    Ok(current_runtime_id
+        .filter(|runtime_id| ssh_runtime_connected(state, &request.session_id, runtime_id)))
 }
 
 fn transfer_uses_ssh_files(request: &StartTransferRequest) -> bool {
@@ -524,8 +515,7 @@ pub(super) async fn run_queued_transfer(
                 | TransferProtocol::Xmodem
                 | TransferProtocol::Ymodem
                 | TransferProtocol::Zmodem
-        )
-    {
+        ) {
         match cancel.modem_runtime_binding() {
             Ok(Some(binding)) => Some(binding),
             Ok(None) => {

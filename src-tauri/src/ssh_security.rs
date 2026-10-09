@@ -328,7 +328,13 @@ pub(super) fn touch_observed_host_key(
             }
         }
     }
-    let mirrors = store.host_keys.keys.iter().filter(|key| touched_key_ids.contains(&key.id)).cloned().collect::<Vec<_>>();
+    let mirrors = store
+        .host_keys
+        .keys
+        .iter()
+        .filter(|key| touched_key_ids.contains(&key.id))
+        .cloned()
+        .collect::<Vec<_>>();
     mirror_persistent_host_keys(store, &mirrors)?;
     Ok(touched)
 }

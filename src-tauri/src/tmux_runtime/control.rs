@@ -84,13 +84,9 @@ pub(crate) fn install_tmux_control_runtime(
     control_key: &(String, String),
     runtime: TmuxControlRuntime,
 ) -> Result<TmuxControlInstall, String> {
-    if let Some(existing) = controls
-        .get(control_key)
-        .filter(|existing| {
-            existing.ssh_runtime_id == runtime.ssh_runtime_id
-                && !existing.cancel.load(Ordering::SeqCst)
-        })
-    {
+    if let Some(existing) = controls.get(control_key).filter(|existing| {
+        existing.ssh_runtime_id == runtime.ssh_runtime_id && !existing.cancel.load(Ordering::SeqCst)
+    }) {
         return Ok(TmuxControlInstall::Existing(existing.clone()));
     }
     ensure_tmux_control_capacity(controls, control_key)?;

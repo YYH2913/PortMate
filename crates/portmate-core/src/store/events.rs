@@ -119,8 +119,11 @@ impl SessionStore {
             .last()
             .is_some_and(|recorded| recorded.ts > event.ts);
         if event.direction == EventDirection::Inbound
-            && matches!(event.stream, EventStream::Stdout | EventStream::Stderr) {
-            if let Some(text) = &event.text { self.process_terminal_output(&session_id, text, event.ts); }
+            && matches!(event.stream, EventStream::Stdout | EventStream::Stderr)
+        {
+            if let Some(text) = &event.text {
+                self.process_terminal_output(&session_id, text, event.ts);
+            }
         }
         self.events.push(event.clone());
         if arrived_out_of_order {
