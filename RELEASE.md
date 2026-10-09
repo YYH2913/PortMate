@@ -3,12 +3,14 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
-The local `0.1.11` Windows GNU x86-64 portable build is recorded in
-`tmp/windows-release-0.1.11-2026-10-07.md`, including the source revision, payload
+The local `0.1.12` Windows GNU x86-64 portable build is recorded in
+`tmp/windows-release-0.1.12-2026-10-08.md`, including the source revision, payload
 hashes, PE/version/frontend checks, and executed tests. Files under `tmp/` are local
 review and build records, are ignored by Git, and are not included in commits.
-The latest rebuild includes the optional SSH/Tmux automatic reconnect fingerprint bypass;
-its local function-by-function recheck is in `tmp/reconnect-host-key-review-0.1.11-2026-10-07.md`.
+This version includes the centralized `test/` layout and newly covered native diagnostic
+translations. The optional SSH/Tmux automatic-reconnect fingerprint bypass introduced
+in 0.1.11 is retained; its earlier local function-by-function recheck is in
+`tmp/reconnect-host-key-review-0.1.11-2026-10-07.md`.
 Native Windows runtime, installer, and signing acceptance remain pending.
 
 ## Version And Source
@@ -31,7 +33,7 @@ Native Windows runtime, installer, and signing acceptance remain pending.
 - [ ] `npm run test:mcp-sdk-freshness` confirms that every latest stable official SDK release is represented in the pinned compatibility matrices.
 - [ ] `npm run test:ssh-server-compat` and `npm run test:tcp-telnet-server-compat` pass on a Linux Docker host.
 - [ ] `npm run test:linux-desktop-smoke` passes on a Linux X11/Xwayland desktop or isolated Xvfb display.
-- [ ] `cargo fmt --all -- --check` passes.
+- [ ] `npm run test:rustfmt` checks workspace formatting and external test support files.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace -- --test-threads=4` passes without unexpected skipped integration tools.
 

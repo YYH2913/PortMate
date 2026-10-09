@@ -6,7 +6,7 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
-<p align="center"><code>v0.1.11</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.12</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <strong>English</strong> |
@@ -563,7 +563,7 @@ npm run desktop:build:windows-gnu
 ```
 
 Native bundles are written below `target/release/bundle/`. The Windows GNU portable
-build writes `target/release-artifacts/PortMate-0.1.11-windows-x86_64-portable.zip`
+build writes `target/release-artifacts/PortMate-0.1.12-windows-x86_64-portable.zip`
 and an extracted directory beside it. With `CARGO_TARGET_DIR` set, both paths use
 that target root instead. Extract the complete ZIP and run `portmate.exe`, keeping
 `portmate-mcp.exe`, `WebView2Loader.dll`, and the license files in their original

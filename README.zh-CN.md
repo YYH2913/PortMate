@@ -6,7 +6,7 @@
 
 <p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
-<p align="center"><code>v0.1.11</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.12</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <a href="./README.md">English</a> |
@@ -540,7 +540,7 @@ npm run desktop:build:windows-gnu
 ```
 
 原生安装包位于 `target/release/bundle/`。Windows GNU 便携构建生成
-`target/release-artifacts/PortMate-0.1.11-windows-x86_64-portable.zip`，并在同一目录
+`target/release-artifacts/PortMate-0.1.12-windows-x86_64-portable.zip`，并在同一目录
 保留解压后的文件夹；设置 `CARGO_TARGET_DIR` 时改用指定的 target 根目录。
 完整解压 ZIP 后运行 `portmate.exe`，保留同目录的 `portmate-mcp.exe`、
 `WebView2Loader.dll` 和许可文件的原有位置。Windows 需要安装 Microsoft Edge WebView2 Runtime。

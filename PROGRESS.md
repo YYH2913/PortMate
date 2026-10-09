@@ -1,8 +1,22 @@
 # PortMate 当前进度与下一阶段目标
 
-更新日期：2026-10-08（v0.1.11；历史审查和验收保留各自日期）
+更新日期：2026-10-08（v0.1.12；历史审查和验收保留各自日期）
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
+
+## v0.1.12 更新
+
+版本元数据、npm/Cargo lockfile、六个 PortMate 自有 Cargo package、Tauri 和 vcpkg
+manifest 同步为 `0.1.12`，上游内嵌依赖维持原版本。此版包含测试统一迁入 `test/`、
+独立测试类型/格式检查、测试并发上限，以及先前被条件编译挂钩遮蔽的 91 条原生诊断
+六语言翻译；既有 SSH `none` 认证和自动重连指纹选项保持不变。详细条目见
+[CHANGELOG.md](./CHANGELOG.md)。
+
+Windows GNU x86-64 便携包路径为
+`target/release-artifacts/PortMate-0.1.12-windows-x86_64-portable.zip`。
+本地构建、版本资源、前端嵌入、payload/ZIP 校验和测试证据记录在
+`tmp/windows-release-0.1.12-2026-10-08.md`，不加入提交。交叉编译的未签名 ZIP
+不替代原生 Windows 启动、凭据服务、安装程序或签名验收。
 
 ## 测试目录整理（2026-10-08）
 
