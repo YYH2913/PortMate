@@ -9,6 +9,13 @@ pub(super) use resume::*;
 // reduce read, allocation and wake-up overhead for high-throughput transfers.
 pub(super) const SFTP_TRANSFER_BUFFER_SIZE: usize = 256 * 1024;
 
+pub(super) fn sftp_read_buffer_len(copied: u64, total: u64, capacity: usize) -> usize {
+    // Trim the final batch to the known remaining length. At the expected end,
+    // retain a one-byte tail probe so source growth is still detected, without
+    // sending eight speculative EOF requests for every small/empty file.
+    capacity.min(usize::try_from(total.saturating_sub(copied)).unwrap_or(usize::MAX).max(1))
+}
+
 pub(super) async fn sftp_upload(
     sftp: &SftpBackendSession,
     local_source: &str,
@@ -116,8 +123,9 @@ pub(super) async fn sftp_download(
     let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
     loop {
         progress.check_cancelled()?;
+        let read_capacity = sftp_read_buffer_len(copied, total, buffer.len());
         let read = remote_file
-            .read(&mut buffer)
+            .read(&mut buffer[..read_capacity])
             .await
             .map_err(|error| format!("SFTP 读取远端文件失败 {remote_source}: {error}"))?;
         if read == 0 {
@@ -181,8 +189,9 @@ pub(super) async fn sftp_remote_copy(
         let mut buffer = vec![0_u8; target_file.write_buffer_size(SFTP_TRANSFER_BUFFER_SIZE)];
         loop {
             progress.check_cancelled()?;
+            let read_capacity = sftp_read_buffer_len(copied, total, buffer.len());
             let read = source_file
-                .read(&mut buffer)
+                .read(&mut buffer[..read_capacity])
                 .await
                 .map_err(|error| format!("SFTP 读取远端源文件失败 {remote_source}: {error}"))?;
             if read == 0 {

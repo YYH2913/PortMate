@@ -1,5 +1,120 @@
 use super::*;
 
+struct ChangingSftpSource {
+    declared_size: u64,
+    data: Vec<u8>,
+}
+
+impl russh_sftp::server::Handler for ChangingSftpSource {
+    type Error = russh_sftp::protocol::StatusCode;
+    fn unimplemented(&self) -> Self::Error {
+        Self::Error::OpUnsupported
+    }
+    async fn lstat(
+        &mut self,
+        id: u32,
+        _path: String,
+    ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+        let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+        attrs.size = Some(self.declared_size);
+        attrs.set_regular(true);
+        Ok(russh_sftp::protocol::Attrs { id, attrs })
+    }
+    async fn open(
+        &mut self,
+        id: u32,
+        _path: String,
+        _flags: OpenFlags,
+        _attrs: russh_sftp::protocol::FileAttributes,
+    ) -> Result<russh_sftp::protocol::Handle, Self::Error> {
+        Ok(russh_sftp::protocol::Handle {
+            id,
+            handle: "source".into(),
+        })
+    }
+    async fn read(
+        &mut self,
+        id: u32,
+        _handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<russh_sftp::protocol::Data, Self::Error> {
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        if start >= self.data.len() {
+            return Err(Self::Error::Eof);
+        }
+        Ok(russh_sftp::protocol::Data {
+            id,
+            data: self.data[start..(start + len as usize).min(self.data.len())].to_vec(),
+        })
+    }
+    async fn close(
+        &mut self,
+        id: u32,
+        _handle: String,
+    ) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        Ok(russh_sftp::protocol::Status {
+            id,
+            status_code: Self::Error::Ok,
+            error_message: String::new(),
+            language_tag: String::new(),
+        })
+    }
+}
+
+#[test]
+fn pipelined_download_final_reads_preserve_empty_growth_and_shrink_safety() {
+    tauri::async_runtime::block_on(async {
+        for (declared_size, data) in [(0, vec![]), (2, vec![1, 2, 3]), (3, vec![1])] {
+            let root = canonical_test_tempdir();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state
+                .store
+                .lock()
+                .unwrap()
+                .record_transfer(test_transfer_task(&profile.id, TransferStatus::Running));
+            let (client, server) = tokio::io::duplex(4096);
+            let server_task = tokio::spawn(russh_sftp::server::run(
+                server,
+                ChangingSftpSource {
+                    declared_size,
+                    data,
+                },
+            ));
+            let sftp = SftpBackendSession::from_russh(SftpSession::new(client).await.unwrap());
+            let target = root.path().join("download.bin");
+            let progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let result = sftp_download(&sftp, "source", target.to_str().unwrap(), &progress).await;
+            if declared_size == 0 {
+                assert_eq!(result.unwrap(), 0);
+                assert_eq!(fs::read(&target).unwrap(), Vec::<u8>::new());
+            } else {
+                assert!(result.unwrap_err().contains("size"));
+                assert!(!target.exists(), "changed source must not be committed");
+            }
+            if let SftpBackendSession::Russh(session) = &sftp {
+                session.close().await.unwrap();
+            }
+            server_task.await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn sftp_final_read_batches_keep_a_growth_probe_without_speculative_eof_ranges() {
+    assert_eq!(sftp_read_buffer_len(0, 0, 256 * 1024), 1);
+    assert_eq!(sftp_read_buffer_len(0, 1024, 256 * 1024), 1024);
+    assert_eq!(sftp_read_buffer_len(1000, 1024, 256 * 1024), 24);
+    assert_eq!(sftp_read_buffer_len(1024, 1024, 256 * 1024), 1);
+    assert_eq!(sftp_read_buffer_len(0, u64::MAX, 256 * 1024), 256 * 1024);
+    assert_eq!(sftp_read_buffer_len(0, 1024, 0), 0);
+}
+
 #[test]
 fn transfer_throttle_delay_respects_rate_limit() {
     assert!(transfer_throttle_delay(None, 1024, Duration::ZERO).is_none());

@@ -12,6 +12,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation
   drains pending reads before closing the handle.
+- Trim final read batches to the expected remaining size and use one EOF/growth
+  probe, avoiding extra requests for small and empty downloads/remote copies.
 - Align upload and remote-copy buffers to negotiated WRITE payload limits to
   avoid tiny tail requests; peers without advertised write limits retain the
   conservative 64 KiB upload buffer. Packet framing and large advertised limits
