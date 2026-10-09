@@ -1,5 +1,9 @@
 use super::*;
 
+// Eight 32 KiB READ ranges share one handle and request at most 256 KiB
+// per batch. libssh remains on its session-serialized synchronous API.
+const SFTP_READ_WINDOW: usize = 8;
+
 fn sftp_file_operation_error(kind: std::io::ErrorKind, message: String) -> std::io::Error {
     std::io::Error::new(kind, message)
 }
@@ -132,7 +136,7 @@ impl SftpBackendFile {
 
     pub(crate) async fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            Self::Russh(file) => tokio::io::AsyncReadExt::read(file, buffer).await,
+            Self::Russh(file) => file.read_pipelined(buffer, SFTP_READ_WINDOW).await,
             Self::Libssh { session, file } => {
                 let session = Arc::clone(session);
                 let file = Arc::clone(file);
@@ -158,7 +162,17 @@ impl SftpBackendFile {
 
     pub(crate) async fn read_exact(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            Self::Russh(file) => tokio::io::AsyncReadExt::read_exact(file, buffer).await,
+            Self::Russh(file) => {
+                let mut filled = 0;
+                while filled < buffer.len() {
+                    let read = file.read_pipelined(&mut buffer[filled..], SFTP_READ_WINDOW).await?;
+                    if read == 0 {
+                        return Err(std::io::ErrorKind::UnexpectedEof.into());
+                    }
+                    filled += read;
+                }
+                Ok(filled)
+            }
             Self::Libssh { session, file } => {
                 let session = Arc::clone(session);
                 let file = Arc::clone(file);

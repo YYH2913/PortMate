@@ -57,3 +57,26 @@ API 文档中的 Rust 示例仍随公开 API 保留并由 rustdoc 验证，不�
 
 Docker、浏览器、原生 keyring 和 Windows/macOS 打包矩阵需要对应工具及系统。
 测试文件搬移不代表这些外部发布门禁已执行；完整清单见 [RELEASE.md](../RELEASE.md)。
+
+## SFTP 性能对照 / SFTP performance probes
+
+本地 OpenSSH 组件矩阵是显式启用的 ignored 测试，涵盖 russh/libssh 上传、
+串行与流水下载、远端复制，以及闲置终端竞争。三轮交替块大小并逐字节核验结果。
+这些数据是本机组件对照，不代表 Windows GUI 或现场局域网速度：
+
+```sh
+CARGO_PROFILE_TEST_OPT_LEVEL=3 cargo test --locked --offline -p portmate \
+  --no-default-features --lib \
+  tests::sftp_component_benchmarks::sftp_component_throughput_matrix \
+  -- --exact --ignored --nocapture --test-threads=1
+```
+
+默认文件为 32 MiB，可用 `PORTMATE_PERF_SIZE_MIB` 设置 1–128 MiB。
+另外的隔离协议测试为每个响应注入 2 ms 延迟，比较 1/4/8/16 路 READ；
+它不包含 SSH 加密或真实网卡延迟：
+
+```sh
+cargo test --locked --offline -p russh-sftp \
+  client::fs::file::tests::read_pipeline_latency_benchmark \
+  -- --exact --ignored --nocapture
+```

@@ -20,8 +20,13 @@ use crate::{
 
 type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
 
+mod read_pipeline;
+
 // read packet overhead: type(1) + id(4) + data_len(4)
 const READ_OVERHEAD_LENGTH: u32 = 9;
+// Include the SFTP length prefix so a DATA reply fits the common 32 KiB
+// SSH channel packet without an extra 13-byte tail packet.
+const PIPELINED_READ_PAYLOAD: u32 = 32 * 1024 - READ_OVERHEAD_LENGTH - 4;
 // write packet overhead excluding handle: type(1) + id(4) + handle_len(4) + offset(8) + data_len(4)
 const WRITE_OVERHEAD_LENGTH: u32 = 21;
 
@@ -92,6 +97,90 @@ impl File {
 
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
+
+    /// Read a bounded batch of ranges concurrently on this file's existing handle.
+    ///
+    /// At most 16 requests of 32 KiB are outstanding, each also bounded by the
+    /// negotiated packet/read limits. Short DATA replies are filled before the
+    /// next range is returned, and responses are assembled in offset order.
+    /// Unlike speculative read-ahead, no bytes beyond this buffer are requested.
+    /// One request timeout covers the whole batch, including short-read retries.
+    ///
+    /// A cancelled call leaves its batch attached to the file. Resume it with
+    /// an equally large buffer, or close/drop the file to drain it before CLOSE;
+    /// seeking and writing while the batch is pending are rejected.
+    pub async fn read_pipelined(
+        &mut self,
+        buffer: &mut [u8],
+        max_requests: usize,
+    ) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.closed
+            || self.state.f_seek.is_some()
+            || self.state.f_shutdown.is_some()
+            || self.state.f_flush.is_some()
+            || !self.state.write_acks.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file is closed or another operation is pending",
+            ));
+        }
+        if self.state.f_read.is_none() {
+            let max_read_len = u64::from(
+                self.features
+                    .max_packet_len
+                    .saturating_sub(READ_OVERHEAD_LENGTH),
+            )
+            .min(
+                self.features
+                    .limits
+                    .and_then(|limits| limits.read_len)
+                    .unwrap_or(u64::MAX),
+            );
+            let request_len = max_read_len.min(u64::from(PIPELINED_READ_PAYLOAD)) as usize;
+            if request_len == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SFTP packet limit leaves no room for DATA",
+                ));
+            }
+            let length = buffer.len().min(request_len * max_requests.clamp(1, 16));
+            self.pos.checked_add(length as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "SFTP read offset overflow")
+            })?;
+            let session = Arc::clone(&self.session);
+            let handle = self.handle.clone();
+            let offset = self.pos;
+            self.state.f_read = Some(Box::pin(async move {
+                read_pipeline::read_batch(session, handle, offset, length, request_len)
+                    .await
+                    .map(Some)
+            }));
+        }
+        let result = future::poll_fn(|cx| {
+            self.state
+                .f_read
+                .as_mut()
+                .expect("pending batch read")
+                .as_mut()
+                .poll(cx)
+        })
+        .await;
+        self.state.f_read = None;
+        let data = result?.unwrap_or_default();
+        if data.len() > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "buffer is smaller than the pending SFTP read",
+            ));
+        }
+        buffer[..data.len()].copy_from_slice(&data);
+        self.pos += data.len() as u64;
+        Ok(data.len())
+    }
 }
 
 fn check_write_result(
@@ -142,8 +231,15 @@ impl Drop for File {
         if let Ok(handle) = Handle::try_current() {
             let session = self.session.clone();
             let file_handle = self.handle.clone();
+            let pending_read = self.state.f_read.take();
 
             handle.spawn(async move {
+                // Cancellation drops the caller, not the queued protocol work.
+                // Drain the bounded batch before CLOSE so no pending READ can
+                // outlive its handle or poison the next operation's responses.
+                if let Some(read) = pending_read {
+                    let _ = read.await;
+                }
                 let _ = session.close(file_handle).await;
             });
         }
@@ -214,7 +310,7 @@ impl AsyncRead for File {
 
 impl AsyncSeek for File {
     fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
-        if self.state.f_seek.is_some() {
+        if self.state.f_seek.is_some() || self.state.f_read.is_some() {
             return Err(io::Error::other(
                 "other file operation is pending, call poll_complete before start_seek",
             ));
@@ -277,6 +373,12 @@ impl AsyncWrite for File {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
+        if self.state.f_read.is_some() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read operation is pending",
+            )));
+        }
         if self.state.write_acks.len() >= self.features.max_concurrent_writes {
             if let Some(poll) = poll_oldest_write(&mut self.state.write_acks, cx) {
                 ready!(poll)?;
@@ -342,6 +444,11 @@ impl AsyncWrite for File {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
+        if let Some(read) = self.state.f_read.as_mut() {
+            let result = ready!(read.as_mut().poll(cx));
+            self.state.f_read = None;
+            result?;
+        }
         ready!(poll_drain_writes(&mut self.state.write_acks, cx))?;
 
         let poll = Pin::new(match self.state.f_shutdown.as_mut() {

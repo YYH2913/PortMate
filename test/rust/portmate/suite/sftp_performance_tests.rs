@@ -1,6 +1,99 @@
 use super::*;
 
 #[test]
+fn failed_sftp_transfer_discards_closed_cache_and_retries_on_the_same_ssh_runtime() {
+    let _guard = shared_runtime_test_guard();
+    let Some(sshd_path) = openssh_test_server_path() else {
+        eprintln!("skipping SFTP retry regression: sshd is not installed");
+        return;
+    };
+    let root = canonical_test_tempdir();
+    let key = root.path().join("client-key");
+    let host_key = root.path().join("host-key");
+    generate_ed25519_test_key(&key);
+    generate_ed25519_test_key(&host_key);
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = root.path().join("sshd_config");
+    write_openssh_test_config(
+        &config,
+        &host_key,
+        &root.path().join("sshd.pid"),
+        &key.with_extension("pub"),
+        port,
+    );
+    let mut sshd = spawn_openssh_test_server(sshd_path, &config);
+    let profile = super::sftp_component_benchmarks::profile_for_backend(port, &key, "russh");
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let source = root.path().join("remote-source.bin");
+    let target = root.path().join("download.bin");
+    let payload = vec![0x5a; 300 * 1024];
+    fs::write(&source, &payload).unwrap();
+    tauri::async_runtime::block_on(async {
+        wait_for_openssh_test_server(&mut sshd, port, "SFTP retry regression").await;
+        open_ssh_session(&state, profile.clone(), None, None)
+            .await
+            .unwrap();
+        let (runtime_id, cache) = {
+            let ssh = state.ssh.lock().unwrap();
+            let runtime = &ssh[&profile.id];
+            (runtime.runtime_id.clone(), Arc::clone(&runtime.sftp))
+        };
+        {
+            let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+            let sftp = auxiliary.sftp().await.unwrap();
+            let SftpBackendSession::Russh(session) = &*sftp else {
+                unreachable!()
+            };
+            session.close().await.unwrap();
+        }
+        state
+            .store
+            .lock()
+            .unwrap()
+            .record_transfer(test_transfer_task(&profile.id, TransferStatus::Running));
+        let progress = test_transfer_progress_context(
+            &state,
+            "transfer-commit-test",
+            Arc::new(AtomicBool::new(false)),
+        );
+        let request = StartTransferRequest {
+            session_id: profile.id.clone(),
+            protocol: TransferProtocol::Sftp,
+            source: format!("remote:{}", source.display()),
+            destination: target.display().to_string(),
+        };
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            transfer_file_via_sftp(&state, &request, &progress, Some(&runtime_id)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(cache.lock().await.is_none());
+        assert_eq!(
+            transfer_file_via_sftp(&state, &request, &progress, Some(&runtime_id))
+                .await
+                .unwrap(),
+            payload.len() as u64
+        );
+        assert_eq!(fs::read(&target).unwrap(), payload);
+        assert_eq!(
+            state.ssh.lock().unwrap()[&profile.id].runtime_id,
+            runtime_id
+        );
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+    });
+    sshd.stop();
+}
+
+#[test]
 fn libssh_idle_terminal_does_not_serialize_sftp_writes_on_poll_timeouts() {
     let _guard = shared_runtime_test_guard();
     let Some(sshd_path) = openssh_test_server_path() else {

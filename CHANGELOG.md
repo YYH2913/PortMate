@@ -8,6 +8,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Pipeline up to eight bounded READ requests on one russh-sftp file handle
+  for downloads, verified resume-prefix reads and remote copies. Short replies
+  are filled and out-of-order responses reassembled by offset; cancellation
+  drains pending reads before closing the handle.
 - SFTP uploads, downloads and remote copies now use 256 KiB application
   buffers so russh-sftp can fill its existing bounded write window more
   efficiently. Server-advertised packet limits still cap each request.

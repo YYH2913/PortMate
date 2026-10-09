@@ -184,6 +184,10 @@ impl RawSftpSession {
         self.timeout.store(secs, Ordering::Relaxed);
     }
 
+    pub(crate) fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.timeout.load(Ordering::Relaxed))
+    }
+
     /// Setting limits. For the `limits@openssh.com` extension
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;

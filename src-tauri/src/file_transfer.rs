@@ -21,7 +21,7 @@ pub(super) async fn transfer_file_via_sftp(
         remote_paths => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
             auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SFTP 文件传输")?;
-            let sftp = auxiliary.sftp().await?;
+            let mut sftp = auxiliary.sftp().await?;
             let transfer = async {
                 match remote_paths {
                     (None, Some(remote_destination)) => {
@@ -37,6 +37,12 @@ pub(super) async fn transfer_file_via_sftp(
                 }
             };
             let result = await_sftp_transfer_with_cancellation(transfer, progress).await;
+            if result.is_err() {
+                // A cancelled/timed-out batch may still be draining its old
+                // handle, or may have closed that subsystem's stream. Reopen
+                // SFTP on the next attempt instead of reusing a poisoned cache.
+                sftp.invalidate();
+            }
             drop(sftp);
             auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SFTP 文件传输")?;
             result
