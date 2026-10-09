@@ -5598,5 +5598,562 @@
     "id": "native-message-4c7ca32f268b",
     "source": "PortMate: {0} 自动重连临时放行变化的主机密钥（{1}，{2}）；已保存的信任记录未变更",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-c161991e2086",
+    "source": "正在等待 MCP HTTP 监听就绪",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-892c9e28e182",
+    "source": "已排除 {0} 个 MCP token 保留引用",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-d0de71ae02b7",
+    "source": "凭据迁移预检失败，尚未写入任何目标 secret ({0}): {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-649cf5444e3a",
+    "source": "凭据迁移内部引用计数不一致: expected {0}, got {1}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-630a4d99bbdb",
+    "source": "凭据迁移恢复记录未能在目标写入前持久化，操作已中止: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-7d0570174957",
+    "source": "{0} 凭据迁移目标写入失败，Profile 引用保持不变；恢复记录 {1} 已保留用于核对目标副本: {2}",
+    "causeIndices": [
+      0,
+      2
+    ]
+  },
+  {
+    "id": "native-message-e1fed8b8e6b8",
+    "source": "；恢复记录 checkpoint 更新失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-0cfdbebc9da6",
+    "source": "{0} portable vault 目标 snapshot 已提交，但版本指纹无法确认；Profile 引用保持不变，恢复记录 {1} 已保留，锁定并重新解锁 vault 后再核对{2}",
+    "causeIndices": [
+      0,
+      2
+    ]
+  },
+  {
+    "id": "native-message-49fdea44da82",
+    "source": "{0} 目标 secret 已写入，但恢复 checkpoint 保存失败；为避免误删，Profile 原引用与两侧 secret 均已保留，恢复记录 {1} 待重启核对: {2}",
+    "causeIndices": [
+      0,
+      2
+    ]
+  },
+  {
+    "id": "native-message-9a3028e615de",
+    "source": "Profile 已提交，但恢复记录 checkpoint 更新失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-98c02233fe4a",
+    "source": "旧 secret {0} 因恢复 checkpoint 未确认而保留",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-78a70d89b755",
+    "source": "旧 secret {0} 清理失败: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-99c90d6bcde9",
+    "source": "旧 secret {0} 未返回清理结果",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-20acff78f9c6",
+    "source": "Stronghold snapshot 已提交，但版本指纹刷新失败；请锁定并重新解锁 portable vault",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-460040d14155",
+    "source": "恢复记录保持 pending 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-44832121c330",
+    "source": "迁移已完成，但恢复记录清除失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-aad49e521043",
+    "source": "凭据迁移 Profile 保存失败，原引用保持不变: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-7e747f4eda77",
+    "source": "；恢复记录更新失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-523eab0a48bf",
+    "source": "{0} {1}；恢复记录 {2} 已保留",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-512507e9f34c",
+    "source": "{0} 凭据迁移 Profile 保存结果无法确认，原引用继续留在当前进程且新目标 secret 已保留；恢复记录 {1} 已持久化，请重启 PortMate 后核对: {2}",
+    "causeIndices": [
+      0,
+      2
+    ]
+  },
+  {
+    "id": "native-message-6e27910cc965",
+    "source": "需要先连接会话才能执行 TFTP 或 X/Y/ZModem 传输",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-5f723f6953ed",
+    "source": "Modem 来源连接已关闭或正在重连",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-d1210e42a121",
+    "source": "Modem reader 未绑定会话",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-7bbd47251ede",
+    "source": "Modem 来源连接已关闭或被新连接替换",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-9e26be932409",
+    "source": "终端输入队列已关闭，未能确认写入",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-2d37aa7180c7",
+    "source": "终端写入在 {0} ms 内未确认；未开始的请求已取消，请检查会话状态后再决定是否重发",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-a40c3f9b74c5",
+    "source": "发送内容超过 4 MiB",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-d656c98c78c3",
+    "source": "间隔发送已取消；已开始的写入无法撤回",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-362fae90fbd0",
+    "source": "终端输入队列已关闭",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-21874c701f8f",
+    "source": "终端写入确认超时；未开始的间隔发送已取消",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-2f2692d8dbb0",
+    "source": "连接已变化，已拒绝旧连接的终端输入",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-e06b541cbc53",
+    "source": "终端输入队列正在关闭",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-71b67c5f00a7",
+    "source": "终端写入确认已超时，请求在执行前取消",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-08cfd9af7a2e",
+    "source": "会话已关闭或被新连接替换",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-68e23024f843",
+    "source": "终端输入队列已满，请稍后重试",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-4d5828f96062",
+    "source": "PortMate: 交互输入发送失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-ce10799f18ae",
+    "source": "OneKey 已在补全等待期间更新，请重新选择",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-65e8a911d708",
+    "source": "命令来源连接已关闭或被新连接替换",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-3e5cd7de9fad",
+    "source": "SSH modem 写入失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-fd0da8e4d2ed",
+    "source": "串口 modem 写入任务被拒绝: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-0c3b555f7ad7",
+    "source": "串口 modem 写入",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-efe08f05bbf7",
+    "source": "串口正在重连，无法执行 modem 写入",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-53cb90aacc85",
+    "source": "会话尚未连接，无法执行 modem 写入",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-0115b4c3f233",
+    "source": "串口读取线程启动失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-3204ff05ab3f",
+    "source": "终端日志 worker 正在关闭",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-5015ee4d797d",
+    "source": "终端事件队列已满，已跳过本次持久化和触发器处理",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-3ee99d5fc723",
+    "source": "终端日志 worker 已关闭",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-eb1eabafd1f5",
+    "source": "Shell 工作目录不可用 {0}: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-318f7dc4aad3",
+    "source": "Shell 工作目录不是目录: {0}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-c4fa100240ce",
+    "source": "Shell PTY 打开失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-cced624e5973",
+    "source": "Shell 启动失败 {0}: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-c4eab1dbaac7",
+    "source": "Shell PTY reader 创建失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-850d52167bef",
+    "source": "Shell PTY writer 创建失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-0dc9d4ee8a53",
+    "source": "Shell PTY 读取线程启动失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-7271fe06b992",
+    "source": "libssh 设置主机失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-4eb9d20098e9",
+    "source": "libssh 设置端口失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-d28566153f49",
+    "source": "libssh 设置用户名失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-ef53d708025a",
+    "source": "libssh 设置代理 socket 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-c395e0b1d4fc",
+    "source": "libssh 设置 SSH agent socket 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-fd72459cfc70",
+    "source": "libssh 设置连接超时失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-62024d2b2e42",
+    "source": "libssh 连接 {0}:{1} 失败: {2}",
+    "causeIndices": [
+      2
+    ]
+  },
+  {
+    "id": "native-message-81af65f6a9d1",
+    "source": "libssh 读取服务端 host key 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-067f1d7cf6d9",
+    "source": "libssh 读取 host key 算法失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-53dff01d10cd",
+    "source": "libssh 导出 host key 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-003e18ff5f20",
+    "source": "libssh 连接 worker 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-6e7abb2d25f0",
+    "source": "libssh 连接超时（{0} ms）",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-f3e1832c90aa",
+    "source": "libssh SSH 认证超时（{0} ms）",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-629710fb63be",
+    "source": "libssh 设置认证超时失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-04b1e3740708",
+    "source": "libssh SSH 认证 worker 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-13a6f11bd155",
+    "source": "libssh 终端 setup 超时（{0} ms）",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-4df205f556c4",
+    "source": "libssh 设置终端 setup 超时失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-fc3186914b7a",
+    "source": "创建终端 channel",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-af38de0153d5",
+    "source": "打开终端 channel",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-c0aabea0c9bc",
+    "source": "libssh 设置运行期 I/O 超时失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-58ca7e8de671",
+    "source": "libssh 终端 worker 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-61069f64947b",
+    "source": "无法创建凭据操作锁目录 {0}: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-3c385dbd0e2b",
+    "source": "无法打开凭据操作锁: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-506c2a6a25b3",
+    "source": "无法获取凭据操作锁: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-e9f7f1968282",
+    "source": "PortMate store 写入已完成，但持久化快照无法读回验证；请重启应用后再继续保存",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-a826fb3408fd",
+    "source": "PortMate store 写入已完成，但提交后版本验证失败；请重启应用: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-aef2432efa71",
+    "source": "Sysmon 采样期间目标已从本机变为 SSH，请重试",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-cd25a0993a3d",
+    "source": "SSH runtime 在 Sysmon 采样期间已变化，请重试",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-75ee2767f148",
+    "source": "本机 Linux Sysmon 任务失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-bec1f64d3617",
+    "source": "本机 Sysmon 暂不支持 {0}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-bfe73b24a94c",
+    "source": "{0} 端口不能为空",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-b7cdd4b9d380",
+    "source": "{0} 连接超时: {1}:{2}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-905c84bf2f69",
+    "source": "{0} TLS connector 初始化失败: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-a13e2998af79",
+    "source": "{0} TLS 握手超时: {1}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-3e56dff1dc13",
+    "source": "{0} TLS 握手失败: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-b464b4915b25",
+    "source": "{0} 设置 TCP_NODELAY 失败: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-ac535fc95389",
+    "source": "{0} 关闭 TCP keepalive 失败: {1}",
+    "causeIndices": [
+      1
+    ]
   }
 ]
