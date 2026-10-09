@@ -51,31 +51,29 @@ pub(super) fn transfer_average_bps(task: &TransferTask) -> Option<f64> {
     Some((task.bytes_done as f64) * 1000.0 / elapsed_ms)
 }
 
-pub(super) fn record_applied_transfer_progress_with<Persist, VerifyAfterError>(
+pub(super) fn record_transfer_progress(
     store: &mut SessionStore,
     task_id: &str,
     bytes_done: u64,
     bytes_total: u64,
-    persist: Persist,
-    verify_after_error: VerifyAfterError,
-) -> Result<TransferTask, String>
-where
-    Persist: FnOnce(&SessionStore) -> Result<(), String>,
-    VerifyAfterError: FnOnce(&SessionStore) -> Result<bool, String>,
-{
+) -> Result<TransferTask, String> {
     let task = store
         .transfers
         .iter_mut()
         .find(|task| task.id == task_id)
         .ok_or_else(|| format!("unknown transfer: {task_id}"))?;
+    if task.status == TransferStatus::Cancelled {
+        return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
+    }
+    if !matches!(task.status, TransferStatus::Queued | TransferStatus::Running) {
+        return Ok(task.clone());
+    }
     task.bytes_done = bytes_done;
     if bytes_total > 0 {
         task.bytes_total = bytes_total;
     }
     task.message = Some("running".to_string());
-    let task = task.clone();
-    persist_applied_store_with(store, "transfer progress", persist, verify_after_error)?;
-    Ok(task)
+    Ok(task.clone())
 }
 
 impl TransferProgressContext {
@@ -129,14 +127,11 @@ impl TransferProgressContext {
         }
         let task = {
             let mut store = self.state.store.lock().map_err(|error| error.to_string())?;
-            record_applied_transfer_progress_with(
-                &mut store,
-                &self.task_id,
-                bytes_done,
-                bytes_total,
-                |next_store| save_store(&self.state.store_path, next_store),
-                |next_store| verify_persisted_store_commit(&self.state.store_path, next_store),
-            )?
+            self.check_cancelled()?;
+            // UI progress is transient. Queue/start/finish/cancellation already
+            // persist the task through the checked Store commit paths; writing
+            // the entire Store here would block every transfer on its history.
+            record_transfer_progress(&mut store, &self.task_id, bytes_done, bytes_total)?
         };
         emit_transfer_task(&self.state, &task);
         Ok(())

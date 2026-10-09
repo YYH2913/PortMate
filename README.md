@@ -164,6 +164,10 @@ SFTP works directly in the desktop application and does not require MCP, an MCP 
 
 For an upload, use a local source path and a destination such as `remote:/tmp/file.bin`. For a download, use a source such as `remote:/var/log/messages` and a local destination path. The desktop transfer queue supports cancellation, retry, progress, and throttling. Local SFTP downloads can resume from a verified partial file; remote SFTP uploads and copies safely restart existing partial files because the protocol does not expose their hard-link count.
 
+Live progress updates stay in memory during a transfer; queue, start, completion,
+failure and cancellation states are persisted. After an abrupt process exit, saved
+byte counters may lag behind the actual partial file, which is checked before resume.
+
 ## SSH Trust and Credentials
 
 For devices that accept SSH protocol-level `none` authentication, select the `none`

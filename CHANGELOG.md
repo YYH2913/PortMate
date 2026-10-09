@@ -6,6 +6,17 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Fixed
+
+- Enable TCP_NODELAY before direct libssh connections to avoid delayed-ACK
+  stalls during SFTP uploads on low-latency networks.
+- Poll libssh terminal channels without blocking the shared SSH session mutex,
+  and wait outside the mutex when idle so SFTP uploads and tunnels can proceed.
+- Keep live transfer progress in memory instead of rewriting the complete Store
+  every 300 ms. Queue, start, completion, failure and cancellation continue to
+  use the existing durable, checked Store writes. After an abrupt process exit,
+  live byte counters may lag; resume still verifies the actual partial file.
+
 ## [0.1.12] - 2026-10-08
 
 ### Added

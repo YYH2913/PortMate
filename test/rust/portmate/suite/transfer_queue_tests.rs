@@ -23,38 +23,127 @@ fn transfer_average_bps_uses_elapsed_time() {
 }
 
 #[test]
-fn transfer_progress_keeps_applied_bytes_and_accepts_verified_commits() {
+fn transfer_progress_preserves_cancelled_and_finished_tasks() {
     let mut store = SessionStore::default();
     let task = test_transfer_task("session-1", TransferStatus::Running);
     let task_id = task.id.clone();
     store.record_transfer(task);
 
-    let updated = record_applied_transfer_progress_with(
-        &mut store,
-        &task_id,
-        512,
-        1_024,
-        |_| Err("post-commit version read failed".to_string()),
-        |_| Ok(true),
-    )
-    .unwrap();
+    let updated = record_transfer_progress(&mut store, &task_id, 512, 1_024).unwrap();
     assert_eq!(updated.bytes_done, 512);
     assert_eq!(updated.bytes_total, 1_024);
 
-    let error = record_applied_transfer_progress_with(
-        &mut store,
-        &task_id,
-        768,
-        1_024,
-        |_| Err("disk full".to_string()),
-        |_| Ok(false),
-    )
-    .unwrap_err();
-    assert_eq!(error, "disk full");
-    let retained = store.transfer_by_id(&task_id).unwrap();
-    assert_eq!(retained.bytes_done, 768);
-    assert_eq!(retained.bytes_total, 1_024);
-    assert_eq!(retained.message.as_deref(), Some("running"));
+    for status in [TransferStatus::Completed, TransferStatus::Failed] {
+        store.transfers[0].status = status;
+        store.transfers[0].message = Some("finished".to_string());
+        let updated = record_transfer_progress(&mut store, &task_id, 768, 1_024).unwrap();
+        assert_eq!(updated.bytes_done, 512);
+        assert_eq!(updated.message.as_deref(), Some("finished"));
+    }
+    store.transfers[0].status = TransferStatus::Cancelled;
+    let error = record_transfer_progress(&mut store, &task_id, 768, 1_024).unwrap_err();
+    assert_eq!(error, TRANSFER_CANCELLED_MESSAGE);
+    assert_eq!(store.transfers[0].bytes_done, 512);
+    assert_eq!(store.transfers[0].message.as_deref(), Some("finished"));
+}
+
+#[test]
+fn transfer_progress_avoids_store_writes_and_lifecycle_persists_latest_bytes() {
+    tauri::async_runtime::block_on(async {
+        for status in [
+            TransferStatus::Completed,
+            TransferStatus::Failed,
+            TransferStatus::Cancelled,
+        ] {
+            let root = canonical_test_tempdir();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            let task = test_transfer_task(&profile.id, TransferStatus::Running);
+            {
+                let mut store = state.store.lock().unwrap();
+                store.record_transfer(task.clone());
+                save_store(&state.store_path, &store).unwrap();
+            }
+            let version = store_snapshot_version(&state.store_path).unwrap();
+            let progress =
+                test_transfer_progress_context(&state, &task.id, Arc::new(AtomicBool::new(false)));
+            for bytes in [256, 512, 768] {
+                *progress.last_emit.lock().unwrap() = Instant::now() - Duration::from_secs(1);
+                progress.update(bytes, 1_024).await.unwrap();
+            }
+            assert_eq!(store_snapshot_version(&state.store_path).unwrap(), version);
+            assert_eq!(
+                load_store_sqlite(&state.store_path)
+                    .unwrap()
+                    .transfer_by_id(&task.id)
+                    .unwrap()
+                    .bytes_done,
+                0
+            );
+            assert_eq!(
+                state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .transfer_by_id(&task.id)
+                    .unwrap()
+                    .bytes_done,
+                768
+            );
+
+            if status == TransferStatus::Cancelled {
+                cancel_transfer_inner(&state, &task.id).unwrap();
+            }
+            finish_transfer_task(
+                &state,
+                &task.id,
+                &profile.id,
+                status.clone(),
+                "finished".to_string(),
+                (status == TransferStatus::Completed).then_some(1_024),
+            );
+            let persisted = load_store_sqlite(&state.store_path)
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap();
+            assert_eq!(persisted.status, status);
+            assert_eq!(
+                persisted.bytes_done,
+                if status == TransferStatus::Completed {
+                    1_024
+                } else {
+                    768
+                }
+            );
+            assert!(persisted.finished_at.is_some());
+        }
+    });
+}
+
+#[test]
+fn transfer_progress_needs_no_writable_store_path() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let blocked_parent = root.path().join("not-a-directory");
+        fs::write(&blocked_parent, b"blocked").unwrap();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), blocked_parent.join("store.sqlite3"));
+        let task = test_transfer_task(&profile.id, TransferStatus::Running);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        let progress =
+            test_transfer_progress_context(&state, &task.id, Arc::new(AtomicBool::new(false)));
+        progress.update(1_024, 1_024).await.unwrap();
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .bytes_done,
+            1_024
+        );
+    });
 }
 
 #[test]
