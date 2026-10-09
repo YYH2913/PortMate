@@ -221,7 +221,11 @@ impl LibsshChannelReader {
                 Ok(LibsshChannelPoll::ExtendedData(data)) => {
                     return Some(SshBackendMessage::ExtendedData { data, ext: 1 });
                 }
-                Ok(LibsshChannelPoll::Pending) => continue,
+                Ok(LibsshChannelPoll::Pending) => {
+                    // The channel poll shares libssh's session mutex with SFTP,
+                    // tunnels and terminal writes. Wait only after releasing it.
+                    tokio::time::sleep(LIBSSH_CHANNEL_POLL_INTERVAL).await;
+                }
                 Ok(LibsshChannelPoll::Finished {
                     exit_status,
                     exit_signal,
@@ -276,19 +280,18 @@ fn poll_libssh_channel(
     channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
     collect_exit_metadata: bool,
 ) -> Result<LibsshChannelPoll, String> {
-    const POLL_TIMEOUT: Duration = Duration::from_millis(50);
     const MAX_READ_BYTES: usize = 64 * 1024;
 
     let channel = channel.blocking_lock();
-    for (is_stderr, timeout) in [(false, Some(POLL_TIMEOUT)), (true, Some(Duration::ZERO))] {
+    for is_stderr in [false, true] {
         match channel
-            .poll_timeout(is_stderr, timeout)
+            .poll_timeout(is_stderr, Some(Duration::ZERO))
             .map_err(|error| error.to_string())?
         {
             libssh_rs::PollStatus::AvailableBytes(available) if available > 0 => {
                 let mut data = vec![0_u8; (available as usize).min(MAX_READ_BYTES)];
                 let read = channel
-                    .read_timeout(&mut data, is_stderr, Some(POLL_TIMEOUT))
+                    .read_timeout(&mut data, is_stderr, Some(Duration::ZERO))
                     .map_err(|error| error.to_string())?;
                 if read == 0 {
                     continue;
@@ -318,6 +321,8 @@ fn poll_libssh_channel(
     }
     Ok(LibsshChannelPoll::Pending)
 }
+
+const LIBSSH_CHANNEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 #[path = "../../test/rust/portmate/unit/ssh_libssh_channel.rs"]

@@ -151,6 +151,8 @@ mod session_lifecycle_tests;
 mod session_logging_tests;
 #[path = "session_profile_tests.rs"]
 mod session_profile_tests;
+#[cfg(unix)]
+mod sftp_performance_tests;
 #[path = "shell_runtime_tests.rs"]
 mod shell_runtime_tests;
 #[path = "ssh_health_profile_tests.rs"]
