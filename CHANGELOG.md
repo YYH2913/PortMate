@@ -6,6 +6,13 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-08
+
+### Added
+
+- Dedicated TypeScript checking for frontend tests and explicit Rust formatting
+  checks for external test support files, plus four test-layout regression checks.
+
 ### Changed
 
 - Centralized frontend, script and Rust tests, probe binaries, compatibility runners,
@@ -19,6 +26,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Native diagnostic translation coverage no longer stops at the first `cfg(test)`
   hook in a production file. Previously hidden diagnostics now have all six locale
   translations, including credential recovery, terminal queues, libssh and Sysmon.
+- Vitest worker concurrency is bounded to keep process/IPC fixture deadlines
+  reliable on hosts with many logical CPUs.
+
+### Security
+
+- Local review reproducers remain ignored by Git and outside normal test discovery.
+  Existing SSH host-key verification and the opt-in automatic-reconnect bypass
+  retain their 0.1.11 behavior; no new trust bypass is enabled by this version.
+
+### Migration
+
+- No persisted Store, Profile, credential, or protocol format changes are required.
+  Existing npm test command names are unchanged; direct test-script consumers must
+  use the new `test/tooling/` paths instead of the old `scripts/` paths.
 
 ## [0.1.11] - 2026-10-07
 
