@@ -124,6 +124,13 @@ pub(crate) enum SftpBackendFile {
 }
 
 impl SftpBackendFile {
+    pub(crate) fn write_buffer_size(&self, maximum: usize) -> usize {
+        match self {
+            Self::Russh(file) => file.preferred_write_packet_size().min(maximum).max(1),
+            Self::Libssh { .. } => maximum,
+        }
+    }
+
     pub(super) fn from_libssh(
         file: libssh_rs::SftpFile,
         session: Arc<tokio::sync::Mutex<libssh_rs::Sftp>>,

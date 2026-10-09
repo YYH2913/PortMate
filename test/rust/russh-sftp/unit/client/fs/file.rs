@@ -50,6 +50,129 @@ fn test_file(session: Arc<RawSftpSession>, read_limit: Option<u64>) -> File {
 }
 
 #[tokio::test]
+async fn large_advertised_limits_are_clamped_before_integer_conversion() {
+    let (client, mut server) = duplex(4096);
+    let server_task = tokio::spawn(async move {
+        assert!(matches!(receive_packet(&mut server).await, Packet::Init(_)));
+        send_packet(
+            &mut server,
+            Version {
+                extensions: [(crate::extensions::LIMITS.to_string(), "1".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }
+            .into(),
+        )
+        .await;
+        let Packet::Extended(request) = receive_packet(&mut server).await else {
+            panic!("expected limits request");
+        };
+        assert_eq!(request.request, crate::extensions::LIMITS);
+        let data = [1_u64 << 32, 1_u64 << 32, 1_u64 << 32, 32]
+            .into_iter()
+            .flat_map(u64::to_be_bytes)
+            .collect();
+        send_packet(
+            &mut server,
+            crate::protocol::ExtendedReply {
+                id: request.id,
+                data,
+            }
+            .into(),
+        )
+        .await;
+        let Packet::Open(open) = receive_packet(&mut server).await else {
+            panic!("expected OPEN");
+        };
+        send_packet(
+            &mut server,
+            crate::protocol::Handle {
+                id: open.id,
+                handle: "handle".to_string(),
+            }
+            .into(),
+        )
+        .await;
+        let Packet::Read(read) = receive_packet(&mut server).await else {
+            panic!("expected READ");
+        };
+        assert_eq!(read.len, 4);
+        send_packet(
+            &mut server,
+            Data {
+                id: read.id,
+                data: vec![1, 2, 3, 4],
+            }
+            .into(),
+        )
+        .await;
+        let Packet::Close(close) = receive_packet(&mut server).await else {
+            panic!("expected CLOSE");
+        };
+        send_packet(&mut server, Packet::error(close.id, StatusCode::Ok)).await;
+    });
+    let session = crate::client::SftpSession::new(client).await.unwrap();
+    let mut file = session.open("file").await.unwrap();
+    assert_eq!(file.preferred_write_packet_size(), 256 * 1024 - 31);
+    let mut buffer = [0_u8; 4];
+    assert_eq!(file.read_pipelined(&mut buffer, 8).await.unwrap(), 4);
+    assert_eq!(buffer, [1, 2, 3, 4]);
+    file.shutdown().await.unwrap();
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn aligned_write_buffers_reduce_tiny_tail_requests_without_changing_data() {
+    for aligned in [false, true] {
+        let (client, mut server) = duplex(4096);
+        let session = Arc::new(RawSftpSession::new(client));
+        let server_task = tokio::spawn(async move {
+            initialize(&mut server).await;
+            let mut uploaded = Vec::new();
+            let mut count = 0;
+            loop {
+                match receive_packet(&mut server).await {
+                    Packet::Write(write) => {
+                        assert_eq!(write.offset, uploaded.len() as u64);
+                        assert!(write.data.len() <= 240);
+                        uploaded.extend_from_slice(&write.data);
+                        count += 1;
+                        send_packet(&mut server, Packet::error(write.id, StatusCode::Ok)).await;
+                    }
+                    Packet::Close(close) => {
+                        send_packet(&mut server, Packet::error(close.id, StatusCode::Ok)).await;
+                        break;
+                    }
+                    packet => panic!("unexpected packet: {packet:?}"),
+                }
+            }
+            (uploaded, count)
+        });
+        session.init().await.unwrap();
+        let mut file = test_file(session, None);
+        file.features.limits = Some(crate::client::rawsession::Limits {
+            write_len: Some(240),
+            ..Default::default()
+        });
+        let payload: Vec<_> = (0..512).map(|index| index as u8).collect();
+        let chunk_size = if aligned {
+            file.preferred_write_packet_size()
+        } else {
+            256
+        };
+        for chunk in payload.chunks(chunk_size) {
+            file.write_all(chunk).await.unwrap();
+        }
+        file.flush().await.unwrap();
+        file.shutdown().await.unwrap();
+        let (uploaded, requests) = server_task.await.unwrap();
+        assert_eq!(uploaded, payload);
+        assert_eq!(requests, if aligned { 3 } else { 4 });
+    }
+}
+
+#[tokio::test]
 async fn pipelined_write_acks_fail_promptly_on_timeout_and_stream_disconnect() {
     for timeout in [false, true] {
         let (client, mut server) = duplex(4096);
@@ -82,6 +205,32 @@ async fn pipelined_write_acks_fail_promptly_on_timeout_and_stream_disconnect() {
         let _ = release_tx.send(());
         server_task.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn preferred_write_buffers_respect_limits_framing_and_legacy_fallback() {
+    let (client, _server) = duplex(4096);
+    let session = Arc::new(RawSftpSession::new(client));
+    let mut file = test_file(session, None);
+    assert_eq!(file.preferred_write_packet_size(), 64 * 1024);
+    file.features.limits = Some(crate::client::rawsession::Limits {
+        write_len: Some(128 * 1024),
+        ..Default::default()
+    });
+    assert_eq!(file.preferred_write_packet_size(), 128 * 1024);
+    file.features.max_packet_len = 100;
+    assert_eq!(file.preferred_write_packet_size(), 69); // Framing + header + handle: 4 + 21 + 6 bytes.
+    file.features.limits = Some(crate::client::rawsession::Limits {
+        packet_len: Some(80),
+        write_len: Some(u64::MAX),
+        ..Default::default()
+    });
+    assert_eq!(file.preferred_write_packet_size(), 49);
+    file.features.limits.as_mut().unwrap().write_len = Some(8);
+    assert_eq!(file.preferred_write_packet_size(), 8);
+    file.features.max_packet_len = 9;
+    assert_eq!(file.preferred_write_packet_size(), 0);
+    file.closed = true;
 }
 
 #[tokio::test]

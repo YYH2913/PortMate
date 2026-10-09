@@ -12,6 +12,10 @@ or an unsigned artifact is not a production release. The complete release gates 
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation
   drains pending reads before closing the handle.
+- Align upload and remote-copy buffers to negotiated WRITE payload limits to
+  avoid tiny tail requests; peers without advertised write limits retain the
+  conservative 64 KiB upload buffer. Packet framing and large advertised limits
+  are capped before conversion.
 - Bound pipelined WRITE acknowledgement waits by the request timeout and
   transport error signal. Failed or cancelled transfers reopen the SFTP
   subsystem on retry instead of reusing a closed cached channel.

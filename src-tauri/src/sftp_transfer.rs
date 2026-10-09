@@ -43,7 +43,7 @@ pub(super) async fn sftp_upload(
     let mut remote_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
 
     let copy_result: Result<u64, String> = async {
-        let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
+        let mut buffer = vec![0_u8; remote_file.write_buffer_size(SFTP_TRANSFER_BUFFER_SIZE)];
         loop {
             progress.check_cancelled()?;
             let read = local_file
@@ -178,7 +178,7 @@ pub(super) async fn sftp_remote_copy(
     let mut target_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
 
     let copy_result: Result<u64, String> = async {
-        let mut buffer = vec![0_u8; SFTP_TRANSFER_BUFFER_SIZE];
+        let mut buffer = vec![0_u8; target_file.write_buffer_size(SFTP_TRANSFER_BUFFER_SIZE)];
         loop {
             progress.check_cancelled()?;
             let read = source_file

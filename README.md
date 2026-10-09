@@ -168,6 +168,12 @@ Live progress updates stay in memory during a transfer; queue, start, completion
 failure and cancellation states are persisted. After an abrupt process exit, saved
 byte counters may lag behind the actual partial file, which is checked before resume.
 
+SFTP transfers use application buffers capped at 256 KiB; uploads align to negotiated
+write limits, with a 64 KiB fallback for russh peers that do not advertise them. The russh backend pipelines
+up to eight reads on one handle; libssh uses its serialized native I/O. Server packet
+limits, throttling, cancellation and path checks remain enforced. Multiple transfers
+to the same session stay queued to avoid races on shared destinations and partial files.
+
 ## SSH Trust and Credentials
 
 For devices that accept SSH protocol-level `none` authentication, select the `none`

@@ -99,6 +99,40 @@ impl File {
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
 
+    fn max_write_packet_size(&self) -> usize {
+        let overhead = u64::from(WRITE_OVERHEAD_LENGTH) + 4 + self.handle.len() as u64;
+        let packet_capacity = u64::from(self.features.max_packet_len)
+            .min(
+                self.features
+                    .limits
+                    .and_then(|limits| limits.packet_len)
+                    .unwrap_or(u64::MAX),
+            )
+            .saturating_sub(overhead);
+        self.features
+            .limits
+            .and_then(|limits| limits.write_len)
+            .unwrap_or(u64::MAX)
+            .min(packet_capacity) as usize
+    }
+
+    /// Payload size for a transfer buffer that avoids a tiny second WRITE.
+    /// Without negotiated write limits, preserve the conservative 64 KiB
+    /// payload used by PortMate for older and embedded SFTP peers.
+    pub fn preferred_write_packet_size(&self) -> usize {
+        let maximum = self.max_write_packet_size();
+        if self
+            .features
+            .limits
+            .and_then(|limits| limits.write_len)
+            .is_some()
+        {
+            maximum
+        } else {
+            maximum.min(64 * 1024)
+        }
+    }
+
     /// Read a bounded batch of ranges concurrently on this file's existing handle.
     ///
     /// At most 16 requests of 32 KiB are outstanding, each also bounded by the
@@ -390,14 +424,7 @@ impl AsyncWrite for File {
             }
         }
 
-        let max_write_len = self
-            .features
-            .limits
-            .and_then(|l| l.write_len)
-            .unwrap_or_else(|| {
-                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
-                self.features.max_packet_len.saturating_sub(overhead) as u64
-            }) as usize;
+        let max_write_len = self.max_write_packet_size();
 
         let len = usize::min(buf.len(), max_write_len);
         let data = buf[..len].to_vec();

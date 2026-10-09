@@ -148,6 +148,32 @@ fn sftp_component_throughput_matrix() {
                     assert_eq!(fs::read(&path).unwrap(), payload);
                     fs::remove_file(&path).unwrap();
                 }
+                let aligned_path = root
+                    .path()
+                    .join(format!("aligned-{backend}-{iteration}.bin"));
+                let mut remote = sftp
+                    .open_with_flags(
+                        aligned_path.display().to_string(),
+                        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE,
+                    )
+                    .await
+                    .unwrap();
+                let chunk_size = remote.write_buffer_size(SFTP_TRANSFER_BUFFER_SIZE);
+                let started = Instant::now();
+                for chunk in payload.chunks(chunk_size) {
+                    remote.write_all(chunk).await.unwrap();
+                }
+                let data_seconds = started.elapsed().as_secs_f64();
+                remote.flush().await.unwrap();
+                remote.shutdown().await.unwrap();
+                print_metric(
+                    format!("{backend}-upload-aligned-{iteration}"),
+                    payload.len(),
+                    started.elapsed(),
+                    serde_json::json!({"chunk_bytes":chunk_size,"data_seconds":data_seconds,"terminal_reader":true}),
+                );
+                assert_eq!(fs::read(&aligned_path).unwrap(), payload);
+                fs::remove_file(aligned_path).unwrap();
                 for chunk_kib in chunks {
                     let mut remote = sftp.open(source.display().to_string()).await.unwrap();
                     let mut buffer = vec![0_u8; chunk_kib * 1024];
