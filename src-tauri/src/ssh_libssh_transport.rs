@@ -210,6 +210,9 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         session
             .set_option(libssh_rs::SshOption::ProcessConfig(false))
             .map_err(|error| format!("libssh 禁用系统 ssh_config 失败: {error}"))?;
+        session
+            .set_option(libssh_rs::SshOption::NoDelay(true))
+            .map_err(|error| format!("libssh SSH 设置 TCP_NODELAY 失败: {error}"))?;
         #[cfg(test)]
         configure_test_libssh_trace(&session)?;
         session

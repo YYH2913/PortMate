@@ -273,6 +273,18 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
         assert_eq!(health.backend, SshBackendKind::Libssh);
         assert_eq!(health.authentication_method, AuthMethod::PublicKey);
+        {
+            use std::os::fd::{AsRawFd, BorrowedFd};
+
+            let handle = Arc::clone(&state.ssh.lock().unwrap()[&profile.id].handle);
+            let backend = handle.lock().await;
+            let SshBackendSession::Libssh(session) = &*backend else {
+                panic!("expected libssh backend");
+            };
+            // SAFETY: the locked backend keeps the session and its socket alive.
+            let socket = unsafe { BorrowedFd::borrow_raw(session.as_raw_fd()) };
+            assert!(SockRef::from(&socket).tcp_nodelay().unwrap());
+        }
         assert!(health.terminal_channel_open);
         assert!(health.terminal_error.is_none());
         assert!(health.sftp_probed);

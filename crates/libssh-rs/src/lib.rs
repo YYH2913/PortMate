@@ -934,6 +934,16 @@ impl Session {
                 )
             },
             SshOption::Timeout(duration) => return sess.set_timeout(duration),
+            SshOption::NoDelay(value) => {
+                let value = c_int::from(value);
+                unsafe {
+                    sys::ssh_options_set(
+                        **sess,
+                        sys::ssh_options_e::SSH_OPTIONS_NODELAY,
+                        &value as *const _ as _,
+                    )
+                }
+            }
             SshOption::CiphersCS(name) => unsafe {
                 let name = CString::new(name)?;
                 sys::ssh_options_set(
@@ -1785,6 +1795,10 @@ pub enum SshOption {
 
     /// Set a timeout for the connection
     Timeout(Duration),
+
+    /// Disable Nagle's algorithm on a directly connected TCP socket.
+    /// Set this before connecting. Caller-supplied sockets must be configured separately.
+    NoDelay(bool),
 
     IdentityAgent(Option<String>),
     /// Set the key exchange method to be used. ex:
