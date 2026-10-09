@@ -1,0 +1,26 @@
+[
+  {
+    "name": "debian-bookworm",
+    "dockerfile": "test/compat/terminal-debian.Dockerfile",
+    "buildArgs": { "DEBIAN_TAG": "bookworm-slim" },
+    "vttestPattern": "2\\.7.*20221229"
+  },
+  {
+    "name": "ubuntu-24.04",
+    "dockerfile": "test/compat/terminal-ubuntu.Dockerfile",
+    "buildArgs": { "UBUNTU_TAG": "24.04" },
+    "vttestPattern": "2\\.7.*20230201"
+  },
+  {
+    "name": "debian-trixie",
+    "dockerfile": "test/compat/terminal-debian.Dockerfile",
+    "buildArgs": { "DEBIAN_TAG": "trixie-slim" },
+    "vttestPattern": "2\\.7.*20241208"
+  },
+  {
+    "name": "alpine-3.20",
+    "dockerfile": "test/compat/terminal-alpine.Dockerfile",
+    "buildArgs": { "ALPINE_TAG": "3.20" },
+    "vttestPattern": null
+  }
+]

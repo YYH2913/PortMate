@@ -20,11 +20,7 @@ pub(super) async fn transfer_file_via_sftp(
         }
         remote_paths => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SFTP 文件传输",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SFTP 文件传输")?;
             let sftp = auxiliary.sftp().await?;
             let transfer = async {
                 match remote_paths {
@@ -42,11 +38,7 @@ pub(super) async fn transfer_file_via_sftp(
             };
             let result = await_sftp_transfer_with_cancellation(transfer, progress).await;
             drop(sftp);
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SFTP 文件传输",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SFTP 文件传输")?;
             result
         }
     }
@@ -93,34 +85,18 @@ pub(super) async fn transfer_file_via_local_or_scp(
         }
         (None, Some(remote_destination)) => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SCP 文件上传",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SCP 文件上传")?;
             let handle = auxiliary.handle();
             let result = scp_upload(handle, &request.source, remote_destination, progress).await;
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SCP 文件上传",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SCP 文件上传")?;
             result
         }
         (Some(remote_source), None) => {
             let auxiliary = ssh_auxiliary_lease(state, &request.session_id)?;
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SCP 文件下载",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SCP 文件下载")?;
             let handle = auxiliary.handle();
             let result = scp_download(handle, remote_source, &request.destination, progress).await;
-            auxiliary.ensure_expected_current(
-                state,
-                expected_ssh_runtime_id,
-                "SCP 文件下载",
-            )?;
+            auxiliary.ensure_expected_current(state, expected_ssh_runtime_id, "SCP 文件下载")?;
             result
         }
         (Some(remote_source), Some(remote_destination)) => {
@@ -451,10 +427,7 @@ pub(super) fn local_transfer_entry(
             {
                 use std::os::unix::fs::MetadataExt;
                 if metadata.nlink() != 1 {
-                    return Err(format!(
-                        "{label}不能是硬链接: {}",
-                        path.display()
-                    ));
+                    return Err(format!("{label}不能是硬链接: {}", path.display()));
                 }
             }
             #[cfg(windows)]
@@ -527,32 +500,31 @@ pub(super) fn open_local_transfer_source(
     Ok((file, metadata.len()))
 }
 
-fn same_local_file_identity(before: &LocalTransferEntry, after: &fs::File) -> std::io::Result<bool> {
+fn same_local_file_identity(
+    before: &LocalTransferEntry,
+    after: &fs::File,
+) -> std::io::Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let after = after.metadata()?;
-        Ok(
-            before.dev() == after.dev()
-                && before.ino() == after.ino()
-                && before.nlink() == 1
-                && after.nlink() == 1,
-        )
+        Ok(before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.nlink() == 1
+            && after.nlink() == 1)
     }
     #[cfg(windows)]
     {
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
         let before = windows_transfer_file_information(&before.file)?;
         let after = windows_transfer_file_information(after)?;
-        Ok(
-            before.dwVolumeSerialNumber == after.dwVolumeSerialNumber
-                && before.nFileIndexHigh == after.nFileIndexHigh
-                && before.nFileIndexLow == after.nFileIndexLow
-                && before.nNumberOfLinks == 1
-                && after.nNumberOfLinks == 1
-                && before.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
-                && after.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
-        )
+        Ok(before.dwVolumeSerialNumber == after.dwVolumeSerialNumber
+            && before.nFileIndexHigh == after.nFileIndexHigh
+            && before.nFileIndexLow == after.nFileIndexLow
+            && before.nNumberOfLinks == 1
+            && after.nNumberOfLinks == 1
+            && before.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+            && after.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -603,34 +575,5 @@ pub(super) fn open_new_local_transfer_file(target: &Path) -> Result<(fs::File, P
 }
 
 #[cfg(all(test, any(unix, windows)))]
-mod local_transfer_identity_tests {
-    use super::*;
-
-    #[test]
-    fn transfer_file_identity_rejects_same_size_path_replacement() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("source.bin");
-        fs::write(&source, b"first").unwrap();
-        let before = local_transfer_entry(&source, "source").unwrap().unwrap();
-        let original = fs::File::open(&source).unwrap();
-        assert!(same_local_file_identity(&before, &original).unwrap());
-
-        fs::rename(&source, root.path().join("original.bin")).unwrap();
-        fs::write(&source, b"other").unwrap();
-        let replacement = fs::File::open(&source).unwrap();
-        assert!(!same_local_file_identity(&before, &replacement).unwrap());
-        assert_eq!(before.len(), replacement.metadata().unwrap().len());
-    }
-
-    #[test]
-    fn transfer_file_identity_rejects_hard_linked_source() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("source.bin");
-        fs::write(&source, b"protected").unwrap();
-        fs::hard_link(&source, root.path().join("alias.bin")).unwrap();
-
-        let error = open_local_transfer_source(&source, "source").err().unwrap();
-        assert!(error.contains("硬链接"), "{error}");
-        assert_eq!(fs::read(&source).unwrap(), b"protected");
-    }
-}
+#[path = "../../test/rust/portmate/unit/file_transfer.rs"]
+mod local_transfer_identity_tests;

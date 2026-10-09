@@ -110,7 +110,9 @@ pub(super) async fn execute_tunnel_request_inner(
                 "dynamic MCP tunnel requests require targetHost and targetPort".to_string()
             })?;
             if !tunnel_route_allowed(&runtime.spec.route_rules, &host, port) {
-                return Err(format!("MCP tunnel target denied by route rules: {host}:{port}"));
+                return Err(format!(
+                    "MCP tunnel target denied by route rules: {host}:{port}"
+                ));
             }
             (host, port)
         }
@@ -125,7 +127,9 @@ pub(super) async fn execute_tunnel_request_inner(
     // One deadline covers connect, write, and response reads so a peer cannot
     // multiply the caller-selected budget across independent I/O phases.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let max_response_bytes = request.max_response_bytes.unwrap_or(MAX_MCP_TUNNEL_EXCHANGE_BYTES);
+    let max_response_bytes = request
+        .max_response_bytes
+        .unwrap_or(MAX_MCP_TUNNEL_EXCHANGE_BYTES);
     let metrics = Arc::clone(&runtime.metrics);
     let Some(permit) =
         try_acquire_tunnel_connection(&state.tunnel_connection_slots, metrics.as_ref())
@@ -227,12 +231,15 @@ pub(super) async fn execute_udp_tunnel_request_inner(
         .unwrap_or(DEFAULT_MCP_TUNNEL_EXCHANGE_TIMEOUT_MS);
     let target = format!("{target_host}:{target_port}");
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let target_addr = tokio::time::timeout_at(deadline, lookup_host((target_host.as_str(), target_port)))
-        .await
-        .map_err(|_| format!("MCP UDP target lookup timed out after {timeout_ms} ms: {target}"))?
-        .map_err(|error| format!("MCP UDP target lookup failed {target}: {error}"))?
-        .next()
-        .ok_or_else(|| format!("MCP UDP target lookup returned no address: {target}"))?;
+    let target_addr =
+        tokio::time::timeout_at(deadline, lookup_host((target_host.as_str(), target_port)))
+            .await
+            .map_err(|_| {
+                format!("MCP UDP target lookup timed out after {timeout_ms} ms: {target}")
+            })?
+            .map_err(|error| format!("MCP UDP target lookup failed {target}: {error}"))?
+            .next()
+            .ok_or_else(|| format!("MCP UDP target lookup returned no address: {target}"))?;
     let bind_addr = match target_addr {
         std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
         std::net::SocketAddr::V6(_) => std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0)),
@@ -254,7 +261,9 @@ pub(super) async fn execute_udp_tunnel_request_inner(
     let result = async {
         tokio::time::timeout_at(deadline, socket.connect(target_addr))
             .await
-            .map_err(|_| format!("MCP UDP target connect timed out after {timeout_ms} ms {target}"))?
+            .map_err(|_| {
+                format!("MCP UDP target connect timed out after {timeout_ms} ms {target}")
+            })?
             .map_err(|error| format!("MCP UDP target connect failed {target}: {error}"))?;
         tokio::time::timeout_at(deadline, socket.send(&payload))
             .await
@@ -310,25 +319,23 @@ async fn exchange_host_tcp_request(
     close_write: bool,
 ) -> Result<(Vec<u8>, bool, bool), String> {
     let target = format!("{target_host}:{target_port}");
-    let mut stream = match tokio::time::timeout_at(
-        deadline,
-        TcpStream::connect((target_host, target_port)),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(error)) => {
-            return Err(format!(
-                "MCP tunnel target connect failed {target}: {error}"
-            ));
-        }
-        Err(_) => {
-            return Err(format!(
-                "MCP tunnel target connect timed out after {} ms {target}",
-                timeout_ms
-            ));
-        }
-    };
+    let mut stream =
+        match tokio::time::timeout_at(deadline, TcpStream::connect((target_host, target_port)))
+            .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                return Err(format!(
+                    "MCP tunnel target connect failed {target}: {error}"
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "MCP tunnel target connect timed out after {} ms {target}",
+                    timeout_ms
+                ));
+            }
+        };
     let write = tokio::time::timeout_at(deadline, async {
         stream.write_all(payload).await?;
         if close_write {
@@ -340,9 +347,7 @@ async fn exchange_host_tcp_request(
     match write {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            return Err(format!(
-                "MCP tunnel request write failed {target}: {error}"
-            ));
+            return Err(format!("MCP tunnel request write failed {target}: {error}"));
         }
         Err(_) => {
             return Err(format!(
@@ -405,37 +410,5 @@ async fn read_bounded_tunnel_response(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn response_limit_releases_without_waiting_for_peer_eof() {
-        tauri::async_runtime::block_on(async {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let server = tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                stream.write_all(b"pong").await.unwrap();
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            });
-
-            let started = Instant::now();
-            let result = exchange_host_tcp_request(
-                "127.0.0.1",
-                address.port(),
-                b"ping",
-                tokio::time::Instant::now() + Duration::from_secs(1),
-                1_000,
-                4,
-                false,
-            )
-            .await
-            .unwrap();
-            assert_eq!(result.0, b"pong");
-            assert!(result.1);
-            assert!(!result.2);
-            assert!(started.elapsed() < Duration::from_millis(500));
-            server.abort();
-        });
-    }
-}
+#[path = "../../test/rust/portmate/unit/host_proxy_io.rs"]
+mod tests;

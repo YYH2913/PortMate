@@ -1,0 +1,105 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildDetachedPanePath,
+  DETACHED_PANE_MESSAGE_TYPE,
+  DETACHED_PANE_RESULT_MESSAGE_TYPE,
+  normalizeDetachedPaneCommand,
+  normalizeDetachedPaneMessage,
+  normalizeDetachedPaneResult,
+  normalizeDetachedPaneResultMessage,
+  parseDetachedPaneRequest,
+  upsertDetachedSessionSummary,
+} from "../../src/detached-pane-state";
+import type { SessionSummary } from "../../src/types";
+
+describe("detached pane state", () => {
+  it("round-trips an encoded detached pane route", () => {
+    const request = { windowId: "pane-123", ownerWindowId: "workspace-123", paneId: "pane/a", viewId: "view/1", sessionId: "ssh host", title: "Router Copy", color: "#228B22", keyMode: "command" as const };
+    const path = buildDetachedPanePath(request);
+
+    expect(path).toContain("detachedPane=1");
+    expect(parseDetachedPaneRequest(new URL(path, "http://localhost").search)).toEqual(request);
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-old&paneId=a&viewId=v&sessionId=b&title=Old")).toEqual({
+      windowId: "pane-old",
+      ownerWindowId: "main",
+      paneId: "a",
+      viewId: "v",
+      sessionId: "b",
+      title: "Old",
+      color: "",
+      keyMode: "remote",
+    });
+  });
+
+  it("rejects malformed labels and control characters", () => {
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane%2Fbad&paneId=a&sessionId=b")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a%0A&viewId=v&sessionId=b&title=x")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a&viewId=v&sessionId=b&title=x%0A")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&paneId=a&viewId=v&sessionId=b&title=x&color=red")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&ownerWindowId=pane-owner&paneId=a&viewId=v&sessionId=b&title=x")).toBeNull();
+    expect(parseDetachedPaneRequest("?detachedPane=1&windowId=pane-ok&ownerWindowId=undefined&paneId=a&viewId=v&sessionId=b&title=x")).toBeNull();
+    expect(parseDetachedPaneRequest("?windowId=pane-ok&paneId=a&sessionId=b")).toBeNull();
+  });
+
+  it("normalizes only supported cross-window commands", () => {
+    const payload = { action: "reattach", requestId: "request-123", windowId: "pane-123", ownerWindowId: "workspace-owner", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "local" };
+
+    expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
+    const { ownerWindowId: _, ...legacyPayload } = payload;
+    expect(normalizeDetachedPaneCommand(legacyPayload)).toMatchObject({ ownerWindowId: "main" });
+    expect(normalizeDetachedPaneCommand({ ...payload, keyMode: "invalid" })).toMatchObject({ keyMode: "remote" });
+    const { requestId: __, ...legacyRequestPayload } = payload;
+    expect(normalizeDetachedPaneCommand(legacyRequestPayload)).toMatchObject({ requestId: "" });
+    expect(normalizeDetachedPaneCommand({ ...payload, requestId: "bad/request" })).toBeNull();
+    expect(normalizeDetachedPaneCommand({ ...payload, action: "remove" })).toBeNull();
+    expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
+      type: DETACHED_PANE_MESSAGE_TYPE,
+      payload,
+    });
+    expect(normalizeDetachedPaneMessage({ type: "other", payload })).toBeNull();
+  });
+
+  it("accepts a global lock request from a detached window", () => {
+    const payload = { action: "lock-screen", requestId: "request-lock", windowId: "pane-123", ownerWindowId: "main", paneId: "pane-a", viewId: "view-a", sessionId: "session-a", title: "Router", color: "#4169E1", keyMode: "remote" };
+
+    expect(normalizeDetachedPaneCommand(payload)).toEqual(payload);
+    expect(normalizeDetachedPaneMessage({ type: DETACHED_PANE_MESSAGE_TYPE, payload })).toEqual({
+      type: DETACHED_PANE_MESSAGE_TYPE,
+      payload,
+    });
+  });
+
+  it("normalizes bounded reattach acknowledgements", () => {
+    const accepted = { windowId: "pane-123", requestId: "request-123", action: "reattach", ok: true, error: "" };
+    const rejected = { windowId: "pane-123", requestId: "request-123", action: "reattach", ok: false, error: "原会话已不存在。" };
+
+    expect(normalizeDetachedPaneResult(accepted)).toEqual(accepted);
+    expect(normalizeDetachedPaneResult(rejected)).toEqual(rejected);
+    expect(normalizeDetachedPaneResultMessage({
+      type: DETACHED_PANE_RESULT_MESSAGE_TYPE,
+      payload: rejected,
+    })).toEqual({ type: DETACHED_PANE_RESULT_MESSAGE_TYPE, payload: rejected });
+    expect(normalizeDetachedPaneResult({ ...accepted, windowId: "pane/bad" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...accepted, requestId: "request/bad" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...accepted, error: "unexpected" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "bad\u0000error" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "bad\nerror" })).toBeNull();
+    expect(normalizeDetachedPaneResult({ ...rejected, error: "x".repeat(513) })).toBeNull();
+    expect(normalizeDetachedPaneResultMessage({ type: "other", payload: accepted })).toBeNull();
+  });
+
+  it("upserts a detached session after a profile update", () => {
+    const first = { profile: { id: "session-a", name: "Before" } } as SessionSummary;
+    const second = { profile: { id: "session-b", name: "Other" } } as SessionSummary;
+    const updated = { profile: { id: "session-a", name: "After" } } as SessionSummary;
+    const sessions = [first, second];
+
+    const next = upsertDetachedSessionSummary(sessions, updated);
+    expect(next).toEqual([updated, second]);
+    expect(next).not.toBe(sessions);
+
+    const unknown = { profile: { id: "session-c", name: "Unknown" } } as SessionSummary;
+    expect(upsertDetachedSessionSummary(sessions, unknown)).toEqual([first, second, unknown]);
+  });
+});

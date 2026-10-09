@@ -160,19 +160,12 @@ pub(super) enum SshBackendChannelWriter {
     Libssh(Arc<tokio::sync::Mutex<libssh_rs::Channel>>),
 }
 
-#[cfg(all(test, unix))]
-pub(super) async fn write_ssh_channel_bytes_with_timeout(
+pub(super) async fn write_ssh_channel_bytes_with_cancellation(
     writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
     data: &[u8],
     timeout: Duration,
     label: &str,
-) -> Result<(), String> {
-    write_ssh_channel_bytes_with_cancellation(writer, data, timeout, label, None).await
-}
-
-pub(super) async fn write_ssh_channel_bytes_with_cancellation(
-    writer: &Arc<tokio::sync::Mutex<SshBackendChannelWriter>>,
-    data: &[u8], timeout: Duration, label: &str, cancellation: Option<&AtomicBool>,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let started = Instant::now();
     let writer = tokio::time::timeout(timeout, Arc::clone(writer).lock_owned())
@@ -216,9 +209,18 @@ impl SshBackendChannelWriter {
     pub(super) async fn close(&self) -> Result<(), String> {
         match self {
             Self::Russh(writer) => tokio::time::timeout(SSH_TERMINAL_WRITE_TIMEOUT, writer.close())
-                .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string()),
-            Self::Libssh(channel) => run_libssh_channel_operation_with_timeout(Arc::clone(channel),
-                SSH_TERMINAL_WRITE_TIMEOUT, "terminal close", |channel| channel.close().map_err(|e| e.to_string())).await,
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string()),
+            Self::Libssh(channel) => {
+                run_libssh_channel_operation_with_timeout(
+                    Arc::clone(channel),
+                    SSH_TERMINAL_WRITE_TIMEOUT,
+                    "terminal close",
+                    |channel| channel.close().map_err(|e| e.to_string()),
+                )
+                .await
+            }
         }
     }
     pub(super) async fn data(&self, data: &[u8]) -> Result<(), String> {
@@ -263,10 +265,8 @@ impl SshBackendChannelWriter {
         match self {
             Self::Russh(writer) => {
                 tokio::time::timeout(timeout, writer.window_change(cols, rows, 0, 0))
-                .await
-                    .map_err(|_| {
-                        format!("SSH resize timed out after {} ms", timeout.as_millis())
-                    })?
+                    .await
+                    .map_err(|_| format!("SSH resize timed out after {} ms", timeout.as_millis()))?
                     .map_err(|error| error.to_string())
             }
             Self::Libssh(channel) => {
@@ -394,24 +394,11 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "../../test/rust/portmate/unit/ssh_channel.rs"]
+mod tests;
 
-    #[test]
-    fn russh_messages_are_normalized_without_transport_types() {
-        assert_eq!(
-            SshBackendMessage::from(ChannelMsg::Data {
-                data: b"hello".as_slice().into(),
-            }),
-            SshBackendMessage::Data(b"hello".to_vec())
-        );
-        assert_eq!(
-            SshBackendMessage::from(ChannelMsg::ExitStatus { exit_status: 23 }),
-            SshBackendMessage::ExitStatus(23)
-        );
-        assert_eq!(
-            SshBackendMessage::from(ChannelMsg::Eof),
-            SshBackendMessage::Eof
-        );
-    }
-}
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/ssh_channel.rs"
+));

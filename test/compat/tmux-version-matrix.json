@@ -1,0 +1,30 @@
+[
+  {
+    "name": "tmux-3.1c-debian-bullseye",
+    "dockerfile": "test/compat/tmux-debian.Dockerfile",
+    "buildArgs": { "DEBIAN_TAG": "bullseye-slim" },
+    "versionPattern": "^tmux 3\\.1c$"
+  },
+  {
+    "name": "tmux-3.3a-debian-bookworm",
+    "dockerfile": "test/compat/tmux-debian.Dockerfile",
+    "buildArgs": { "DEBIAN_TAG": "bookworm-slim" },
+    "versionPattern": "^tmux 3\\.3a$"
+  },
+  {
+    "name": "tmux-3.5a-alpine-3.21",
+    "dockerfile": "test/compat/tmux-alpine.Dockerfile",
+    "buildArgs": { "ALPINE_TAG": "3.21" },
+    "versionPattern": "^tmux 3\\.5a$"
+  },
+  {
+    "name": "tmux-3.7b-debian-bookworm-source",
+    "dockerfile": "test/compat/tmux-source.Dockerfile",
+    "buildArgs": {
+      "DEBIAN_TAG": "bookworm-slim",
+      "TMUX_VERSION": "3.7b",
+      "TMUX_SHA256": "87f2e99e3b685973f2ca002ffd6ed7e51a5744f7009daae5a15670b6d532db96"
+    },
+    "versionPattern": "^tmux 3\\.7b$"
+  }
+]

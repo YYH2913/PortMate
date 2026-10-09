@@ -48,7 +48,12 @@ where
         .ok_or_else(|| format!("{label} deadline is outside the supported range"))?;
     let session = tokio::time::timeout(timeout, session.lock_owned())
         .await
-        .map_err(|_| format!("{label} SFTP lock timed out after {} ms", timeout.as_millis()))?;
+        .map_err(|_| {
+            format!(
+                "{label} SFTP lock timed out after {} ms",
+                timeout.as_millis()
+            )
+        })?;
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
@@ -59,9 +64,10 @@ where
     });
     match wait_reapable_blocking_worker(worker, remaining, label).await {
         Ok(result) => result,
-        Err(BlockingWorkerWaitError::TimedOut) => {
-            Err(format!("{label} timed out after {} ms", timeout.as_millis()))
-        }
+        Err(BlockingWorkerWaitError::TimedOut) => Err(format!(
+            "{label} timed out after {} ms",
+            timeout.as_millis()
+        )),
         Err(BlockingWorkerWaitError::Failed(error)) => {
             Err(format!("{label} worker failed: {error}"))
         }
@@ -154,18 +160,14 @@ impl SftpBackendSession {
                     session,
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP canonicalize",
-                    move |session, _| session.canonicalize(&path).map_err(|error| error.to_string()),
+                    move |session, _| {
+                        session
+                            .canonicalize(&path)
+                            .map_err(|error| error.to_string())
+                    },
                 )
                 .await
             }
-        }
-    }
-
-    #[cfg(all(test, unix))]
-    pub(super) async fn close(&self) -> Result<(), String> {
-        match self {
-            Self::Russh(session) => session.close().await.map_err(|error| error.to_string()),
-            Self::Libssh(_) => Ok(()),
         }
     }
 
@@ -325,7 +327,11 @@ impl SftpBackendSession {
                     session,
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP unlink",
-                    move |session, _| session.remove_file(&path).map_err(|error| error.to_string()),
+                    move |session, _| {
+                        session
+                            .remove_file(&path)
+                            .map_err(|error| error.to_string())
+                    },
                 )
                 .await
             }
@@ -461,3 +467,9 @@ fn libssh_open_flags(flags: OpenFlags) -> libssh_rs::OpenFlags {
     }
     mapped
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/sftp_backend.rs"
+));

@@ -318,16 +318,6 @@ pub(super) async fn request_mcp_approval(
     .await
 }
 
-#[cfg(test)]
-pub(super) fn build_mcp_approval_request(
-    client_id: &str,
-    action: &str,
-    session_id: &str,
-    scope: McpScope,
-) -> Result<McpApprovalRequest, String> {
-    build_mcp_approval_request_with_target(client_id, action, session_id, scope, None)
-}
-
 pub(super) fn build_mcp_approval_request_with_target(
     client_id: &str,
     action: &str,
@@ -503,15 +493,17 @@ fn normalize_mcp_http_client_host(value: &str) -> Result<String, String> {
         .unwrap_or(value);
     if value.is_empty()
         || value.len() > MAX_MCP_HTTP_CLIENT_HOST_BYTES
-        || value.chars().any(|character| character.is_control() || character.is_whitespace())
+        || value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
     {
         return Err(format!(
             "MCP HTTP client address must be non-empty, contain no whitespace, and not exceed {MAX_MCP_HTTP_CLIENT_HOST_BYTES} bytes"
         ));
     }
-    match Host::parse(value).map_err(|_| {
-        "MCP HTTP client address must be an IPv4, IPv6, or DNS host".to_string()
-    })? {
+    match Host::parse(value)
+        .map_err(|_| "MCP HTTP client address must be an IPv4, IPv6, or DNS host".to_string())?
+    {
         Host::Domain(domain) => Ok(domain),
         Host::Ipv4(ip) if !ip.is_unspecified() => Ok(ip.to_string()),
         Host::Ipv6(ip) if !ip.is_unspecified() => Ok(ip.to_string()),
@@ -537,9 +529,7 @@ pub(super) fn set_mcp_http_settings_in_store(
     store.mcp_http_settings.clone()
 }
 
-pub(super) fn read_mcp_http_settings(
-    state: &AppState,
-) -> Result<McpHttpSettings, String> {
+pub(super) fn read_mcp_http_settings(state: &AppState) -> Result<McpHttpSettings, String> {
     let store = state.store.lock().map_err(|error| error.to_string())?;
     Ok(store.mcp_http_settings.clone())
 }
@@ -595,3 +585,9 @@ fn default_mcp_http_origins(bind_ip: std::net::IpAddr, port: u16) -> Vec<String>
     };
     vec![format!("http://{host}:{port}")]
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/mcp_control.rs"
+));

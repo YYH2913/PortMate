@@ -580,7 +580,7 @@ npm test
 npm run build
 npm run test:release-source
 npm run test:release-upgrade
-cargo fmt --all -- --check
+npm run test:rustfmt
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
@@ -635,12 +635,20 @@ PortMate/
 │   ├── portmate-kdf/       Portable Vault KDF boundary
 │   ├── portmate-keyring/   Cross-platform native keyring boundary
 │   └── russh-sftp/         SFTP compatibility implementation used by PortMate
-├── scripts/                Build, packaging, and compatibility scripts
-├── tests/                  External server and protocol fixtures
+├── scripts/                Production build and packaging tools
+├── test/                 All tests, test tooling, and fixtures
 └── .github/workflows/      Native CI and SDK freshness workflows
 ```
 
 The Tauri root `lib.rs` contains only module registration and public re-exports. Transport, security, storage, automation, and application logic remain with their owning boundaries instead of accumulating in the crate root.
+
+Tests are centralized under [`test/`](./test/README.md): `frontend/` and `scripts/`
+contain Vitest suites, `rust/<package>/` contains Rust suites, support code, integration
+tests and probe binaries, and `tooling/`, `compat/`, `fixtures/`, and `setup/` contain
+their runners and inputs. Rust source files retain only `cfg(test)` registrations and
+necessary test hooks; private-module access and existing Cargo test filters are preserved.
+`npm test` type-checks test sources separately from the production frontend build.
+Local review reproducers in `tmp/` are not discovered by the normal test suite.
 
 ## Data and Privacy
 

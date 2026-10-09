@@ -112,25 +112,10 @@ pub(super) fn schedule_json_compatibility_snapshot(store_path: &Path, store: &Se
     match enqueue_json_compatibility_snapshot(store_path, store) {
         Ok(()) => {
             #[cfg(test)]
-            if let Err(error) =
-                flush_json_compatibility_snapshot(store_path, Duration::from_secs(5))
-            {
-                panic!("test JSON compatibility snapshot did not flush: {error}");
-            }
+            assert_test_json_snapshot_flushed(store_path);
         }
         Err(error) => eprintln!("PortMate: failed to queue JSON compatibility store: {error}"),
     }
-}
-
-#[cfg(test)]
-pub(super) fn flush_json_compatibility_snapshot(
-    store_path: &Path,
-    timeout: Duration,
-) -> Result<(), String> {
-    let snapshot_path = compatibility_snapshot_path(store_path);
-    wait_for_compatibility_snapshots(timeout, |state| {
-        !state.pending.contains_key(&snapshot_path) && !state.writing.contains(&snapshot_path)
-    })
 }
 
 pub(super) fn flush_json_compatibility_snapshots(timeout: Duration) -> Result<(), String> {
@@ -174,3 +159,9 @@ pub(super) fn save_store_json(path: &Path, store: &SessionStore) -> Result<(), S
         .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
     write_private_atomic_file(path, &bytes, "PortMate JSON compatibility store")
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/store_compatibility.rs"
+));

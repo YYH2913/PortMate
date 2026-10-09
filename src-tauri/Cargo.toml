@@ -15,6 +15,14 @@ desktop = ["tauri/wry"]
 name = "portmate_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "native-keyring-probe"
+path = "../test/rust/portmate/bin/native-keyring-probe.rs"
+
+[[bin]]
+name = "tmux-compat-probe"
+path = "../test/rust/portmate/bin/tmux-compat-probe.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 

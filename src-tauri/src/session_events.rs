@@ -2,12 +2,23 @@ use super::transport_timing::STREAM_PERSIST_INTERVAL;
 use super::*;
 
 pub(super) fn finish_channel_decoder(
-    io: &SessionIo, session_id: &str, runtime_id: &str, stream: EventStream, decoder: &mut StreamDecoder,
+    io: &SessionIo,
+    session_id: &str,
+    runtime_id: &str,
+    stream: EventStream,
+    decoder: &mut StreamDecoder,
 ) {
     let text = decoder.finish();
     if !text.is_empty() {
-        record_channel_bytes_with_accepted_side_effect(io, session_id, Some(runtime_id), stream,
-            ChannelByteViews::same(&[]), text, || {});
+        record_channel_bytes_with_accepted_side_effect(
+            io,
+            session_id,
+            Some(runtime_id),
+            stream,
+            ChannelByteViews::same(&[]),
+            text,
+            || {},
+        );
     }
 }
 
@@ -35,29 +46,14 @@ pub(super) fn append_logging_errors(event: &mut SessionEvent, errors: &[String])
 pub(super) fn sync_stored_event(store: &mut SessionStore, event: &SessionEvent) {
     // Logging metadata is normally attached to the event just appended. Search
     // from the recent end so each byte/echo does not walk the retained log.
-    if let Some(stored) = store.events.iter_mut().rev().find(|stored| stored.id == event.id) {
+    if let Some(stored) = store
+        .events
+        .iter_mut()
+        .rev()
+        .find(|stored| stored.id == event.id)
+    {
         *stored = event.clone();
     }
-}
-
-#[cfg(test)]
-pub(super) fn record_channel_bytes(
-    io: &SessionIo,
-    session_id: &str,
-    source_runtime_id: Option<&str>,
-    stream: EventStream,
-    raw_bytes: &[u8],
-    text: String,
-) {
-    record_channel_bytes_with_accepted_side_effect(
-        io,
-        session_id,
-        source_runtime_id,
-        stream,
-        ChannelByteViews::same(raw_bytes),
-        text,
-        || {},
-    );
 }
 
 /// Original wire bytes for raw audit logs and application bytes for the
@@ -85,21 +81,10 @@ pub(super) fn record_channel_bytes_with_accepted_side_effect(
     text: String,
     accepted_side_effect: impl FnOnce(),
 ) -> bool {
-    let ChannelByteViews {
-        raw_log,
-        terminal,
-    } = bytes;
+    let ChannelByteViews { raw_log, terminal } = bytes;
     let Some(source_runtime_id) = source_runtime_id else {
         accepted_side_effect();
-        record_accepted_channel_bytes(
-            io,
-            session_id,
-            None,
-            stream,
-            raw_log,
-            terminal,
-            text,
-        );
+        record_accepted_channel_bytes(io, session_id, None, stream, raw_log, terminal, text);
         return true;
     };
     match with_current_session_runtime_generation(
@@ -152,10 +137,7 @@ fn record_accepted_channel_bytes(
             stream,
             bytes_ref: None,
             text: None,
-            annotations: BTreeMap::from([(
-                "binaryOnly".to_string(),
-                "true".to_string(),
-            )]),
+            annotations: BTreeMap::from([("binaryOnly".to_string(), "true".to_string())]),
         };
         publish_terminal_live_event(io.app_handle.as_ref(), &event, terminal_bytes);
         if let Err(error) = enqueue_inbound_log_persistence(
@@ -185,11 +167,7 @@ fn record_accepted_channel_bytes(
         text: Some(text.clone()),
         annotations,
     };
-    publish_terminal_live_event(
-        io.app_handle.as_ref(),
-        &prepared_event,
-        terminal_bytes,
-    );
+    publish_terminal_live_event(io.app_handle.as_ref(), &prepared_event, terminal_bytes);
     if let Err(error) = enqueue_inbound_log_persistence(
         io.clone(),
         session_id.to_string(),
@@ -365,7 +343,10 @@ impl InboundLogQueueState {
     }
 
     fn finish(&self) {
-        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.finished.store(true, Ordering::SeqCst);
         self.changed.notify_all();
     }
@@ -449,19 +430,21 @@ fn enqueue_inbound_log_persistence(
         };
         // Shutdown takes this registry lock before dropping every sender,
         // so the worker drains every request admitted here before finishing.
-        queue.sender.try_send(InboundLogPersistenceRequest {
-            io,
-            session_id,
-            source_runtime_id,
-            event,
-            raw_bytes,
-        }).map_err(|error| {
-            match error {
-                mpsc::error::TrySendError::Full(_) =>
-                    "终端事件队列已满，已跳过本次持久化和触发器处理".to_string(),
+        queue
+            .sender
+            .try_send(InboundLogPersistenceRequest {
+                io,
+                session_id,
+                source_runtime_id,
+                event,
+                raw_bytes,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    "终端事件队列已满，已跳过本次持久化和触发器处理".to_string()
+                }
                 mpsc::error::TrySendError::Closed(_) => "终端日志 worker 已关闭".to_string(),
-            }
-        })
+            })
     };
     result.map(|_| ())
 }
@@ -479,7 +462,9 @@ async fn run_inbound_log_queue(
             match tokio::time::timeout(
                 STREAM_PERSIST_INTERVAL.saturating_sub(last_persist.elapsed()),
                 receiver.recv(),
-            ).await {
+            )
+            .await
+            {
                 Ok(request) => request,
                 Err(_) => {
                     dirty = !persist_inbound_log_checkpoint(&store, &path).await;
@@ -505,7 +490,10 @@ async fn run_inbound_log_queue(
             for request in batch {
                 persist_inbound_log_request(request);
             }
-        }).await.is_err() {
+        })
+        .await
+        .is_err()
+        {
             eprintln!("PortMate: inbound log persistence worker failed");
         }
         // Checkpoint only after recording the batch. Readers keep publishing
@@ -522,7 +510,9 @@ async fn run_inbound_log_queue(
 }
 
 async fn persist_inbound_log_checkpoint(store: &Weak<Mutex<SessionStore>>, path: &Path) -> bool {
-    let Some(store) = store.upgrade() else { return true };
+    let Some(store) = store.upgrade() else {
+        return true;
+    };
     let path = path.to_path_buf();
     match tauri::async_runtime::spawn_blocking(move || persist_store_arc(&path, &store)).await {
         Ok(Ok(())) => true,
@@ -537,33 +527,28 @@ async fn persist_inbound_log_checkpoint(store: &Weak<Mutex<SessionStore>>, path:
     }
 }
 
-#[cfg(test)]
-pub(super) fn finish_inbound_log_queue(store_path: &Path, session_id: &str, timeout: Duration) -> bool {
-    let queue = INBOUND_LOG_QUEUES.get().and_then(|queues| {
-        queues.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&(store_path.to_path_buf(), session_id.to_string()))
-    });
-    let Some(queue) = queue else { return true };
-    drop(queue.sender);
-    queue.state.wait_finished(Instant::now() + timeout)
-}
-
 pub(super) fn shutdown_inbound_log_queues(timeout: Duration) {
-    let queues = INBOUND_LOG_QUEUES.get().map(|queues| {
-        let mut queues = queues
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
-        std::mem::take(&mut *queues)
-    }).unwrap_or_else(|| {
-        INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
-        HashMap::new()
-    });
+    let queues = INBOUND_LOG_QUEUES
+        .get()
+        .map(|queues| {
+            let mut queues = queues
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+            std::mem::take(&mut *queues)
+        })
+        .unwrap_or_else(|| {
+            INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+            HashMap::new()
+        });
     let deadline = Instant::now() + timeout;
-    let completions = queues.into_values().map(|queue| {
-        drop(queue.sender);
-        queue.state
-    }).collect::<Vec<_>>();
+    let completions = queues
+        .into_values()
+        .map(|queue| {
+            drop(queue.sender);
+            queue.state
+        })
+        .collect::<Vec<_>>();
     for completion in completions {
         if !completion.wait_finished(deadline) {
             eprintln!("PortMate: inbound log queue did not flush before shutdown");
@@ -859,3 +844,9 @@ fn logging_profile(io: &SessionIo, session_id: &str) -> Result<SessionProfile, S
         .profile(session_id)
         .ok_or_else(|| format!("unknown session while resolving logging: {session_id}"))
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/session_events.rs"
+));

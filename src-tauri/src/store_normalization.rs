@@ -4,8 +4,7 @@ mod mirror;
 mod one_key;
 
 pub(super) use mirror::normalize_loaded_mirror_keys;
-#[cfg(test)]
-pub(super) use mirror::normalize_loaded_record_ids;
+
 pub(super) use one_key::normalize_loaded_one_keys;
 
 pub(super) fn load_store_json(path: &Path) -> Result<SessionStore, String> {
@@ -68,14 +67,10 @@ fn normalize_loaded_mcp_grants(store: &mut SessionStore) {
             needs_review = true;
             continue;
         };
-        let was_session_scoped = !grant.allowed_sessions.is_empty()
-            && !grant.denies_all_sessions();
-        grant
-            .allowed_sessions
-            .retain(|session_id| {
-                session_id == MCP_NO_SESSIONS_SENTINEL
-                    || session_ids.contains(session_id.as_str())
-            });
+        let was_session_scoped = !grant.allowed_sessions.is_empty() && !grant.denies_all_sessions();
+        grant.allowed_sessions.retain(|session_id| {
+            session_id == MCP_NO_SESSIONS_SENTINEL || session_ids.contains(session_id.as_str())
+        });
         if was_session_scoped && grant.allowed_sessions.is_empty() && grant.revoked_at.is_none() {
             grant.revoked_at = Some(revoked_at);
         }
@@ -314,9 +309,8 @@ pub(super) fn normalize_loaded_store_at(
         .map(|(settings, _)| settings)
         .unwrap_or_default();
     normalize_loaded_one_keys(&mut store);
-    store.custom_scripts = normalize_loaded_custom_scripts(
-        std::mem::take(&mut store.custom_scripts),
-    );
+    store.custom_scripts =
+        normalize_loaded_custom_scripts(std::mem::take(&mut store.custom_scripts));
     redact_custom_script_event_bodies(&mut store.events);
     for runtime in &mut store.runtimes {
         if let Some(saved) = saved_runtimes.get(&runtime.session_id) {
@@ -360,3 +354,9 @@ pub(super) fn normalize_loaded_store_at(
 fn remap_loaded_session_id(session_id: &str, remap: &LoadedSessionIdRemap) -> String {
     remap.resolve(session_id)
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/store_normalization.rs"
+));

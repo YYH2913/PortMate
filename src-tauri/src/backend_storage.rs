@@ -76,8 +76,13 @@ use store_normalization::*;
 use store_persistence::*;
 use store_transactions::*;
 use system_event_sink::*;
-#[cfg(test)]
-use terminal_export_commands::{export_terminal_text_inner, validate_terminal_text_export_request};
+
 use transfer_progress::*;
 use transfer_request::*;
 use transfer_runtime::*;
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/backend_storage.rs"
+));

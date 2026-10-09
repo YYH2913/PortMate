@@ -1,15 +1,15 @@
 // Included from lib.rs so the existing crate-root module paths stay stable.
 
-mod modem_protocol;
+mod host_proxy_io;
+mod host_proxy_runtime;
 mod modem_device;
+mod modem_protocol;
 mod modem_remote;
 mod modem_runtime;
 mod modem_transfer;
 mod modem_xmodem;
 mod modem_ymodem;
 mod modem_zmodem;
-mod host_proxy_io;
-mod host_proxy_runtime;
 mod outbound_io;
 mod proxy_protocol;
 mod remote_copy;
@@ -54,6 +54,7 @@ mod ssh_tunnel_request;
 mod ssh_tunnel_restore;
 mod ssh_tunnel_runtime;
 mod ssh_tunnel_store;
+mod stream_decode;
 mod tcp_connection;
 mod tcp_reconnect;
 mod tcp_reconnect_runtime;
@@ -64,20 +65,19 @@ mod tmux_commands;
 mod tmux_protocol;
 mod tmux_runtime;
 mod transport_timing;
-mod stream_decode;
 use stream_decode::StreamDecoder;
 mod tunnel_commands;
 
-use modem_protocol::*;
+use host_proxy_io::*;
+use host_proxy_runtime::*;
 use modem_device::*;
+use modem_protocol::*;
 use modem_remote::*;
 use modem_runtime::*;
 use modem_transfer::*;
 use modem_xmodem::*;
 use modem_ymodem::*;
 use modem_zmodem::*;
-use host_proxy_io::*;
-use host_proxy_runtime::*;
 use outbound_io::*;
 use proxy_protocol::*;
 use remote_copy::*;
@@ -88,11 +88,7 @@ use scp_download_wire::*;
 use scp_source::*;
 use scp_upload::*;
 use serial_capture::*;
-#[cfg(test)]
-use serial_commands::{
-    apply_serial_line_updates_with, pulse_serial_break_with, record_applied_serial_line_state,
-    SerialControlLine,
-};
+
 use serial_reconnect::*;
 use serial_reconnect_runtime::*;
 use serial_transport::*;
@@ -133,3 +129,9 @@ use telnet_protocol::*;
 use tftp_transfer::*;
 use tmux_protocol::*;
 use tmux_runtime::*;
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/backend_transport.rs"
+));

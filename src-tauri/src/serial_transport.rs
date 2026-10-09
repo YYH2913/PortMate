@@ -16,7 +16,10 @@ pub(super) fn read_available_serial_bytes(
     reader.read(&mut buffer[..size])
 }
 
-fn read_serial_chunk(reader: &mut dyn serialport::SerialPort, buffer: &mut [u8]) -> std::io::Result<usize> {
+fn read_serial_chunk(
+    reader: &mut dyn serialport::SerialPort,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
     #[cfg(windows)]
     {
         // serialport duplicates a synchronous Windows file handle. A blocking
@@ -138,14 +141,6 @@ pub(super) fn open_configured_serial_port(
     })
 }
 
-#[cfg(all(test, unix))]
-pub(super) fn open_serial_session(
-    state: &AppState,
-    profile: SessionProfile,
-) -> Result<SessionSummary, String> {
-    install_serial_session(state, prepare_serial_session(state, profile)?)
-}
-
 pub(super) fn prepare_serial_session(
     state: &AppState,
     profile: SessionProfile,
@@ -174,7 +169,9 @@ pub(super) fn install_serial_session(
     state: &AppState,
     prepared: PreparedSerialSession,
 ) -> Result<SessionSummary, String> {
-    let _worker = state.serial_workers.register_for_session(&prepared.profile.id)?;
+    let _worker = state
+        .serial_workers
+        .register_for_session(&prepared.profile.id)?;
     let PreparedSerialSession {
         profile,
         serial,
@@ -299,12 +296,10 @@ pub(super) fn spawn_serial_reader(
         .register_for_session(&task.profile.id)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Interrupted, error))?;
     let name = format!("portmate-serial-{}", task.profile.id);
-    std::thread::Builder::new()
-        .name(name)
-        .spawn(move || {
-            let _worker = worker;
-            read_serial_port(task)();
-        })
+    std::thread::Builder::new().name(name).spawn(move || {
+        let _worker = worker;
+        read_serial_port(task)();
+    })
 }
 
 pub(super) fn shutdown_serial_runtimes(state: &AppState) {
@@ -314,7 +309,10 @@ pub(super) fn shutdown_serial_runtimes(state: &AppState) {
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        connections.drain().map(|(_, runtime)| runtime).collect::<Vec<_>>()
+        connections
+            .drain()
+            .map(|(_, runtime)| runtime)
+            .collect::<Vec<_>>()
     };
     for runtime in &runtimes {
         runtime.closed.store(true, Ordering::SeqCst);
@@ -394,7 +392,13 @@ fn read_serial_port(task: SerialReadTask) -> impl FnOnce() + Send + 'static {
         }
 
         // Abort a driver-level write before releasing the reader clone. This
-        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
+        finish_channel_decoder(
+            &io,
+            &session_id,
+            &runtime_id,
+            EventStream::Stdout,
+            &mut decoder,
+        );
         // is especially important on Windows, where a pending COM write keeps
         // the exclusive device handle alive and makes an immediate reopen fail.
         let _ = reader.clear(serialport::ClearBuffer::All);
@@ -529,3 +533,9 @@ pub(super) fn serial_flow_control(value: &str) -> serialport::FlowControl {
         _ => serialport::FlowControl::None,
     }
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/serial_transport.rs"
+));

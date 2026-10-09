@@ -1,8 +1,7 @@
 use super::*;
 use native_tls::TlsConnector as NativeTlsConnector;
 use socket2::TcpKeepalive;
-#[cfg(test)]
-use tokio::net::tcp::OwnedWriteHalf;
+
 use tokio_native_tls::{TlsConnector as TokioTlsConnector, TlsStream};
 
 const TCP_CONNECTION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -28,11 +27,6 @@ impl TcpConnectedStream {
             }
         }
     }
-}
-
-#[cfg(test)]
-pub(super) fn box_tcp_write_half(writer: OwnedWriteHalf) -> TcpWriteHalf {
-    Box::new(writer)
 }
 
 pub(super) fn tcp_connection_details(
@@ -164,3 +158,9 @@ fn tcp_keepalive_config(tcp: &TcpConnection) -> TcpKeepalive {
     let keepalive = keepalive.with_retries(tcp.keepalive_retries);
     keepalive
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/tcp_connection.rs"
+));

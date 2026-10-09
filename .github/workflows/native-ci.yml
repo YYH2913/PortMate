@@ -214,7 +214,7 @@ jobs:
       - name: Verify native keyring dependency boundary
         run: node scripts/ci-command-log.mjs target/native-ci/native-keyring-dependencies.log npm run test:native-keyring-dependencies
       - name: Verify Rust formatting
-        run: node scripts/ci-command-log.mjs target/native-ci/rustfmt.log cargo fmt --all -- --check
+        run: node scripts/ci-command-log.mjs target/native-ci/rustfmt.log npm run test:rustfmt
       - name: Verify frontend and script tests
         run: node scripts/ci-command-log.mjs target/native-ci/frontend-tests.log npm test
       - name: Build frontend
@@ -224,7 +224,7 @@ jobs:
       - name: Verify portable vault fault matrix
         run: node scripts/ci-command-log.mjs target/native-ci/portable-vault.log npm run test:portable-vault
       - name: Verify workspace Rust tests
-        run: node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log node scripts/native-rust-tests.mjs workspace
+        run: node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log node test/tooling/native-rust-tests.mjs workspace
       - name: Verify workspace Clippy
         run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Verify native keyring lifecycle and faults

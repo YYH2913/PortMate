@@ -61,7 +61,9 @@ pub(super) fn read_ssh_channel(
             let Some(message) = message else {
                 break;
             };
-            if !terminal_channel_open.load(Ordering::SeqCst) { return; }
+            if !terminal_channel_open.load(Ordering::SeqCst) {
+                return;
+            }
             if let Some(reason) = ssh_channel_disconnect_reason(&message) {
                 disconnect_reason = Some(reason);
             }
@@ -91,7 +93,11 @@ pub(super) fn read_ssh_channel(
                         Some(&runtime_id),
                         stream,
                         ChannelByteViews::same(&bytes),
-                        if ext == 1 { stderr_decoder.feed(&bytes) } else { stdout_decoder.feed(&bytes) },
+                        if ext == 1 {
+                            stderr_decoder.feed(&bytes)
+                        } else {
+                            stdout_decoder.feed(&bytes)
+                        },
                         || {
                             let _ = tap.send(bytes.clone());
                         },
@@ -128,9 +134,23 @@ pub(super) fn read_ssh_channel(
             }
         }
 
-        if !terminal_channel_open.load(Ordering::SeqCst) { return; }
-        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut stdout_decoder);
-        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stderr, &mut stderr_decoder);
+        if !terminal_channel_open.load(Ordering::SeqCst) {
+            return;
+        }
+        finish_channel_decoder(
+            &io,
+            &session_id,
+            &runtime_id,
+            EventStream::Stdout,
+            &mut stdout_decoder,
+        );
+        finish_channel_decoder(
+            &io,
+            &session_id,
+            &runtime_id,
+            EventStream::Stderr,
+            &mut stderr_decoder,
+        );
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| "SSH channel closed".to_string()),
         )
@@ -141,11 +161,10 @@ pub(super) fn read_ssh_channel(
                 Ok(connections) => connections,
                 Err(_) => return,
             };
-            if connections
-                .get(&session_id)
-                .is_none_or(|runtime| runtime.runtime_id != runtime_id
-                    || !Arc::ptr_eq(&runtime.terminal_channel_open, &terminal_channel_open))
-            {
+            if connections.get(&session_id).is_none_or(|runtime| {
+                runtime.runtime_id != runtime_id
+                    || !Arc::ptr_eq(&runtime.terminal_channel_open, &terminal_channel_open)
+            }) {
                 return;
             }
             clear_active_command(&io, &session_id);
@@ -266,20 +285,5 @@ pub(super) fn ssh_channel_disconnect_reason(message: &SshBackendMessage) -> Opti
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ssh_reader_completion_closes_the_terminal_health_flag() {
-        let terminal_channel_open = Arc::new(AtomicBool::new(true));
-        let (sender, mut receiver) = tokio::sync::oneshot::channel();
-        {
-            let _guard = SshReaderCompletionGuard {
-                terminal_channel_open: Arc::clone(&terminal_channel_open),
-                reader_finished: Some(sender),
-            };
-        }
-        assert!(!terminal_channel_open.load(Ordering::SeqCst));
-        assert_eq!(receiver.try_recv(), Ok(()));
-    }
-}
+#[path = "../../test/rust/portmate/unit/ssh_reader.rs"]
+mod tests;

@@ -13,24 +13,37 @@ pub(super) async fn write_shell_bytes(
     let worker_cancel = cancellation.clone();
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut worker = tokio::task::spawn_blocking(move || {
-        let cancelled = || worker_closed.load(Ordering::SeqCst) || Instant::now() >= deadline
-            || worker_cancel.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst));
+        let cancelled = || {
+            worker_closed.load(Ordering::SeqCst)
+                || Instant::now() >= deadline
+                || worker_cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        };
         let mut writer = loop {
-            if cancelled() { return Err("Shell write cancelled".into()); }
+            if cancelled() {
+                return Err("Shell write cancelled".into());
+            }
             match writer.try_lock() {
                 Ok(writer) => break writer,
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(5)),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
                 Err(error) => return Err(error.to_string()),
             }
         };
         let mut remaining = bytes.as_slice();
         while !remaining.is_empty() {
-            if cancelled() { return Err("Shell write cancelled".into()); }
+            if cancelled() {
+                return Err("Shell write cancelled".into());
+            }
             match writer.write(&remaining[..remaining.len().min(4096)]) {
                 Ok(0) => return Err("Shell PTY write returned zero".into()),
                 Ok(size) => remaining = &remaining[size..],
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(format!("Shell PTY write failed: {error}")),
             }
         }
@@ -168,14 +181,6 @@ fn validate_shell_arguments(shell: &portmate_core::ShellConnection) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
-pub(super) fn open_shell_session(
-    state: &AppState,
-    profile: SessionProfile,
-) -> Result<SessionSummary, String> {
-    install_shell_session(state, prepare_shell_session(profile)?)
-}
-
 pub(super) fn prepare_shell_session(
     profile: SessionProfile,
 ) -> Result<PreparedShellSession, String> {
@@ -223,7 +228,10 @@ pub(super) fn prepare_shell_session(
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             let mut child = child;
             let _ = child.kill();
-            return Err(format!("Shell nonblocking PTY setup failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "Shell nonblocking PTY setup failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
     }
 
@@ -240,7 +248,7 @@ pub(super) fn prepare_shell_session(
             .master
             .as_ref()
             .expect("prepared Shell session owns its PTY master")
-        .try_clone_reader()
+            .try_clone_reader()
             .map_err(|error| format!("Shell PTY reader 创建失败: {error}"))?,
     );
     prepared.writer = Some(
@@ -436,7 +444,13 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             }
         }
 
-        finish_channel_decoder(&io, &session_id, &runtime_id, EventStream::Stdout, &mut decoder);
+        finish_channel_decoder(
+            &io,
+            &session_id,
+            &runtime_id,
+            EventStream::Stdout,
+            &mut decoder,
+        );
         let disconnect_reason = portmate_core::normalize_session_disconnect_reason(
             &disconnect_reason.unwrap_or_else(|| format!("shell closed ({program})")),
         )
@@ -562,3 +576,9 @@ fn apply_shell_terminal_color_env(command: &mut CommandBuilder, term: &str) {
     command.env("TERM_PROGRAM", "PortMate");
     command.env_remove("NO_COLOR");
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/shell_transport.rs"
+));

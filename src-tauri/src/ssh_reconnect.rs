@@ -367,16 +367,13 @@ pub(super) fn fail_pending_ssh_reconnect_install(
     }
 }
 
-#[cfg(test)]
-pub(super) fn take_forced_ssh_reconnect_install_error(state: &AppState) -> Option<String> {
-    state
-        .ssh_reconnect_install_error
-        .lock()
-        .ok()
-        .and_then(|mut error| error.take())
-}
-
 #[cfg(not(test))]
 pub(super) fn take_forced_ssh_reconnect_install_error(_state: &AppState) -> Option<String> {
     None
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/ssh_reconnect.rs"
+));

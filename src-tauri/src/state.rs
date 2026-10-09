@@ -28,11 +28,6 @@ pub(super) struct SerialWorkerRegistry {
 }
 
 impl SerialWorkerRegistry {
-    #[cfg(test)]
-    pub(super) fn register(self: &Arc<Self>) -> Result<SerialWorkerGuard, String> {
-        self.register_inner(None)
-    }
-
     pub(super) fn register_for_session(
         self: &Arc<Self>,
         session_id: &str,
@@ -60,7 +55,10 @@ impl SerialWorkerRegistry {
         }
         state.active += 1;
         if let Some(session_id) = session_id.as_ref() {
-            *state.active_by_session.entry(session_id.clone()).or_default() += 1;
+            *state
+                .active_by_session
+                .entry(session_id.clone())
+                .or_default() += 1;
         }
         Ok(SerialWorkerGuard {
             registry: Arc::clone(self),
@@ -111,7 +109,11 @@ impl SerialWorkerRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
-            let active = state.active_by_session.get(session_id).copied().unwrap_or(0);
+            let active = state
+                .active_by_session
+                .get(session_id)
+                .copied()
+                .unwrap_or(0);
             if active == 0 {
                 return 0;
             }
@@ -125,7 +127,11 @@ impl SerialWorkerRegistry {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
             if result.timed_out() {
-                return state.active_by_session.get(session_id).copied().unwrap_or(0);
+                return state
+                    .active_by_session
+                    .get(session_id)
+                    .copied()
+                    .unwrap_or(0);
             }
         }
     }
@@ -164,9 +170,12 @@ impl SerialWorkerRegistry {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_by_session.get(session_id).copied().unwrap_or(0)
+        state
+            .active_by_session
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
-
 }
 
 pub(super) struct SerialWorkerGuard {
@@ -548,3 +557,9 @@ pub(super) fn truncate_for_log(value: &str, limit: usize) -> String {
         .unwrap_or(0);
     format!("{}...", &trimmed[..boundary])
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/state.rs"
+));

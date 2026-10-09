@@ -12,3 +12,5 @@ __pycache__/
 !.env.example
 ref/
 /tmp/
+/test/tooling/mcp-swift-client-check/.build/
+/test/tooling/mcp-swift-client-check/.swiftpm/

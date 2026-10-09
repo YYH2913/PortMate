@@ -556,7 +556,7 @@ npm test
 npm run build
 npm run test:release-source
 npm run test:release-upgrade
-cargo fmt --all -- --check
+npm run test:rustfmt
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
@@ -611,12 +611,19 @@ PortMate/
 │   ├── portmate-kdf/       Portable Vault KDF 边界
 │   ├── portmate-keyring/   跨平台原生 keyring 边界
 │   └── russh-sftp/         项目使用的 SFTP 兼容实现
-├── scripts/                构建、打包与兼容矩阵脚本
-├── tests/                  外部服务端与协议夹具
+├── scripts/                生产构建与打包工具
+├── test/                 全部测试、测试工具与夹具
 └── .github/workflows/      Native CI 与 SDK freshness 工作流
 ```
 
 Tauri 根 `lib.rs` 只保留模块注册与公开重导出。transport、security、storage、automation 和 application 的实现按各自 owner 维护，避免新的跨领域逻辑重新堆回根模块。
+
+测试统一放在 [`test/`](./test/README.md)：`frontend/` 和 `scripts/` 保存 Vitest
+用例，`rust/<package>/` 按包细分 Rust 用例、支持代码、集成测试和探针二进制，
+`tooling/`、`compat/`、`fixtures/`、`setup/` 保存运行器及输入数据。Rust 源码只保留
+`cfg(test)` 注册和必要的测试挂钩，私有模块访问与已有 Cargo 测试过滤器保持不变。
+`npm test` 单独检查测试代码的类型，生产前端构建不再包含测试源码。
+`tmp/` 下的本地审查复现不会由常规测试自动发现。
 
 ## 数据与隐私
 

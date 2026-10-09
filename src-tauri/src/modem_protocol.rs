@@ -252,16 +252,6 @@ pub(super) fn crc16_xmodem(data: &[u8]) -> u16 {
     crc
 }
 
-#[cfg(all(test, unix))]
-pub(super) fn write_local_transfer_file(path: &str, data: &[u8]) -> Result<(), String> {
-    let mut output = PendingLocalTransferOutput::create(Path::new(path), "本地传输目标路径")?;
-    output
-        .file_mut()?
-        .write_all(data)
-        .map_err(|error| format!("写入本地文件失败: {error}"))?;
-    output.finish()
-}
-
 pub(super) struct PendingLocalTransferOutput {
     target: PathBuf,
     pub(super) temp: PathBuf,
@@ -428,3 +418,9 @@ pub(super) fn remote_parent_and_file_name(path: &str) -> (String, String) {
 pub(super) fn is_modem_timeout(error: &str) -> bool {
     error.contains("timeout") || error.contains("timed out")
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/modem_protocol.rs"
+));

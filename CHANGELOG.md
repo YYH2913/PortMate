@@ -6,6 +6,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Changed
+
+- Centralized frontend, script and Rust tests, probe binaries, compatibility runners,
+  SDK client projects and fixtures under the workspace-root `test/` directory.
+  Existing Cargo filters and npm test commands retain their behavior; test TypeScript
+  and externally included Rust support code now have dedicated type/format checks.
+  Local review reproducers under `tmp/` are excluded from the normal suite.
+
+### Fixed
+
+- Native diagnostic translation coverage no longer stops at the first `cfg(test)`
+  hook in a production file. Previously hidden diagnostics now have all six locale
+  translations, including credential recovery, terminal queues, libssh and Sysmon.
+
 ## [0.1.11] - 2026-10-07
 
 ### Added

@@ -15,4 +15,5 @@ pub use session::*;
 pub use transfer::*;
 
 #[cfg(test)]
+#[path = "../../../test/rust/portmate-core/suite/models.rs"]
 mod tests;

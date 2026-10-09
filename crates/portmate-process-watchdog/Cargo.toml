@@ -13,3 +13,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
 ] }
+
+[[test]]
+name = "parent_exit"
+path = "../../test/rust/portmate-process-watchdog/integration/parent_exit.rs"

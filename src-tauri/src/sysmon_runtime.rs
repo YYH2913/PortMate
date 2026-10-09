@@ -179,20 +179,6 @@ pub(super) enum SysmonCollectionTarget {
     Ssh(String),
 }
 
-#[cfg(test)]
-pub(super) fn commit_sysmon_snapshot(
-    state: &AppState,
-    session_id: &str,
-    snapshot: SysmonSnapshot,
-) -> Result<SysmonSnapshot, String> {
-    commit_sysmon_snapshot_for_target(
-        state,
-        session_id,
-        snapshot,
-        &SysmonCollectionTarget::Local,
-    )
-}
-
 pub(super) fn commit_sysmon_snapshot_for_target(
     state: &AppState,
     session_id: &str,
@@ -245,8 +231,7 @@ pub(super) fn validate_sysmon_collection_target(
         }
         SysmonCollectionTarget::Local => Ok(()),
         SysmonCollectionTarget::Ssh(expected_runtime_id)
-            if profile_is_ssh
-                && current_ssh_runtime_id == Some(expected_runtime_id.as_str()) =>
+            if profile_is_ssh && current_ssh_runtime_id == Some(expected_runtime_id.as_str()) =>
         {
             Ok(())
         }
@@ -379,3 +364,9 @@ pub(super) fn collect_local_linux_sysmon(session_id: &str) -> SysmonSnapshot {
         network_interfaces,
     }
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/sysmon_runtime.rs"
+));

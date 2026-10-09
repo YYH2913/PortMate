@@ -34,7 +34,9 @@ impl DeferredInteractiveBatch {
 
     fn append(&mut self, request: DeferredInteractiveEvent) {
         self.request.text.push_str(&request.text);
-        self.request.wire_bytes.extend_from_slice(&request.wire_bytes);
+        self.request
+            .wire_bytes
+            .extend_from_slice(&request.wire_bytes);
         self.request.wire_byte_count = self
             .request
             .wire_byte_count
@@ -49,8 +51,7 @@ impl DeferredInteractiveBatch {
     }
 }
 
-type DeferredInteractiveQueues =
-    Mutex<HashMap<(PathBuf, String), DeferredInteractiveQueue>>;
+type DeferredInteractiveQueues = Mutex<HashMap<(PathBuf, String), DeferredInteractiveQueue>>;
 
 static DEFERRED_INTERACTIVE_QUEUES: OnceLock<DeferredInteractiveQueues> = OnceLock::new();
 static DEFERRED_INTERACTIVE_ACCEPTING: AtomicBool = AtomicBool::new(true);
@@ -159,8 +160,7 @@ struct InteractiveWriteCompletion {
     cancellation: Option<Arc<AtomicBool>>,
 }
 
-type InteractiveWriteQueues =
-    Mutex<HashMap<(PathBuf, String), InteractiveWriteQueue>>;
+type InteractiveWriteQueues = Mutex<HashMap<(PathBuf, String), InteractiveWriteQueue>>;
 
 #[derive(Clone)]
 struct InteractiveWriteQueue {
@@ -215,19 +215,6 @@ impl InteractiveWorkerCompletion {
 static INTERACTIVE_WRITE_QUEUES: OnceLock<InteractiveWriteQueues> = OnceLock::new();
 static INTERACTIVE_WRITE_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
-/// Enqueues desktop input without making the webview wait for the transport
-/// writer. Printable input may coalesce; control keys and paste requests are
-/// explicit ordering barriers in the same per-session queue.
-#[cfg(test)]
-pub(super) fn enqueue_interactive_text(
-    io: SessionIo,
-    session_id: String,
-    text: String,
-    coalesce: bool,
-) -> Result<(), String> {
-    enqueue_interactive_text_with_sensitivity(io, session_id, text, coalesce, false)
-}
-
 pub(super) fn enqueue_interactive_text_with_sensitivity(
     io: SessionIo,
     session_id: String,
@@ -235,15 +222,7 @@ pub(super) fn enqueue_interactive_text_with_sensitivity(
     coalesce: bool,
     sensitive: bool,
 ) -> Result<(), String> {
-    enqueue_interactive_text_with_completion(
-        io,
-        session_id,
-        text,
-        coalesce,
-        sensitive,
-        None,
-        None,
-    )
+    enqueue_interactive_text_with_completion(io, session_id, text, coalesce, sensitive, None, None)
 }
 
 /// Enqueue a raw byte frame on the same per-session lane as interactive text.
@@ -274,28 +253,6 @@ pub(super) fn enqueue_interactive_bytes(
     )
 }
 
-/// Enqueue an atomic payload and wait until the per-session writer has
-/// completed the transport write. The regular keyboard path intentionally
-/// remains fire-and-forget; this acknowledgement is used by paced senders
-/// that must measure their interval from an actual write rather than from
-/// queue admission.
-#[cfg(test)]
-pub(super) async fn enqueue_interactive_text_and_wait(
-    io: SessionIo,
-    session_id: String,
-    text: String,
-    coalesce: bool,
-) -> Result<(), String> {
-    enqueue_interactive_text_and_wait_with_sensitivity(
-        io,
-        session_id,
-        text,
-        coalesce,
-        false,
-    )
-    .await
-}
-
 pub(super) async fn enqueue_interactive_text_and_wait_with_sensitivity(
     io: SessionIo,
     session_id: String,
@@ -310,20 +267,6 @@ pub(super) async fn enqueue_interactive_text_and_wait_with_sensitivity(
         coalesce,
         sensitive,
         INTERACTIVE_WRITE_CONFIRM_TIMEOUT,
-    )
-    .await
-}
-
-#[cfg(test)]
-pub(super) async fn enqueue_interactive_text_and_wait_with_timeout(
-    io: SessionIo,
-    session_id: String,
-    text: String,
-    coalesce: bool,
-    timeout: Duration,
-) -> Result<(), String> {
-    enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
-        io, session_id, text, coalesce, false, timeout,
     )
     .await
 }
@@ -414,15 +357,30 @@ pub(super) fn enqueue_terminal_stream_text(
 }
 
 pub(super) async fn enqueue_paced_payload_and_wait(
-    io: SessionIo, session_id: String, text: String, wire_bytes: Option<Vec<u8>>,
-    job: Arc<paced_send::PacedSendJob>, runtime_id: String,
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    wire_bytes: Option<Vec<u8>>,
+    job: Arc<paced_send::PacedSendJob>,
+    runtime_id: String,
 ) -> Result<(), String> {
-    if wire_bytes.as_ref().map_or(text.len(), Vec::len) > 4 * 1024 * 1024 { return Err("发送内容超过 4 MiB".into()); }
+    if wire_bytes.as_ref().map_or(text.len(), Vec::len) > 4 * 1024 * 1024 {
+        return Err("发送内容超过 4 MiB".into());
+    }
     let (completion, result) = tokio::sync::oneshot::channel();
-    enqueue_interactive_payload_with_completion(io, session_id, text, wire_bytes, false, false,
+    enqueue_interactive_payload_with_completion(
+        io,
+        session_id,
+        text,
+        wire_bytes,
+        false,
+        false,
         InteractiveWriteCompletion {
-            runtime_id: Some(runtime_id), sender: Some(completion), cancellation: Some(Arc::clone(&job.cancelled)),
-        })?;
+            runtime_id: Some(runtime_id),
+            sender: Some(completion),
+            cancellation: Some(Arc::clone(&job.cancelled)),
+        },
+    )?;
     tokio::select! {
         _ = job.wait_cancelled() => Err("间隔发送已取消；已开始的写入无法撤回".into()),
         result = tokio::time::timeout(INTERACTIVE_WRITE_CONFIRM_TIMEOUT, result) => match result {
@@ -450,7 +408,11 @@ fn enqueue_interactive_payload_with_completion(
     }
     let runtime_id = current_session_runtime_id(&io.runtimes, &session_id)?
         .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
-    if completion.runtime_id.as_ref().is_some_and(|expected| expected != &runtime_id) {
+    if completion
+        .runtime_id
+        .as_ref()
+        .is_some_and(|expected| expected != &runtime_id)
+    {
         return Err("连接已变化，已拒绝旧连接的终端输入".into());
     }
     let key = (io.store_path.clone(), session_id.clone());
@@ -465,9 +427,8 @@ fn enqueue_interactive_payload_with_completion(
         if let Some(queue) = queues.get(&key) {
             queue.clone()
         } else {
-            let (sender, mut receiver) = mpsc::channel::<InteractiveWriteRequest>(
-                INTERACTIVE_WRITE_QUEUE_CAPACITY,
-            );
+            let (sender, mut receiver) =
+                mpsc::channel::<InteractiveWriteRequest>(INTERACTIVE_WRITE_QUEUE_CAPACITY);
             let cancellation = Arc::new(InteractiveQueueCancellation::new());
             let worker_cancellation = Arc::clone(&cancellation);
             let completion = Arc::new(InteractiveWorkerCompletion::new());
@@ -502,9 +463,8 @@ fn enqueue_interactive_payload_with_completion(
                         .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst))
                     {
                         if let Some(completion) = completion {
-                            let _ = completion.send(Err(
-                                "终端写入确认已超时，请求在执行前取消".to_string(),
-                            ));
+                            let _ = completion
+                                .send(Err("终端写入确认已超时，请求在执行前取消".to_string()));
                         }
                         continue;
                     }
@@ -524,7 +484,8 @@ fn enqueue_interactive_payload_with_completion(
                             && next.cancellation.is_none()
                             && next.coalesce
                             && next.sensitive == sensitive
-                            && next.wire_bytes.is_none() && wire_bytes.is_none()
+                            && next.wire_bytes.is_none()
+                            && wire_bytes.is_none()
                             && next.runtime_id == runtime_id
                             && next.text.len() <= remaining
                         {
@@ -561,7 +522,11 @@ fn enqueue_interactive_payload_with_completion(
                             };
                             if completion.is_none() {
                                 if let Err(error) = &result {
-                                    publish_interactive_write_error(&io, &session_id, error.clone());
+                                    publish_interactive_write_error(
+                                        &io,
+                                        &session_id,
+                                        error.clone(),
+                                    );
                                 }
                             }
                             if let Some(completion) = completion {
@@ -573,9 +538,8 @@ fn enqueue_interactive_payload_with_completion(
                             // request waited in the queue. Never replay stale
                             // keystrokes into a newly connected runtime.
                             if let Some(completion) = completion {
-                                let _ = completion.send(Err(
-                                    "会话已关闭或被新连接替换".to_string(),
-                                ));
+                                let _ =
+                                    completion.send(Err("会话已关闭或被新连接替换".to_string()));
                             }
                         }
                         Err(error) => {
@@ -673,8 +637,13 @@ pub(super) fn clear_deferred_interactive_queue(store_path: &Path, session_id: &s
     });
     if let Some(queue) = queue {
         drop(queue.sender);
-        if !queue.state.wait_empty(Instant::now() + Duration::from_secs(1)) {
-            eprintln!("PortMate: deferred interactive event queue did not drain while closing session");
+        if !queue
+            .state
+            .wait_empty(Instant::now() + Duration::from_secs(1))
+        {
+            eprintln!(
+                "PortMate: deferred interactive event queue did not drain while closing session"
+            );
         }
     }
 }
@@ -708,7 +677,9 @@ pub(super) fn shutdown_interactive_write_queues() {
         for queue in queues.into_values() {
             drop(queue.sender);
             if !queue.state.wait_empty(deadline) {
-                eprintln!("PortMate: deferred interactive event queue did not flush before shutdown");
+                eprintln!(
+                    "PortMate: deferred interactive event queue did not flush before shutdown"
+                );
             }
         }
     }
@@ -743,9 +714,8 @@ pub(super) fn enqueue_deferred_interactive_event(
         let queue = if let Some(queue) = queues.get(&key) {
             queue.clone()
         } else {
-            let (sender, mut receiver) = mpsc::channel::<DeferredInteractiveEvent>(
-                DEFERRED_INTERACTIVE_QUEUE_CAPACITY,
-            );
+            let (sender, mut receiver) =
+                mpsc::channel::<DeferredInteractiveEvent>(DEFERRED_INTERACTIVE_QUEUE_CAPACITY);
             let state = Arc::new(DeferredInteractiveQueueState::new());
             let worker_state = Arc::clone(&state);
             tauri::async_runtime::spawn(async move {
@@ -753,7 +723,9 @@ pub(super) fn enqueue_deferred_interactive_event(
                 while let Some(request) = receiver.recv().await {
                     if batch
                         .as_ref()
-                        .is_some_and(|current: &DeferredInteractiveBatch| !current.can_append(&request))
+                        .is_some_and(|current: &DeferredInteractiveBatch| {
+                            !current.can_append(&request)
+                        })
                     {
                         persist_deferred_interactive_batch(
                             batch.take().expect("deferred batch exists"),
@@ -805,12 +777,8 @@ pub(super) fn enqueue_deferred_interactive_event(
 }
 
 fn deferred_interactive_input_boundary(text: &str) -> bool {
-    text.chars().any(|character| {
-        matches!(
-            character,
-            '\r' | '\n' | '\u{0003}' | '\u{0004}'
-        )
-    })
+    text.chars()
+        .any(|character| matches!(character, '\r' | '\n' | '\u{0003}' | '\u{0004}'))
 }
 
 async fn persist_deferred_interactive_batch(
@@ -919,13 +887,15 @@ async fn send_text_interactive_inner_for_optional_runtime(
 ) -> Result<SessionEvent, String> {
     let lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
     let _protocol_guard = acquire_telnet_protocol_lane(&io.runtimes, &session_id).await?;
-    if cancellation.as_ref().is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+    if cancellation
+        .as_ref()
+        .is_some_and(|cancelled| cancelled.load(Ordering::SeqCst))
+    {
         return Err("终端写入确认已超时，请求在执行前取消".to_string());
     }
     let wire_bytes = match provided_wire_bytes {
         Some(bytes) => bytes,
-        None => outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?
-            .into_bytes(),
+        None => outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes(),
     };
     clear_active_command(&io, &session_id);
     write_session_bytes_for_runtime_with_cancellation(
@@ -991,10 +961,8 @@ pub(super) async fn send_one_key_value(
             &validation.prompt_event_id,
         )?;
     }
-    let terminator = terminal_key_sequence_for_protocol(
-        "Enter",
-        is_telnet_session(&io.store, session_id)?,
-    )?;
+    let terminator =
+        terminal_key_sequence_for_protocol("Enter", is_telnet_session(&io.store, session_id)?)?;
     let text = Zeroizing::new(format!("{value}{terminator}"));
     let wire_text = Zeroizing::new(outbound_text_for_session(
         &io.store,
@@ -1037,15 +1005,8 @@ pub(super) async fn send_text_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
-    send_text_inner_with_context_and_validation(
-        io,
-        session_id,
-        text,
-        actor,
-        audit_action,
-        None,
-    )
-    .await
+    send_text_inner_with_context_and_validation(io, session_id, text, actor, audit_action, None)
+        .await
 }
 
 pub(super) async fn send_text_inner_with_context_and_validation(
@@ -1126,15 +1087,8 @@ pub(super) async fn run_command_inner_with_context(
     actor: &str,
     audit_action: Option<&str>,
 ) -> Result<SessionEvent, String> {
-    run_command_inner_with_annotations(
-        io,
-        session_id,
-        text,
-        actor,
-        audit_action,
-        BTreeMap::new(),
-    )
-    .await
+    run_command_inner_with_annotations(io, session_id, text, actor, audit_action, BTreeMap::new())
+        .await
 }
 
 pub(super) async fn run_command_inner_with_context_and_validation(
@@ -1689,3 +1643,9 @@ fn merge_logging_error_messages(errors: &[String], error: String) -> String {
     messages.push(error);
     messages.join("; ")
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/outbound_events.rs"
+));

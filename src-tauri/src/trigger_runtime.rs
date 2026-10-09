@@ -3,8 +3,6 @@ use super::*;
 mod trigger_command;
 
 use trigger_command::run_shell_command;
-#[cfg(all(test, not(windows)))]
-pub(super) use trigger_command::run_shell_command_bounded;
 
 pub(super) const MAX_TRIGGER_COMMAND_CONCURRENCY: usize = 4;
 pub(super) const MAX_TRIGGER_LOCAL_COMMANDS_PER_BATCH: usize = 8;
@@ -379,3 +377,9 @@ fn record_trigger_send_text_event(
         eprintln!("PortMate: failed to persist trigger send_text result: {error}");
     }
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/trigger_runtime.rs"
+));

@@ -43,16 +43,6 @@ where
     read_http_request_with_timeout_and_body_limit(stream, HTTP_REQUEST_TIMEOUT, body_limit)
 }
 
-#[cfg(test)]
-pub(super) fn read_http_request_with_timeout(
-    stream: &mut TcpStream,
-    timeout: Duration,
-) -> Result<HttpRequest> {
-    read_http_request_with_timeout_and_body_limit(stream, timeout, |_, _, _| {
-        Ok(MAX_HTTP_BODY_BYTES)
-    })
-}
-
 fn read_http_request_with_timeout_and_body_limit<BodyLimit>(
     stream: &mut TcpStream,
     timeout: Duration,
@@ -424,3 +414,9 @@ fn is_single_value_http_header(name: &str) -> bool {
 fn find_header_end(raw: &[u8]) -> Option<usize> {
     raw.windows(4).position(|window| window == b"\r\n\r\n")
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../test/rust/portmate-mcp/support/http_request.rs"
+));

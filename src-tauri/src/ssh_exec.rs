@@ -11,11 +11,6 @@ pub(super) async fn close_ssh_channel_bounded(channel: &SshBackendChannel) {
         .await;
 }
 
-#[cfg(all(test, unix))]
-pub(super) async fn close_russh_channel_bounded(channel: &Channel<client::Msg>) {
-    let _ = tokio::time::timeout(SSH_SETUP_TIMEOUT_DISCONNECT_TIMEOUT, channel.close()).await;
-}
-
 pub(super) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -151,3 +146,9 @@ pub(super) fn append_bounded_ssh_exec_data(
     buffer.extend_from_slice(data);
     Ok(())
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/ssh_exec.rs"
+));

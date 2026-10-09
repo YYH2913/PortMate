@@ -22,8 +22,7 @@ mod sysmon_runtime;
 mod trigger_runtime;
 
 use mcp_authorization::*;
-#[cfg(test)]
-use mcp_commands::{delete_mcp_audit_from_store, export_mcp_audit_inner};
+
 use mcp_content_staging::*;
 use mcp_control::*;
 use mcp_execution::*;
@@ -41,3 +40,9 @@ use sysmon_network_io::*;
 use sysmon_remote_parsing::*;
 use sysmon_runtime::*;
 use trigger_runtime::*;
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/backend_automation.rs"
+));

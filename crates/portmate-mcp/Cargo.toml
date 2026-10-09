@@ -21,3 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+
+[[test]]
+name = "parent_watchdog"
+path = "../../test/rust/portmate-mcp/integration/parent_watchdog.rs"

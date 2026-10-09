@@ -4,8 +4,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use flate2::{write::GzEncoder, Compression};
 use keyring_core::Entry;
 use portable_pty::PtySize;
-#[cfg(test)]
-use portmate_core::ProxyKind;
+
 use portmate_core::{
     classify_mcp_start_transfer_source, compute_ssh_sha256_fingerprint,
     normalize_custom_script_content, normalize_loaded_custom_scripts, normalize_triggers,
@@ -95,5 +94,11 @@ pub fn run() {
 pub use command_types::*;
 
 #[cfg(test)]
-#[path = "tests/mod.rs"]
+#[path = "../../test/rust/portmate/suite/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/lib.rs"
+));

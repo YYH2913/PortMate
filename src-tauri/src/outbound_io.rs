@@ -6,14 +6,21 @@ static OUTBOUND_LANES: OnceLock<OutboundLanes> = OnceLock::new();
 const OUTBOUND_LANE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn acquire_telnet_protocol_lane(
-    runtimes: &RuntimeRegistry, session_id: &str,
+    runtimes: &RuntimeRegistry,
+    session_id: &str,
 ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
-    let lane = runtimes.tcp.lock().map_err(|error| error.to_string())?
-        .get(session_id).and_then(|runtime| runtime.telnet.as_ref())
+    let lane = runtimes
+        .tcp
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .and_then(|runtime| runtime.telnet.as_ref())
         .map(|telnet| Arc::clone(&telnet.protocol_lane));
     match lane {
         Some(lane) => tokio::time::timeout(OUTBOUND_LANE_WAIT_TIMEOUT, lane.lock_owned())
-            .await.map(Some).map_err(|_| "Telnet protocol writer timed out".into()),
+            .await
+            .map(Some)
+            .map_err(|_| "Telnet protocol writer timed out".into()),
         None => Ok(None),
     }
 }
@@ -155,7 +162,10 @@ async fn write_serial_port_bytes(
         if closed.load(Ordering::SeqCst) {
             return Err(format!("{label}失败: 串口会话已关闭"));
         }
-        if cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        if cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
             return Err("发送已取消".into());
         }
         write_serial_payload(&mut **writer, &bytes)
@@ -177,14 +187,26 @@ pub(super) async fn write_session_bytes_for_runtime(
     bytes: &[u8],
     expected_runtime_id: Option<&str>,
 ) -> Result<(), String> {
-    write_session_bytes_for_runtime_with_cancellation(store, runtimes, serial_workers,
-        session_id, bytes, expected_runtime_id, None).await
+    write_session_bytes_for_runtime_with_cancellation(
+        store,
+        runtimes,
+        serial_workers,
+        session_id,
+        bytes,
+        expected_runtime_id,
+        None,
+    )
+    .await
 }
 
 pub(super) async fn write_session_bytes_for_runtime_with_cancellation(
-    store: &Arc<Mutex<SessionStore>>, runtimes: &RuntimeRegistry,
-    serial_workers: &Arc<SerialWorkerRegistry>, session_id: &str, bytes: &[u8],
-    expected_runtime_id: Option<&str>, cancellation: Option<Arc<AtomicBool>>,
+    store: &Arc<Mutex<SessionStore>>,
+    runtimes: &RuntimeRegistry,
+    serial_workers: &Arc<SerialWorkerRegistry>,
+    session_id: &str,
+    bytes: &[u8],
+    expected_runtime_id: Option<&str>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
     let writer = {
         let connections = runtimes.ssh.lock().map_err(|error| error.to_string())?;
@@ -213,7 +235,13 @@ pub(super) async fn write_session_bytes_for_runtime_with_cancellation(
                 .filter(|runtime| {
                     expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
                 })
-                .map(|runtime| (Arc::clone(&runtime.writer), Arc::clone(&runtime.child), Arc::clone(&runtime.closed)))
+                .map(|runtime| {
+                    (
+                        Arc::clone(&runtime.writer),
+                        Arc::clone(&runtime.child),
+                        Arc::clone(&runtime.closed),
+                    )
+                })
         };
         if let Some((writer, child, closed)) = writer {
             write_shell_bytes(writer, child, closed, bytes, cancellation).await?;
@@ -228,8 +256,14 @@ pub(super) async fn write_session_bytes_for_runtime_with_cancellation(
                     .map(|runtime| Arc::clone(&runtime.writer))
             };
             if let Some(writer) = writer {
-                write_tcp_bytes_with_cancellation(&writer, bytes,
-                    transport_timing::TCP_RUNTIME_WRITE_TIMEOUT, "TCP/Telnet 写入", cancellation.as_deref()).await?;
+                write_tcp_bytes_with_cancellation(
+                    &writer,
+                    bytes,
+                    transport_timing::TCP_RUNTIME_WRITE_TIMEOUT,
+                    "TCP/Telnet 写入",
+                    cancellation.as_deref(),
+                )
+                .await?;
             } else {
                 // Register before reading the runtime entry. Once close begins
                 // waiting for this session, no captured serial handle may
@@ -344,15 +378,6 @@ pub(super) fn is_telnet_session(
         .is_some_and(|profile| matches!(profile.connection, ConnectionConfig::Telnet(_))))
 }
 
-#[cfg(test)]
-pub(super) async fn write_runtime_bytes(
-    state: &AppState,
-    session_id: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    write_runtime_bytes_for_runtime(state, session_id, bytes, None).await
-}
-
 pub(super) async fn write_runtime_bytes_for_runtime(
     state: &AppState,
     session_id: &str,
@@ -418,7 +443,13 @@ pub(super) async fn write_runtime_bytes_for_runtime_with_lane(
             .filter(|runtime| {
                 expected_runtime_id.is_none_or(|expected| runtime.runtime_id == expected)
             })
-            .map(|runtime| (Arc::clone(&runtime.writer), Arc::clone(&runtime.child), Arc::clone(&runtime.closed)))
+            .map(|runtime| {
+                (
+                    Arc::clone(&runtime.writer),
+                    Arc::clone(&runtime.child),
+                    Arc::clone(&runtime.closed),
+                )
+            })
     };
     if let Some((writer, child, closed)) = shell_writer {
         write_shell_bytes(writer, child, closed, &wire_bytes, None).await?;
@@ -512,3 +543,9 @@ pub(super) async fn write_runtime_bytes_for_runtime_with_lane(
         "会话尚未连接，无法执行 modem 写入".to_string()
     })
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/outbound_io.rs"
+));

@@ -1,13 +1,9 @@
 use crate::host_keys::HostKeyStore;
 use crate::models::*;
 use crate::store_system_events::SystemEventSinkRuntime;
-#[cfg(test)]
-use crate::store_system_events::MAX_SYSTEM_EVENT_OUTBOX;
-#[cfg(test)]
-use chrono::Utc;
+
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use std::collections::BTreeMap;
+
 use std::collections::HashMap;
 
 mod events;
@@ -16,13 +12,7 @@ mod histories;
 mod security;
 mod sessions;
 mod terminal;
-#[cfg(test)]
-use events::{EVENT_TRIM_BATCH, MAX_EVENTS_PER_SESSION};
-#[cfg(test)]
-use histories::{
-    AUX_HISTORY_TRIM_BATCH, MAX_AUDIT_RECORDS_PER_SCOPE, MAX_SYSMON_SNAPSHOTS_PER_SESSION,
-    MAX_TERMINAL_TRANSFERS_PER_SESSION, MAX_TIMELINE_MARKS_PER_SESSION,
-};
+
 pub use histories::{
     MAX_COMMAND_HISTORY_COMMAND_CHARACTERS, MAX_COMMAND_HISTORY_ENTRIES,
     MAX_COMMAND_HISTORY_RETENTION_DAYS, MAX_COMMAND_HISTORY_STORAGE_BYTES,
@@ -83,9 +73,20 @@ pub struct CommandHistoryPolicy {
 impl Default for CommandHistoryPolicy {
     fn default() -> Self {
         // Until the desktop synchronizes its preferences, do not collect MCP input.
-        Self { enabled: false, limit: 10_000, retention_days: 30 }
+        Self {
+            enabled: false,
+            limit: 10_000,
+            retention_days: 30,
+        }
     }
 }
 
 #[cfg(test)]
+#[path = "../../../test/rust/portmate-core/suite/store/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../test/rust/portmate-core/support/store.rs"
+));

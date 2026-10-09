@@ -123,17 +123,6 @@ impl ModemRuntimeCompletionGuard<'_> {
 }
 
 impl ModemConnectionWatch {
-    #[cfg(test)]
-    fn store_only(store: Arc<Mutex<SessionStore>>, session_id: String) -> Self {
-        Self {
-            store,
-            runtimes: None,
-            session_id,
-            runtime_id: None,
-            runtime_kind: None,
-        }
-    }
-
     fn ensure_current(&self) -> Result<(), String> {
         ensure_modem_session_connected(&self.store, &self.session_id)?;
         if let (Some(runtimes), Some(runtime_id), Some(runtime_kind)) =
@@ -193,7 +182,8 @@ pub(super) fn runtime_modem_binding(
             )
         });
     }
-    let target = target.ok_or_else(|| "需要先连接会话才能执行 TFTP 或 X/Y/ZModem 传输".to_string())?;
+    let target =
+        target.ok_or_else(|| "需要先连接会话才能执行 TFTP 或 X/Y/ZModem 传输".to_string())?;
     if target.3 {
         return Err("Modem 来源连接已关闭或正在重连".to_string());
     }
@@ -239,14 +229,6 @@ pub(super) async fn transfer_modem_binding(
     Ok(binding)
 }
 
-#[cfg(test)]
-pub(super) fn runtime_tap_receiver(
-    state: &AppState,
-    session_id: &str,
-) -> Result<broadcast::Receiver<Vec<u8>>, String> {
-    runtime_modem_binding(state, session_id).map(|binding| binding.subscribe())
-}
-
 pub(super) async fn check_modem_cancelled(
     state: &AppState,
     reader: &ModemByteReader,
@@ -270,26 +252,6 @@ pub(super) struct ModemByteReader {
 }
 
 impl ModemByteReader {
-    #[cfg(test)]
-    pub(super) fn new(receiver: broadcast::Receiver<Vec<u8>>, cancel: Arc<AtomicBool>) -> Self {
-        Self {
-            receiver,
-            pending: VecDeque::new(),
-            cancel,
-            connection: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn watch_connection(
-        mut self,
-        store: Arc<Mutex<SessionStore>>,
-        session_id: String,
-    ) -> Self {
-        self.connection = Some(ModemConnectionWatch::store_only(store, session_id));
-        self
-    }
-
     pub(super) fn runtime_id(&self) -> Option<&str> {
         self.connection
             .as_ref()
@@ -318,23 +280,6 @@ impl ModemByteReader {
             connection.ensure_current()?;
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) async fn after_marker(
-        receiver: broadcast::Receiver<Vec<u8>>,
-        marker: &str,
-        cancel: Arc<AtomicBool>,
-        connection: Option<(Arc<Mutex<SessionStore>>, String)>,
-    ) -> Result<Self, String> {
-        Self::after_marker_with_watch(
-            receiver,
-            marker,
-            cancel,
-            connection
-                .map(|(store, session_id)| ModemConnectionWatch::store_only(store, session_id)),
-        )
-        .await
     }
 
     pub(super) async fn after_marker_for_binding(
@@ -582,3 +527,9 @@ pub(super) fn ensure_modem_session_connected(
         Err(format!("modem session disconnected ({status:?})"))
     }
 }
+
+#[cfg(test)]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../test/rust/portmate/support/modem_runtime.rs"
+));

@@ -1,0 +1,169 @@
+[
+  {
+    "name": "openssh-alpine-3.19",
+    "dockerfile": "test/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "xmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.19"
+    }
+  },
+  {
+    "name": "openssh-alpine-3.20",
+    "dockerfile": "test/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "zmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.20"
+    }
+  },
+  {
+    "name": "openssh-alpine-3.21",
+    "dockerfile": "test/compat/openssh-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "zmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.21"
+    }
+  },
+  {
+    "name": "openssh-debian-bookworm",
+    "dockerfile": "test/compat/openssh-debian.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "ymodem"
+  },
+  {
+    "name": "openssh-debian-trixie",
+    "dockerfile": "test/compat/openssh-debian.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem",
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim"
+    }
+  },
+  {
+    "name": "openssh-ubuntu-jammy",
+    "dockerfile": "test/compat/openssh-ubuntu.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "xmodem",
+    "buildArgs": {
+      "UBUNTU_VERSION": "22.04"
+    }
+  },
+  {
+    "name": "openssh-ubuntu-noble",
+    "dockerfile": "test/compat/openssh-ubuntu.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem",
+    "buildArgs": {
+      "UBUNTU_VERSION": "24.04"
+    }
+  },
+  {
+    "name": "openssh-fedora-44",
+    "dockerfile": "test/compat/openssh-fedora.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "xmodem"
+  },
+  {
+    "name": "openssh-gesftpserver-ubuntu-noble",
+    "dockerfile": "test/compat/openssh-gesftpserver-ubuntu.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "ymodem"
+  },
+  {
+    "name": "dropbear-alpine-3.20",
+    "dockerfile": "test/compat/dropbear-alpine.Dockerfile",
+    "disconnectProtocol": "sftp",
+    "modemDisconnectProtocol": "xmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.20"
+    }
+  },
+  {
+    "name": "dropbear-alpine-3.21",
+    "dockerfile": "test/compat/dropbear-alpine.Dockerfile",
+    "disconnectProtocol": "scp",
+    "modemDisconnectProtocol": "zmodem",
+    "buildArgs": {
+      "ALPINE_VERSION": "3.21"
+    }
+  },
+  {
+    "name": "asyncssh-2.24.0-debian-bookworm",
+    "dockerfile": "test/compat/asyncssh-python.Dockerfile",
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "ASYNCSSH_VERSION": "2.24.0",
+      "DEBIAN_VERSION": "bookworm-slim"
+    }
+  },
+  {
+    "name": "paramiko-5.0.0-debian-bookworm",
+    "dockerfile": "test/compat/paramiko-python.Dockerfile",
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "PARAMIKO_VERSION": "5.0.0",
+      "DEBIAN_VERSION": "bookworm-slim"
+    }
+  },
+  {
+    "name": "proftpd-sftp-alpine-3.21",
+    "dockerfile": "test/compat/proftpd-sftp-alpine.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
+  },
+  {
+    "name": "sftpgo-2.6.6",
+    "dockerfile": "test/compat/sftpgo-2.6.6.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
+  },
+  {
+    "name": "sftpgo-2.7.5",
+    "dockerfile": "test/compat/sftpgo-2.7.5.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
+  },
+  {
+    "name": "rclone-1.74.4",
+    "dockerfile": "test/compat/rclone-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "RCLONE_VERSION": "1.74.4",
+      "RCLONE_SHA256": "fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
+    }
+  },
+  {
+    "name": "erlang-otp-25.2.3-debian-bookworm",
+    "dockerfile": "test/compat/erlang-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "DEBIAN_VERSION": "bookworm-slim"
+    }
+  },
+  {
+    "name": "erlang-otp-27.3.4.1-debian-trixie",
+    "dockerfile": "test/compat/erlang-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "buildArgs": {
+      "DEBIAN_VERSION": "trixie-slim"
+    }
+  },
+  {
+    "name": "go-pkg-sftp-1.13.6-debian-trixie",
+    "dockerfile": "test/compat/go-pkg-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false
+  },
+  {
+    "name": "apache-mina-sshd-2.19.0",
+    "dockerfile": "test/compat/apache-mina-sftp.Dockerfile",
+    "protocols": ["sftp"],
+    "runActiveTransferDisconnect": false,
+    "verifyExtendedSftpStatusCodes": true
+  }
+]
