@@ -5,6 +5,12 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   const target = sender.getByRole('combobox', { name: '发送目标', exact: true });
   assert.equal(await ending.inputValue(), 'none', 'raw text must remain the default');
   assert.equal(await ending.isEnabled(), true);
+  assert.deepEqual(await ending.locator('option').evaluateAll(options => options.map(option => [option.value, option.textContent])), [
+    ['none', '不追加 — 原样发送'],
+    ['lf', 'LF — 换行（\\n）'],
+    ['cr', 'CR — 回车（\\r）'],
+    ['crlf', 'CRLF — 回车 + 换行（\\r\\n）'],
+  ]);
   if (process.env.PORTMATE_SEND_LINE_ENDING_SCREENSHOT) {
     await page.screenshot({ path: process.env.PORTMATE_SEND_LINE_ENDING_SCREENSHOT });
   }
@@ -15,6 +21,7 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   // Every send appends to the original draft, never to a previous payload.
   for (const [value, suffix] of [['none', ''], ['lf', '\n'], ['cr', '\r'], ['crlf', '\r\n']]) {
     await ending.selectOption(value);
+    assert.equal(await ending.getAttribute('title'), await ending.locator('option:checked').textContent(), 'hover must explain the selected ending');
     await text.fill(draft);
     await page.evaluate(() => { window.__pacedWrites = []; });
     if (value === 'lf') await text.press('Control+Enter');
@@ -134,6 +141,9 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
         assert(geometry.every(control => control.inside && control.width > 0 && control.height > 0),
           `${locale} send controls overflow at ${width}px: ${JSON.stringify(geometry)}`);
         assert.equal(await sender.locator('.send-line-ending-input').inputValue(), 'crlf', 'locale changes must not alter the ending');
+        const localizedEnding = sender.locator('.send-line-ending-input');
+        assert.equal(await localizedEnding.getAttribute('title'), await localizedEnding.locator('option:checked').textContent(),
+          `${locale} selected ending hover must retain the full localized description`);
       }
     }
   } finally {

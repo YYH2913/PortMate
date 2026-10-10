@@ -4424,8 +4424,10 @@ body[data-portmate-modal-open] .portmate-context-menu {
 }
 
 .send-line-ending-control select {
-  flex: 0 0 auto;
-  width: 112px;
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .send-line-ending-control select:disabled {

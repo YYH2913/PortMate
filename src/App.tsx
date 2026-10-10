@@ -4609,6 +4609,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       );
     }
     const sendAdvancedActive = sendCount !== DEFAULT_SEND_COUNT || sendIntervalMs !== DEFAULT_SEND_INTERVAL_MS || sendTarget !== "active";
+    const sendLineEndingLabels: Record<SendLineEnding, string> = {
+      none: t("send-line-ending-none"),
+      lf: t("send-line-ending-lf"),
+      cr: t("send-line-ending-cr"),
+      crlf: t("send-line-ending-crlf"),
+    };
     return (
       <>
         <div className="send-toolbar" data-advanced-open={sendAdvancedOpen ? "true" : "false"}>
@@ -4644,14 +4650,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <select
               className="send-line-ending-input"
               aria-label={t("append-line-ending")}
+              title={sendLineEndingLabels[sendLineEnding]}
               value={sendLineEnding}
               disabled={sendMode === "hex" || sendBusy}
               onChange={(event) => setSendLineEnding(event.target.value as SendLineEnding)}
             >
-              <option value="none">{t("do-not-append")}</option>
-              <option value="lf">{"LF (\\n)"}</option>
-              <option value="cr">{"CR (\\r)"}</option>
-              <option value="crlf">{"CRLF (\\r\\n)"}</option>
+              <option value="none">{sendLineEndingLabels.none}</option>
+              <option value="lf">{sendLineEndingLabels.lf}</option>
+              <option value="cr">{sendLineEndingLabels.cr}</option>
+              <option value="crlf">{sendLineEndingLabels.crlf}</option>
             </select>
           </label>
           {sendAdvancedOpen ? (

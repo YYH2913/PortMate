@@ -7,6 +7,18 @@ const catalogs = Object.fromEntries(locales.map(locale => [locale, JSON.parse(re
 const placeholders = text => [...text.matchAll(/\{\d+\}/g)].map(match => match[0]).sort();
 
 describe("translation catalog contract", () => {
+  it("explains sender endings with literal escape sequences in every locale", () => {
+    for (const [locale, catalog] of Object.entries(catalogs)) {
+      for (const [ending, abbreviation, escape] of [["lf", "LF", "\\n"], ["cr", "CR", "\\r"], ["crlf", "CRLF", "\\r\\n"]]) {
+        const label = catalog[`send-line-ending-${ending}`];
+        expect(label, `${locale}:${ending}`).toContain(abbreviation);
+        expect(label, `${locale}:${ending}`).toContain(escape);
+        expect(label, `${locale}:${ending}`).not.toMatch(/[\r\n]/);
+      }
+      expect(catalog["send-line-ending-none"], locale).toBeTruthy();
+    }
+  });
+
   it("uses English message identifiers and preserves interpolation placeholders", () => {
     expect(Object.keys(catalogs.zh).sort()).toEqual(Object.keys(catalogs.en).sort());
     for (const [locale, catalog] of Object.entries(catalogs)) {

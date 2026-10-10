@@ -297,9 +297,11 @@ Use the terminal toolbar's `− / font size / +` controls, `Ctrl/Cmd + plus/minu
 
 ### Send Panel Line Endings
 
-In the workspace **Send** panel, text mode offers **None** (the default),
-**LF (`\n`)**, **CR (`\r`)**, and **CRLF (`\r\n`)**. The chosen ending is
-appended once to each payload, even when the draft already ends with a newline;
+In the workspace **Send** panel, text mode offers **None — No extra characters**
+(the default), **LF — Line feed (`\n`)**, **CR — Carriage return (`\r`)**, and
+**CRLF — Carriage return + line feed (`\r\n`)**. Options show their meanings and
+escape sequences; hover over the selector for the full selected label. The chosen
+ending is appended once to each payload, even when the draft already ends with a newline;
 internal line breaks and the draft itself are unchanged. An empty draft sends
 only the selected ending, or nothing with None selected. The 4 MiB UTF-8 limit
 includes the appended ending. Repeated/broadcast sends keep the content and

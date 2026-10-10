@@ -12,6 +12,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   text sends, defaulting to None. The selected suffix is appended once per
   payload without rewriting internal line breaks or the draft. Hex sends stay
   byte-exact; repeated/broadcast sends use the same content and ending snapshot.
+  Each option explains its meaning and escape sequence (e.g. CR is carriage
+  return, `\r`); the selected option also exposes its full label on hover.
 
 ### Fixed
 
