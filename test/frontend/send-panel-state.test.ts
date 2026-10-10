@@ -3,14 +3,50 @@ import type { SessionSummary } from "../../src/types";
 import {
   DEFAULT_SEND_COUNT,
   DEFAULT_SEND_INTERVAL_MS,
+  DEFAULT_SEND_LINE_ENDING,
   MAX_SEND_COUNT,
   MAX_SEND_INTERVAL_MS,
+  appendSendLineEnding,
   dispatchPacedSends,
   normalizeSendCount,
   normalizeSendInterval,
   parseHexBytes,
   resolveSendTargets,
 } from "../../src/send-panel-state";
+
+describe("send panel line endings", () => {
+  it("preserves raw text by default", () => {
+    expect(DEFAULT_SEND_LINE_ENDING).toBe("none");
+    expect(appendSendLineEnding("one\r\ntwo\nthree\r", DEFAULT_SEND_LINE_ENDING)).toBe("one\r\ntwo\nthree\r");
+  });
+
+  it.each([
+    ["none", []],
+    ["lf", [10]],
+    ["cr", [13]],
+    ["crlf", [13, 10]],
+  ] as const)("appends exactly the %s bytes to UTF-8 text", (ending, bytes) => {
+    const draft = "中😀\n";
+    const prefix = [...new TextEncoder().encode(draft)];
+    const payload = appendSendLineEnding(draft, ending);
+    expect([...new TextEncoder().encode(payload)]).toEqual([...prefix, ...bytes]);
+    expect(appendSendLineEnding(draft, ending)).toBe(payload);
+    expect(draft).toBe("中😀\n");
+  });
+
+  it.each([
+    ["none", ""], ["lf", "\n"], ["cr", "\r"], ["crlf", "\r\n"],
+  ] as const)("supports an empty draft with %s selected", (ending, expected) => {
+    expect(appendSendLineEnding("", ending)).toBe(expected);
+  });
+
+  it("includes the suffix in the UTF-8 payload size", () => {
+    const limit = 4 * 1024 * 1024;
+    const draft = "a".repeat(limit - 1);
+    expect(new TextEncoder().encode(appendSendLineEnding(draft, "lf")).length).toBe(limit);
+    expect(new TextEncoder().encode(appendSendLineEnding(draft, "crlf")).length).toBe(limit + 1);
+  });
+});
 
 describe("send panel pacing", () => {
   it("normalizes invalid and bounded sender settings", () => {

@@ -6,6 +6,19 @@ export const DEFAULT_SEND_INTERVAL_MS = 1_000;
 export const MAX_SEND_COUNT = 10_000;
 export const MAX_SEND_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
+export type SendLineEnding = "none" | "lf" | "cr" | "crlf";
+export const DEFAULT_SEND_LINE_ENDING: SendLineEnding = "none";
+
+/** Append one selected suffix without rewriting draft contents or existing endings. */
+export function appendSendLineEnding(value: string, ending: SendLineEnding): string {
+  switch (ending) {
+    case "lf": return `${value}\n`;
+    case "cr": return `${value}\r`;
+    case "crlf": return `${value}\r\n`;
+    default: return value;
+  }
+}
+
 export function normalizeSendCount(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SEND_COUNT;
   return Math.min(MAX_SEND_COUNT, Math.max(DEFAULT_SEND_COUNT, Math.trunc(value)));

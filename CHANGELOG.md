@@ -6,6 +6,13 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Added
+
+- The send panel now offers **None**, **LF**, **CR**, and **CRLF** endings for
+  text sends, defaulting to None. The selected suffix is appended once per
+  payload without rewriting internal line breaks or the draft. Hex sends stay
+  byte-exact; repeated/broadcast sends use the same content and ending snapshot.
+
 ### Fixed
 
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle

@@ -295,6 +295,19 @@ In serial Insert mode, `Esc` is sent to the device. Use `Shift+Esc` or the statu
 
 Use the terminal toolbar's `− / font size / +` controls, `Ctrl/Cmd + plus/minus/0`, or `Ctrl/Cmd + wheel` over the terminal. Clicking the displayed size restores the session profile default. Sizes are bounded to 6–72px and remembered per view, including detached windows; zoom does not scale the application or other split views. Hex byte views are unaffected.
 
+### Send Panel Line Endings
+
+In the workspace **Send** panel, text mode offers **None** (the default),
+**LF (`\n`)**, **CR (`\r`)**, and **CRLF (`\r\n`)**. The chosen ending is
+appended once to each payload, even when the draft already ends with a newline;
+internal line breaks and the draft itself are unchanged. An empty draft sends
+only the selected ending, or nothing with None selected. The 4 MiB UTF-8 limit
+includes the appended ending. Repeated/broadcast sends keep the content and
+ending fixed for the whole job. The choice is retained while the app is open
+and disabled during sending or in Hex mode, which always sends exact bytes.
+Terminal keystrokes, free input, quick commands, MCP and file transfers are
+unaffected.
+
 ### Custom Script Tools
 
 Create Python 3 or platform Shell scripts from `Tools -> Custom Scripts`. Scripts execute as independent processes on the PortMate host without terminal sessions. Defaults: `python3` / `python.exe`, `/bin/sh` on Linux/macOS, and PowerShell 7 (`pwsh.exe`) on Windows. Configure an absolute interpreter path (including a virtual environment), working directory, and 1–60 second timeout. Missing interpreters are reported, not installed.

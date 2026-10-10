@@ -4394,7 +4394,8 @@ body[data-portmate-modal-open] .portmate-context-menu {
 
 .send-toolbar-primary {
   display: flex;
-  flex: 1 1 0;
+  flex: 1 1 240px;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
   gap: 7px;
@@ -4407,6 +4408,29 @@ body[data-portmate-modal-open] .portmate-context-menu {
   align-items: center;
   gap: 4px;
   white-space: nowrap;
+}
+
+.send-line-ending-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.send-line-ending-control > span {
+  white-space: nowrap;
+}
+
+.send-line-ending-control select {
+  flex: 0 0 auto;
+  width: 112px;
+}
+
+.send-line-ending-control select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .send-toolbar-primary .sync-badge {
@@ -4475,6 +4499,7 @@ body[data-portmate-modal-open] .portmate-context-menu {
 
 .tiny-input,
 .number-input,
+.send-line-ending-input,
 .target-input {
   height: 24px;
   border: 1px solid var(--line);

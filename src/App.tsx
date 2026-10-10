@@ -119,7 +119,8 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
 import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp-connection-settings";
-import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, dispatchPacedSends, normalizeSendCount, normalizeSendInterval, parseHexBytes, resolveSendTargets } from "./send-panel-state";
+import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, DEFAULT_SEND_LINE_ENDING, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, appendSendLineEnding, dispatchPacedSends, normalizeSendCount, normalizeSendInterval, parseHexBytes, resolveSendTargets } from "./send-panel-state";
+import type { SendLineEnding } from "./send-panel-state";
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
@@ -332,6 +333,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const draftExpectedProfileRef = useRef<SessionProfile | null>(null);
   const [sendText, setSendText] = useState("");
   const [sendMode, setSendMode] = useState<SendMode>("text");
+  const [sendLineEnding, setSendLineEnding] = useState<SendLineEnding>(DEFAULT_SEND_LINE_ENDING);
   const [sendCount, setSendCount] = useState(DEFAULT_SEND_COUNT);
   const [sendIntervalMs, setSendIntervalMs] = useState(DEFAULT_SEND_INTERVAL_MS);
   const [sendTarget, setSendTarget] = useState<SendTarget>("active");
@@ -4206,10 +4208,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function runSendPanel() {
     if (sendBusy || sendOperationGateRef.current.isActive("send")) return;
     const sendModeSnapshot = sendMode;
-    const textPayload = sendModeSnapshot === "text" ? sendText : "";
+    const draftSnapshot = sendText;
+    const textPayload = sendModeSnapshot === "text" ? appendSendLineEnding(draftSnapshot, sendLineEnding) : "";
     let bytePayload: number[];
     try {
-      bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(sendText) : [];
+      bytePayload = sendModeSnapshot === "hex" ? parseHexBytes(draftSnapshot) : [];
       if ((sendModeSnapshot === "hex" ? bytePayload.length : new TextEncoder().encode(textPayload).length) > 4 * 1024 * 1024) {
         throw new Error(t("a-single-payload-cannot-exceed-4-mib"));
       }
@@ -4262,7 +4265,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               }
             };
             validate();
-            await directInputPumpRef.current!.dispatch(target, sendText, "atomic", {
+            await directInputPumpRef.current!.dispatch(target, sendModeSnapshot === "text" ? textPayload : draftSnapshot, "atomic", {
               awaitWrite: true,
               signal: cancellation.signal,
               executeWrite: async () => {
@@ -4636,6 +4639,21 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             </button>
             {syncInput ? <span className="sync-badge">{t("synchronized-input-targets", [syncInputTargetCount])}</span> : null}
           </div>
+          <label className="send-line-ending-control" title={t("send-line-ending-hint")}>
+            <span>{t("append-line-ending")}</span>
+            <select
+              className="send-line-ending-input"
+              aria-label={t("append-line-ending")}
+              value={sendLineEnding}
+              disabled={sendMode === "hex" || sendBusy}
+              onChange={(event) => setSendLineEnding(event.target.value as SendLineEnding)}
+            >
+              <option value="none">{t("do-not-append")}</option>
+              <option value="lf">{"LF (\\n)"}</option>
+              <option value="cr">{"CR (\\r)"}</option>
+              <option value="crlf">{"CRLF (\\r\\n)"}</option>
+            </select>
+          </label>
           {sendAdvancedOpen ? (
             <div className="send-advanced-controls" role="group" aria-label={t("advanced-send-options")}>
               <label>

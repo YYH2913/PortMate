@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { checkSendLineEndings } from "./send-line-ending-regressions.mjs";
 
 export async function checkPacedSender(context, appUrl) {
   const page = await context.newPage();
@@ -31,6 +32,8 @@ export async function checkPacedSender(context, appUrl) {
     assert.equal(await page.evaluate(() => window.__invokeCalls.filter(c => c.command === 'begin_paced_send').length), 0);
     await dismiss();
     await sender.getByRole('radio', { name: '文本(T)' }).check();
+
+    await checkSendLineEndings(page, sender, start, text, count, interval, dismiss);
 
     // Stop a first payload that is behind earlier keyboard IPC, before it
     // reaches native send_text. No repeated payload should escape later.
