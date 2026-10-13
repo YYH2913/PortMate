@@ -38,6 +38,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   local-target overwrite remains supported.
 - Complete SFTP-download and local-copy resume files now pass the final source
   growth/EOF check before commit, preserving existing targets on size mismatch.
+- SCP single-file downloads resolve existing or trailing-slash local directories
+  using the requested source filename, rather than the peer's header name.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

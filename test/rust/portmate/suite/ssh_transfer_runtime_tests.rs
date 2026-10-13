@@ -237,6 +237,37 @@ fn scp_download_validates_completion_and_protocol_streams() {
         assert_eq!(fs::read(&target).unwrap(), b"data");
         assert!(!part.exists());
 
+        for (directory, directory_syntax) in [
+            (root.path().join("existing-directory"), false),
+            (root.path().join("new-directory"), true),
+        ] {
+            if !directory_syntax {
+                fs::create_dir(&directory).unwrap();
+            }
+            let destination = if directory_syntax {
+                format!("{}/", directory.display())
+            } else {
+                directory.display().to_string()
+            };
+            let downloaded = scp_download_with_idle_timeout(
+                Arc::clone(&handle),
+                "/__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__",
+                &destination,
+                &progress,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(downloaded, 4);
+            // The remote header advertises file.bin. Use the requested name
+            // so a peer cannot choose a different local output path.
+            let resolved_target = directory.join("__PORTMATE_TEST_SCP_DOWNLOAD_SUCCESS__");
+            assert_eq!(fs::read(&resolved_target).unwrap(), b"data");
+            assert!(!local_resume_part_path(&resolved_target).exists());
+            assert!(!directory.join("file.bin").exists());
+            assert!(!local_resume_part_path(&directory).exists());
+        }
+
         let failed_target = root.path().join("download-failed.bin");
         let failed_part = local_resume_part_path(&failed_target);
         let error = scp_download_with_idle_timeout(
@@ -285,13 +316,13 @@ fn scp_download_validates_completion_and_protocol_streams() {
         assert!(!oversized_target.exists());
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while counters.channel_closes.load(Ordering::SeqCst) < 4 {
+            while counters.channel_closes.load(Ordering::SeqCst) < 6 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .expect("SCP download channels were not closed across protocol outcomes");
-        assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 4);
+        assert_eq!(counters.session_channel_attempts.load(Ordering::SeqCst), 6);
 
         drop(handle);
         server_task.abort();

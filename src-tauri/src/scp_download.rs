@@ -86,9 +86,11 @@ pub(super) async fn scp_download_with_idle_timeout<H: SshExecChannelOpener>(
             .parse::<u64>()
             .map_err(|error| format!("SCP invalid file size: {error}"))?;
 
-        let target = Path::new(local_destination);
-        prepare_local_transfer_target_path(target, "SCP 本地目标路径")?;
-        let temp_target = local_resume_part_path(target);
+        // Resolve directory syntax from the requested source path, rather
+        // than trusting the peer-controlled filename in the SCP header.
+        let target = local_destination_file_path(local_destination, remote_source)?;
+        prepare_local_transfer_target_path(&target, "SCP 本地目标路径")?;
+        let temp_target = local_resume_part_path(&target);
         local_resume_offset(&temp_target, size)?;
         // Standard scp -f always streams from byte zero and provides no source
         // identity for validating an existing prefix. Truncate instead of
@@ -172,7 +174,7 @@ pub(super) async fn scp_download_with_idle_timeout<H: SshExecChannelOpener>(
         )
         .await?;
         scp_wait_download_completion(&mut channel, &mut stderr, progress, idle_timeout).await?;
-        finalize_local_resume_file(&temp_target, target)?;
+        finalize_local_resume_file(&temp_target, &target)?;
         Ok(size)
     }
     .await;
