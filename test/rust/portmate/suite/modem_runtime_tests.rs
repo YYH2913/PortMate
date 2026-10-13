@@ -126,6 +126,198 @@ fn tcp_xmodem_receiver_rejects_a_future_block() {
 }
 
 #[test]
+fn tcp_ymodem_receiver_without_size_rejects_out_of_order_blocks() {
+    tauri::async_runtime::block_on(async {
+        for blocks in [vec![2_u8], vec![1_u8, 3]] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+                let mut metadata = [0_u8; XMODEM_BLOCK_SIZE];
+                metadata[..12].copy_from_slice(b"firmware.bin");
+                socket
+                    .write_all(&modem_packet_bytes(
+                        MODEM_SOH,
+                        0,
+                        &metadata,
+                        XMODEM_BLOCK_SIZE,
+                        true,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+                assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+                for block in blocks {
+                    let mut bytes = modem_packet_bytes(
+                        MODEM_SOH,
+                        block,
+                        &[b'x'; XMODEM_BLOCK_SIZE],
+                        XMODEM_BLOCK_SIZE,
+                        true,
+                    );
+                    if block != 1 {
+                        // The old receiver ACKed the missing block and accepted
+                        // this EOT because metadata had no declared length.
+                        bytes.push(MODEM_EOT);
+                    }
+                    socket.write_all(&bytes).await.unwrap();
+                    let ack = socket.read_u8().await.unwrap();
+                    assert_eq!(ack, if block == 1 { MODEM_ACK } else { MODEM_NAK });
+                }
+                let _ = release_rx.await;
+            });
+            let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+                host: "127.0.0.1".to_string(),
+                port: address.port(),
+                reconnect: false,
+                ..Default::default()
+            }));
+            let root = canonical_test_tempdir();
+            let target = root.path().join("received.bin");
+            fs::write(&target, b"old target").unwrap();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            open_tcp_session(&state, profile.clone()).await.unwrap();
+            let task = start_transfer_inner(
+                &state,
+                StartTransferRequest {
+                    session_id: profile.id.clone(),
+                    protocol: TransferProtocol::Ymodem,
+                    source: "remote:/tmp/source.bin".to_string(),
+                    destination: target.display().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            let failed = wait_for_transfer_terminal_state(&state, &task.id).await;
+            assert_eq!(failed.status, TransferStatus::Failed, "{failed:?}");
+            assert!(failed
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("失序数据块")));
+            assert_eq!(fs::read(&target).unwrap(), b"old target");
+            assert!(!fs::read_dir(root.path())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains(".part")));
+            let _ = release_tx.send(());
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .expect("YModem order server timed out")
+                .expect("YModem order server failed");
+            close_session_inner(&state, profile.id.clone())
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[test]
+fn tcp_ymodem_receiver_without_size_accepts_duplicate_previous_block_once() {
+    tauri::async_runtime::block_on(async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+            let mut metadata = [0_u8; XMODEM_BLOCK_SIZE];
+            metadata[..12].copy_from_slice(b"firmware.bin");
+            socket
+                .write_all(&modem_packet_bytes(
+                    MODEM_SOH,
+                    0,
+                    &metadata,
+                    XMODEM_BLOCK_SIZE,
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+            // A lost metadata ACK causes another block zero before any data.
+            socket
+                .write_all(&modem_packet_bytes(
+                    MODEM_SOH,
+                    0,
+                    &metadata,
+                    XMODEM_BLOCK_SIZE,
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+            for (block, byte) in [(1, b'a'), (1, b'a'), (2, b'b')] {
+                socket
+                    .write_all(&modem_packet_bytes(
+                        MODEM_SOH,
+                        block,
+                        &[byte; XMODEM_BLOCK_SIZE],
+                        XMODEM_BLOCK_SIZE,
+                        true,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+            }
+            socket.write_all(&[MODEM_EOT]).await.unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_CRC_REQUEST);
+            socket
+                .write_all(&modem_packet_bytes(
+                    MODEM_SOH,
+                    0,
+                    &[0; XMODEM_BLOCK_SIZE],
+                    XMODEM_BLOCK_SIZE,
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(socket.read_u8().await.unwrap(), MODEM_ACK);
+            let _ = release_rx.await;
+        });
+        let profile = test_tcp_profile(ConnectionConfig::Tcp(portmate_core::TcpConnection {
+            host: "127.0.0.1".to_string(),
+            port: address.port(),
+            reconnect: false,
+            ..Default::default()
+        }));
+        let root = canonical_test_tempdir();
+        let target = root.path().join("received.bin");
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        open_tcp_session(&state, profile.clone()).await.unwrap();
+        let task = start_transfer_inner(
+            &state,
+            StartTransferRequest {
+                session_id: profile.id.clone(),
+                protocol: TransferProtocol::Ymodem,
+                source: "remote:/tmp/source.bin".to_string(),
+                destination: target.display().to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let completed = wait_for_transfer_terminal_state(&state, &task.id).await;
+        assert_eq!(completed.status, TransferStatus::Completed, "{completed:?}");
+        assert_eq!(completed.bytes_done, (XMODEM_BLOCK_SIZE * 2) as u64);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            [vec![b'a'; XMODEM_BLOCK_SIZE], vec![b'b'; XMODEM_BLOCK_SIZE]].concat()
+        );
+        let _ = release_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("YModem duplicate server timed out")
+            .expect("YModem duplicate server failed");
+        close_session_inner(&state, profile.id.clone())
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
 fn tcp_device_tftp_transfer_runs_one_shot_server_and_uboot_commands() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

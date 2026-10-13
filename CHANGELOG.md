@@ -40,6 +40,8 @@ or an unsigned artifact is not a production release. The complete release gates 
   growth/EOF check before commit, preserving existing targets on size mismatch.
 - SCP single-file downloads resolve existing or trailing-slash local directories
   using the requested source filename, rather than the peer's header name.
+- YModem rejects out-of-order data blocks even when metadata omits the file size,
+  while accepting metadata retransmissions and the previous acknowledged block.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

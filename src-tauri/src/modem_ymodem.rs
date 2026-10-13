@@ -184,6 +184,21 @@ pub(super) async fn ymodem_receive_file(
                 .ok_or_else(|| "YModem 接收字节数溢出".to_string())?;
             progress.update(bytes_received, total).await?;
             expected = expected.wrapping_add(1);
+        } else if bytes_received == 0 && packet.block_no == 0 && packet.data == metadata.data {
+            // The sender may retry its metadata if the initial ACK was lost.
+            reader
+                .write_runtime_bytes(state, &[MODEM_ACK, MODEM_CRC_REQUEST])
+                .await?;
+            continue;
+        } else if bytes_received > 0 && packet.block_no == expected.wrapping_sub(1) {
+            // A lost ACK may retransmit the preceding data block. All other
+            // sequence numbers must fail, even when metadata omits the size.
+        } else {
+            let _ = reader.write_runtime_bytes(state, &[MODEM_NAK]).await;
+            return Err(format!(
+                "YModem 收到失序数据块 {}，预期 {}",
+                packet.block_no, expected
+            ));
         }
         reader.write_runtime_bytes(state, &[MODEM_ACK]).await?;
     }

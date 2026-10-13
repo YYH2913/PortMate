@@ -3918,6 +3918,7 @@
   "remote-overwrite-unavailable": "La sobrescritura remota no está disponible; elija Detener, Omitir o Renombrar.",
   "remote-overwrite-option": "Sobrescribir (no disponible en destinos remotos)",
   "native-message-39c26858f50e": "Los destinos remotos no admiten sobrescritura segura; elija Fallar, Omitir o Renombrar",
+  "native-message-f724de1e82ab": "YModem recibió el bloque {0} fuera de secuencia; se esperaba {1}",
   "local-overwrite-option": "Sobrescribir (solo destinos locales)",
   "native-message-9343e77ea4d9": "La conexión cambió; no se confirmó la escritura del terminal de la conexión anterior",
   "native-message-4264c1194851": "La entrada del terminal no tiene una generación de conexión válida"

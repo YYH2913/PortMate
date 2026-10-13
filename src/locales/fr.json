@@ -3918,6 +3918,7 @@
   "remote-overwrite-unavailable": "Le remplacement distant est indisponible ; choisissez Arrêter, Ignorer ou Renommer.",
   "remote-overwrite-option": "Remplacer (indisponible à distance)",
   "native-message-39c26858f50e": "Les cibles distantes ne permettent pas un remplacement sûr ; choisissez Échec, Ignorer ou Renommer",
+  "native-message-f724de1e82ab": "YModem a reçu le bloc {0} hors séquence ; bloc attendu : {1}",
   "local-overwrite-option": "Remplacer (cibles locales uniquement)",
   "native-message-9343e77ea4d9": "La connexion a changé ; l’écriture du terminal de la connexion précédente n’a pas été confirmée",
   "native-message-4264c1194851": "L’entrée du terminal n’a pas de génération de connexion valide"

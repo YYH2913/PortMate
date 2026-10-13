@@ -3918,6 +3918,7 @@
   "remote-overwrite-unavailable": "远端暂不支持安全覆盖，请选择停止、跳过或重命名。",
   "remote-overwrite-option": "覆盖（远端目标不可用）",
   "native-message-39c26858f50e": "远端目标不支持安全覆盖，请选择失败、跳过或重命名",
+  "native-message-f724de1e82ab": "YModem 收到失序数据块 {0}，预期 {1}",
   "local-overwrite-option": "覆盖（仅本地目标）",
   "native-message-9343e77ea4d9": "连接已变化，未确认旧连接的终端写入",
   "native-message-4264c1194851": "终端输入缺少有效的连接代际"
