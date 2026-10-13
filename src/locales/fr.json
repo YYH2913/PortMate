@@ -3914,5 +3914,7 @@
   "native-message-a13e2998af79": "Délai de négociation TLS {0} dépassé : {1}",
   "native-message-3e56dff1dc13": "Échec de négociation TLS {0} : {1}",
   "native-message-b464b4915b25": "{0} : échec de définition de TCP_NODELAY : {1}",
-  "native-message-ac535fc95389": "{0} : échec de désactivation de TCP keepalive : {1}"
+  "native-message-ac535fc95389": "{0} : échec de désactivation de TCP keepalive : {1}",
+  "native-message-9343e77ea4d9": "La connexion a changé ; l’écriture du terminal de la connexion précédente n’a pas été confirmée",
+  "native-message-4264c1194851": "L’entrée du terminal n’a pas de génération de connexion valide"
 }

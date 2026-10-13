@@ -3991,11 +3991,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   ): void | Promise<void> {
     const currentSessions = sessionsRef.current;
     const sourceSession = currentSessions.find((session) => session.profile.id === sessionId);
-    if (!sourceSession) return;
+    const rejectStaleInput = () => options?.awaitWrite
+      ? Promise.reject(new DOMException("Terminal connection changed before input was sent", "AbortError"))
+      : undefined;
+    if (!sourceSession) return rejectStaleInput();
     if (options?.expectedConnectedSince !== undefined
       && (sourceSession.runtime.connectedSince ?? null) !== options.expectedConnectedSince) {
-      return;
+      return rejectStaleInput();
     }
+    if (options?.expectedInputEpoch !== undefined
+      && (options.expectedInputEpoch === null || !terminalInputIsCurrent(sessionId, options.expectedInputEpoch))) return rejectStaleInput();
     const broadcastEnabled = syncInputRef.current;
     // Mouse reports are addressed to the pane that received the pointer
     // event. Keep them source-local even when synchronized input is enabled.
@@ -4115,6 +4120,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             text,
             interactive: origin === "interactive",
             queued: true,
+            ...(options?.expectedConnectedSince !== undefined ? { expectedConnectedSince: options.expectedConnectedSince } : {}),
             ...(inputOrder ? { inputOrder } : {}),
             ...(options?.sensitive ? { sensitive: true } : {}),
             ...(options?.awaitWrite ? { awaitWrite: true } : {}),

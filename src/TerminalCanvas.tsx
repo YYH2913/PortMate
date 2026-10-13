@@ -58,6 +58,8 @@ import { boundedTerminalFontSize, nextTerminalFontSize, readTerminalFontZoom, su
 import type { TerminalFontZoomAction } from "./terminal-font-zoom";
 import { SerialColumnDetector } from "./terminal-serial-columns";
 import { TerminalInputController } from "./terminal-input-controller";
+import { commitTerminalInputAfterWrite, pasteTerminalClipboard, TerminalInputBoundary } from "./terminal-input-boundary";
+import type { TerminalInputSnapshot } from "./terminal-input-boundary";
 import { recordCommandSubmission } from "./command-submission";
 import type { CommandSubmitHandler, CommandSubmissionSource } from "./command-submission";
 import {
@@ -377,6 +379,9 @@ function TerminalCanvas({
   const activeTerminalTheme = terminalTheme(themeId, backgroundOpacity);
   const canvasBackground = backgroundOpacity >= 100 ? activeTerminalTheme.background : "transparent";
   const sessionId = active?.profile.id ?? "";
+  const inputBoundaryRef = useRef<TerminalInputBoundary | null>(null);
+  if (!inputBoundaryRef.current) inputBoundaryRef.current = new TerminalInputBoundary(active);
+  else inputBoundaryRef.current.update(active);
   const stateCacheKey = terminalStateCacheKey(sessionId, viewId);
   const baseFontSize = boundedTerminalFontSize(active?.profile.terminal.fontSize ?? 13);
   const subscribeFontZoom = useCallback((notify: () => void) => subscribeTerminalFontZoom(stateCacheKey, notify), [stateCacheKey]);
@@ -1116,6 +1121,7 @@ function TerminalCanvas({
 
   useEffect(() => {
     if (!active || !hostRef.current) return;
+    inputBoundaryRef.current!.update(active);
     const host = hostRef.current;
     const terminalInstanceId = String(++terminalInstanceSequence);
     host.dataset.terminalInstanceId = terminalInstanceId;
@@ -2253,11 +2259,17 @@ function TerminalCanvas({
       }
     };
     let pasteInput = false;
-    let pasteInputExpectedConnectedSince: string | null | undefined;
+    let pasteSnapshot: TerminalInputSnapshot | null = null;
+    const pendingPasteWrites = new Map<Promise<boolean>, TerminalInputSnapshot>();
+    const currentPasteWrites = () => [...pendingPasteWrites]
+      .filter(([, snapshot]) => inputBoundaryRef.current!.isCurrent(snapshot))
+      .map(([acknowledged]) => acknowledged);
     const inputDisposable = term.onData((text) => {
       // Device replies (DSR/DA, etc.) also arrive here. Block background user
       // events at the DOM boundary, without dropping terminal protocol replies.
       if (!focusedRef.current || keyModeRef.current !== "remote") return;
+      const currentPaste = pasteInput ? pasteSnapshot : null;
+      if (pasteInput && (!currentPaste || !inputBoundaryRef.current!.isCurrent(currentPaste))) return;
       const mouseReport = isTerminalMouseReport(text);
       if (mouseReport) {
         dispatchBinaryInput(text);
@@ -2269,21 +2281,46 @@ function TerminalCanvas({
       const sensitive = manualPrivateInputRef.current || detectedSensitive || privateInputLineRef.current;
       if (sensitive) commitPrivateInputLine(true);
       const isEnter = /\r|\n/.test(text);
-      const inputOrigin: SyncInputOrigin = /[\u0000-\u001f\u007f]/.test(text)
+      const inputOrigin: SyncInputOrigin = pasteInput || /[\u0000-\u001f\u007f]/.test(text)
         ? "atomic"
         : "interactive";
       // The App-level registry is the single ordering queue for this session.
       // Bypassing the view-local pump removes a second IPC batching window.
-      const inputOptions = sensitive
-        ? { sensitive: true, ...(pasteInput ? { expectedConnectedSince: pasteInputExpectedConnectedSince } : {}) }
-        : (pasteInput ? { expectedConnectedSince: pasteInputExpectedConnectedSince } : undefined);
-      void onInputRef.current(
-        active.profile.id,
-        text,
-        inputOrigin,
-        inputOptions,
-      );
-      trackCommandSubmission(text, pasteInput ? "paste" : "interactive", sensitive);
+      const inputOptions: TerminalInputSendOptions | undefined = sensitive || currentPaste
+        ? { ...(sensitive ? { sensitive: true } : {}),
+          ...(currentPaste ? { awaitWrite: true, expectedConnectedSince: currentPaste.connectedSince } : {}) }
+        : undefined;
+      if (currentPaste) {
+        // Keep the line tracker synchronous so an immediate Enter follows the
+        // paste, but publish submitted commands only after its write succeeds.
+        const submitted = terminalInputControllerRef.current!.track(text, sensitive || term.buffer.active.type !== "normal");
+        const previousWrites = currentPasteWrites();
+        const acknowledged = commitTerminalInputAfterWrite(inputBoundaryRef.current!, currentPaste,
+          () => onInputRef.current(active.profile.id, text, inputOrigin, inputOptions), () => {}, () => {
+            terminalInputControllerRef.current?.invalidate();
+            resetCompletionInput(false);
+          });
+        pendingPasteWrites.set(acknowledged, currentPaste);
+        void Promise.all([...previousWrites, acknowledged]).then((received) => {
+          if (!received.every(Boolean) || !inputBoundaryRef.current!.isCurrent(currentPaste)) return;
+          const submit = onCommandSubmitRef.current;
+          if (submit) for (const command of submitted) recordCommandSubmission(submit, active.profile.id, command, "paste");
+        }).finally(() => pendingPasteWrites.delete(acknowledged));
+      } else {
+        void onInputRef.current(active.profile.id, text, inputOrigin, inputOptions);
+        const pendingWrites = currentPasteWrites();
+        if (pendingWrites.length) {
+          const snapshot = inputBoundaryRef.current!.capture();
+          const submitted = terminalInputControllerRef.current!.track(text, sensitive || term.buffer.active.type !== "normal");
+          // Enter can immediately follow a paste whose transport write is
+          // still pending. Its history depends on that paste succeeding too.
+          void Promise.all(pendingWrites).then((received) => {
+            if (!snapshot || !received.every(Boolean) || !inputBoundaryRef.current!.isCurrent(snapshot)) return;
+            const submit = onCommandSubmitRef.current;
+            if (submit) for (const command of submitted) recordCommandSubmission(submit, active.profile.id, command, "interactive");
+          });
+        } else trackCommandSubmission(text, "interactive", sensitive);
+      }
       updateCompletionInput(text, sensitive);
       if (sensitive && terminalPrivateInputEndsLine(text)) commitPrivateInputLine(false);
       if (sensitive && /[\r\n\u0003]$/.test(text)) clearPrivateInput();
@@ -2308,17 +2345,16 @@ function TerminalCanvas({
     const pasteFromClipboard = (event: MouseEvent) => {
       event.preventDefault();
       if (!focusedRef.current || keyModeRef.current !== "remote" || freeInputSubmission.isBusy()) return;
-      void navigator.clipboard?.readText().then((text) => {
-        if (text && !terminalDisposed && focusedRef.current && keyModeRef.current === "remote" && !freeInputSubmission.isBusy()) {
-          resetCompletionInput(false);
-          // xterm normalizes line endings and honors bracketed paste. Its
-          // synchronous onData event is the only input/history dispatch path.
-          pasteInput = true;
-          pasteInputExpectedConnectedSince = active.runtime.connectedSince ?? null;
-          try { term.paste(text); } finally { pasteInput = false; }
-          pasteInputExpectedConnectedSince = undefined;
-        }
-      }).catch(() => {});
+      const clipboard = navigator.clipboard;
+      if (!clipboard) return;
+      void pasteTerminalClipboard(inputBoundaryRef.current!, () => clipboard.readText(), (text, snapshot) => {
+        resetCompletionInput(false);
+        // xterm normalizes line endings and honors bracketed paste. Its
+        // synchronous onData event is the only input/history dispatch path.
+        pasteInput = true;
+        pasteSnapshot = snapshot;
+        try { term.paste(text); } finally { pasteInput = false; pasteSnapshot = null; }
+      }, () => !terminalDisposed && focusedRef.current && keyModeRef.current === "remote" && !freeInputSubmission.isBusy()).catch(() => {});
     };
     const pasteOnMiddleClick = (event: MouseEvent) => {
       if (event.button === 1) {
@@ -2333,7 +2369,8 @@ function TerminalCanvas({
       }
       resetCompletionInput(false);
       pasteInput = true;
-      queueMicrotask(() => { pasteInput = false; });
+      pasteSnapshot = inputBoundaryRef.current!.capture();
+      queueMicrotask(() => { pasteInput = false; pasteSnapshot = null; });
     };
     const blockPendingEditorInput = (event: Event) => {
       if (!freeInputSubmission.isBusy()) return;
@@ -2367,6 +2404,7 @@ function TerminalCanvas({
 
     return () => {
       terminalDisposed = true;
+      inputBoundaryRef.current!.update();
       if (serialColumnDetectorRef.current === serialColumnDetector) serialColumnDetectorRef.current = null;
       writeTerminalLiveRef.current = null;
       window.cancelAnimationFrame(readyFrame);

@@ -246,6 +246,39 @@ pub(crate) fn read_screen(
         .ok_or_else(|| format!("no screen data for session: {session_id}"))
 }
 
+fn capture_desktop_input_runtime(
+    io: &SessionIo,
+    session_id: &str,
+    expected_connected_since: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(expected) = expected_connected_since else {
+        // Older desktop callers omit the timestamp. Ordered streams and
+        // sender jobs have their own native runtime bindings.
+        return Ok(None);
+    };
+    let expected = DateTime::parse_from_rfc3339(expected)
+        .map_err(|_| "终端输入缺少有效的连接代际".to_string())?
+        .with_timezone(&Utc);
+    let runtime_id = current_session_runtime_id(&io.runtimes, session_id)?
+        .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
+    // Hold the captured runtime while inspecting the canonical Store, using
+    // the registry -> Store order shared by reconnect installation. The id is
+    // carried into the queue/write rather than looked up after validation.
+    with_current_session_runtime_store(io, session_id, &runtime_id, |store| {
+        let current = store
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.session_id == session_id)
+            .ok_or_else(|| "会话尚未连接，无法发送输入".to_string())?;
+        if current.status != SessionStatus::Connected || current.connected_since != Some(expected) {
+            return Err("连接已变化，已拒绝旧连接的终端输入".to_string());
+        }
+        Ok(())
+    })?
+    .ok_or_else(|| "连接已变化，已拒绝旧连接的终端输入".to_string())??;
+    Ok(Some(runtime_id))
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Preserve the existing desktop command arguments.
 pub(crate) async fn send_text(
@@ -259,13 +292,66 @@ pub(crate) async fn send_text(
     sensitive: Option<bool>,
     input_order: Option<terminal_input_stream::TerminalInputOrder>,
     paced_send_id: Option<String>,
+    expected_connected_since: Option<String>,
 ) -> Result<Option<SessionEvent>, String> {
+    send_desktop_text(
+        state.session_io(),
+        window.label(),
+        session_id,
+        text,
+        DesktopTextSendOptions {
+            interactive,
+            queued,
+            await_write,
+            sensitive,
+            input_order,
+            paced_send_id,
+            expected_connected_since,
+        },
+    )
+    .await
+}
+
+#[derive(Default)]
+struct DesktopTextSendOptions {
+    interactive: Option<bool>,
+    queued: Option<bool>,
+    await_write: Option<bool>,
+    sensitive: Option<bool>,
+    input_order: Option<terminal_input_stream::TerminalInputOrder>,
+    paced_send_id: Option<String>,
+    expected_connected_since: Option<String>,
+}
+
+async fn send_desktop_text(
+    io: SessionIo,
+    owner: &str,
+    session_id: String,
+    text: String,
+    options: DesktopTextSendOptions,
+) -> Result<Option<SessionEvent>, String> {
+    let DesktopTextSendOptions {
+        interactive,
+        queued,
+        await_write,
+        sensitive,
+        input_order,
+        paced_send_id,
+        expected_connected_since,
+    } = options;
+    let expected_runtime_id =
+        capture_desktop_input_runtime(&io, &session_id, expected_connected_since.as_deref())?;
     if let Some(job_id) = paced_send_id {
         if input_order.is_some() || interactive.unwrap_or(false) || !await_write.unwrap_or(false) {
             return Err("间隔发送必须使用独立的确认写入".into());
         }
-        let io = state.session_io();
-        let (job, runtime_id) = paced_send::target(&io, window.label(), &job_id, &session_id)?;
+        let (job, runtime_id) = paced_send::target(&io, owner, &job_id, &session_id)?;
+        if expected_runtime_id
+            .as_ref()
+            .is_some_and(|expected| expected != &runtime_id)
+        {
+            return Err("连接已变化，已拒绝旧连接的终端输入".into());
+        }
         enqueue_paced_payload_and_wait(io, session_id, text, None, job, runtime_id).await?;
         return Ok(None);
     }
@@ -276,9 +362,9 @@ pub(crate) async fn send_text(
             return Err("有序终端输入仅用于非等待式队列写入".into());
         }
         terminal_input_stream::accept_text(
-            state.session_io(),
+            io,
             session_id,
-            window.label(),
+            owner,
             order,
             text,
             interactive,
@@ -291,19 +377,32 @@ pub(crate) async fn send_text(
     // queue contract while requesting an acknowledgement after the actual
     // transport write, so their pacing is measured against real writes.
     if queued.unwrap_or(false) {
-        let io = state.inner().session_io();
         // Acknowledgement is deliberately restricted to atomic payloads;
         // printable interactive input must remain fire-and-forget even if a
         // caller sends an unexpected `awaitWrite` flag.
         if await_write.unwrap_or(false) && !interactive {
-            enqueue_interactive_text_and_wait_with_sensitivity(
-                io,
-                session_id,
-                text,
-                interactive,
-                sensitive,
-            )
-            .await?;
+            if let Some(runtime_id) = expected_runtime_id.as_deref() {
+                enqueue_interactive_text_and_wait_for_runtime(
+                    io,
+                    session_id,
+                    text,
+                    interactive,
+                    sensitive,
+                    runtime_id,
+                )
+                .await?;
+            } else {
+                enqueue_interactive_text_and_wait_with_sensitivity(
+                    io,
+                    session_id,
+                    text,
+                    interactive,
+                    sensitive,
+                )
+                .await?;
+            }
+        } else if let Some(runtime_id) = expected_runtime_id.as_deref() {
+            enqueue_terminal_stream_text(io, session_id, runtime_id, text, interactive, sensitive)?;
         } else {
             enqueue_interactive_text_with_sensitivity(
                 io,
@@ -316,18 +415,36 @@ pub(crate) async fn send_text(
         return Ok(None);
     }
     if interactive {
-        return send_text_interactive_inner_with_sensitivity(
-            state.inner().session_io(),
+        if let Some(runtime_id) = expected_runtime_id.as_deref() {
+            return send_text_interactive_inner_for_optional_runtime(
+                io,
+                session_id,
+                text,
+                Some(runtime_id),
+                None,
+                sensitive,
+                None,
+            )
+            .await
+            .map(Some);
+        }
+        return send_text_interactive_inner_with_sensitivity(io, session_id, text, sensitive)
+            .await
+            .map(Some);
+    }
+    match expected_runtime_id.as_deref() {
+        Some(runtime_id) => send_text_inner_for_runtime(
+            io,
             session_id,
             text,
-            sensitive,
+            runtime_id,
+            "desktop-user",
+            Some("send_text"),
         )
         .await
-        .map(Some);
+        .map(Some),
+        None => send_text_inner(io, session_id, text).await.map(Some),
     }
-    send_text_inner(state.inner().session_io(), session_id, text)
-        .await
-        .map(Some)
 }
 
 #[tauri::command]
@@ -338,10 +455,39 @@ pub(crate) async fn send_bytes(
     bytes: Vec<u8>,
     queued: Option<bool>,
     paced_send_id: Option<String>,
+    expected_connected_since: Option<String>,
 ) -> Result<SessionEvent, String> {
-    let io = state.inner().session_io();
+    send_desktop_bytes(
+        state.session_io(),
+        window.label(),
+        session_id,
+        bytes,
+        queued,
+        paced_send_id,
+        expected_connected_since,
+    )
+    .await
+}
+
+async fn send_desktop_bytes(
+    io: SessionIo,
+    owner: &str,
+    session_id: String,
+    bytes: Vec<u8>,
+    queued: Option<bool>,
+    paced_send_id: Option<String>,
+    expected_connected_since: Option<String>,
+) -> Result<SessionEvent, String> {
+    let expected_runtime_id =
+        capture_desktop_input_runtime(&io, &session_id, expected_connected_since.as_deref())?;
     if let Some(job_id) = paced_send_id {
-        let (job, runtime_id) = paced_send::target(&io, window.label(), &job_id, &session_id)?;
+        let (job, runtime_id) = paced_send::target(&io, owner, &job_id, &session_id)?;
+        if expected_runtime_id
+            .as_ref()
+            .is_some_and(|expected| expected != &runtime_id)
+        {
+            return Err("连接已变化，已拒绝旧连接的终端输入".into());
+        }
         let summary = format_outbound_byte_summary(&bytes);
         let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
         let event = deferred_outbound_event(&session_id, &summary, &wire_bytes, false);
@@ -354,7 +500,15 @@ pub(crate) async fn send_bytes(
         // write and persisted event are completed by the per-session worker.
         let summary = format_outbound_byte_summary(&bytes);
         let returned_bytes = bytes.clone();
-        enqueue_interactive_bytes(io, session_id.clone(), bytes)?;
+        match expected_runtime_id.as_deref() {
+            Some(runtime_id) => enqueue_interactive_bytes_for_optional_runtime(
+                io,
+                session_id.clone(),
+                bytes,
+                Some(runtime_id),
+            )?,
+            None => enqueue_interactive_bytes(io, session_id.clone(), bytes)?,
+        }
         return Ok(deferred_outbound_event(
             &session_id,
             &summary,
@@ -362,7 +516,10 @@ pub(crate) async fn send_bytes(
             false,
         ));
     }
-    send_bytes_inner(io, session_id, bytes).await
+    match expected_runtime_id.as_deref() {
+        Some(runtime_id) => send_bytes_inner_for_runtime(io, session_id, bytes, runtime_id).await,
+        None => send_bytes_inner(io, session_id, bytes).await,
+    }
 }
 
 #[tauri::command]
@@ -401,3 +558,7 @@ pub(crate) async fn resize_session(
 #[cfg(test)]
 #[path = "../../test/rust/portmate/unit/session_terminal.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../test/rust/portmate/unit/session_terminal/input_generation.rs"]
+mod input_generation_tests;

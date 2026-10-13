@@ -35,7 +35,7 @@ pub(super) async fn enqueue_interactive_text_and_wait_with_timeout(
     timeout: Duration,
 ) -> Result<(), String> {
     enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
-        io, session_id, text, coalesce, false, timeout,
+        io, session_id, text, coalesce, false, timeout, None,
     )
     .await
 }

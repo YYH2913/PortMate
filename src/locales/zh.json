@@ -3914,5 +3914,7 @@
   "native-message-a13e2998af79": "{0} TLS 握手超时: {1}",
   "native-message-3e56dff1dc13": "{0} TLS 握手失败: {1}",
   "native-message-b464b4915b25": "{0} 设置 TCP_NODELAY 失败: {1}",
-  "native-message-ac535fc95389": "{0} 关闭 TCP keepalive 失败: {1}"
+  "native-message-ac535fc95389": "{0} 关闭 TCP keepalive 失败: {1}",
+  "native-message-9343e77ea4d9": "连接已变化，未确认旧连接的终端写入",
+  "native-message-4264c1194851": "终端输入缺少有效的连接代际"
 }

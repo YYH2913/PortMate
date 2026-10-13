@@ -233,6 +233,15 @@ pub(super) fn enqueue_interactive_bytes(
     session_id: String,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
+    enqueue_interactive_bytes_for_optional_runtime(io, session_id, bytes, None)
+}
+
+pub(super) fn enqueue_interactive_bytes_for_optional_runtime(
+    io: SessionIo,
+    session_id: String,
+    bytes: Vec<u8>,
+    runtime_id: Option<&str>,
+) -> Result<(), String> {
     if session_id.is_empty() || bytes.is_empty() {
         return Ok(());
     }
@@ -246,7 +255,7 @@ pub(super) fn enqueue_interactive_bytes(
         false,
         false,
         InteractiveWriteCompletion {
-            runtime_id: None,
+            runtime_id: runtime_id.map(str::to_string),
             sender: None,
             cancellation: None,
         },
@@ -267,6 +276,27 @@ pub(super) async fn enqueue_interactive_text_and_wait_with_sensitivity(
         coalesce,
         sensitive,
         INTERACTIVE_WRITE_CONFIRM_TIMEOUT,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn enqueue_interactive_text_and_wait_for_runtime(
+    io: SessionIo,
+    session_id: String,
+    text: String,
+    coalesce: bool,
+    sensitive: bool,
+    runtime_id: &str,
+) -> Result<(), String> {
+    enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
+        io,
+        session_id,
+        text,
+        coalesce,
+        sensitive,
+        INTERACTIVE_WRITE_CONFIRM_TIMEOUT,
+        Some(runtime_id),
     )
     .await
 }
@@ -278,20 +308,25 @@ async fn enqueue_interactive_text_and_wait_with_timeout_and_sensitivity(
     coalesce: bool,
     sensitive: bool,
     timeout: Duration,
+    runtime_id: Option<&str>,
 ) -> Result<(), String> {
     if session_id.is_empty() || text.is_empty() {
         return Ok(());
     }
     let (completion, result) = tokio::sync::oneshot::channel();
     let cancellation = Arc::new(AtomicBool::new(false));
-    enqueue_interactive_text_with_completion(
+    enqueue_interactive_payload_with_completion(
         io,
         session_id,
         text,
+        None,
         coalesce,
         sensitive,
-        Some(completion),
-        Some(Arc::clone(&cancellation)),
+        InteractiveWriteCompletion {
+            runtime_id: runtime_id.map(str::to_string),
+            sender: Some(completion),
+            cancellation: Some(Arc::clone(&cancellation)),
+        },
     )?;
     match tokio::time::timeout(timeout, result).await {
         Ok(Ok(result)) => result,
@@ -876,7 +911,7 @@ async fn send_text_interactive_inner_for_runtime(
     .await
 }
 
-async fn send_text_interactive_inner_for_optional_runtime(
+pub(super) async fn send_text_interactive_inner_for_optional_runtime(
     io: SessionIo,
     session_id: String,
     text: String,
@@ -897,7 +932,9 @@ async fn send_text_interactive_inner_for_optional_runtime(
         Some(bytes) => bytes,
         None => outbound_text_for_active_runtime(&io.runtimes, &session_id, &text)?.into_bytes(),
     };
-    clear_active_command(&io, &session_id);
+    if expected_runtime_id.is_none() {
+        clear_active_command(&io, &session_id);
+    }
     write_session_bytes_for_runtime_with_cancellation(
         &io.store,
         &io.runtimes,
@@ -908,15 +945,28 @@ async fn send_text_interactive_inner_for_optional_runtime(
         cancellation,
     )
     .await?;
+    if let Some(runtime_id) = expected_runtime_id {
+        with_current_session_runtime_generation(&io.runtimes, &session_id, runtime_id, || {
+            clear_active_command(&io, &session_id);
+            enqueue_deferred_interactive_event(
+                io.clone(),
+                session_id.clone(),
+                text.clone(),
+                wire_bytes.clone(),
+                sensitive,
+            );
+        })?
+        .ok_or_else(|| "连接已变化，未确认旧连接的终端写入".to_string())?;
+    } else {
+        enqueue_deferred_interactive_event(
+            io.clone(),
+            session_id.clone(),
+            text.clone(),
+            wire_bytes.clone(),
+            sensitive,
+        );
+    }
     drop(lane_guard);
-
-    enqueue_deferred_interactive_event(
-        io,
-        session_id.clone(),
-        text.clone(),
-        wire_bytes.clone(),
-        sensitive,
-    );
     Ok(deferred_outbound_event(
         &session_id,
         &text,
@@ -1066,18 +1116,27 @@ pub(super) async fn send_text_under_outbound_lane(
         expected_runtime_id,
     )
     .await?;
-    if expected_runtime_id.is_some() {
-        clear_active_command(io, session_id);
+    let record = || {
+        if expected_runtime_id.is_some() {
+            clear_active_command(io, session_id);
+        }
+        record_outbound_user_event_with_context(
+            io,
+            session_id,
+            text,
+            wire_text.as_bytes(),
+            actor,
+            audit_action,
+            BTreeMap::new(),
+        )
+    };
+    match expected_runtime_id {
+        Some(runtime_id) => {
+            with_current_session_runtime_generation(&io.runtimes, session_id, runtime_id, record)?
+                .ok_or_else(|| "连接已变化，未确认旧连接的终端写入".to_string())
+        }
+        None => Ok(record()),
     }
-    Ok(record_outbound_user_event_with_context(
-        io,
-        session_id,
-        text,
-        wire_text.as_bytes(),
-        actor,
-        audit_action,
-        BTreeMap::new(),
-    ))
 }
 
 pub(super) async fn run_command_inner_with_context(
@@ -1262,27 +1321,70 @@ pub(super) async fn send_bytes_inner_with_context(
     if let Some(validate) = commit_validation {
         validate()?;
     }
-    let wire_bytes = outbound_bytes_for_session(&io.store, &session_id, &bytes)?;
-    clear_active_command(&io, &session_id);
+    send_bytes_under_outbound_lane(&io, &session_id, &bytes, actor, audit_action, None).await
+}
+
+pub(super) async fn send_bytes_inner_for_runtime(
+    io: SessionIo,
+    session_id: String,
+    bytes: Vec<u8>,
+    runtime_id: &str,
+) -> Result<SessionEvent, String> {
+    let _lane_guard = acquire_outbound_lane(&io.store_path, &session_id).await?;
+    send_bytes_under_outbound_lane(
+        &io,
+        &session_id,
+        &bytes,
+        "desktop-user",
+        Some("send_bytes"),
+        Some(runtime_id),
+    )
+    .await
+}
+
+async fn send_bytes_under_outbound_lane(
+    io: &SessionIo,
+    session_id: &str,
+    bytes: &[u8],
+    actor: &str,
+    audit_action: Option<&str>,
+    expected_runtime_id: Option<&str>,
+) -> Result<SessionEvent, String> {
+    let wire_bytes = outbound_bytes_for_session(&io.store, session_id, bytes)?;
+    if expected_runtime_id.is_none() {
+        clear_active_command(io, session_id);
+    }
     write_session_bytes_for_runtime(
         &io.store,
         &io.runtimes,
         &io.serial_workers,
-        &session_id,
+        session_id,
         &wire_bytes,
-        None,
+        expected_runtime_id,
     )
     .await?;
-    let text = format_outbound_byte_summary(&bytes);
-    Ok(record_outbound_user_event_with_context(
-        &io,
-        &session_id,
-        &text,
-        &wire_bytes,
-        actor,
-        audit_action,
-        BTreeMap::new(),
-    ))
+    let text = format_outbound_byte_summary(bytes);
+    let record = || {
+        if expected_runtime_id.is_some() {
+            clear_active_command(io, session_id);
+        }
+        record_outbound_user_event_with_context(
+            io,
+            session_id,
+            &text,
+            &wire_bytes,
+            actor,
+            audit_action,
+            BTreeMap::new(),
+        )
+    };
+    match expected_runtime_id {
+        Some(runtime_id) => {
+            with_current_session_runtime_generation(&io.runtimes, session_id, runtime_id, record)?
+                .ok_or_else(|| "连接已变化，未确认旧连接的终端写入".to_string())
+        }
+        None => Ok(record()),
+    }
 }
 
 pub(super) fn record_outbound_user_event_with_context(

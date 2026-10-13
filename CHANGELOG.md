@@ -21,6 +21,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Middle-click paste now captures the current connection before reading the
+  clipboard, and records commands after write acknowledgement. Native IPC
+  validates the captured connection and binds queued writes to it, rejecting
+  late clipboard/queue requests.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation
