@@ -42,6 +42,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   using the requested source filename, rather than the peer's header name.
 - YModem rejects out-of-order data blocks even when metadata omits the file size,
   while accepting metadata retransmissions and the previous acknowledged block.
+- Sidecar builds pass every explicit target to Cargo, including host targets;
+  the Tauri-selected target takes precedence over Cargo's default target, so
+  artifact lookup cannot accidentally copy an older sidecar from another layout.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

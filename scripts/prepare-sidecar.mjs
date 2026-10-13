@@ -7,16 +7,15 @@ const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const release = process.argv.includes("--release");
 const profile = release ? "release" : "debug";
 const hostTarget = rustHostTarget();
-const configuredTarget = process.env.CARGO_BUILD_TARGET
-  || process.env.TAURI_ENV_TARGET_TRIPLE;
+// Tauri's selected target must match the desktop binary, even when Cargo has
+// a different default. An explicit host target also uses Cargo's triple layout.
+const configuredTarget = process.env.TAURI_ENV_TARGET_TRIPLE
+  || process.env.CARGO_BUILD_TARGET;
 const target = configuredTarget || hostTarget;
-const crossTarget = target !== hostTarget;
 const extension = target.includes("windows") ? ".exe" : "";
 const cargoTargetDir = resolveTargetDirectory();
-const source = crossTarget
+const source = configuredTarget
   ? resolve(cargoTargetDir, target, profile, `portmate-mcp${extension}`)
-  : configuredTarget
-    ? resolve(cargoTargetDir, target, profile, `portmate-mcp${extension}`)
   : resolve(cargoTargetDir, profile, `portmate-mcp${extension}`);
 const destination = resolve(
   projectRoot,
@@ -26,7 +25,7 @@ const destination = resolve(
 );
 
 const args = ["build", "--locked", "-p", "portmate-mcp"];
-if (crossTarget) args.push("--target", target);
+if (configuredTarget) args.push("--target", target);
 if (release) args.push("--release");
 run("cargo", args);
 mkdirSync(dirname(destination), { recursive: true });
