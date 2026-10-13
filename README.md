@@ -164,6 +164,10 @@ SFTP works directly in the desktop application and does not require MCP, an MCP 
 
 For an upload, use a local source path and a destination such as `remote:/tmp/file.bin`. For a download, use a source such as `remote:/var/log/messages` and a local destination path. The desktop transfer queue supports cancellation, retry, progress, and throttling. Local SFTP downloads can resume from a verified partial file; remote SFTP uploads and copies safely restart existing partial files because the protocol does not expose their hard-link count.
 
+For batch transfers and external drops to remote targets, choose Stop, Skip, or
+Rename for name conflicts. Overwrite is available for local targets; remote
+targets reject it before queueing because safe replacement is not supported.
+
 Live progress updates stay in memory during a transfer; queue, start, completion,
 failure and cancellation states are persisted. After an abrupt process exit, saved
 byte counters may lag behind the actual partial file, which is checked before resume.
@@ -209,6 +213,14 @@ response remains authoritative.
 4. For stdio clients, use the exact bridge and Store paths displayed by the MCP Bridge UI.
 5. For HTTP clients, explicitly select a saved, active grant on the `HTTP` page, then configure the listen IP, client-facing address, port, and Origins. Use **Save and start** to save the binding, generate a Token if needed, and start the managed service. PortMate never infers a Client ID from the grant list or automatically switches to another client. Changing the bound identity invalidates the previous Token.
 6. Copy the CC Switch JSON from the `HTTP` page after a Token is available. Copying does not change grants, binding, or service state. The JSON includes the Token and must be treated as a secret.
+
+The MCP HTTP **Access address** selector lists enabled local adapters with IPv4
+and usable IPv6 addresses. It matches the existing configured address by default;
+**Custom** accepts an IP or DNS name. The last adapter and address family are
+remembered across app restarts and follow its current DHCP address in the draft.
+If the adapter disappears, choose another one or Custom before saving. Legacy
+manual addresses remain available. Address selection does not open remote
+listening or change a running service's configuration automatically.
 
 The Grants page owns client permissions, session scope, expiration, and revocation; the HTTP page owns transport binding, network settings, Tokens, and the managed service. Revocation requires an initial confirmation followed by entering the exact Client ID. Revoking the bound client also stops the managed HTTP Bridge and invalidates its Token; cleanup failures are reported without restoring the revoked grant.
 
