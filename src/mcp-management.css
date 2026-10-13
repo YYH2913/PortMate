@@ -74,6 +74,9 @@
 .mcp-http-panel textarea { min-height: 72px; resize: vertical; font-family: var(--mono); }
 .mcp-http-panel :is(input, select, textarea):focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
 .mcp-address-fields { display: grid; grid-template-columns: minmax(0, 1fr) 94px; gap: 10px; }
+.mcp-client-address-selector { display: grid; gap: 7px; min-width: 0; }
+.mcp-client-address-options { display: flex; gap: 6px; min-width: 0; }
+.mcp-client-address-options select { flex: 1; width: 0; min-width: 0; }
 .mcp-http-panel .mcp-remote-consent { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 12px; }
 .mcp-remote-consent input { width: 14px; height: 14px; accent-color: var(--cyan); }
 .mcp-network-actions { align-items: center; gap: 6px; margin-top: auto; }

@@ -12,6 +12,7 @@ import { checkSerialNanoBehavior } from "./serial-nano-review.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
+import { checkMcpHttpAddressSelection } from "./mcp-http-address-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 import { checkI18n } from "./i18n-regressions.mjs";
 import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
@@ -1651,6 +1652,12 @@ try {
           }
           return structuredClone(window.__mcpAudit);
         }
+        if (command === "list_local_network_addresses") return structuredClone(window.__localNetworkAddresses ?? [
+          { interfaceId: "loopback", interfaceName: "Loopback", address: "127.0.0.1", family: "ipv4", loopback: true },
+          { interfaceId: "ethernet-guid", interfaceName: "Ethernet", address: "192.0.2.42", family: "ipv4", loopback: false },
+          { interfaceId: "wifi-guid", interfaceName: "Wi-Fi", address: "192.0.2.99", family: "ipv4", loopback: false },
+          { interfaceId: "ethernet-guid", interfaceName: "Ethernet", address: "2001:db8::42", family: "ipv6", loopback: false },
+        ]);
         if (command === "mcp_http_config") {
           if (!window.__deferMcpHttpConfig) return structuredClone(window.__mcpHttpConfig);
           return new Promise((resolve) => window.__pendingMcpHttpConfig.push({ resolve }));
@@ -1999,6 +2006,12 @@ try {
   if (process.env.PORTMATE_UI_MODULE_AUDIT_ONLY === "1") {
     await checkModuleAuditRegressions(context, appUrl);
     console.log("Module architecture/interaction audit regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_MCP_ADDRESSES_ONLY === "1") {
+    await checkMcpHttpAddressSelection(context, appUrl);
+    console.log("MCP HTTP adapter/custom selection and persistence browser regressions passed");
     await context.close();
     break checks;
   }

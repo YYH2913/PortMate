@@ -9,6 +9,7 @@ mod custom_script_commands;
 mod host_script_commands;
 mod host_script_process;
 mod locale_commands;
+mod local_network_addresses;
 mod one_key_commands;
 mod one_key_prompt;
 mod one_key_runtime;

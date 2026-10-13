@@ -8,6 +8,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- MCP HTTP access addresses can now be selected from local IPv4/IPv6 adapters
+  or entered with **Custom**. The last adapter/family is remembered across app
+  restarts and follows DHCP address changes; unavailable adapters require a new
+  selection. Listener scope and running services are preserved.
 - An opt-in serial nano diagnostic replays real PTY output through main and
   detached terminal views, including split raw packets. It distinguishes normal
   screen erasure under `linux`/`vt100` from preserved alternate-screen output

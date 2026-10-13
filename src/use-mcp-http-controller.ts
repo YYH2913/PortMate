@@ -13,6 +13,8 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   const [settings, setSettings] = useState(defaultMcpHttpSettings);
   const [originsText, setOriginsText] = useState(() => formatMcpHttpOrigins(defaultMcpHttpSettings().allowedOrigins));
   const [dirty, setDirty] = useState(false);
+  const [draftResetRevision, setDraftResetRevision] = useState(0);
+  const [clientAddressAvailable, setClientAddressAvailable] = useState(true);
   const dirtyRef = useRef(false);
   const [token, setToken] = useState("");
   const [runtime, setRuntime] = useState<McpHttpRuntimeStatus | null>(null);
@@ -38,7 +40,7 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   const running = runtime?.phase === "running" || runtime?.phase === "starting";
   const locked = busy || loading || copying || !available || runtime === null || running;
   const remote = isNonLoopbackMcpHost(settings.listenHost);
-  const settingsValid = Boolean(selectedGrant && settings.listenHost.trim()
+  const settingsValid = clientAddressAvailable && Boolean(selectedGrant && settings.listenHost.trim()
     && mcpHttpClientEndpoint(settings)) && (!remote || settings.allowRemote);
   const identityChanged = Boolean(savedConfig && settings.clientId !== savedConfig.clientId);
   // Unsaved identity/address edits must never display a usable-looking old token.
@@ -196,14 +198,14 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
   }
 
   return {
-    savedConfig, settings, originsText, dirty, token, runtime, busy, loading, copying, error, notice,
+    savedConfig, settings, originsText, dirty, draftResetRevision, setClientAddressAvailable, token, runtime, busy, loading, copying, error, notice,
     serverId, toolTimeout, copied, commandCopied, activeGrants, selectedGrant, savedGrant,
     running, locked, remote, settingsValid, identityChanged, json, available,
     update, mutate, copy, refreshAfterGrantChange,
     refresh: () => { void refreshAccess(); void refreshRuntime(); },
     isMutating: () => gate.isActive("mutation") || gate.isActive("access") || gate.isActive("copy"),
     updateOrigins: (value: string) => { if (!locked) { setOriginsText(value); update({}); } },
-    resetDraft: () => { if (!locked && savedConfig) { applyAccess({ config: savedConfig, token }); setNotice(""); setError(""); } },
+    resetDraft: () => { if (!locked && savedConfig) { applyAccess({ config: savedConfig, token }); setDraftResetRevision(value => value + 1); setNotice(""); setError(""); } },
     setServerId, setToolTimeout,
   };
 }

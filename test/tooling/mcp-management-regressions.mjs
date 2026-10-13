@@ -199,6 +199,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await listen.fill("0.0.0.0");
     assert(!await remote.isChecked());
     await remote.check();
+    await dialog.getByLabel("MCP HTTP 接入地址选择", { exact: true }).selectOption("custom");
     await dialog.getByLabel("MCP HTTP 客户端地址", { exact: true }).fill("0.0.0.0");
     assert(await dialog.getByRole("button", { name: "保存配置", exact: true }).isDisabled());
     await dialog.getByLabel("MCP HTTP 客户端地址", { exact: true }).fill("192.0.2.42");

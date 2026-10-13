@@ -73,6 +73,9 @@ zmodem2 = "0.7.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",

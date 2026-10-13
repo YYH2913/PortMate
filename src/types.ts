@@ -617,6 +617,14 @@ export interface McpHttpConfigRequest {
   allowRemote: boolean;
 }
 
+export interface LocalNetworkAddress {
+  interfaceId: string;
+  interfaceName: string;
+  address: string;
+  family: "ipv4" | "ipv6";
+  loopback: boolean;
+}
+
 export interface McpHttpConfig extends McpHttpConfigRequest {
   remoteAccess: boolean;
   endpoint: string;

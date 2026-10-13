@@ -5,6 +5,7 @@ import { mcpSessionAccessMode } from "./mcp-grant-state";
 import { isNonLoopbackMcpHost, MCP_HTTP_CUSTOM_LISTEN_PRESET, mcpHttpClientEndpoint, mcpHttpListenPreset } from "./mcp-http-state";
 import { mcpHttpRuntimeLabel } from "./mcp-http-workflow";
 import type { McpHttpController } from "./use-mcp-http-controller";
+import McpHttpAddressSelector from "./McpHttpAddressSelector";
 
 const listenOptions = [
   ["127.0.0.1", "local-only-ipv4"], ["0.0.0.0", "all-interfaces-ipv4"],
@@ -88,7 +89,7 @@ export default function McpHttpPanel({ http, grantBusy, onManageGrants }: {
                 <label><span>{t("listen-ip")}</span><input ref={listenInput} aria-label={t("mcp-http-listen-ip")} value={settings.listenHost} disabled={locked} maxLength={128} spellCheck={false} onChange={event => updateListenHost(event.target.value)} /></label>
                 <label><span>{t("port")}</span><input type="number" aria-label={t("mcp-http-port")} min={1} max={65_535} value={settings.port || ""} disabled={locked} onChange={event => http.update({ port: Number(event.target.value) })} /></label>
               </div>
-              <label><span>{t("access-address-portmate-host")}</span><input aria-label={t("mcp-http-client-address")} value={settings.clientHost} maxLength={253} spellCheck={false} disabled={locked} onChange={event => http.update({ clientHost: event.target.value })} /></label>
+              <McpHttpAddressSelector http={http} locked={locked} />
               <p className="mcp-help">{t("clients-use-this-ip-or-domain-to-reach-portmate")}</p>
               <label className="mcp-remote-consent"><input type="checkbox" checked={settings.allowRemote} disabled={locked || !http.remote} onChange={event => http.update({ allowRemote: event.target.checked })} />{t("allow-non-local-listening")}</label>
               {http.remote ? <p className="mcp-inline-warning" role="status">{settings.allowRemote ? t("use-only-on-trusted-networks-or-behind-a-tls") : t("allow-non-local-listening-before-saving-or-starting")}</p> : null}
