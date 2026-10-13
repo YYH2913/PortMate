@@ -1,17 +1,253 @@
 use super::*;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty};
 
+type ShellProcess = Box<dyn portable_pty::Child + Send + Sync>;
+type ShellChildCleanup = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+pub(super) type SharedShellChild = Arc<Mutex<ManagedShellChild>>;
+
+const SHELL_CHILD_CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
+const SHELL_CHILD_REAP_INTERVAL: Duration = Duration::from_millis(50);
+
+pub(super) struct ManagedShellChild {
+    process: Option<ShellProcess>,
+    cleanup: Option<ShellChildCleanup>,
+}
+
+impl ManagedShellChild {
+    fn new(process: ShellProcess) -> Self {
+        Self {
+            process: Some(process),
+            cleanup: None,
+        }
+    }
+
+    fn begin_cleanup(&mut self) -> ShellChildCleanup {
+        if let Some(cleanup) = self.cleanup.as_ref() {
+            return cleanup.clone();
+        }
+        let process = self.process.take().expect("Shell child is still owned");
+        let cleanup = start_shell_child_cleanup(process);
+        self.cleanup = Some(cleanup.clone());
+        cleanup
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        match self.process.as_mut() {
+            Some(process) => process.try_wait(),
+            // Cleanup owns the child now. The reader's closed flag stops its
+            // loop; it must not compete with the reaper for the process.
+            None => Ok(None),
+        }
+    }
+}
+
+impl Drop for ManagedShellChild {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take() {
+            start_shell_child_cleanup(process);
+        }
+    }
+}
+
+enum ShellChildCleanupStep {
+    Exited,
+    Pending {
+        process: ShellProcess,
+        kill_requested: bool,
+        warning: Option<String>,
+    },
+}
+
+fn poll_shell_child_cleanup(
+    mut process: ShellProcess,
+    kill_requested: bool,
+) -> ShellChildCleanupStep {
+    match process.try_wait() {
+        // In particular, never signal a cached/reaped PID that the OS may
+        // already have assigned to a different process.
+        Ok(Some(_)) => ShellChildCleanupStep::Exited,
+        Ok(None) => {
+            let warning = if kill_requested {
+                None
+            } else {
+                process
+                    .kill()
+                    .err()
+                    .map(|error| format!("Shell child termination failed: {error}"))
+            };
+            let kill_requested = warning.is_none();
+            ShellChildCleanupStep::Pending {
+                process,
+                // On an unsuccessful signal, re-check ownership/status before
+                // a later retry instead of retaining a live child forever.
+                kill_requested,
+                warning,
+            }
+        }
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {
+            // Another waiter already reaped this child. We no longer own a
+            // waitable process and must not send a signal to its old PID.
+            ShellChildCleanupStep::Exited
+        }
+        Err(error) => ShellChildCleanupStep::Pending {
+            process,
+            kill_requested,
+            warning: Some(format!("Shell child status query failed: {error}")),
+        },
+    }
+}
+
+fn start_shell_child_cleanup(mut process: ShellProcess) -> ShellChildCleanup {
+    let (finished, cleanup) = tokio::sync::watch::channel(None);
+    // This task owns the actual child, independent of a caller being cancelled
+    // or dropping its last runtime reference. portable-pty kill can sleep and
+    // can return immediately after SIGKILL, so keep polling until it is reaped.
+    tauri::async_runtime::spawn(async move {
+        let mut kill_requested = false;
+        let mut previous_warning = None;
+        loop {
+            let step = tauri::async_runtime::spawn_blocking(move || {
+                poll_shell_child_cleanup(process, kill_requested)
+            })
+            .await;
+            match step {
+                Ok(ShellChildCleanupStep::Exited) => {
+                    let _ = finished.send(Some(Ok(())));
+                    return;
+                }
+                Ok(ShellChildCleanupStep::Pending {
+                    process: pending,
+                    kill_requested: requested,
+                    warning,
+                }) => {
+                    process = pending;
+                    kill_requested = requested;
+                    if let Some(warning) = warning {
+                        if previous_warning.as_ref() != Some(&warning) {
+                            eprintln!("PortMate: {warning}");
+                            previous_warning = Some(warning);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let message = format!("Shell child cleanup worker failed: {error}");
+                    eprintln!("PortMate: {message}");
+                    let _ = finished.send(Some(Err(message)));
+                    return;
+                }
+            }
+            // Do not occupy a blocking thread with an unbounded wait. If a
+            // driver/kernel delays exit, retain ownership in this async reaper.
+            tokio::time::sleep(if kill_requested {
+                SHELL_CHILD_REAP_INTERVAL
+            } else {
+                Duration::from_secs(1)
+            })
+            .await;
+        }
+    });
+    cleanup
+}
+
+fn begin_shared_shell_child_cleanup(child: &SharedShellChild) -> ShellChildCleanup {
+    child
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .begin_cleanup()
+}
+
+async fn wait_for_shell_child_cleanup(
+    mut cleanup: ShellChildCleanup,
+    timeout: Duration,
+) -> Result<(), String> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let Some(result) = cleanup.borrow().clone() {
+                return result;
+            }
+            cleanup
+                .changed()
+                .await
+                .map_err(|_| "Shell child cleanup completion was lost".to_string())?;
+        }
+    })
+    .await
+    .map_err(|_| {
+        "Shell child is still releasing; the background reaper retains ownership".to_string()
+    })?
+}
+
+pub(super) async fn disconnect_shell_runtime(runtime: ShellRuntime) {
+    runtime.closed.store(true, Ordering::SeqCst);
+    let cleanup = begin_shared_shell_child_cleanup(&runtime.child);
+    // Closing a PTY (especially ConPTY) can wait for the child or driver.
+    // Release its handles on a blocking worker alongside child termination.
+    let release = tauri::async_runtime::spawn_blocking(move || drop(runtime));
+    let (reaped, released) = tokio::join!(
+        wait_for_shell_child_cleanup(cleanup, SHELL_CHILD_CLEANUP_TIMEOUT),
+        tokio::time::timeout(SHELL_CHILD_CLEANUP_TIMEOUT, release),
+    );
+    if let Err(error) = reaped {
+        eprintln!("PortMate: {error}");
+    }
+    match released {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("PortMate: Shell PTY release worker failed: {error}"),
+        Err(_) => eprintln!("PortMate: Shell PTY handles are still releasing in the background"),
+    }
+}
+
+struct ShellWriteGuard {
+    child: SharedShellChild,
+    closed: Arc<AtomicBool>,
+    completed: bool,
+}
+
+impl Drop for ShellWriteGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.closed.store(true, Ordering::SeqCst);
+            begin_shared_shell_child_cleanup(&self.child);
+        }
+    }
+}
+
 pub(super) async fn write_shell_bytes(
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    child: SharedShellChild,
     closed: Arc<AtomicBool>,
     bytes: &[u8],
     cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
+    write_shell_bytes_with_timeout(
+        writer,
+        child,
+        closed,
+        bytes,
+        cancellation,
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+async fn write_shell_bytes_with_timeout(
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    child: SharedShellChild,
+    closed: Arc<AtomicBool>,
+    bytes: &[u8],
+    cancellation: Option<Arc<AtomicBool>>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut cleanup = ShellWriteGuard {
+        child,
+        closed: Arc::clone(&closed),
+        completed: false,
+    };
     let bytes = bytes.to_vec();
     let worker_closed = Arc::clone(&closed);
     let worker_cancel = cancellation.clone();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
     let mut worker = tokio::task::spawn_blocking(move || {
         let cancelled = || {
             worker_closed.load(Ordering::SeqCst)
@@ -53,12 +289,7 @@ pub(super) async fn write_shell_bytes(
         tokio::select! {
             result = &mut worker => {
                 let result = result.map_err(|error| error.to_string())?;
-                if result.is_err() {
-                    closed.store(true, Ordering::SeqCst);
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut child) = child.lock() { let _ = child.kill(); }
-                    });
-                }
+                cleanup.completed = result.is_ok();
                 return result;
             },
             _ = tokio::time::sleep(Duration::from_millis(25)) => {
@@ -66,10 +297,6 @@ pub(super) async fn write_shell_bytes(
                     || cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst)) {
                     // A partially written frame cannot be retried safely. End this
                     // PTY generation and unblock the worker by terminating its child.
-                    closed.store(true, Ordering::SeqCst);
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut child) = child.lock() { let _ = child.kill(); }
-                    });
                     return Err("Shell write cancelled or timed out; session terminated".into());
                 }
             }
@@ -82,7 +309,7 @@ pub(super) struct ShellRuntime {
     pub(super) master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub(super) writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub(super) tap: broadcast::Sender<Vec<u8>>,
-    pub(super) child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    pub(super) child: SharedShellChild,
     pub(super) closed: Arc<AtomicBool>,
 }
 
@@ -92,13 +319,17 @@ pub(super) struct PreparedShellSession {
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Option<Box<dyn Write + Send>>,
     reader: Option<Box<dyn Read + Send>>,
-    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    child: Option<ShellProcess>,
 }
 
 impl Drop for PreparedShellSession {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+        if let Some(child) = self.child.take() {
+            start_shell_child_cleanup(child);
+        }
+        let resources = (self.master.take(), self.writer.take(), self.reader.take());
+        if resources.0.is_some() || resources.1.is_some() || resources.2.is_some() {
+            tauri::async_runtime::spawn_blocking(move || drop(resources));
         }
     }
 }
@@ -226,12 +457,9 @@ pub(super) fn prepare_shell_session(
         // loops handle WouldBlock so close/cancellation never needs a stuck I/O.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            let mut child = child;
-            let _ = child.kill();
-            return Err(format!(
-                "Shell nonblocking PTY setup failed: {}",
-                std::io::Error::last_os_error()
-            ));
+            let error = std::io::Error::last_os_error();
+            start_shell_child_cleanup(child);
+            return Err(format!("Shell nonblocking PTY setup failed: {error}"));
         }
     }
 
@@ -264,7 +492,20 @@ pub(super) fn prepare_shell_session(
 
 pub(super) fn install_shell_session(
     state: &AppState,
+    prepared: PreparedShellSession,
+) -> Result<SessionSummary, String> {
+    install_shell_session_with_reader(state, prepared, |task| {
+        std::thread::Builder::new()
+            .name(format!("portmate-shell-{}", task.session_id))
+            .spawn(read_shell_pty(task))
+            .map(|_| ())
+    })
+}
+
+fn install_shell_session_with_reader(
+    state: &AppState,
     mut prepared: PreparedShellSession,
+    start_reader: impl FnOnce(ShellReadTask) -> std::io::Result<()>,
 ) -> Result<SessionSummary, String> {
     let profile = prepared.profile.clone();
     let program = prepared.program.clone();
@@ -290,7 +531,7 @@ pub(super) fn install_shell_session(
     let closed = Arc::new(AtomicBool::new(false));
     let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
-    let child = Arc::new(Mutex::new(child));
+    let child = Arc::new(Mutex::new(ManagedShellChild::new(child)));
     let master = Arc::new(Mutex::new(master));
     let writer = Arc::new(Mutex::new(writer));
     let existing = connections.insert(
@@ -307,30 +548,23 @@ pub(super) fn install_shell_session(
     drop(connections);
     if let Some(existing) = existing {
         existing.closed.store(true, Ordering::SeqCst);
-        if let Ok(mut child) = existing.child.lock() {
-            let _ = child.kill();
-        }
+        begin_shared_shell_child_cleanup(&existing.child);
     }
 
-    if let Err(error) = std::thread::Builder::new()
-        .name(format!("portmate-shell-{}", profile.id))
-        .spawn(read_shell_pty(ShellReadTask {
-            io: state.session_io(),
-            session_id: profile.id.clone(),
-            runtime_id: runtime_id.clone(),
-            program: program.clone(),
-            tap,
-            closed: Arc::clone(&closed),
-            start_gate: Arc::clone(&reader_start_gate),
-            child: Arc::clone(&child),
-            reader,
-        }))
-    {
+    if let Err(error) = start_reader(ShellReadTask {
+        io: state.session_io(),
+        session_id: profile.id.clone(),
+        runtime_id: runtime_id.clone(),
+        program: program.clone(),
+        tap,
+        closed: Arc::clone(&closed),
+        start_gate: Arc::clone(&reader_start_gate),
+        child: Arc::clone(&child),
+        reader,
+    }) {
         closed.store(true, Ordering::SeqCst);
         reader_start_gate.cancel();
-        if let Ok(mut child) = child.lock() {
-            let _ = child.kill();
-        }
+        begin_shared_shell_child_cleanup(&child);
         remove_runtime_if_owned(&state.shell, &profile.id, |runtime| {
             runtime.runtime_id == runtime_id
         })?;
@@ -357,9 +591,7 @@ pub(super) fn install_shell_session(
         Err(error) => {
             closed.store(true, Ordering::SeqCst);
             reader_start_gate.cancel();
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
-            }
+            begin_shared_shell_child_cleanup(&child);
             let cleanup_error = remove_runtime_if_owned(&state.shell, &profile.id, |runtime| {
                 runtime.runtime_id == runtime_id
             })
@@ -383,7 +615,7 @@ struct ShellReadTask {
     tap: broadcast::Sender<Vec<u8>>,
     closed: Arc<AtomicBool>,
     start_gate: Arc<ReaderStartGate>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    child: SharedShellChild,
     reader: Box<dyn Read + Send>,
 }
 
@@ -401,6 +633,8 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             mut reader,
         } = task;
         if !start_gate.wait() {
+            closed.store(true, Ordering::SeqCst);
+            begin_shared_shell_child_cleanup(&child);
             return;
         }
         let mut buffer = vec![0_u8; 8192];
@@ -455,6 +689,8 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
             &disconnect_reason.unwrap_or_else(|| format!("shell closed ({program})")),
         )
         .unwrap_or_else(|| format!("shell closed ({program})"));
+        closed.store(true, Ordering::SeqCst);
+        begin_shared_shell_child_cleanup(&child);
 
         let accepted =
             match with_current_session_runtime_store(&io, &session_id, &runtime_id, |store| {
@@ -491,7 +727,7 @@ fn read_shell_pty(task: ShellReadTask) -> impl FnOnce() + Send + 'static {
 }
 
 fn shell_child_disconnect_reason(
-    child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    child: &Mutex<ManagedShellChild>,
     program: &str,
 ) -> Option<String> {
     let mut child = match child.lock() {
@@ -512,7 +748,7 @@ fn shell_child_disconnect_reason(
 }
 
 fn wait_for_shell_child_disconnect_reason(
-    child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    child: &Mutex<ManagedShellChild>,
     program: &str,
 ) -> Option<String> {
     let started = Instant::now();
@@ -582,3 +818,7 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../test/rust/portmate/support/shell_transport.rs"
 ));
+
+#[cfg(test)]
+#[path = "../../test/rust/portmate/unit/shell_transport.rs"]
+mod tests;

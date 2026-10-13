@@ -192,10 +192,7 @@ pub(super) async fn close_session_under_lifecycle_lock(
         connections.remove(&session_id)
     };
     if let Some(runtime) = existing_shell {
-        runtime.closed.store(true, Ordering::SeqCst);
-        if let Ok(mut child) = runtime.child.lock() {
-            let _ = child.kill();
-        }
+        disconnect_shell_runtime(runtime).await;
     }
     let existing_tcp = {
         let mut connections = state.tcp.lock().map_err(|error| error.to_string())?;
