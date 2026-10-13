@@ -106,6 +106,97 @@ fn pipelined_download_final_reads_preserve_empty_growth_and_shrink_safety() {
 }
 
 #[test]
+fn fully_resumed_sftp_download_probes_for_source_growth_before_commit() {
+    tauri::async_runtime::block_on(async {
+        for data in [vec![1, 2], vec![1, 2, 3]] {
+            let root = canonical_test_tempdir();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state
+                .store
+                .lock()
+                .unwrap()
+                .record_transfer(test_transfer_task(&profile.id, TransferStatus::Running));
+            let (client, server) = tokio::io::duplex(4096);
+            let grown = data.len() > 2;
+            let server_task = tokio::spawn(russh_sftp::server::run(
+                server,
+                ChangingSftpSource {
+                    declared_size: 2,
+                    data,
+                },
+            ));
+            let sftp = SftpBackendSession::from_russh(SftpSession::new(client).await.unwrap());
+            let target = root.path().join("download.bin");
+            fs::write(&target, b"old target").unwrap();
+            fs::write(local_resume_part_path(&target), [1, 2]).unwrap();
+            let progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let result = sftp_download(&sftp, "source", target.to_str().unwrap(), &progress).await;
+            if grown {
+                assert!(result.unwrap_err().contains("size mismatch"));
+                assert_eq!(fs::read(&target).unwrap(), b"old target");
+            } else {
+                assert_eq!(result.unwrap(), 2);
+                assert_eq!(fs::read(&target).unwrap(), [1, 2]);
+                assert!(!local_resume_part_path(&target).exists());
+            }
+            if let SftpBackendSession::Russh(session) = &sftp {
+                session.close().await.unwrap();
+            }
+            server_task.await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn fully_resumed_local_copy_checks_growth_after_source_size_snapshot() {
+    tauri::async_runtime::block_on(async {
+        for grew in [false, true] {
+            let root = canonical_test_tempdir();
+            let profile = test_shell_profile();
+            let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+            state
+                .store
+                .lock()
+                .unwrap()
+                .record_transfer(test_transfer_task(&profile.id, TransferStatus::Running));
+            let source = root.path().join("source.bin");
+            let target = root.path().join("target.bin");
+            fs::write(&source, b"prefix").unwrap();
+            fs::write(&target, b"old target").unwrap();
+            fs::write(local_resume_part_path(&target), b"prefix").unwrap();
+            let (input, total) = open_local_transfer_source(&source, "local transfer").unwrap();
+            if grew {
+                OpenOptions::new()
+                    .append(true)
+                    .open(&source)
+                    .unwrap()
+                    .write_all(b"suffix")
+                    .unwrap();
+            }
+            let progress = test_transfer_progress_context(
+                &state,
+                "transfer-commit-test",
+                Arc::new(AtomicBool::new(false)),
+            );
+            let result = copy_open_local_file_for_transfer(input, total, &target, &progress).await;
+            if grew {
+                assert!(result.unwrap_err().contains("size mismatch"));
+                assert_eq!(fs::read(&target).unwrap(), b"old target");
+            } else {
+                assert_eq!(result.unwrap(), 6);
+                assert_eq!(fs::read(&target).unwrap(), b"prefix");
+                assert!(!local_resume_part_path(&target).exists());
+            }
+        }
+    });
+}
+
+#[test]
 fn sftp_final_read_batches_keep_a_growth_probe_without_speculative_eof_ranges() {
     assert_eq!(sftp_read_buffer_len(0, 0, 256 * 1024), 1);
     assert_eq!(sftp_read_buffer_len(0, 1024, 256 * 1024), 1024);

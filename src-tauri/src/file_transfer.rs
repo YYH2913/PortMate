@@ -152,18 +152,23 @@ pub(super) async fn copy_local_file_for_transfer(
 ) -> Result<u64, String> {
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
-    let (mut input, total) = open_local_transfer_source(&source, "local transfer")?;
-    prepare_local_transfer_target_path(&destination, "本地传输目标路径")?;
-    let temp_destination = local_resume_part_path(&destination);
+    let (input, total) = open_local_transfer_source(&source, "local transfer")?;
+    copy_open_local_file_for_transfer(input, total, &destination, progress).await
+}
+
+pub(super) async fn copy_open_local_file_for_transfer(
+    mut input: fs::File,
+    total: u64,
+    destination: &Path,
+    progress: &TransferProgressContext,
+) -> Result<u64, String> {
+    prepare_local_transfer_target_path(destination, "本地传输目标路径")?;
+    let temp_destination = local_resume_part_path(destination);
     let mut copied =
         local_resume_offset_matching_local_source(&mut input, &temp_destination, total, progress)?;
     progress.set_rate_baseline(copied);
     if copied > 0 {
         progress.update(copied, total).await?;
-    }
-    if total > 0 && copied == total {
-        finalize_local_resume_file(&temp_destination, &destination)?;
-        return Ok(copied);
     }
     let mut output = open_local_resume_writer(&temp_destination, copied)
         .map_err(|error| format!("local transfer create failed: {error}"))?;
@@ -188,7 +193,7 @@ pub(super) async fn copy_local_file_for_transfer(
         .flush()
         .map_err(|error| format!("local transfer flush failed: {error}"))?;
     drop(output);
-    finalize_local_resume_file(&temp_destination, &destination)?;
+    finalize_local_resume_file(&temp_destination, destination)?;
     Ok(copied)
 }
 

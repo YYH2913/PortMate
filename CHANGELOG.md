@@ -36,6 +36,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Remote batch/drop **Overwrite** is rejected before planning/queueing and shown
   as unavailable for remote targets. Stop, Skip and Rename remain available;
   local-target overwrite remains supported.
+- Complete SFTP-download and local-copy resume files now pass the final source
+  growth/EOF check before commit, preserving existing targets on size mismatch.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

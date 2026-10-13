@@ -13,7 +13,11 @@ pub(super) fn sftp_read_buffer_len(copied: u64, total: u64, capacity: usize) -> 
     // Trim the final batch to the known remaining length. At the expected end,
     // retain a one-byte tail probe so source growth is still detected, without
     // sending eight speculative EOF requests for every small/empty file.
-    capacity.min(usize::try_from(total.saturating_sub(copied)).unwrap_or(usize::MAX).max(1))
+    capacity.min(
+        usize::try_from(total.saturating_sub(copied))
+            .unwrap_or(usize::MAX)
+            .max(1),
+    )
 }
 
 pub(super) async fn sftp_upload(
@@ -112,11 +116,6 @@ pub(super) async fn sftp_download(
     progress.set_rate_baseline(copied);
     if copied > 0 {
         progress.update(copied, total).await?;
-    }
-    if total > 0 && copied == total {
-        finalize_local_resume_file(&temp_target, &target)?;
-        let _ = remote_file.shutdown().await;
-        return Ok(copied);
     }
     let mut local_file = open_local_resume_writer(&temp_target, copied)
         .map_err(|error| format!("创建本地目标文件失败 {}: {error}", temp_target.display()))?;
