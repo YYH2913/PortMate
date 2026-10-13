@@ -310,6 +310,21 @@ and disabled during sending or in Hex mode, which always sends exact bytes.
 Terminal keystrokes, free input, quick commands, MCP and file transfers are
 unaffected.
 
+### Serial TUI and Earlier Output
+
+UART cannot negotiate the device's `TERM`; changing the session terminal type
+does not change the remote environment. With terminal definitions such as
+`linux` or `vt100` that lack alternate-screen capabilities, nano clears and
+redraws the normal screen. Earlier output still in that viewport is overwritten,
+while older scrollback remains, so exiting nano may appear to lose only part of
+the history. The terminal is not recreated on exit.
+
+Check `printf '%s\n' "$TERM"` on the device. If the corresponding terminfo is
+installed, `TERM=xterm-256color nano <file>` lets nano use an alternate screen and
+restore the prior screen on exit. The app's terminal-type setting alone cannot
+fix the device's UART environment. PortMate does not send configuration commands
+automatically or ignore explicit erase/reset instructions.
+
 ### Custom Script Tools
 
 Create Python 3 or platform Shell scripts from `Tools -> Custom Scripts`. Scripts execute as independent processes on the PortMate host without terminal sessions. Defaults: `python3` / `python.exe`, `/bin/sh` on Linux/macOS, and PowerShell 7 (`pwsh.exe`) on Windows. Configure an absolute interpreter path (including a virtual environment), working directory, and 1–60 second timeout. Missing interpreters are reported, not installed.

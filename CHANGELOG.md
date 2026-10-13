@@ -8,6 +8,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- An opt-in serial nano diagnostic replays real PTY output through main and
+  detached terminal views, including split raw packets. It distinguishes normal
+  screen erasure under `linux`/`vt100` from preserved alternate-screen output
+  under `xterm-256color`; UART `TERM` setup and history limitations are documented.
 - The send panel now offers **None**, **LF**, **CR**, and **CRLF** endings for
   text sends, defaulting to None. The selected suffix is appended once per
   payload without rewriting internal line breaks or the draft. Hex sends stay

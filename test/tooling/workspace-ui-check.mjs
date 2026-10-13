@@ -8,6 +8,7 @@ import { checkTerminalFontZoom } from "./terminal-font-zoom-regressions.mjs";
 import { checkSerialLogin } from "./serial-login-regressions.mjs";
 import { checkTelnetInput } from "./telnet-input-regressions.mjs";
 import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
+import { checkSerialNanoBehavior } from "./serial-nano-review.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
@@ -2011,6 +2012,12 @@ try {
     await checkCommandSubmissions(context, appUrl);
     await checkHostScripts(context, appUrl, screenshotPrefix);
     console.log("Command submissions and revoked-client browser regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_SERIAL_NANO_REVIEW_ONLY === "1") {
+    await checkSerialNanoBehavior(context, appUrl);
+    console.log("Serial nano screen/scrollback behavior review passed");
     await context.close();
     break checks;
   }
