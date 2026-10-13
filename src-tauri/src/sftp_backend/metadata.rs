@@ -61,17 +61,10 @@ fn validate_sftp_directory_entry_name(name: &str) -> Result<(), String> {
 
 #[derive(Clone)]
 pub(crate) struct SftpBackendMetadata {
-    pub(super) raw: SftpBackendMetadataRaw,
     kind: SftpBackendFileType,
     size: u64,
     pub(crate) permissions: Option<u32>,
     pub(crate) mtime: Option<u32>,
-}
-
-#[derive(Clone)]
-pub(super) enum SftpBackendMetadataRaw {
-    Russh(russh_sftp::client::fs::Metadata),
-    Libssh,
 }
 
 impl SftpBackendMetadata {
@@ -89,7 +82,6 @@ impl SftpBackendMetadata {
             size: metadata.len(),
             permissions: metadata.permissions,
             mtime: metadata.mtime,
-            raw: SftpBackendMetadataRaw::Russh(metadata),
             kind,
         }
     }
@@ -106,7 +98,6 @@ impl SftpBackendMetadata {
             .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
             .and_then(|duration| u32::try_from(duration.as_secs()).ok());
         Self {
-            raw: SftpBackendMetadataRaw::Libssh,
             kind,
             size: metadata.len().unwrap_or(0),
             permissions: metadata.permissions(),

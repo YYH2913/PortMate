@@ -4,7 +4,6 @@ mod file;
 mod metadata;
 
 pub(super) use file::SftpBackendFile;
-use metadata::SftpBackendMetadataRaw;
 pub(super) use metadata::{SftpBackendDirEntry, SftpBackendMetadata};
 
 const MAX_SFTP_DIRECTORY_ENTRIES: usize = super::file_metadata::MAX_FILE_DIRECTORY_ENTRIES;
@@ -406,15 +405,18 @@ impl SftpBackendSession {
         path: String,
         metadata: SftpBackendMetadata,
     ) -> Result<(), String> {
-        match (self, metadata.raw) {
-            (Self::Russh(session), SftpBackendMetadataRaw::Russh(mut raw)) => {
-                raw.permissions = metadata.permissions;
+        // The file-manager caller changes permissions only. Reusing LSTAT
+        // attributes here would also reset stale size, ownership and times.
+        match self {
+            Self::Russh(session) => {
+                let mut attributes = russh_sftp::protocol::FileAttributes::empty();
+                attributes.permissions = metadata.permissions;
                 session
-                    .set_metadata(path, raw)
+                    .set_metadata(path, attributes)
                     .await
                     .map_err(|error| error.to_string())
             }
-            (Self::Libssh(session), _) => {
+            Self::Libssh(session) => {
                 let session = Arc::clone(session);
                 let attributes = libssh_rs::SetAttributes {
                     size: None,
@@ -433,9 +435,6 @@ impl SftpBackendSession {
                     },
                 )
                 .await
-            }
-            (Self::Russh(_), SftpBackendMetadataRaw::Libssh) => {
-                Err("SFTP metadata backend mismatch".to_string())
             }
         }
     }
@@ -467,6 +466,10 @@ fn libssh_open_flags(flags: OpenFlags) -> libssh_rs::OpenFlags {
     }
     mapped
 }
+
+#[cfg(test)]
+#[path = "../../test/rust/portmate/unit/sftp_backend/permissions.rs"]
+mod permissions_tests;
 
 #[cfg(test)]
 include!(concat!(

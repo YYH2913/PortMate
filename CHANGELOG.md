@@ -28,6 +28,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Detached windows reset input lanes on reconnect and carry the captured
   connection into native text/binary writes. Stale clipboard reads and queued
   input are rejected without recording successful command history.
+- Russh remote chmod sends only permissions, preventing stale file size, owner,
+  timestamps and extension attributes from being written back with SETSTAT.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation
