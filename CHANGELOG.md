@@ -25,6 +25,9 @@ or an unsigned artifact is not a production release. The complete release gates 
   clipboard, and records commands after write acknowledgement. Native IPC
   validates the captured connection and binds queued writes to it, rejecting
   late clipboard/queue requests.
+- Detached windows reset input lanes on reconnect and carry the captured
+  connection into native text/binary writes. Stale clipboard reads and queued
+  input are rejected without recording successful command history.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

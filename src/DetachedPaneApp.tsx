@@ -1,5 +1,6 @@
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
+import type { SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
@@ -32,13 +33,9 @@ import type { ScreenLockMarker } from "./screen-lock-state";
 import { sessionConnectionAction, sessionRuntimeHealthDescription } from "./session-runtime-state";
 import { readSessionSummaryCache, SESSION_SUMMARY_CACHE_STORAGE_KEY } from "./session-summary-cache";
 import type { SyncInputOrigin } from "./sync-input-state";
-import { formatDirectInput } from "./sync-input-state";
 import TerminalCanvas from "./TerminalCanvas";
-import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-input-pump";
-import { TerminalInputStreams } from "./terminal-input-stream";
-import type { TerminalInputOrder } from "./terminal-input-stream";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
-import { terminalBinaryStringToBytes } from "./terminal-mouse";
+import { TerminalSessionInput } from "./terminal-session-input";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { CommandHistorySnapshot, DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
@@ -60,7 +57,8 @@ type DetachedTerminalInteractionPrefs = {
 
 export default function DetachedPaneApp({ request }: { request: DetachedPaneRequest }) {
   useLocale();
-  const [sessions, setSessions] = useState<SessionSummary[]>(loadLocalSessions);
+  const [sessions, setSessionsState] = useState<SessionSummary[]>(loadLocalSessions);
+  const sessionsRef = useRef(sessions);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(() => readTerminalInteractionPrefs(request.sessionId));
@@ -73,24 +71,33 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
   const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef(new AsyncOperationQueue());
-  const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
-  const terminalInputStreamsRef = useRef(new TerminalInputStreams(invokeBackend));
-  const inputEpochRef = useRef(0);
-  const profileDeletedRef = useRef(false);
+  const terminalInputRef = useRef<TerminalSessionInput | null>(null);
   errorRef.current = error;
-  if (!directInputPumpRef.current) {
-    directInputPumpRef.current = new TerminalInputPumpRegistry((sessionId, text, origin, options) => {
-      const inputEpoch = captureTerminalInputEpoch();
-      return inputEpoch === null
-        ? Promise.resolve()
-        : sendInput(sessionId, text, origin, inputEpoch, options);
-    }, { orderedPipeline: true, onReset: (sessionId) => terminalInputStreamsRef.current.reset(sessionId) });
-  }
   const session = sessions.find((item) => item.profile.id === request.sessionId);
+  if (!terminalInputRef.current) {
+    terminalInputRef.current = new TerminalSessionInput(invokeBackend, session, {
+      onError: (inputError) => setError(formatDetachedError(inputError)),
+      onSuccess: () => { if (errorRef.current) setError(""); },
+    });
+  }
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : t("session-unavailable");
   const statusText = error || runtimeHealth;
   const statusError = Boolean(error) || session?.runtime.status === "blocked" || session?.runtime.status === "error";
+
+  function setSessions(update: SetStateAction<SessionSummary[]>) {
+    const next = typeof update === "function" ? update(sessionsRef.current) : update;
+    sessionsRef.current = next;
+    // Fence before React commits: a pending IPC can settle between the event
+    // callback and the next render and must not drain the old connection's lane.
+    terminalInputRef.current!.update(next.find((item) => item.profile.id === request.sessionId));
+    setSessionsState(next);
+  }
+
+  useEffect(() => {
+    terminalInputRef.current?.update(sessionsRef.current.find((item) => item.profile.id === request.sessionId));
+    return () => terminalInputRef.current?.update();
+  }, [request.sessionId]);
 
   useEffect(() => {
     document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
@@ -141,7 +148,6 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           ? await invokeBackend<SessionSummary[]>("list_sessions", {})
           : loadLocalSessions();
         if (!disposed && generation === sessionRefreshGenerationRef.current) {
-          if (nextSessions.some((item) => item.profile.id === request.sessionId)) restoreTerminalInput();
           setSessions(nextSessions);
         }
       } catch {
@@ -198,7 +204,6 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         : event.payload?.deletedProfileId;
       if (disposed || deletedProfileId !== request.sessionId) return;
       sessionRefreshGenerationRef.current += 1;
-      invalidateTerminalInput();
       setSessions((current) => current.filter((item) => item.profile.id !== request.sessionId));
       setError(t("session-profile-deleted"));
       void getCurrentWebviewWindow().close().catch(() => {});
@@ -209,7 +214,6 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     void listen<SessionSummary>(SESSION_PROFILE_UPDATED_EVENT, (event) => {
       if (disposed || event.payload?.profile?.id !== request.sessionId) return;
       sessionRefreshGenerationRef.current += 1;
-      restoreTerminalInput();
       setSessions((current) => upsertDetachedSessionSummary(current, event.payload));
     }).then((nextUnlisten) => {
       if (disposed) nextUnlisten();
@@ -265,39 +269,14 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     return () => window.removeEventListener("keydown", handleScreenLockShortcut, true);
   }, []);
 
-  function captureTerminalInputEpoch(): number | null {
-    return profileDeletedRef.current ? null : inputEpochRef.current;
-  }
-
-  function terminalInputIsCurrent(inputEpoch: number) {
-    return !profileDeletedRef.current && inputEpochRef.current === inputEpoch;
-  }
-
-  function invalidateTerminalInput() {
-    profileDeletedRef.current = true;
-    inputEpochRef.current += 1;
-    directInputPumpRef.current?.reset(request.sessionId);
-  }
-
-  function restoreTerminalInput() {
-    profileDeletedRef.current = false;
-  }
-
   function enqueueTerminalInput(
     sessionId: string,
     text: string,
     origin: SyncInputOrigin,
     options?: TerminalInputSendOptions,
   ): void | Promise<void> {
-    if (captureTerminalInputEpoch() === null) return;
-    if (!options?.binary) {
-      text = formatDirectInput(text, session?.profile.kind);
-    }
-    if (origin === "interactive" && !options?.awaitWrite) {
-      directInputPumpRef.current?.enqueueFast(sessionId, text, origin, options);
-      return;
-    }
-    return directInputPumpRef.current?.enqueue(sessionId, text, origin, options);
+    if (!isBackendAvailable()) return;
+    return terminalInputRef.current!.dispatch(sessionId, text, origin, options);
   }
 
   function rememberDetachedCommand(sessionId: string, command: string, source: CommandSubmissionSource) {
@@ -336,45 +315,6 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     });
   }
 
-  async function sendInput(
-    sessionId: string,
-    text: string,
-    origin: SyncInputOrigin,
-    inputEpoch: number,
-    options?: TerminalInputSendOptions,
-  ) {
-    if (!text || !isBackendAvailable() || !terminalInputIsCurrent(inputEpoch)) return;
-    let inputOrder: TerminalInputOrder | undefined;
-    try {
-      if (options?.binary) {
-        const bytes = terminalBinaryStringToBytes(text);
-        if (!bytes) throw new Error(t("terminal-binary-input-contains-invalid-bytes"));
-        await invokeBackend("send_bytes", { sessionId, bytes, queued: true });
-      } else {
-        inputOrder = canPipelineTerminalInput(text, origin, options)
-          ? await terminalInputStreamsRef.current.prepare(sessionId, inputEpoch)
-          : undefined;
-        if (!terminalInputIsCurrent(inputEpoch)) return;
-        await invokeBackend("send_text", {
-          sessionId,
-          text,
-          interactive: origin === "interactive",
-          queued: true,
-          ...(inputOrder ? { inputOrder } : {}),
-          ...(options?.sensitive ? { sensitive: true } : {}),
-          ...(options?.awaitWrite ? { awaitWrite: true } : {}),
-        });
-      }
-      if (terminalInputIsCurrent(inputEpoch) && errorRef.current) setError("");
-    } catch (inputError) {
-      if (inputOrder) terminalInputStreamsRef.current.invalidate(sessionId, inputOrder);
-      if (terminalInputIsCurrent(inputEpoch)) setError(formatDetachedError(inputError));
-      // Acknowledged editor submissions must reject so the editor retains its
-      // draft and does not record a command that failed to reach the transport.
-      throw inputError;
-    }
-  }
-
   async function completeOneKeyPrompt(
     sessionId: string,
     oneKeyId: string,
@@ -382,10 +322,10 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     promptEventId: string,
   ) {
     if (!isBackendAvailable()) throw new Error("PortMate desktop backend is unavailable");
-    const inputEpoch = captureTerminalInputEpoch();
-    if (inputEpoch === null) return;
+    const snapshot = terminalInputRef.current!.capture();
+    if (!snapshot) return;
     await inputQueueRef.current.enqueue(async () => {
-      if (!terminalInputIsCurrent(inputEpoch)) return;
+      if (!terminalInputRef.current!.isCurrent(snapshot)) return;
       try {
         await invokeBackend("send_one_key", {
           request: {
@@ -394,10 +334,11 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
             field,
             source: "prompt-completion",
             promptEventId,
+            expectedConnectedSince: snapshot.connectedSince,
           },
         });
       } catch (inputError) {
-        if (terminalInputIsCurrent(inputEpoch)) throw inputError;
+        if (terminalInputRef.current!.isCurrent(snapshot)) throw inputError;
       }
     });
   }
