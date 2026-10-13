@@ -43,6 +43,19 @@ export async function checkFileManagerDetails(context, appUrl, screenshotPrefix 
     const row = (pane, name) => pane.locator("[data-file-path]").filter({ has: page.locator(".file-entry-name", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
     await load(local, "/details", entries);
     await load(remote, "/remote-details", entries.map(entry => ({ ...entry, path: entry.path.replace("/details", "/remote-details") })));
+    assert.equal(await remote.locator('option[value="overwrite"]').isDisabled(), true, 'remote destination must not advertise unsafe overwrite');
+    await local.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).selectOption('overwrite');
+    assert.equal(await remote.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).inputValue(), 'overwrite',
+      'shared local-only policy must remain visible so an explicit Stop choice changes it');
+    await row(local, 'file1.txt').click();
+    const beforeUnsupported = await page.evaluate(() => window.__invokeCalls.filter(call => call.command === 'start_file_batch').length);
+    await local.getByRole('button', { name: await message('upload'), exact: true }).click();
+    await page.locator('.notice-dialog', { hasText: await message('remote-overwrite-unavailable') }).waitFor();
+    assert.equal(await page.evaluate(() => window.__invokeCalls.filter(call => call.command === 'start_file_batch').length), beforeUnsupported,
+      'unsupported remote overwrite must be rejected before queueing');
+    await page.locator('.notice-dialog').getByRole('button', { name: await message('ok'), exact: true }).click();
+    await remote.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).selectOption('fail');
+    assert.equal(await local.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).inputValue(), 'fail');
     const ascendingNames = ["folder1", "folder2", " spaced العربية.txt ", "file1.txt", "file2.log", "file10.txt"];
     assert.deepEqual(await order(local), ascendingNames, "file names were not naturally sorted with directories first");
     assert.equal(await row(local, "file2.log").locator(".file-entry-size").textContent(), "2.0 KiB");

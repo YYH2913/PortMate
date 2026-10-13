@@ -572,6 +572,10 @@ export default function FileManagerPanel({
     title: string,
   ) {
     if (!active || !canRemote || !fileTransferProtocol || !entries.length) return;
+    if (destinationRemote && conflictPolicy === "overwrite") {
+      onNotice({ title, message: t("remote-overwrite-unavailable") });
+      return;
+    }
     const operation = beginFileOperation([sourceRemote, destinationRemote]);
     if (!operation) return;
     if (!operation.requestSessionId) {
@@ -656,6 +660,10 @@ export default function FileManagerPanel({
 
   async function startExternalDrop(remote: boolean, paths: string[]) {
     if (!active || (remote && (!canRemote || !fileTransferProtocol)) || !paths.length) return;
+    if (remote && conflictPolicy === "overwrite") {
+      onNotice({ title: t("drag-and-drop-transfer"), message: t("remote-overwrite-unavailable") });
+      return;
+    }
     const panel = remote ? remotePanel : localPanel;
     if (panel.directory === null) return;
     const directory = panel.directory;
@@ -1014,9 +1022,9 @@ function FileBrowserPane({
             <button type="button" title={t("file-properties")} aria-label={t("file-properties")} onClick={(event) => closeOverflowAndRun(event, onProperties)} disabled={locked || panel.selected.length !== 1}><Info size={13} /><span>{t("file-properties")}</span></button>
           </div>
         </details>
-        <select value={conflictPolicy} disabled={locked} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label={t("file-conflict-policy")} title={t("file-conflict-policy")}>
+        <select value={conflictPolicy} disabled={locked} onChange={(event) => onConflictPolicyChange(event.target.value as TransferConflictPolicy)} aria-label={t("file-conflict-policy")} title={remote ? t("remote-overwrite-unavailable") : t("file-conflict-policy")}>
           <option value="fail">{t("stop")}</option>
-          <option value="overwrite">{t("overwrite")}</option>
+          <option value="overwrite" disabled={remote}>{remote ? t("remote-overwrite-option") : t("local-overwrite-option")}</option>
           <option value="skip">{t("skip")}</option>
           <option value="rename">{t("rename")}</option>
         </select>

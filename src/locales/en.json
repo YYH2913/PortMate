@@ -3915,6 +3915,10 @@
   "native-message-3e56dff1dc13": "{0} TLS handshake failed: {1}",
   "native-message-b464b4915b25": "{0} failed to set TCP_NODELAY: {1}",
   "native-message-ac535fc95389": "{0} failed to disable TCP keepalive: {1}",
+  "remote-overwrite-unavailable": "Remote overwrite is unavailable; choose Stop, Skip or Rename.",
+  "remote-overwrite-option": "Overwrite (unavailable for remote targets)",
+  "native-message-39c26858f50e": "Remote targets do not support safe overwrite; choose Fail, Skip or Rename",
+  "local-overwrite-option": "Overwrite (local targets only)",
   "native-message-9343e77ea4d9": "The connection changed; the previous connection’s terminal write was not acknowledged",
   "native-message-4264c1194851": "Terminal input lacks a valid connection generation"
 }

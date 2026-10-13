@@ -8,6 +8,7 @@ pub(super) async fn apply_external_drop_conflicts(
     remote: bool,
     policy: TransferConflictPolicy,
 ) -> Result<(), String> {
+    validate_batch_conflict_policy(remote, policy)?;
     for relative in &plan.directories {
         let relative = external_relative_remote_path(relative)?;
         let target = batch_destination_path(destination, local_destination, &relative, remote)?;
@@ -89,6 +90,7 @@ pub(super) async fn start_external_drop_inner(
     state: &AppState,
     request: StartExternalDropRequest,
 ) -> Result<ExternalDropResult, String> {
+    validate_batch_conflict_policy(request.remote, request.conflict_policy)?;
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store

@@ -1,5 +1,52 @@
 use super::*;
 
+#[test]
+fn remote_overwrite_policy_is_rejected_before_planning_or_queueing() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let profile = test_ssh_profile();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        let target = root.path().join("uncreated-destination");
+        for protocol in [TransferProtocol::Sftp, TransferProtocol::Scp] {
+            let batch_error = start_file_batch_inner(
+                &state,
+                StartFileBatchRequest {
+                    session_id: profile.id.clone(),
+                    protocol: protocol.clone(),
+                    paths: vec![root.path().join("missing-source").display().to_string()],
+                    source_remote: false,
+                    destination: target.display().to_string(),
+                    destination_remote: true,
+                    conflict_policy: TransferConflictPolicy::Overwrite,
+                },
+            )
+            .await
+            .unwrap_err();
+            let drop_error = start_external_drop_inner(
+                &state,
+                StartExternalDropRequest {
+                    session_id: profile.id.clone(),
+                    protocol,
+                    paths: vec![root.path().join("missing-source").display().to_string()],
+                    destination: target.display().to_string(),
+                    remote: true,
+                    conflict_policy: TransferConflictPolicy::Overwrite,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                batch_error,
+                "远端目标不支持安全覆盖，请选择失败、跳过或重命名"
+            );
+            assert_eq!(drop_error, batch_error);
+        }
+        assert!(!target.exists());
+        assert!(state.store.lock().unwrap().transfers.is_empty());
+        assert!(state.transfer_cancellations.lock().unwrap().is_empty());
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn local_batch_parent_replacement_after_listing_is_rejected() {

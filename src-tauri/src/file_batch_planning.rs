@@ -24,6 +24,18 @@ pub(super) enum BatchTargetKind {
     Other,
 }
 
+pub(super) fn validate_batch_conflict_policy(
+    destination_remote: bool,
+    policy: TransferConflictPolicy,
+) -> Result<(), String> {
+    if destination_remote && matches!(policy, TransferConflictPolicy::Overwrite) {
+        // Both remote transfer backends commit with no-replace semantics.
+        // Reject unsupported intent before planning or creating any output.
+        return Err("远端目标不支持安全覆盖，请选择失败、跳过或重命名".to_string());
+    }
+    Ok(())
+}
+
 pub(super) fn plan_local_file_batch(paths: &[String]) -> Result<FileBatchPlan, String> {
     let plan = plan_external_drop(paths, None)?;
     Ok(FileBatchPlan {

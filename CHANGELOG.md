@@ -33,6 +33,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Local Shell close, setup failure and cancelled/failed writes terminate and reap
   the owned child. Blocking cleanup runs outside the async executor with bounded
   close waits and a retained background reaper for delayed exits.
+- Remote batch/drop **Overwrite** is rejected before planning/queueing and shown
+  as unavailable for remote targets. Stop, Skip and Rename remain available;
+  local-target overwrite remains supported.
 - Pipeline up to eight bounded READ requests on one russh-sftp file handle
   for downloads, verified resume-prefix reads and remote copies. Short replies
   are filled and out-of-order responses reassembled by offset; cancellation

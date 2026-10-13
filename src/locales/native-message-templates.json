@@ -6157,6 +6157,11 @@
     ]
   },
   {
+    "id": "native-message-39c26858f50e",
+    "source": "远端目标不支持安全覆盖，请选择失败、跳过或重命名",
+    "causeIndices": []
+  },
+  {
     "id": "native-message-9343e77ea4d9",
     "source": "连接已变化，未确认旧连接的终端写入",
     "causeIndices": []

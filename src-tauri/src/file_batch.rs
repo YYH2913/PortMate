@@ -33,6 +33,7 @@ pub(super) async fn start_file_batch_inner(
     if request.source_remote == request.destination_remote {
         return Err("文件批次必须在本地与远端面板之间传输".to_string());
     }
+    validate_batch_conflict_policy(request.destination_remote, request.conflict_policy)?;
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store
