@@ -185,6 +185,21 @@ export function resetWorkspaceTerminalKeyModes(snapshot: WorkspaceSnapshot): Wor
   return root === snapshot.root ? snapshot : { ...snapshot, root };
 }
 
+/** A session rename must not remain hidden behind a persisted view alias. */
+export function clearWorkspaceSessionViewTitles(
+  root: WorkspaceNode | null,
+  sessionIds: ReadonlySet<string>,
+): WorkspaceNode | null {
+  if (!root || !sessionIds.size) return root;
+  if (root.kind === "pane") {
+    if (!root.views.some(view => view.title && sessionIds.has(view.sessionId))) return root;
+    return { ...root, views: root.views.map(view => view.title && sessionIds.has(view.sessionId) ? { ...view, title: "" } : view) };
+  }
+  const first = clearWorkspaceSessionViewTitles(root.first, sessionIds)!;
+  const second = clearWorkspaceSessionViewTitles(root.second, sessionIds)!;
+  return first === root.first && second === root.second ? root : { ...root, first, second };
+}
+
 export function resolveStartupSessionIds(
   mode: StartupMode,
   configuredIds: string[],

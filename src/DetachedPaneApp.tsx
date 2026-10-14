@@ -63,6 +63,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const [oneKeys, setOneKeys] = useState<OneKeySummary[]>([]);
   const [terminalInteractionPrefs, setTerminalInteractionPrefs] = useState(() => readTerminalInteractionPrefs(request.sessionId));
   const [keyMode, setKeyMode] = useState<TerminalKeyMode>(request.keyMode);
+  const [viewTitle, setViewTitle] = useState(request.title);
   const [error, setError] = useState("");
   const errorRef = useRef(error);
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
@@ -87,6 +88,9 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   function setSessions(update: SetStateAction<SessionSummary[]>) {
     const next = typeof update === "function" ? update(sessionsRef.current) : update;
+    const previous = sessionsRef.current.find(item => item.profile.id === request.sessionId);
+    const current = next.find(item => item.profile.id === request.sessionId);
+    if (previous && current && previous.profile.name !== current.profile.name) setViewTitle("");
     sessionsRef.current = next;
     // Fence before React commits: a pending IPC can settle between the event
     // callback and the next render and must not drain the old connection's lane.
@@ -100,8 +104,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   }, [request.sessionId]);
 
   useEffect(() => {
-    document.title = session ? `${request.title || session.profile.name} - PortMate` : "PortMate Detached Pane";
-  }, [request.title, session?.profile.name]);
+    document.title = session ? `${viewTitle || session.profile.name} - PortMate` : "PortMate Detached Pane";
+  }, [viewTitle, session?.profile.name]);
 
   useEffect(() => {
     if (!isBackendAvailable()) return;
@@ -121,8 +125,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     terminalInteractionPrefs.completionSettings.historyRetentionDays]);
 
   useEffect(() => {
-    window.history.replaceState(null, "", buildDetachedPanePath({ ...request, keyMode }));
-  }, [keyMode, request]);
+    window.history.replaceState(null, "", buildDetachedPanePath({ ...request, title: viewTitle, keyMode }));
+  }, [keyMode, request, viewTitle]);
 
   useEffect(() => {
     let disposed = false;
@@ -350,7 +354,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       ownerCommandBusyRef.current = controlAction;
       setOwnerCommandBusy(controlAction);
     }
-    const command: DetachedPaneCommand = { ...request, keyMode, action, requestId: createDetachedCommandRequestId() };
+    const command: DetachedPaneCommand = { ...request, title: viewTitle, keyMode, action, requestId: createDetachedCommandRequestId() };
     try {
       if (action === "reattach") {
         const result = await requestReattachResult(command);
@@ -388,7 +392,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
-        <strong>{request.title || session?.profile.name || t("session-unavailable")}</strong>
+        <strong>{viewTitle || session?.profile.name || t("session-unavailable")}</strong>
         <span
           className={`session-status-dot status-${session?.runtime.status ?? "disconnected"}`}
           role="status"

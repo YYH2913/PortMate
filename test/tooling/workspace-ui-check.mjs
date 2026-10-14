@@ -19,6 +19,7 @@ import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs"
 import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
 import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regressions.mjs";
 import { checkSshReconnectSettings } from "./ssh-reconnect-settings-regressions.mjs";
+import { checkSessionRename } from "./session-rename-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1978,6 +1979,12 @@ try {
     await context.close();
     break checks;
   }
+  if (process.env.PORTMATE_UI_SESSION_RENAME_ONLY === "1") {
+    await checkSessionRename(context, appUrl);
+    console.log("Explorer, workspace tabs and detached session rename regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_DRAG_OVERFLOW_ONLY === "1") {
     await checkWorkspaceDragOverflow(context, appUrl);
     console.log("Overflow tab auto-scroll and keyboard activation regressions passed");
@@ -2088,6 +2095,7 @@ try {
   await checkSerialWrap(context, appUrl);
   await checkSerialColumnDetection(context, appUrl);
   await checkModuleAuditRegressions(context, appUrl);
+  await checkSessionRename(context, appUrl);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -2285,8 +2293,8 @@ try {
   await edgeTabLabel.dispatchEvent("auxclick", { button: 1 });
   const middleClickRename = page.locator(".workspace-view-rename-dialog");
   await middleClickRename.waitFor();
-  assert(await middleClickRename.getByLabel("视图名称", { exact: true }).inputValue() === "Edge",
-    "middle-clicking a workspace view tab did not open its rename dialog");
+  assert(await middleClickRename.getByLabel("会话名称", { exact: true }).inputValue() === "Edge Router",
+    "middle-clicking a workspace tab did not open its session rename dialog");
   await middleClickRename.getByRole("button", { name: "取消", exact: true }).click();
   await middleClickRename.waitFor({ state: "detached" });
 

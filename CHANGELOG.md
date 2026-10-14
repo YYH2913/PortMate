@@ -25,6 +25,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Renaming a workspace tab now saves its session name, keeping the Explorer,
+  sibling tabs and detached windows synchronized. Session renames clear stale
+  aliases from open and closed views; failed saves retain the existing names
+  and edit-time Profile checks prevent overwriting concurrent changes.
 - Middle-click paste now captures the current connection before reading the
   clipboard, and records commands after write acknowledgement. Native IPC
   validates the captured connection and binds queued writes to it, rejecting

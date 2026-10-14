@@ -133,7 +133,7 @@ export default function WorkspaceViewContextMenu({
       </div>
       <Divider />
       <MenuButton label={t("duplicate-view")} disabled={!canDuplicate} onClick={onDuplicate} />
-      <MenuButton label={t("rename-view")} onClick={onRename} />
+      <MenuButton label={t("rename-session")} disabled={profileBusy} onClick={onRename} />
       <Divider />
       <MenuButton label={t("copy-session-name")} onClick={() => onAction("copy-name")} />
       <MenuButton label={t("copy-session-url")} onClick={() => onAction("copy-url")} />

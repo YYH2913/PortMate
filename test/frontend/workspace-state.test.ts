@@ -4,6 +4,7 @@ import {
   activateWorkspacePaneView,
   addWorkspacePaneSession,
   canSplitWorkspacePane,
+  clearWorkspaceSessionViewTitles,
   createWorkspacePane,
   duplicateWorkspacePaneView,
   emptyWorkspaceSnapshot,
@@ -362,6 +363,32 @@ describe("workspace snapshots", () => {
     expect(findWorkspacePane(closed, "group-a")?.views.map((view) => view.id)).toEqual(["view-copy", pane.views[2].id]);
     const cleared = setWorkspacePaneViewColor(closed, "group-a", "view-copy", "not-a-color")!;
     expect(findWorkspacePane(cleared, "group-a")?.views[0].color).toBe("");
+  });
+
+  it("clears renamed session aliases across split and duplicate views without changing view identity", () => {
+    const root = sanitizeWorkspaceSnapshot({
+      version: 4,
+      root: {
+        kind: "split", id: "split", direction: "vertical", ratio: 0.4,
+        first: { kind: "pane", id: "left", activeViewId: "original", views: [
+          { id: "original", sessionId: "a", title: "Old name", color: "#4169e1", keyMode: "command" },
+          { id: "other", sessionId: "b", title: "Other alias" },
+        ] },
+        second: { kind: "pane", id: "right", activeViewId: "copy", views: [
+          { id: "copy", sessionId: "a", title: "Old copy" },
+          { id: "default", sessionId: "a", title: "" },
+        ] },
+      },
+    }).root!;
+    const result = clearWorkspaceSessionViewTitles(root, new Set(["a"]))!;
+    expect(workspacePaneLeaves(result).flatMap(pane => pane.views.map(view => [view.id, view.title]))).toEqual([
+      ["original", ""], ["other", "Other alias"], ["copy", ""], ["default", ""],
+    ]);
+    expect(findWorkspacePane(result, "left")?.activeViewId).toBe("original");
+    expect(findWorkspacePane(result, "left")?.views[0]).toMatchObject({ color: "#4169E1", keyMode: "command" });
+    expect(findWorkspacePane(result, "left")?.views[1]).toBe(findWorkspacePane(root, "left")?.views[1]);
+    expect(clearWorkspaceSessionViewTitles(result, new Set(["a"]))).toBe(result);
+    expect(clearWorkspaceSessionViewTitles(root, new Set(["missing"]))).toBe(root);
   });
 
   it("persists key mode per view and repairs invalid or legacy values", () => {

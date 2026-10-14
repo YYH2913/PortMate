@@ -128,7 +128,7 @@ import { activateWorkspaceDockPanel, activeWorkspaceDockPanel, clampWorkspaceDoc
 import type { WorkspaceDockId, WorkspaceDockLayout, WorkspaceDockPanelId, WorkspaceDockSizes, WorkspacePanelId } from "./workspace-panel-state";
 import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabilities } from "./workspace-view-context-state";
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
-import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, renameWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
+import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, clearWorkspaceSessionViewTitles, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
 import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
@@ -221,7 +221,7 @@ type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string; link?: string; diagnostic?: boolean } | null;
 type WorkspaceGroupMoveRequest = { paneId: string; mode: "view" | "group" } | null;
-type WorkspaceViewRenameRequest = { paneId: string; viewId: string; value: string; sessionName: string } | null;
+type WorkspaceViewRenameRequest = { paneId: string; viewId: string; sessionId: string; value: string; sessionName: string; expectedProfile: SessionProfile } | null;
 type WorkspaceViewContextMenuState = { x: number; y: number; paneId: string; viewId: string } | null;
 type ClosedWorkspaceView = { view: WorkspaceView; paneId: string; index: number };
 type CurrentWorkspaceTarget = { pane: WorkspacePaneNode; view: WorkspaceView; session: SessionSummary };
@@ -602,8 +602,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   function setSessions(update: SetStateAction<SessionSummary[]>) {
     const next = typeof update === "function" ? update(sessionsRef.current) : update;
+    const previousNames = new Map(sessionsRef.current.map(session => [session.profile.id, session.profile.name]));
+    const renamed = new Set(next.filter(session => previousNames.has(session.profile.id)
+      && previousNames.get(session.profile.id) !== session.profile.name).map(session => session.profile.id));
+    if (renamed.size) clearSessionViewTitles(renamed);
     sessionsRef.current = next;
     setSessionsState(next);
+  }
+
+  function clearSessionViewTitles(sessionIds: ReadonlySet<string>) {
+    setWorkspaceRoot(current => clearWorkspaceSessionViewTitles(current, sessionIds));
+    setClosedWorkspaceViews(current => current.map(closed => closed.view.title && sessionIds.has(closed.view.sessionId)
+      ? { ...closed, view: { ...closed.view, title: "" } } : closed));
   }
 
   function setActiveId(update: SetStateAction<string>) {
@@ -3043,27 +3053,46 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setWorkspaceViewRename({
       paneId: pane.id,
       viewId: view.id,
-      value: view.title || sessionName,
+      sessionId: session.profile.id,
+      value: sessionName,
       sessionName,
+      expectedProfile: cloneSessionProfile(session.profile),
     });
   }
 
-  function commitWorkspaceViewRename(useSessionName = false) {
-    if (!workspaceViewRename) return;
-    const title = useSessionName ? "" : workspaceViewRename.value.trim();
-    if (!useSessionName && !title) return;
-    const storedTitle = title === workspaceViewRename.sessionName ? "" : title;
-    setWorkspaceRoot((current) => renameWorkspacePaneView(
-      current,
-      workspaceViewRename.paneId,
-      workspaceViewRename.viewId,
-      storedTitle,
-    ));
-    setWorkspaceViewRename(null);
-    focusWorkspacePaneInput(workspaceViewRename.paneId);
+  async function commitWorkspaceViewRename(useSessionName = false) {
+    const request = workspaceViewRename;
+    if (!request) return;
+    const current = currentWorkspaceTarget(request);
+    if (!current) return;
+    const token = beginProfileShortcutOperation(request.sessionId);
+    if (token === null) return;
+    const gate = profileShortcutOperationGateRef.current;
+    try {
+      if (useSessionName) {
+        clearSessionViewTitles(new Set([request.sessionId]));
+      } else {
+        const name = request.value.trim();
+        if (!name) return;
+        const saved = await saveProfile({ ...request.expectedProfile, name }, request.expectedProfile);
+        if (!gate.isCurrent(request.sessionId, token)) return;
+        applySavedSession(saved, false);
+        // Also reset aliases when the submitted name already matches the Profile.
+        clearSessionViewTitles(new Set([request.sessionId]));
+      }
+      setWorkspaceViewRename(value => value === request ? null : value);
+      focusWorkspacePaneInput(request.paneId);
+    } catch (error) {
+      if (gate.isCurrent(request.sessionId, token)) {
+        setNotice({ diagnostic: true, title: t("failed", [t("rename-session")]), message: formatError(error) });
+      }
+    } finally {
+      finishProfileShortcutOperation(request.sessionId, token);
+    }
   }
 
   function closeWorkspaceViewRename() {
+    if (workspaceViewRename && profileShortcutOperationGateRef.current.isActive(workspaceViewRename.sessionId)) return;
     const paneId = workspaceViewRename?.paneId;
     setWorkspaceViewRename(null);
     if (paneId) focusWorkspacePaneInput(paneId);
@@ -5030,6 +5059,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazyWorkspaceViewRenameDialog
             state={workspaceViewRename}
+            busy={profileShortcutBusyIds.has(workspaceViewRename.sessionId)}
             onChange={(value) => setWorkspaceViewRename((current) => current ? { ...current, value } : null)}
             onUseSessionName={() => commitWorkspaceViewRename(true)}
             onSave={() => commitWorkspaceViewRename(false)}
