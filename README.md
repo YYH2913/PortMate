@@ -441,6 +441,17 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
 
 The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot supports either the explicit `serverIp:port:fileName` form or `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
+Live byte counts and the progress bar are retained, with updates throttled to
+about 300 ms. Commit `2f7bbe66` (2026-10-09) removes full Store writes from this
+hot path; queue/start/finish/failure/cancellation still persist. The original
+0.1.12 builds predate that fix: a slow Store write can delay every TFTP block,
+so the version number alone does not establish that a binary contains it.
+The three 500 ms gaps between U-Boot setup commands are separate from DATA/ACK
+pacing. Completed average speed includes that startup time. DATA is currently
+stop-and-wait (512 bytes by default, up to 1468 via `blksize`); delayed ACKs or an
+explicit session rate limit can also reduce throughput. `windowsize` is not yet
+negotiated.
+
 For content produced on another MCP client, use the virtual source form of `start_transfer`. It sends one standard Base64 value without requiring the source to exist on the desktop host or granting access to a local folder. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 
 ```json

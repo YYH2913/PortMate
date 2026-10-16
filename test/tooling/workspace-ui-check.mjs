@@ -20,6 +20,7 @@ import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
 import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regressions.mjs";
 import { checkSshReconnectSettings } from "./ssh-reconnect-settings-regressions.mjs";
 import { checkSessionRename } from "./session-rename-regressions.mjs";
+import { checkTftpProgress } from "./tftp-progress-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1985,6 +1986,12 @@ try {
     await context.close();
     break checks;
   }
+  if (process.env.PORTMATE_UI_TFTP_PROGRESS_ONLY === "1") {
+    await checkTftpProgress(context, appUrl);
+    console.log("TFTP live byte counts and progress rendering browser regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_DRAG_OVERFLOW_ONLY === "1") {
     await checkWorkspaceDragOverflow(context, appUrl);
     console.log("Overflow tab auto-scroll and keyboard activation regressions passed");
@@ -2096,6 +2103,7 @@ try {
   await checkSerialColumnDetection(context, appUrl);
   await checkModuleAuditRegressions(context, appUrl);
   await checkSessionRename(context, appUrl);
+  await checkTftpProgress(context, appUrl);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

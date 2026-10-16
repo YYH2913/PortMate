@@ -177,6 +177,7 @@ mod store_normalization_tests;
 mod sysmon_tests;
 #[path = "tcp_telnet_tests.rs"]
 mod tcp_telnet_tests;
+mod tftp_runtime_tests;
 #[path = "tmux_protocol_tests.rs"]
 mod tmux_protocol_tests;
 #[path = "transfer_io_tests.rs"]
