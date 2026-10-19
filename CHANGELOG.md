@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP HTTP/desktop IPC reads retain their real absolute deadline when macOS
+  rejects `SO_RCVTIMEO`, using bounded nonblocking reads rather than reporting
+  an immediate false timeout or falling back to an unbounded blocking read.
 - Windows native unit tests activate Common Controls v6 before launch, matching
   the desktop resource manifest. This supplies `TaskDialogIndirect` instead of
   failing in the loader; tests run as the current user without elevation.
