@@ -278,6 +278,9 @@ async fn prepare_remote_move_paths(
             .symlink_metadata(source.clone())
             .await
             .map_err(|error| format!("SFTP 读取远端移动源路径失败 {source}: {error}"))?;
+        if metadata.is_symlink() {
+            return Err("SFTP 符号链接移动无法保证保留链接且禁止覆盖".to_string());
+        }
         let name = portable_file_name(&source)
             .ok_or_else(|| format!("远端移动源路径没有文件名: {source}"))?;
         let target = remote_join_path(&destination, &name);
@@ -404,6 +407,9 @@ pub(super) async fn rename_path_inner(
                 .map_err(|error| format!("SFTP 读取重命名源属性失败 {old_path}: {error}"))?;
             if old_metadata.is_dir() {
                 return Err("SFTP 目录重命名无法提供禁止覆盖的原子提交".to_string());
+            }
+            if old_metadata.is_symlink() {
+                return Err("SFTP 符号链接重命名无法保证保留链接且禁止覆盖".to_string());
             }
             sftp.rename_without_overwrite(old_path.clone(), new_path.clone())
                 .await

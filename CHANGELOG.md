@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Remote symlink moves/renames fail before mutation because hardlink source
+  semantics vary by server OS and can dereference the link. Batch preflight
+  preserves earlier files; final-link deletion still leaves its target intact.
 - Failed Windows native tests retain MSVC import tables and inspect DLL exports
   for loader failures such as `STATUS_ENTRYPOINT_NOT_FOUND`. Diagnostic builds
   reuse the original locked/profile settings and never mask the test failure.

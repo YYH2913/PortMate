@@ -614,6 +614,9 @@ instead of falling back to a potentially overwriting rename. Upload/copy data
 remains in the `.portmate-part` file; downloads remain available. The SSH
 compatibility matrix pins this capability per server and checks either successful
 commit or the rejection, intact partial data and absent final destination.
+Remote symlink moves/renames are rejected before mutation: hardlink behavior for
+symlink sources differs across server OSes and cannot guarantee preserving the
+link itself. Deleting the final symlink without following its target remains supported.
 
 For passwordless SSH devices, choose **none** in the profile authentication order.
 This uses protocol-level `none` authentication, not an empty password; host-key

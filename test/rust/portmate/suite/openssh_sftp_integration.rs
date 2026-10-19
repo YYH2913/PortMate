@@ -334,7 +334,7 @@ pub(super) async fn exercise_openssh_sftp_operations(
     assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
 
     let renamed_directory_link = root.join("sftp-directory-link-renamed");
-    rename_path_inner(
+    let error = rename_path_inner(
         state,
         RenamePathRequest {
             session_id: Some(profile.id.clone()),
@@ -345,25 +345,71 @@ pub(super) async fn exercise_openssh_sftp_operations(
         },
     )
     .await
-    .unwrap();
-    assert!(fs::symlink_metadata(&renamed_directory_link)
+    .unwrap_err();
+    assert!(error.contains("符号链接重命名"), "{error}");
+    assert!(!renamed_directory_link.exists());
+    assert!(fs::symlink_metadata(&sftp_directory_link)
         .unwrap()
         .file_type()
         .is_symlink());
     assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
+    let file_link = root.join("sftp-file-link");
+    let renamed_file_link = root.join("sftp-file-link-renamed");
+    std::os::unix::fs::symlink(&linked_file, &file_link).unwrap();
+    let error = rename_path_inner(
+        state,
+        RenamePathRequest {
+            session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
+            old_path: file_link.display().to_string(),
+            new_path: renamed_file_link.display().to_string(),
+            remote: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("符号链接重命名"), "{error}");
+    assert!(fs::symlink_metadata(&renamed_file_link).is_err());
+    assert_eq!(fs::read_link(&file_link).unwrap(), linked_file);
+
+    let preceding = root.join("before-link-move.txt");
+    let move_target = root.join("link-move-target");
+    fs::write(&preceding, b"must not move").unwrap();
+    fs::create_dir(&move_target).unwrap();
+    let error = move_paths_inner(
+        state,
+        MovePathsRequest {
+            session_id: Some(profile.id.clone()),
+            expected_connected_since: None,
+            paths: vec![
+                preceding.display().to_string(),
+                file_link.display().to_string(),
+            ],
+            destination: move_target.display().to_string(),
+            remote: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("符号链接移动"), "{error}");
+    assert_eq!(fs::read(&preceding).unwrap(), b"must not move");
+    assert_eq!(fs::read_dir(&move_target).unwrap().count(), 0);
+    fs::remove_file(preceding).unwrap();
+    fs::remove_file(file_link).unwrap();
+    fs::remove_dir(move_target).unwrap();
     file_operation_inner(
         state,
         FileOperationRequest {
             session_id: Some(profile.id.clone()),
             expected_connected_since: None,
-            path: renamed_directory_link.display().to_string(),
+            path: sftp_directory_link.display().to_string(),
             remote: true,
         },
         FileOperation::Delete,
     )
     .await
     .unwrap();
-    assert!(fs::symlink_metadata(&renamed_directory_link).is_err());
+    assert!(fs::symlink_metadata(&sftp_directory_link).is_err());
     assert_eq!(fs::read(&linked_file).unwrap(), b"protected");
     fs::remove_dir_all(&sftp_link_target).unwrap();
 
