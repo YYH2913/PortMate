@@ -588,6 +588,7 @@ fn mcp_start_transfer_accepts_tftp_for_a_profile_with_tftp_enabled() {
         let root =
             std::env::temp_dir().join(format!("portmate-mcp-tftp-transfer-{}", Uuid::new_v4()));
         let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));
+        let source = root.join("firmware.bin").to_string_lossy().into_owned();
         let session_id = state.store.lock().unwrap().profiles[0].id.clone();
         grant_test_mcp_access(
             &state,
@@ -607,7 +608,7 @@ fn mcp_start_transfer_accepts_tftp_for_a_profile_with_tftp_enabled() {
                 args: serde_json::json!({
                     "sessionId": session_id,
                     "protocol": "tftp",
-                    "source": "/tmp/firmware.bin",
+                    "source": source,
                     "destination": "load:tftpboot?deviceIp=192.168.255.1&serverIp=192.168.255.2&bindPort=0"
                 }),
             },
@@ -616,6 +617,19 @@ fn mcp_start_transfer_accepts_tftp_for_a_profile_with_tftp_enabled() {
         .unwrap();
         let task: TransferTask = serde_json::from_value(response).unwrap();
         assert_eq!(task.protocol, TransferProtocol::Tftp);
+        assert_eq!(task.source, "<redacted-path>");
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfers
+                .iter()
+                .find(|queued| queued.id == task.id)
+                .unwrap()
+                .source,
+            source
+        );
         assert_eq!(task.status, TransferStatus::Queued);
         let cancelled = handle_ipc_request(
             state.clone(),
@@ -2360,7 +2374,10 @@ fn mcp_http_config_uses_bridge_token_ref_and_loopback_endpoint() {
     assert_eq!(config.settings, McpHttpSettings::default());
     assert!(!config.remote_access);
     assert!(config.token_available);
+    #[cfg(not(windows))]
     assert!(config.start_command.contains("PORTMATE_MCP_HTTP=1"));
+    #[cfg(windows)]
+    assert!(config.start_command.contains("$env:PORTMATE_MCP_HTTP='1'"));
     assert_eq!(config.executable, executable.to_string_lossy());
     assert_eq!(config.store_path, store_path.to_string_lossy());
     assert!(config

@@ -257,7 +257,14 @@ fn terminal_text_export_is_atomic_bounded_and_checksummed() {
         .unwrap()
         .starts_with(&result.sha256));
     let export_dir = root.join("exports").canonicalize().unwrap();
-    assert_eq!(Path::new(&result.path).parent().unwrap(), export_dir);
+    assert_eq!(
+        Path::new(&result.path)
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap(),
+        export_dir
+    );
     assert!(Path::new(&result.path)
         .file_name()
         .unwrap()
