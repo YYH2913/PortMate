@@ -3928,5 +3928,7 @@
   "native-message-f724de1e82ab": "YModem 收到失序数据块 {0}，预期 {1}",
   "local-overwrite-option": "覆盖（仅本地目标）",
   "native-message-9343e77ea4d9": "连接已变化，未确认旧连接的终端写入",
-  "native-message-4264c1194851": "终端输入缺少有效的连接代际"
+  "native-message-4264c1194851": "终端输入缺少有效的连接代际",
+  "native-message-6f2fb18081c8": "SFTP 符号链接移动无法保证保留链接且禁止覆盖",
+  "native-message-d36fcf9a174a": "SFTP 符号链接重命名无法保证保留链接且禁止覆盖"
 }

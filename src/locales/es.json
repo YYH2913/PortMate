@@ -3928,5 +3928,7 @@
   "native-message-f724de1e82ab": "YModem recibió el bloque {0} fuera de secuencia; se esperaba {1}",
   "local-overwrite-option": "Sobrescribir (solo destinos locales)",
   "native-message-9343e77ea4d9": "La conexión cambió; no se confirmó la escritura del terminal de la conexión anterior",
-  "native-message-4264c1194851": "La entrada del terminal no tiene una generación de conexión válida"
+  "native-message-4264c1194851": "La entrada del terminal no tiene una generación de conexión válida",
+  "native-message-6f2fb18081c8": "SFTP no puede mover enlaces simbólicos garantizando su conservación y evitando sobrescrituras",
+  "native-message-d36fcf9a174a": "SFTP no puede renombrar enlaces simbólicos garantizando su conservación y evitando sobrescrituras"
 }

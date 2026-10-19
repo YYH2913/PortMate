@@ -6175,5 +6175,15 @@
     "id": "native-message-4264c1194851",
     "source": "终端输入缺少有效的连接代际",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-6f2fb18081c8",
+    "source": "SFTP 符号链接移动无法保证保留链接且禁止覆盖",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-d36fcf9a174a",
+    "source": "SFTP 符号链接重命名无法保证保留链接且禁止覆盖",
+    "causeIndices": []
   }
 ]

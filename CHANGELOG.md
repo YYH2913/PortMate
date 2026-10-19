@@ -28,6 +28,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- The remote-symlink safety rejections include native diagnostic templates and
+  translations for all six UI languages; native-message coverage stays strict.
 - Explorer browser regressions wait for the failure notice to close and use
   a real pointer focus before filtering. Tag/address checks require the exact
   query as well as the filtered rows; failures include focus and Vite state.

@@ -3928,5 +3928,7 @@
   "native-message-f724de1e82ab": "YModem received out-of-order block {0}; expected {1}",
   "local-overwrite-option": "Overwrite (local targets only)",
   "native-message-9343e77ea4d9": "The connection changed; the previous connection’s terminal write was not acknowledged",
-  "native-message-4264c1194851": "Terminal input lacks a valid connection generation"
+  "native-message-4264c1194851": "Terminal input lacks a valid connection generation",
+  "native-message-6f2fb18081c8": "SFTP cannot move symbolic links while guaranteeing link preservation and no overwrite",
+  "native-message-d36fcf9a174a": "SFTP cannot rename symbolic links while guaranteeing link preservation and no overwrite"
 }
