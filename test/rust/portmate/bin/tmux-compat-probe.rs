@@ -107,6 +107,17 @@ struct ProbeOutput {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--list-formats") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "sessions": tmux_protocol::tmux_session_list_format(),
+                "windows": tmux_protocol::tmux_window_list_format(),
+                "panes": tmux_protocol::tmux_pane_list_format(),
+            })
+        );
+        return Ok(());
+    }
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let input: ProbeInput = serde_json::from_str(&input)?;

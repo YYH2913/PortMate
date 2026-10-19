@@ -28,6 +28,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Tmux list formats quote each field and use a printable versioned separator:
+  tmux 3.1 sanitizes literal control separators to underscores. Session/window/
+  pane parsing now preserves escaped spaces, quotes, backslashes and delimiter
+  text; the four-version compatibility probe uses the production format builders.
 - SSH compatibility cases pin safe SFTP commit support per server. Peers without
   a usable hardlink extension verify fail-closed uploads/copies/renames,
   intact partial data and absent final destinations rather than claiming success.

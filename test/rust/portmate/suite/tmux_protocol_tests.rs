@@ -247,6 +247,29 @@ fn tmux_pane_parser_reads_synchronization_state_conservatively() {
 }
 
 #[test]
+fn tmux_quoted_fields_preserve_printable_names_without_separator_collisions() {
+    for format in [
+        tmux_session_list_format(),
+        tmux_window_list_format(),
+        tmux_pane_list_format(),
+    ] {
+        assert!(!format.chars().any(char::is_control));
+        assert!(format.contains("#{q:session_name}"));
+    }
+    let pane = parse_tmux_pane(&format!(
+        "lab\\ name{0}2{0}1{0}%7{0}1{0}vim{0}title\\ \\|PORTMATE:Q1:\\|\\ \\\"quoted\\\"\\ \\\\slash{0}1",
+        TMUX_FIELD_SEPARATOR
+    )).unwrap();
+    assert_eq!(pane.session, "lab name");
+    assert_eq!(pane.title, "title |PORTMATE:Q1:| \"quoted\" \\slash");
+    assert_eq!(pane.pane_id, "%7");
+    assert!(pane.synchronized);
+    assert!(parse_tmux_session(&format!("bad\\{0}2{0}0{0}1", TMUX_FIELD_SEPARATOR)).is_none());
+    let legacy = "lab\x1f0\x1f0\x1f%1\x1f1\x1fbash\x1fshell\x1f0";
+    assert_eq!(parse_tmux_pane(legacy).unwrap().pane_id, "%1");
+}
+
+#[test]
 fn tmux_control_parser_ignores_output_and_tracks_fragmented_state_events() {
     let mut parser = TmuxControlLineParser::default();
     assert_eq!(

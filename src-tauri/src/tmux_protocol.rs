@@ -6,10 +6,51 @@ use super::{
 };
 
 pub(super) const MAX_TMUX_CONTROL_LINE_BYTES: usize = 64 * 1024;
-// Tmux names are already validated to reject control characters. A unit
-// separator therefore cannot occur in a valid field and keeps printable names
-// lossless without relying on tmux format escaping support versions.
-pub(super) const TMUX_FIELD_SEPARATOR: &str = "\x1f";
+// tmux 3.1 replaces literal control characters in -F with underscores. Quote
+// every field using the long-supported q modifier and use a printable separator:
+// q escapes each pipe, so this complete separator cannot occur inside a field.
+pub(super) const TMUX_FIELD_SEPARATOR: &str = "|PORTMATE:Q1:|";
+
+fn tmux_list_format(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|field| format!("#{{q:{field}}}"))
+        .collect::<Vec<_>>()
+        .join(TMUX_FIELD_SEPARATOR)
+}
+
+pub(super) fn tmux_session_list_format() -> String {
+    tmux_list_format(&[
+        "session_name",
+        "session_windows",
+        "session_attached",
+        "session_created",
+    ])
+}
+
+pub(super) fn tmux_window_list_format() -> String {
+    tmux_list_format(&[
+        "session_name",
+        "window_index",
+        "window_id",
+        "window_name",
+        "window_panes",
+        "window_active",
+    ])
+}
+
+pub(super) fn tmux_pane_list_format() -> String {
+    tmux_list_format(&[
+        "session_name",
+        "window_index",
+        "pane_index",
+        "pane_id",
+        "pane_active",
+        "pane_current_command",
+        "pane_title",
+        "pane_synchronized",
+    ])
+}
 
 pub(super) fn bounded_tmux_control_error(error: &str) -> String {
     const MAX_ERROR_CHARS: usize = 512;
@@ -270,7 +311,7 @@ pub(super) fn tmux_mutation_label(action: TmuxMutationAction) -> &'static str {
 }
 
 pub(super) fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
-    let mut parts = tmux_fields(line);
+    let mut parts = tmux_fields(line)?.into_iter();
     let name = parts.next()?.to_string();
     if name.is_empty() {
         return None;
@@ -297,7 +338,7 @@ pub(super) fn parse_tmux_session(line: &str) -> Option<TmuxSessionInfo> {
 }
 
 pub(super) fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
-    let mut parts = tmux_fields(line);
+    let mut parts = tmux_fields(line)?.into_iter();
     let session = parts.next()?.to_string();
     if session.is_empty() {
         return None;
@@ -320,7 +361,7 @@ pub(super) fn parse_tmux_window(line: &str) -> Option<TmuxWindowInfo> {
 }
 
 pub(super) fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
-    let mut parts = tmux_fields(line);
+    let mut parts = tmux_fields(line)?.into_iter();
     let session = parts.next()?.to_string();
     if session.is_empty() {
         return None;
@@ -343,10 +384,31 @@ pub(super) fn parse_tmux_pane(line: &str) -> Option<TmuxPaneInfo> {
     })
 }
 
-fn tmux_fields(line: &str) -> std::str::Split<'_, &str> {
-    line.split(if line.contains(TMUX_FIELD_SEPARATOR) {
-        TMUX_FIELD_SEPARATOR
-    } else {
-        "\t"
-    })
+fn tmux_fields(line: &str) -> Option<Vec<String>> {
+    if line.contains(TMUX_FIELD_SEPARATOR) {
+        return line
+            .split(TMUX_FIELD_SEPARATOR)
+            .map(tmux_unquote_field)
+            .collect();
+    }
+    // Preserve previously captured/tab-separated test and diagnostic records.
+    let separator = if line.contains('\x1f') { "\x1f" } else { "\t" };
+    Some(line.split(separator).map(str::to_string).collect())
+}
+
+fn tmux_unquote_field(field: &str) -> Option<String> {
+    let mut result = String::with_capacity(field.len());
+    let mut characters = field.chars();
+    while let Some(character) = characters.next() {
+        let character = if character == '\\' {
+            characters.next()?
+        } else {
+            character
+        };
+        if character.is_control() {
+            return None;
+        }
+        result.push(character);
+    }
+    Some(result)
 }

@@ -149,7 +149,8 @@ async fn list_tmux_state_with_handle(
     let sessions_output = exec_ssh_command_capture(
         Arc::clone(&handle),
         &format!(
-            "tmux list-sessions -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{session_windows}}{TMUX_FIELD_SEPARATOR}#{{session_attached}}{TMUX_FIELD_SEPARATOR}#{{session_created}}' 2>/dev/null || true"
+            "tmux list-sessions -F {} 2>/dev/null || true",
+            shell_quote(&tmux_session_list_format())
         ),
         Duration::from_secs(8),
     )
@@ -157,7 +158,8 @@ async fn list_tmux_state_with_handle(
     let windows_output = exec_ssh_command_capture(
         Arc::clone(&handle),
         &format!(
-            "tmux list-windows -a -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{window_index}}{TMUX_FIELD_SEPARATOR}#{{window_id}}{TMUX_FIELD_SEPARATOR}#{{window_name}}{TMUX_FIELD_SEPARATOR}#{{window_panes}}{TMUX_FIELD_SEPARATOR}#{{window_active}}' 2>/dev/null || true"
+            "tmux list-windows -a -F {} 2>/dev/null || true",
+            shell_quote(&tmux_window_list_format())
         ),
         Duration::from_secs(8),
     )
@@ -165,7 +167,8 @@ async fn list_tmux_state_with_handle(
     let panes_output = exec_ssh_command_capture(
         handle,
         &format!(
-            "tmux list-panes -a -F '#{{session_name}}{TMUX_FIELD_SEPARATOR}#{{window_index}}{TMUX_FIELD_SEPARATOR}#{{pane_index}}{TMUX_FIELD_SEPARATOR}#{{pane_id}}{TMUX_FIELD_SEPARATOR}#{{pane_active}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}{TMUX_FIELD_SEPARATOR}#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_synchronized}}' 2>/dev/null || true"
+            "tmux list-panes -a -F {} 2>/dev/null || true",
+            shell_quote(&tmux_pane_list_format())
         ),
         Duration::from_secs(8),
     )

@@ -17,7 +17,7 @@ if (process.platform !== "linux") {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const commandTimeoutMs = 300_000;
 const useCachedImages = compatibilityUsesCachedImages();
-const fieldSeparator = "|PORTMATE:8f41c2d7:|";
+const collisionTitle = 'literal |PORTMATE:Q1:| and \\ path "quoted"';
 const allEntries = JSON.parse(readFileSync(resolve(projectRoot, "test/compat/tmux-version-matrix.json"), "utf8"));
 if (!Array.isArray(allEntries) || allEntries.length < 4) throw new Error("tmux version matrix must contain at least four entries");
 allEntries.forEach(validateEntry);
@@ -29,6 +29,11 @@ const probe = resolve(
   resolveCargoProfileDirectory(projectRoot, "debug"),
   process.platform === "win32" ? "tmux-compat-probe.exe" : "tmux-compat-probe",
 );
+const formats = JSON.parse(run(probe, ["--list-formats"], { capture: true }).stdout);
+for (const format of Object.values(formats)) {
+  assert(typeof format === "string" && format.length > 0 && !/[\x00-\x1f']/u.test(format),
+    "tmux compatibility probe returned an invalid list format");
+}
 const results = [];
 
 for (const entry of matrix) {
@@ -54,6 +59,7 @@ for (const entry of matrix) {
       "tmux -L portmate set-option -w -t 'lab alpha:0' synchronize-panes on",
       "tmux -L portmate select-layout -t 'lab alpha:0' tiled",
       "tmux -L portmate rename-window -t 'lab alpha:0' 'primary pane'",
+      `tmux -L portmate select-pane -t 'lab alpha:0.0' -T ${shellQuote(collisionTitle)}`,
       "tmux -L portmate new-session -d -s aux -n monitor 'sleep 300'",
       "tmux -L portmate rename-session -t 'lab alpha' 'lab-renamed'",
       "tmux -L portmate resize-pane -t 'lab-renamed:0.0' -R 1",
@@ -64,11 +70,17 @@ for (const entry of matrix) {
       + "tail -f /dev/null | timeout 2 tmux -L portmate -C attach-session -t lab-renamed; "
       + "status=$?; test $status -eq 0 -o $status -eq 124");
     const sessions = dockerExec(container,
-      `tmux -L portmate list-sessions -F '#{session_name}${fieldSeparator}#{session_windows}${fieldSeparator}#{session_attached}${fieldSeparator}#{session_created}'`);
+      `tmux -L portmate list-sessions -F '${formats.sessions}'`);
     const windows = dockerExec(container,
-      `tmux -L portmate list-windows -a -F '#{session_name}${fieldSeparator}#{window_index}${fieldSeparator}#{window_id}${fieldSeparator}#{window_name}${fieldSeparator}#{window_panes}${fieldSeparator}#{window_active}'`);
+      `tmux -L portmate list-windows -a -F '${formats.windows}'`);
     const panes = dockerExec(container,
-      `tmux -L portmate list-panes -a -F '#{session_name}${fieldSeparator}#{window_index}${fieldSeparator}#{pane_index}${fieldSeparator}#{pane_id}${fieldSeparator}#{pane_active}${fieldSeparator}#{pane_current_command}${fieldSeparator}#{pane_title}${fieldSeparator}#{pane_synchronized}'`);
+      `tmux -L portmate list-panes -a -F '${formats.panes}'`);
+    // select-pane's backslash normalization differs across tmux releases. The
+    // raw server field, not that mutation's input, is the lossless parser oracle.
+    const reportedTitle = dockerExec(container,
+      "tmux -L portmate display-message -p -t 'lab-renamed:0.0' '#{pane_title}'").replace(/\r?\n$/u, "");
+    assert(reportedTitle.includes("|PORTMATE:Q1:|") && reportedTitle.includes("\\")
+      && reportedTitle.includes('"quoted"'), `${entry.name} collision title was not installed`);
     const parsed = run(probe, [], {
       capture: true,
       input: JSON.stringify({ sessions, windows, panes, control }),
@@ -83,6 +95,8 @@ for (const entry of matrix) {
       `${entry.name} synchronize-panes parsing failed: ${parsed.stdout}`);
     assert(state.panes.filter((pane) => pane.session === "lab-renamed").length >= 3,
       `${entry.name} pane parsing failed: ${parsed.stdout}`);
+    assert(state.panes.some((pane) => pane.session === "lab-renamed" && pane.title === reportedTitle),
+      `${entry.name} quoted separator/backslash/title parsing failed: ${parsed.stdout}`);
     assert(state.controlChanged && state.lastControlEvent,
       `${entry.name} control-mode notifications were not recognized: ${JSON.stringify({ control, state })}`);
     assert(state.protocolCommandCount === 21 && state.boundedErrorCharacters === 515,
@@ -106,6 +120,10 @@ console.log(JSON.stringify({ verifiedTmuxVersions: results }, null, 2));
 
 function dockerExec(container, command) {
   return run("docker", ["exec", container, "sh", "-lc", command], { capture: true }).stdout;
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function validateEntry(entry) {
