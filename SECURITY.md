@@ -81,16 +81,27 @@ The exception is intentionally treated as required evidence: when the advisory i
 dependency disappears, or a patched RSA release is adopted, the audit gate fails until the stale
 exception and mitigation note are reviewed.
 
+The workspace patches `libsodium-sys-stable` 1.24.0 locally because even upstream
+1.24.3 still requires the ZIP 8.x build dependency affected by
+`RUSTSEC-2026-0367`, `RUSTSEC-2026-0368` and `RUSTSEC-2026-0369`. The patch only
+upgrades that build dependency to ZIP 9.0.5; bindings, build logic and the signed
+native source archive remain unchanged. Provenance and removal criteria are in
+`crates/libsodium-sys-stable/PORTMATE_ORIGIN.md`. No ZIP vulnerability is exempted.
+
 ## Reviewed Upstream Warnings
 
-- GTK3/GLib warnings are confined to Tauri's Linux GTK3/WebKit dependency graph. PortMate does not
-  call the affected `glib::VariantStrIter` API directly; migration depends on an upstream Tauri
-  GTK4-capable runtime.
-- `rand 0.7.3` is a build-only dependency through `phf_generator -> selectors -> tauri-utils`. The
-  advisory requires a runtime custom logger recursively calling `thread_rng`, which is not part of
-  this build path.
+- The remaining GLib warning is confined to Tauri's Linux GTK3/WebKit dependency graph. PortMate does not
+  call the affected `glib::VariantStrIter` API directly; migration depends on upstream runtime
+  dependency updates. Withdrawn GTK3 unmaintained advisories are removed from the reviewed set.
+- `zvariant 5.15.0`, `zvariant_derive 5.15.0` and `zbus_names 4.3.4` are unmaintained
+  standalone crates after their APIs moved into zbus 6. They are confined to the
+  FreeBSD keyring backend through `zbus-secret-service-keyring-store 1.0.1` and
+  `secret-service 5.2.0`; no compatible upstream backend release uses zbus 6 yet.
+  Linux uses the separate native libdbus backend, while Windows/macOS use their
+  platform-native stores. These are exact maintenance-warning reviews, not
+  vulnerability exceptions; migration must be reviewed when the backend updates.
 - Yanked package warnings are not exempted. The lockfile uses compatible patch releases of
-  `aes`, `chacha20`, `der`, and `wnaf`; reintroducing their yanked versions fails the audit gate.
+  `aes`, `chacha20`, `der`, `serialport`, and `wnaf`; reintroducing their yanked versions fails the audit gate.
 - Remaining unmaintained crates are exact transitive dependencies of Tauri build/runtime support or
   IOTA Stronghold. Their full fingerprints remain in the audit script so additions, removals, or
   version changes cannot pass without review.

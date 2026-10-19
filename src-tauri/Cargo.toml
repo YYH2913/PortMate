@@ -50,7 +50,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha1_11 = { package = "sha1", version = "0.11", features = ["oid"] }
 sha2.workspace = true
-serialport = { version = "4.10.0", default-features = false }
+serialport = { version = "4.10.1", default-features = false }
 socket2 = { version = "0.6.5", features = ["all"] }
 sys-locale = "0.3.2"
 native-tls = "0.2.18"

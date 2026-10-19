@@ -9,17 +9,7 @@ export const ALLOWED_RUSTSEC_VULNERABILITIES = Object.freeze([
 ]);
 
 export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
-  "unmaintained:RUSTSEC-2024-0413:atk@0.18.2",
-  "unmaintained:RUSTSEC-2024-0416:atk-sys@0.18.2",
   "unmaintained:RUSTSEC-2025-0141:bincode@1.3.3",
-  "unmaintained:RUSTSEC-2024-0412:gdk@0.18.2",
-  "unmaintained:RUSTSEC-2024-0418:gdk-sys@0.18.2",
-  "unmaintained:RUSTSEC-2024-0411:gdkwayland-sys@0.18.2",
-  "unmaintained:RUSTSEC-2024-0417:gdkx11@0.18.2",
-  "unmaintained:RUSTSEC-2024-0414:gdkx11-sys@0.18.2",
-  "unmaintained:RUSTSEC-2024-0415:gtk@0.18.2",
-  "unmaintained:RUSTSEC-2024-0420:gtk-sys@0.18.2",
-  "unmaintained:RUSTSEC-2024-0419:gtk3-macros@0.18.2",
   "unmaintained:RUSTSEC-2024-0436:paste@1.0.15",
   "unmaintained:RUSTSEC-2024-0370:proc-macro-error@1.0.4",
   "unmaintained:RUSTSEC-2025-0081:unic-char-property@0.9.0",
@@ -27,6 +17,9 @@ export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
   "unmaintained:RUSTSEC-2025-0080:unic-common@0.9.0",
   "unmaintained:RUSTSEC-2025-0100:unic-ucd-ident@0.9.0",
   "unmaintained:RUSTSEC-2025-0098:unic-ucd-version@0.9.0",
+  "unmaintained:RUSTSEC-2026-0371:zbus_names@4.3.4",
+  "unmaintained:RUSTSEC-2026-0370:zvariant@5.15.0",
+  "unmaintained:RUSTSEC-2026-0372:zvariant_derive@5.15.0",
   "unsound:RUSTSEC-2024-0429:glib@0.18.5",
 ]);
 

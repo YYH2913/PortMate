@@ -11,6 +11,11 @@ members = [
   "src-tauri",
 ]
 resolver = "2"
+exclude = ["crates/libsodium-sys-stable"]
+
+[patch.crates-io]
+# Upstream 1.24.x still requires the vulnerable zip 8.x build dependency.
+libsodium-sys-stable = { path = "crates/libsodium-sys-stable" }
 
 [workspace.package]
 edition = "2021"

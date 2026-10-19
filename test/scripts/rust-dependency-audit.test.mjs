@@ -13,7 +13,7 @@ describe("Rust dependency audit policy", () => {
     ]);
     expect(validateRustDependencyAuditReport(reviewedReport())).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 19,
+      reviewedWarnings: 12,
     });
   });
 
@@ -53,6 +53,7 @@ describe("Rust dependency audit policy", () => {
     ["aes", "0.9.0"],
     ["chacha20", "0.10.0"],
     ["der", "0.8.0"],
+    ["serialport", "4.10.0"],
     ["wnaf", "0.14.0"],
     ["new-yanked-package", "1.0.0"],
   ])("rejects yanked %s@%s without an exception", (name, version) => {
@@ -72,7 +73,7 @@ describe("Rust dependency audit policy", () => {
     }));
     expect(runRustDependencyAudit({ spawn, projectRoot: "/repo", environment: {} })).toEqual({
       vulnerabilityExceptions: 1,
-      reviewedWarnings: 19,
+      reviewedWarnings: 12,
     });
     expect(spawn).toHaveBeenCalledWith("cargo", ["audit", "--json"], expect.objectContaining({
       cwd: "/repo",

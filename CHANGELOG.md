@@ -88,6 +88,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Upgrade the root TypeScript MCP SDK to 1.32.1 and refresh vulnerable npm
   transitive dependencies; add the patched SDK to the locked interoperability
   matrix and align its HTTP/parser dependencies with the audited root lock.
+- Replace the vulnerable ZIP 8.x build dependency with ZIP 9.0.5 through a
+  provenance-documented local libsodium-sys-stable patch. The native bindings,
+  build logic, signed source archive and vulnerability exception are unchanged.
+- Replace yanked serialport 4.10.0 with 4.10.1. Refresh exact maintenance-warning
+  reviews for the FreeBSD keyring backend and remove withdrawn GTK3 advisories;
+  new or changed findings and yanked dependencies continue to fail the gate.
 
 ## [0.1.12] - 2026-10-08
 
