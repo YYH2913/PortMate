@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseLoggedCommandArguments } from "../../scripts/ci-command-log.mjs";
+import { canonicalLoggedCommandEnvironment, parseLoggedCommandArguments } from "../../scripts/ci-command-log.mjs";
 
 const helper = resolve(import.meta.dirname, "../../scripts/ci-command-log.mjs");
 const temporaryRoots = [];
@@ -50,6 +50,31 @@ describe("CI command logging", () => {
     expect(log).toContain("audit-out");
     expect(log).toContain("audit-error");
     expect(log.match(/x/g)).toHaveLength(262144);
+  });
+
+  it.each(["darwin", "linux", "win32"])("canonicalizes fixture temp aliases without mutating the %s environment", (platform) => {
+    const { alias, actual } = temporaryAlias();
+    const env = { TMPDIR: alias, TMP: alias, TEMP: alias, SENTINEL: "keep" };
+    expect(canonicalLoggedCommandEnvironment(env, platform)).toEqual({
+      TMPDIR: actual, TMP: actual, TEMP: actual, SENTINEL: "keep",
+    });
+    expect(env).toEqual({ TMPDIR: alias, TMP: alias, TEMP: alias, SENTINEL: "keep" });
+  });
+
+  it("passes a canonical temporary root through the actual logged child process", () => {
+    const { root, alias, actual } = temporaryAlias();
+    const result = spawnSync(process.execPath, [
+      helper,
+      join(root, "canonical-child.log"),
+      process.execPath,
+      "-e",
+      "process.stdout.write(JSON.stringify({ temp: require('node:os').tmpdir(), marker: process.env.PORTMATE_TEMP_MARKER }))",
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, TMPDIR: alias, TMP: alias, TEMP: alias, PORTMATE_TEMP_MARKER: "preserved" },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ temp: actual, marker: "preserved" });
   });
 
   it("retains both native credential fault gates as CI diagnostics", () => {
@@ -229,3 +254,13 @@ describe("CI command logging", () => {
     });
   });
 });
+
+function temporaryAlias() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "portmate ci temp alias ")));
+  temporaryRoots.push(root);
+  const actual = join(root, "actual temp");
+  const alias = join(root, "temp alias");
+  mkdirSync(actual);
+  symlinkSync(actual, alias, process.platform === "win32" ? "junction" : "dir");
+  return { root, actual, alias };
+}

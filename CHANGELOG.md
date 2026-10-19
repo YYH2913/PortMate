@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- CI commands canonicalize their isolated temporary root, so macOS `/var` and
+  `/tmp` aliases do not trip the Store's strict no-symlink parent checks during
+  upgrade/runtime tests. The application still rejects symlinked Store paths.
 - Linux builds support system libssh 0.9.7/0.10 without an unresolved
   `sftp_hardlink` symbol. Safe SFTP commits use the same checked hardlink
   extension on an isolated, deadline-bounded subsystem when that native API is

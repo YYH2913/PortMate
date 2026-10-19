@@ -1,4 +1,5 @@
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { finished } from "node:stream/promises";
@@ -28,12 +29,13 @@ export function parseLoggedCommandArguments(argv) {
 
 export async function runLoggedCommand(argv, options = {}) {
   const { logPath, command, args } = parseLoggedCommandArguments(argv);
+  const environment = canonicalLoggedCommandEnvironment(options.env ?? process.env);
   mkdirSync(dirname(logPath), { recursive: true });
   const log = createWriteStream(logPath, { flags: "w", mode: 0o600 });
   let logFailure = null;
   const child = crossSpawn(command, args, {
     cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? process.env,
+    env: environment,
     stdio: ["inherit", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
@@ -111,6 +113,16 @@ export async function runLoggedCommand(argv, options = {}) {
     }
   }
   return result;
+}
+
+export function canonicalLoggedCommandEnvironment(env = process.env, platform = process.platform) {
+  const configured = platform === "win32"
+    ? env.TEMP || env.TMP
+    : env.TMPDIR || env.TMP || env.TEMP;
+  // macOS exposes /var and /tmp aliases. Isolated fixtures must start from the
+  // canonical temp root, not weaken the application's no-follow Store checks.
+  const temporaryRoot = realpathSync(configured || tmpdir());
+  return { ...env, TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
 }
 
 async function main() {
