@@ -68,7 +68,11 @@ export async function checkPacedSender(context, appUrl) {
     });
     await start.waitFor();
     const times = await page.evaluate(() => window.__pacedWrites.filter(w => w.text === 'paced-wire').map(w => w.time));
-    assert.equal(times.length, 2);
+    assert.equal(times.length, 2, `paced wire writes: ${JSON.stringify(await page.evaluate(() => ({
+      writes: window.__pacedWrites,
+      pending: window.__pendingTerminalSends.map(item => item.args),
+      notices: [...document.querySelectorAll('.notice-dialog')].map(element => element.textContent),
+    })))}`);
     assert(times[1] - times[0] >= 195, `write gap collapsed: ${times}`);
 
     // Synchronized keyboard input must not sit behind interval timers.

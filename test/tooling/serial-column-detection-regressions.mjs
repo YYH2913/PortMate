@@ -21,7 +21,9 @@ export async function checkSerialColumnDetection(context, appUrl) {
       if (!detached) await page.locator(".tree-session", { hasText: "Bench UART" }).click();
       const canvas = page.locator('.terminal-canvas[data-terminal-focused="true"]');
       const host = canvas.locator(".terminal-host");
-      await host.locator(".xterm-helper-textarea").waitFor();
+      // Passive output checks do not require xterm's hidden input to be visible
+      // or focused. Its attachment plus the parsed column count proves readiness.
+      await host.locator(".xterm-helper-textarea").waitFor({ state: "attached" });
       const waitCols = columns => page.waitForFunction(columns => window.__columnTerminal?.cols === columns, columns);
       const apply = canvas.getByRole("button", { name: "应用 80 列", exact: true });
       const idle = () => page.waitForTimeout(200);

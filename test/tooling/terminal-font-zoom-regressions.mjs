@@ -6,8 +6,31 @@ export async function checkTerminalFontZoom(context, appUrl, screenshotPrefix) {
   await page.goto(appUrl);
   const canvas = page.locator(".terminal-pane.active .terminal-canvas");
   const host = canvas.locator(".terminal-host");
-  await host.locator(".xterm-screen").waitFor();
-  const waitSize = (p, value) => p.waitForFunction((size) => document.querySelector('.terminal-canvas[data-terminal-focused="true"] .terminal-host')?.dataset.terminalFontSize === String(size), value);
+  await host.locator(".xterm-screen").waitFor().catch(async error => {
+    const state = await page.evaluate(() => ({
+      text: document.body.innerText.slice(0, 3_000),
+      panes: [...document.querySelectorAll(".terminal-pane")].map(element => ({ className: element.className, html: element.innerHTML.slice(0, 1_000) })),
+      terminals: [...document.querySelectorAll(".terminal-canvas")].map(element => ({ ...element.dataset })),
+    }));
+    throw new Error(`font zoom terminal did not become ready: ${JSON.stringify(state)}`, { cause: error });
+  });
+  const waitSize = async (p, value) => {
+    try {
+      await p.waitForFunction((size) => document.querySelector('.terminal-canvas[data-terminal-focused="true"] .terminal-host')?.dataset.terminalFontSize === String(size), value);
+    } catch (error) {
+      const state = await p.evaluate(() => ({
+        url: location.href,
+        terminals: [...document.querySelectorAll(".terminal-canvas")].map(canvas => ({
+          session: canvas.dataset.terminalSessionId,
+          view: canvas.dataset.terminalViewId,
+          focused: canvas.dataset.terminalFocused,
+          fontSize: canvas.querySelector(".terminal-host")?.dataset.terminalFontSize,
+        })),
+        zoom: Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith("portmate.terminalFontZoom"))),
+      }));
+      throw new Error(`expected terminal font size ${value}: ${JSON.stringify(state)}`, { cause: error });
+    }
+  };
   await waitSize(page, 13);
   const initial = await host.evaluate((el) => ({ size: el.dataset.terminalSize, instance: el.dataset.terminalInstanceId, width: el.querySelector(".xterm-screen").getBoundingClientRect().width }));
   const writes = await page.evaluate(() => window.__invokeCalls.filter((c) => ["send_text", "send_bytes"].includes(c.command)).length);

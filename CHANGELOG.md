@@ -28,18 +28,24 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,
+  avoiding Swiftly installer verification before its signing keys are imported.
+  macOS keeps the pinned setup action and Swift SDK tests still run on both OSes.
+- Shell-capable SSH compatibility images include Python 3, matching the safe
+  remote directory cleanup contract instead of failing at the first server.
+- SSH compatibility cases pin safe SFTP commit support per server. Peers without
+  a usable hardlink extension verify fail-closed uploads/copies/renames,
+  intact partial data and absent final destinations rather than claiming success.
+- Passive serial-column browser checks wait for the hidden xterm input to be
+  attached rather than visible, avoiding a setup timeout before the assertions.
+  Workspace navigation explicitly confirms discarding the adapter-selected MCP
+  draft, and retires earlier mock windows before paced-send checks so their
+  broadcasts cannot invalidate the new fixture. Zoom/send failures include state.
+  Approval focus waits target the actual Reject button, not matching text in BODY.
 - Tmux list formats quote each field and use a printable versioned separator:
   tmux 3.1 sanitizes literal control separators to underscores. Session/window/
   pane parsing now preserves escaped spaces, quotes, backslashes and delimiter
   text; the four-version compatibility probe uses the production format builders.
-- SSH compatibility cases pin safe SFTP commit support per server. Peers without
-  a usable hardlink extension verify fail-closed uploads/copies/renames,
-  intact partial data and absent final destinations rather than claiming success.
-- Shell-capable SSH compatibility images include Python 3, matching the safe
-  remote directory cleanup contract instead of failing at the first server.
-- Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,
-  avoiding Swiftly installer verification before its signing keys are imported.
-  macOS keeps the pinned setup action and Swift SDK tests still run on both OSes.
 - Renaming a workspace tab now saves its session name, keeping the Explorer,
   sibling tabs and detached windows synchronized. Session renames clear stale
   aliases from open and closed views; failed saves retain the existing names

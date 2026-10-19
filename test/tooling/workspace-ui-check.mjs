@@ -30,6 +30,23 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function closeMcpBridgeDiscardingDraft(page, dialogLocator) {
+  // Navigation cases intentionally discard an adapter-selected HTTP draft.
+  // Keep this listener scoped so other tests still exercise cancel/confirmation.
+  const discard = async dialog => {
+    if (dialog.type() === "confirm" && dialog.message().includes("MCP")
+      && dialog.message().includes("未保存")) await dialog.accept();
+    else await dialog.dismiss();
+  };
+  page.on("dialog", discard);
+  try {
+    await dialogLocator.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+    await dialogLocator.waitFor({ state: "detached" });
+  } finally {
+    page.off("dialog", discard);
+  }
+}
+
 function protocolTabName(protocol) {
   return protocol === "Tcp" ? "TCP" : protocol;
 }
@@ -2090,20 +2107,26 @@ try {
     await context.close();
     break checks;
   }
-  await checkI18n(context, appUrl);
-  await checkWorkspaceDragging(context, appUrl, screenshotPrefix);
-  await checkWorkspaceDragOverflow(context, appUrl);
-  await checkFileManagerDetails(context, appUrl, screenshotPrefix);
-  await checkHostScripts(context, appUrl, screenshotPrefix);
-  await checkCommandSubmissions(context, appUrl);
-  await checkTerminalFontZoom(context, appUrl, screenshotPrefix);
-  await checkSerialLogin(context, appUrl);
-  await checkTelnetInput(context, appUrl);
-  await checkSerialWrap(context, appUrl);
-  await checkSerialColumnDetection(context, appUrl);
-  await checkModuleAuditRegressions(context, appUrl);
-  await checkSessionRename(context, appUrl);
-  await checkTftpProgress(context, appUrl);
+  const runAndRetirePages = async (check, ...args) => {
+    await check(context, appUrl, ...args);
+    // Cross-window checks may create auxiliary pages. Their mock backends must
+    // not publish into the storage of the next independently initialized check.
+    await Promise.all(context.pages().map(openPage => openPage.close()));
+  };
+  await runAndRetirePages(checkI18n);
+  await runAndRetirePages(checkWorkspaceDragging, screenshotPrefix);
+  await runAndRetirePages(checkWorkspaceDragOverflow);
+  await runAndRetirePages(checkFileManagerDetails, screenshotPrefix);
+  await runAndRetirePages(checkHostScripts, screenshotPrefix);
+  await runAndRetirePages(checkCommandSubmissions);
+  await runAndRetirePages(checkTerminalFontZoom, screenshotPrefix);
+  await runAndRetirePages(checkSerialLogin);
+  await runAndRetirePages(checkTelnetInput);
+  await runAndRetirePages(checkSerialWrap);
+  await runAndRetirePages(checkSerialColumnDetection);
+  await runAndRetirePages(checkModuleAuditRegressions);
+  await runAndRetirePages(checkSessionRename);
+  await runAndRetirePages(checkTftpProgress);
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -6471,8 +6494,7 @@ Host staging
       message: null,
     };
   });
-  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  await mcpDialog.waitFor({ state: "detached" });
+  await closeMcpBridgeDiscardingDraft(page, mcpDialog);
   await page.locator(".menu-trigger", { hasText: "工具" }).click();
   await page.locator(".menu-popover button", { hasText: "MCP Bridge" }).click();
   const reopenedMcpRuntimeDialog = page.locator(".mcp-dialog");
@@ -6482,8 +6504,7 @@ Host staging
     "reopening MCP Bridge did not reload the managed runtime process state");
   await reopenedMcpRuntimeDialog.getByRole("button", { name: "停止服务", exact: true }).click();
   await reopenedMcpRuntimeDialog.locator(".mcp-http-runtime", { hasText: "未运行" }).waitFor();
-  await reopenedMcpRuntimeDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  await reopenedMcpRuntimeDialog.waitFor({ state: "detached" });
+  await closeMcpBridgeDiscardingDraft(page, reopenedMcpRuntimeDialog);
 
   const quickStart = page.getByRole("button", { name: "快速启动 MCP Bridge", exact: true });
   await quickStart.waitFor();
@@ -6509,8 +6530,7 @@ Host staging
   await mcpDialog.waitFor();
   await mcpDialog.getByRole("tab", { name: "HTTP", exact: true }).click();
   await mcpDialog.getByRole("button", { name: "停止服务", exact: true }).click();
-  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  await mcpDialog.waitFor({ state: "detached" });
+  await closeMcpBridgeDiscardingDraft(page, mcpDialog);
   await quickStart.waitFor();
   await page.evaluate(() => { window.__mcpQuickStartFailure = "请先生成 MCP HTTP Token"; });
   await quickStart.click();
@@ -6519,8 +6539,7 @@ Host staging
   await quickStartFailure.getByRole("button", { name: "确定", exact: true }).click();
   await mcpDialog.waitFor();
   await page.evaluate(() => { window.__mcpQuickStartFailure = null; });
-  await mcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  await mcpDialog.waitFor({ state: "detached" });
+  await closeMcpBridgeDiscardingDraft(page, mcpDialog);
 
   await page.waitForFunction(() => (window.__tauriEventListeners.get("portmate-mcp-approval") || []).length > 0);
   const approvalIds = await page.evaluate(() => {
@@ -6552,7 +6571,9 @@ Host staging
     && (await approvalDialog.textContent()).includes("Operations Console") === false
     && (await approvalDialog.textContent()).includes("ops-console"),
   "MCP approval queue did not deduplicate or expose the exact client ID");
-  await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
+  await page.waitForFunction(() => document.activeElement instanceof HTMLButtonElement
+    && document.activeElement.closest(".mcp-approval-dialog") !== null
+    && document.activeElement.textContent?.trim() === "拒绝");
   const desktopApprovalBounds = await approvalDialog.evaluate((dialog) => {
     const rect = dialog.getBoundingClientRect();
     return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
@@ -6575,7 +6596,9 @@ Host staging
   "MCP approval controls stayed enabled while a response was pending");
   await page.evaluate(() => window.__pendingMcpApprovalResponses.shift().resolve());
   await page.waitForFunction(() => document.querySelector(".mcp-approval-dialog")?.textContent?.includes("停止指定转发或代理"));
-  await page.waitForFunction(() => document.activeElement?.textContent?.includes("拒绝"));
+  await page.waitForFunction(() => document.activeElement instanceof HTMLButtonElement
+    && document.activeElement.closest(".mcp-approval-dialog") !== null
+    && document.activeElement.textContent?.trim() === "拒绝");
   const approvalEscapeFocus = await page.evaluate(() => ({
     tag: document.activeElement?.tagName ?? null,
     text: document.activeElement?.textContent?.trim().slice(0, 80) ?? null,
@@ -7027,8 +7050,7 @@ Host staging
     && await page.locator(".mcp-audit-inspector").isVisible(),
   "mobile MCP audit list or inspector is unreachable");
   await page.screenshot({ path: `${screenshotPrefix}-mcp-audit-mobile.png`, fullPage: true });
-  await page.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-  await page.locator(".mcp-dialog").waitFor({ state: "detached" });
+  await closeMcpBridgeDiscardingDraft(page, page.locator(".mcp-dialog"));
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await togglePanel("资源管理器");
@@ -10469,6 +10491,12 @@ Host staging
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
   await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
 
+  // Every harness page owns an independent mock backend but shares browser
+  // storage. Retire the earlier lifecycle fixtures before a fresh sender page
+  // resets storage and starts connection-bound jobs; stale profile broadcasts
+  // from those pages must not invalidate the new fixture's input epochs.
+  const persistedCustomScripts = await page.evaluate(() => window.__customScripts.length);
+  await Promise.all(context.pages().map(openPage => openPage.close()));
   await checkPacedSender(context, appUrl);
 
   console.log(JSON.stringify({
@@ -10510,7 +10538,7 @@ Host staging
     customScripts: {
       desktop: customScriptBounds,
       mobile: mobileCustomScriptBounds,
-      persisted: await page.evaluate(() => window.__customScripts.length),
+      persisted: persistedCustomScripts,
     },
     dockResize: {
       resized: resizedDockLayout,
