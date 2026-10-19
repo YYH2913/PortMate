@@ -125,23 +125,41 @@ describe("command history state", () => {
 
   it("bounds pending backend writes by the persisted UTF-8 payload budget", () => {
     const command = "\"\\\n界".repeat(2_000);
-    let pending: ReturnType<typeof queuePendingCommandHistory> = [];
-    for (let index = 0; index < 200; index += 1) {
-      pending = queuePendingCommandHistory(
-        pending,
-        `${index}-${command}`,
-        { limit: 10_000, retentionDays: 0 },
-        10_000 + index,
-      );
-    }
-    const entries = [...pending].reverse().map((item, index) => ({
-      command: item.command,
-      recordedAt: 20_000 - index,
-      sessionId: item.sessionId,
+    const policy = { limit: 10_000, retentionDays: 0 };
+    const source = Array.from({ length: 200 }, (_, index) => ({
+      command: `${index}-${command}`,
+      sessionId: null,
     }));
-    const bytes = new TextEncoder().encode(JSON.stringify({ version: 3, entries })).byteLength;
-    expect(bytes).toBeLessThanOrEqual(MAX_COMMAND_HISTORY_STORAGE_BYTES);
-    expect(pending.length).toBeLessThan(200);
+    // Exercise an oversized backlog and subsequent queue growth directly.
+    // Rebuilding the same multi-megabyte queue 200 times tested CPU throughput,
+    // not an additional budget boundary, and exceeded hosted-runner deadlines.
+    let pending = queuePendingCommandHistory(
+      source.slice(0, -1), source[source.length - 1].command, policy, 20_000,
+    );
+    expect(pending).toEqual(normalizePendingCommandHistory(source, policy, 20_000));
+    const persistedBytes = (items: ReturnType<typeof queuePendingCommandHistory>) => {
+      const entries = [...items].reverse().map((item, index) => ({
+        command: item.command,
+        recordedAt: 20_000 - index,
+        sessionId: item.sessionId,
+      }));
+      return new TextEncoder().encode(JSON.stringify({ version: 3, entries })).byteLength;
+    };
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.length).toBeLessThan(source.length);
+    expect(persistedBytes(pending)).toBeLessThanOrEqual(MAX_COMMAND_HISTORY_STORAGE_BYTES);
+    expect(persistedBytes([source[source.length - pending.length - 1], ...pending]))
+      .toBeGreaterThan(MAX_COMMAND_HISTORY_STORAGE_BYTES);
+
+    for (let index = 200; index < 203; index += 1) {
+      const next = { command: `${index}-${command}`, sessionId: null };
+      source.push(next);
+      pending = queuePendingCommandHistory(
+        pending, next.command, policy, 20_000,
+      );
+      expect(pending).toEqual(source.slice(-pending.length));
+      expect(persistedBytes(pending)).toBeLessThanOrEqual(MAX_COMMAND_HISTORY_STORAGE_BYTES);
+    }
   });
 
   it("bounds the serialized UTF-8 payload and returns defensive snapshots", () => {

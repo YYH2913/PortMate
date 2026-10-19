@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Command-history budget regressions exercise an oversized backlog and exact
+  overflow boundaries directly, retaining newest-entry and incremental queue
+  checks without repeatedly rebuilding hundreds of multi-megabyte snapshots.
 - Sidecar target regressions use canonical temporary paths and file-URL
   preloads, covering macOS `/var` aliases, Windows drive letters and escaped
   path characters without changing the production build or target assertions.
