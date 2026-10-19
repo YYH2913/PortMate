@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Packaged startup-failure checks match the Store's strict regular-file
+  rejection and exact isolated path, retaining exit-status, no-IPC and data
+  preservation assertions while rejecting panic exits and unrelated errors.
 - Native keyring probes reuse the headless native-test build profile and the
   release CRT on Windows, avoiding a redundant GUI build inside the probe's
   compile budget. Real provider access, fault cases and phase deadlines remain.

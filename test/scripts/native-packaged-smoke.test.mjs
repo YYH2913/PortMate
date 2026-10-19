@@ -183,7 +183,7 @@ describe("native packaged runtime smoke", () => {
       const store = join(data, "portmate-store.sqlite3");
       const endpoint = join(data, "portmate-ipc.json");
       if (existsSync(store) && statSync(store).isDirectory()) {
-        writeFileSync(process.stderr.fd, "PortMate: startup failed: failed to open PortMate SQLite store\\n");
+        writeFileSync(process.stderr.fd, "PortMate: startup failed: PortMate SQLite store must be a regular file: " + store);
         process.exit(1);
       }
       if (!existsSync(store)) writeFileSync(store, randomBytes(48));
@@ -225,15 +225,18 @@ describe("native packaged runtime smoke", () => {
     });
   });
 
-  it.each(["panic-exit", "wrong-diagnostic"])("rejects incorrect setup failure handling: %s", async (mode) => {
+  it.each(["panic-exit", "wrong-diagnostic", "wrong-store"])("rejects incorrect setup failure handling: %s", async (mode) => {
     const root = temporaryRoot();
     const fixture = join(root, "setup-failure.mjs");
     writeFileSync(fixture, `
       import { writeFileSync } from "node:fs";
-      const panicExit = process.argv[2] === "panic-exit";
-      writeFileSync(process.stderr.fd, panicExit
-        ? "PortMate: startup failed: failed to open PortMate SQLite store\\n"
-        : "unrelated startup failure\\n");
+      import { join } from "node:path";
+      const mode = process.argv[2];
+      const panicExit = mode === "panic-exit";
+      writeFileSync(process.stderr.fd, mode === "wrong-diagnostic"
+        ? "unrelated startup failure"
+        : "PortMate: startup failed: PortMate SQLite store must be a regular file: "
+          + join(process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR, mode === "wrong-store" ? "other.sqlite3" : "portmate-store.sqlite3"));
       process.exit(panicExit ? 101 : 1);
     `);
     await expect(smokePackagedApplicationStoreFailure({

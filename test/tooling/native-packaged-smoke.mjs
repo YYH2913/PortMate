@@ -220,7 +220,7 @@ export async function smokePackagedApplicationStoreFailure(options) {
   mkdirSync(storePath, { recursive: true });
   const rejection = await expectPackagedApplicationStartupRejection({
     ...options,
-    expectedDiagnostic: "PortMate: startup failed: failed to open PortMate SQLite store",
+    expectedDiagnostic: `PortMate: startup failed: PortMate SQLite store must be a regular file: ${storePath}`,
   });
   if (rejection.exitCode !== 1) {
     throw new Error(`${label} returned ${rejection.exitCode} instead of startup failure status 1`);
