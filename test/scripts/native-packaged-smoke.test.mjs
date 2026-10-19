@@ -5,7 +5,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   smokePackagedApplication,
@@ -29,7 +29,7 @@ describe("native packaged runtime smoke", () => {
     const root = temporaryRoot();
     const fixture = join(root, "fixture.mjs");
     writeFileSync(fixture, `
-      import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+      import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
       import { join } from "node:path";
       const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
       mkdirSync(data, { recursive: true });
@@ -41,8 +41,7 @@ describe("native packaged runtime smoke", () => {
         storePath: store,
         token: "fixture-token-with-enough-entropy",
       }));
-      setTimeout(() => rmSync(endpoint), 250);
-      setTimeout(() => process.exit(0), 350);
+      ${fixtureExitAfterObservation()}
     `);
     const dataDirectory = join(root, "data", "dev.portmate.desktop");
 
@@ -53,12 +52,59 @@ describe("native packaged runtime smoke", () => {
       label: "fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     });
 
     expect(result.gracefulExit).toBe(true);
     expect(result.endpointRemoved).toBe(true);
     expect(result.endpointUsesTokenRef).toBe(false);
     expect(result.store.bytes).toBeGreaterThan(0);
+  });
+
+  it("rejects a clean exit before IPC publication", async () => {
+    const root = temporaryRoot();
+    const fixture = join(root, "early-exit.mjs");
+    writeFileSync(fixture, "process.exit(0);\n");
+
+    await expect(smokePackagedApplication({
+      executable: process.execPath,
+      args: [fixture],
+      dataDirectory: join(root, "data", "dev.portmate.desktop"),
+      label: "early exit fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/exited before publishing IPC/);
+  });
+
+  it("cleans up a running process if the endpoint observer rejects", async () => {
+    const root = temporaryRoot();
+    const fixture = join(root, "observer-failure.mjs");
+    const pidFile = join(root, "fixture.pid");
+    writeFileSync(fixture, `
+      import { writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      const data = process.env.PORTMATE_NATIVE_SMOKE_DATA_DIR;
+      const store = join(data, "portmate-store.sqlite3");
+      writeFileSync(process.argv[2], String(process.pid));
+      writeFileSync(store, "sqlite-fixture");
+      writeFileSync(join(data, "portmate-ipc.json"), JSON.stringify({
+        addr: "127.0.0.1:43123", storePath: store, token: "fixture-token-with-enough-entropy",
+      }));
+      setInterval(() => {}, 60_000);
+    `);
+
+    await expect(smokePackagedApplication({
+      executable: process.execPath,
+      args: [fixture, pidFile],
+      dataDirectory: join(root, "data", "dev.portmate.desktop"),
+      label: "observer failure fixture app",
+      exitAfterMs: 1_000,
+      timeoutMs: 5_000,
+      onEndpoint: () => { throw new Error("endpoint observer rejected"); },
+    })).rejects.toThrow(/endpoint observer rejected/);
+
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+    expect(() => process.kill(pid, 0)).toThrow();
   });
 
   it("rejects foreign stores and ambiguous credentials", () => {
@@ -93,8 +139,7 @@ describe("native packaged runtime smoke", () => {
         storePath: store,
         token: randomBytes(24).toString("hex"),
       }));
-      setTimeout(() => rmSync(endpoint), 100);
-      setTimeout(() => process.exit(0), 150);
+      ${fixtureExitAfterObservation()}
     `);
 
     const result = await smokePackagedApplicationRestart({
@@ -104,6 +149,7 @@ describe("native packaged runtime smoke", () => {
       label: "restart fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     });
 
     expect(result.storePreserved).toBe(true);
@@ -146,8 +192,7 @@ describe("native packaged runtime smoke", () => {
         storePath: store,
         token: randomBytes(24).toString("hex"),
       }));
-      setTimeout(() => rmSync(endpoint), 100);
-      setTimeout(() => process.exit(0), 150);
+      ${fixtureExitAfterObservation()}
     `);
     const dataDirectory = join(root, "migration-data", "dev.portmate.desktop");
 
@@ -158,6 +203,7 @@ describe("native packaged runtime smoke", () => {
       label: "migration fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     });
 
     expect(result.legacyAppDataMigrated).toBe(true);
@@ -209,6 +255,7 @@ describe("native packaged runtime smoke", () => {
       label: "ignored migration fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     })).rejects.toThrow(/left the legacy app-data directory/);
   });
 
@@ -221,6 +268,7 @@ describe("native packaged runtime smoke", () => {
       label: "Store mutation fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     })).rejects.toThrow(/changed across an idle application restart/);
   });
 
@@ -233,6 +281,7 @@ describe("native packaged runtime smoke", () => {
       label: "credential reuse fixture app",
       exitAfterMs: 1_000,
       timeoutMs: 5_000,
+      onEndpoint: acknowledgeFixtureEndpoint,
     })).rejects.toThrow(/reused its IPC credential after restart/);
   });
 
@@ -269,6 +318,25 @@ function temporaryRoot() {
   return root;
 }
 
+function acknowledgeFixtureEndpoint(endpoint) {
+  writeFileSync(join(dirname(endpoint.storePath), "fixture-endpoint-observed"), "observed");
+}
+
+function fixtureExitAfterObservation() {
+  // A 100 ms publication window races the smoke helper's 100 ms poll on loaded
+  // runners. Keep the fixture alive until the helper observes a valid endpoint.
+  return `
+    const observed = join(data, "fixture-endpoint-observed");
+    const observationTimer = setInterval(() => {
+      if (!existsSync(observed)) return;
+      clearInterval(observationTimer);
+      rmSync(observed);
+      rmSync(endpoint);
+      process.exit(0);
+    }, 10);
+  `;
+}
+
 function restartFailureFixture(name) {
   const root = temporaryRoot();
   const fixture = join(root, `${name}.mjs`);
@@ -286,8 +354,7 @@ function restartFailureFixture(name) {
       ? "fixture-static-token-with-enough-entropy"
       : randomBytes(24).toString("hex");
     writeFileSync(endpoint, JSON.stringify({ addr: "127.0.0.1:43123", storePath: store, token }));
-    setTimeout(() => rmSync(endpoint), 100);
-    setTimeout(() => process.exit(0), 150);
+    ${fixtureExitAfterObservation()}
   `);
   return {
     fixture,

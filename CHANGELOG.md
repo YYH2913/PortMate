@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Packaged-runtime smoke fixtures acknowledge endpoint observation before
+  exiting instead of racing a 100 ms polling window on Windows. Early clean
+  exits still fail, and observer errors are checked to terminate the child.
 - Command-history budget regressions exercise an oversized backlog and exact
   overflow boundaries directly, retaining newest-entry and incremental queue
   checks without repeatedly rebuilding hundreds of multi-megabyte snapshots.

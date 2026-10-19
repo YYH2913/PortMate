@@ -27,6 +27,7 @@ export async function smokePackagedApplication({
   timeoutMs = 45_000,
   expectedStore = null,
   requireExpectedStoreBeforeLaunch = true,
+  onEndpoint = null,
 }) {
   if (!executable || !isAbsolute(executable)) throw new Error(`${label} executable must be absolute`);
   if (!dataDirectory || !isAbsolute(dataDirectory)) throw new Error(`${label} data directory must be absolute`);
@@ -85,6 +86,7 @@ export async function smokePackagedApplication({
   let failure;
   try {
     endpoint = await waitForEndpoint(endpointPath, storePath, label, deadline, () => processResult);
+    if (onEndpoint !== null) await onEndpoint(endpoint);
     const result = await waitForExit(exited, deadline, label);
     if (result.error) throw result.error;
     if (result.code !== 0 || result.signal) {
