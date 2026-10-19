@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Linux desktop CI prebuilds the real dev sidecar and application in the same
+  clean environment used at launch. Cold Rust compilation no longer consumes
+  the window-startup deadline; rendering, IPC and graceful-exit gates remain.
 - Packaged startup-failure checks match the Store's strict regular-file
   rejection and exact isolated path, retaining exit-status, no-IPC and data
   preservation assertions while rejecting panic exits and unrelated errors.

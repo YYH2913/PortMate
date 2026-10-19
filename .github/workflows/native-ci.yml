@@ -237,6 +237,9 @@ jobs:
         run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Verify native keyring lifecycle and faults
         run: node scripts/ci-command-log.mjs target/native-ci/native-keyring.log npm run test:native-keyring
+      - name: Build Linux desktop smoke prerequisites
+        if: runner.os == 'Linux'
+        run: node scripts/ci-command-log.mjs target/native-ci/linux-desktop-prebuild.log node test/tooling/linux-desktop-prebuild.mjs
       - name: Smoke-test the native Linux WebKit window
         if: runner.os == 'Linux'
         env:
