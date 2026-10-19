@@ -25,6 +25,7 @@ import java.time.Duration
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.io.asSink
@@ -37,20 +38,24 @@ private val expectedProtocol = requireNotNull(System.getProperty("portmate.mcp.p
 private const val httpToken = "portmate-mcp-kotlin-http-client-check"
 
 @OptIn(DelicateCoroutinesApi::class)
-fun main(args: Array<String>): Unit = runBlocking {
+fun main(args: Array<String>) {
     try {
-        require(args.size == 1) { "expected the PortMate MCP bridge path" }
-        val binary = Path.of(args[0]).toAbsolutePath().normalize()
-        require(Files.isRegularFile(binary)) { "PortMate MCP bridge does not exist: $binary" }
-        require(sdkVersion.isNotBlank()) { "missing Kotlin SDK version" }
-        require(expectedProtocol.isNotBlank()) { "missing expected protocol version" }
-        require(expectedProtocol in SUPPORTED_PROTOCOL_VERSIONS) {
-            "Kotlin SDK $sdkVersion does not support protocol $expectedProtocol"
-        }
+        runBlocking {
+            require(args.size == 1) { "expected the PortMate MCP bridge path" }
+            val binary = Path.of(args[0]).toAbsolutePath().normalize()
+            require(Files.isRegularFile(binary)) { "PortMate MCP bridge does not exist: $binary" }
+            require(sdkVersion.isNotBlank()) { "missing Kotlin SDK version" }
+            require(expectedProtocol.isNotBlank()) { "missing expected protocol version" }
+            require(expectedProtocol in SUPPORTED_PROTOCOL_VERSIONS) {
+                "Kotlin SDK $sdkVersion does not support protocol $expectedProtocol"
+            }
 
-        checkStdio(binary)
-        checkHttp(binary)
+            checkStdio(binary)
+            checkHttp(binary)
+        }
     } finally {
+        // The root coroutine and transport cleanup must finish before the
+        // process-wide dispatchers stop accepting delayed shutdown work.
         Dispatchers.shutdown()
     }
 }
@@ -75,8 +80,11 @@ private suspend fun checkStdio(binary: Path) {
         }
         println("MCP Kotlin SDK $sdkVersion stdio check passed ($messages messages)")
     } finally {
-        closeClient(client)
-        stopProcess(process)
+        try {
+            closeClient(client)
+        } finally {
+            stopProcess(process)
+        }
     }
 }
 
@@ -107,9 +115,15 @@ private suspend fun checkHttp(binary: Path) {
         check(transport.sessionId == null) { "PortMate stateless HTTP unexpectedly created a session" }
         println("MCP Kotlin SDK $sdkVersion HTTP check passed ($requests requests)")
     } finally {
-        closeClient(client)
-        httpClient.close()
-        stopProcess(process)
+        try {
+            closeClient(client)
+        } finally {
+            try {
+                closeHttpClient(httpClient)
+            } finally {
+                stopProcess(process)
+            }
+        }
     }
 }
 
@@ -163,11 +177,19 @@ private suspend fun closeClient(client: Client) {
     withTimeout(3_000) { client.close() }
 }
 
+private suspend fun closeHttpClient(client: HttpClient) {
+    client.close()
+    withTimeout(3_000) {
+        client.coroutineContext.job.join()
+        client.engine.coroutineContext.job.join()
+    }
+}
+
 private fun stopProcess(process: Process) {
     if (!process.isAlive) return
     process.destroy()
     if (!process.waitFor(2, TimeUnit.SECONDS)) {
         process.destroyForcibly()
-        process.waitFor(2, TimeUnit.SECONDS)
+        check(process.waitFor(2, TimeUnit.SECONDS)) { "PortMate MCP bridge did not terminate" }
     }
 }

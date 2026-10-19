@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Kotlin SDK fixtures await Ktor client/engine shutdown and finish the root
+  coroutine before shutting down shared dispatchers. Bridge processes are
+  reaped even when cleanup fails; protocol and cleanup deadlines remain strict.
 - Linux desktop CI prebuilds the real dev sidecar and application in the same
   clean environment used at launch. Cold Rust compilation no longer consumes
   the window-startup deadline; rendering, IPC and graceful-exit gates remain.
