@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectWindowsLoaderDiagnostics } from "./windows-loader-diagnostics.mjs";
+import { collectWindowsLoaderDiagnostics, prepareWindowsNativeTestManifests } from "./windows-loader-diagnostics.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -58,6 +58,9 @@ export function nativeRustTestArguments(suite, platform = process.platform) {
 
 function main() {
   const args = nativeRustTestArguments(process.argv[2]);
+  if (process.platform === "win32") {
+    prepareWindowsNativeTestManifests(args, projectRoot);
+  }
   const result = spawnSync("cargo", args, {
     cwd: projectRoot,
     stdio: "inherit",

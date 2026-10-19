@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows native unit tests activate Common Controls v6 before launch, matching
+  the desktop resource manifest. This supplies `TaskDialogIndirect` instead of
+  failing in the loader; tests run as the current user without elevation.
 - The remote-symlink safety rejections include native diagnostic templates and
   translations for all six UI languages; native-message coverage stays strict.
 - Explorer browser regressions wait for the failure notice to close and use

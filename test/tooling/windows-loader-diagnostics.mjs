@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -49,5 +49,25 @@ export function collectWindowsLoaderDiagnostics(args, projectRoot) {
   ], { cwd: projectRoot, stdio: "inherit", windowsHide: true, timeout: 120_000 });
   if (probe.error || probe.status !== 0) {
     throw new Error(`Windows loader diagnostic failed: ${probe.error?.message ?? probe.status}`);
+  }
+}
+
+export function prepareWindowsNativeTestManifests(args, projectRoot) {
+  // tauri-build links its application resource only into bin targets, not the
+  // library unit-test executable that also imports TaskDialogIndirect.
+  const build = spawnSync("cargo", nativeTestDiagnosticBuildArguments(args), {
+    cwd: projectRoot, encoding: "utf8", windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (build.stderr) process.stderr.write(build.stderr);
+  if (build.error || build.status !== 0) {
+    throw new Error(`Windows test prebuild failed: ${build.error?.message ?? build.status}`);
+  }
+  const executables = nativeTestExecutables(build.stdout);
+  if (executables.length === 0) throw new Error("no native Windows test executables were built");
+  const manifest = readFileSync(new URL("../fixtures/windows-native-test.manifest", import.meta.url), "utf8");
+  for (const executable of executables) {
+    writeFileSync(`${executable}.manifest`, manifest);
+    console.log(`Prepared Common Controls v6 test activation manifest: ${executable}.manifest`);
   }
 }
