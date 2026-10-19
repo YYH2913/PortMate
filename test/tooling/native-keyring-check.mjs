@@ -279,17 +279,26 @@ function runProbePhase(phase, environment) {
   runCargoProbe(["--phase", phase], environment);
 }
 
-function runCargoProbe(probeArguments, environment) {
-  run("cargo", [
+export function nativeKeyringProbeArguments(probeArguments, platform = process.platform) {
+  return [
     "run",
     "--locked",
     "-p",
     "portmate",
+    // Reuse the native workspace test artifacts; the OS credential provider
+    // does not need the desktop/Wry runtime. MSVC native dependencies use the
+    // release CRT, just as in native-rust-tests.mjs.
+    "--no-default-features",
+    ...(platform === "win32" ? ["--release"] : []),
     "--bin",
     "native-keyring-probe",
     "--",
     ...probeArguments,
-  ], { env: environment, timeout: 360_000 });
+  ];
+}
+
+function runCargoProbe(probeArguments, environment) {
+  run("cargo", nativeKeyringProbeArguments(probeArguments), { env: environment, timeout: 360_000 });
 }
 
 function run(command, args, options = {}) {

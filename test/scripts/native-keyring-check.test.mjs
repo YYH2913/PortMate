@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   cleanupMacOSKeychainProbe,
+  nativeKeyringProbeArguments,
   runDeniedWindowsCredentialManagerProbe,
 } from "../tooling/native-keyring-check.mjs";
+
+describe("native keyring probe build profile", () => {
+  it.each(["linux", "darwin", "win32"])("reuses headless native artifacts on %s and retains exact phases", platform => {
+    const phase = ["--phase", "verify-denied"];
+    expect(nativeKeyringProbeArguments(phase, platform)).toEqual([
+      "run", "--locked", "-p", "portmate", "--no-default-features",
+      ...(platform === "win32" ? ["--release"] : []),
+      "--bin", "native-keyring-probe", "--", ...phase,
+    ]);
+    expect(phase).toEqual(["--phase", "verify-denied"]);
+    expect(nativeKeyringProbeArguments([], platform).at(-1)).toBe("--");
+  });
+});
 
 describe("Windows native keyring denial probe", () => {
   it("writes a real credential before anonymous access and cleans it afterward", () => {

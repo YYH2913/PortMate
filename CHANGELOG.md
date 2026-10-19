@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Native keyring probes reuse the headless native-test build profile and the
+  release CRT on Windows, avoiding a redundant GUI build inside the probe's
+  compile budget. Real provider access, fault cases and phase deadlines remain.
 - Idle SQLite loads and identical snapshot saves preserve Store bytes and
   revisions instead of rebuilding mirrors and updating timestamps. Stale and
   unknown-version rejection, schema/mirror repairs and durable credential
