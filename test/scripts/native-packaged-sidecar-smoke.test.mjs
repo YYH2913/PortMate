@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { smokePackagedSidecarParentWatchdog } from "../tooling/native-packaged-sidecar-smoke.mjs";
 
 const temporaryRoots = [];
+// These cases assert watchdog/diagnostic behavior, not Node startup speed.
+const fixtureReadyTimeoutMs = 2_000;
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
@@ -25,7 +27,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
       executable: process.execPath,
       args: [fixture, "watchdog", pidPath],
       label: "watchdog fixture",
-      readyTimeoutMs: 2_000,
+      readyTimeoutMs: fixtureReadyTimeoutMs,
       watchdogTimeoutMs: 2_000,
     });
 
@@ -44,7 +46,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
       executable: process.execPath,
       args: [fixture, "early-exit", pidPath],
       label: "early-exit fixture",
-      readyTimeoutMs: 1_000,
+      readyTimeoutMs: fixtureReadyTimeoutMs,
       watchdogTimeoutMs: 1_000,
     })).rejects.toThrow(/sidecar exited before HTTP readiness: 17/);
 
@@ -58,7 +60,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
       executable: process.execPath,
       args: [fixture, "invalid-readiness", pidPath],
       label: "invalid-readiness fixture",
-      readyTimeoutMs: 500,
+      readyTimeoutMs: fixtureReadyTimeoutMs,
       watchdogTimeoutMs: 1_000,
     })).rejects.toThrow(/sidecar did not become ready: OPTIONS \/mcp returned HTTP 200/);
 
@@ -72,7 +74,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
       executable: process.execPath,
       args: [fixture, "ignore-parent", pidPath],
       label: "ignored-parent fixture",
-      readyTimeoutMs: 1_000,
+      readyTimeoutMs: fixtureReadyTimeoutMs,
       watchdogTimeoutMs: 300,
     });
     if (process.platform === "win32") {
@@ -97,7 +99,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
         executable: process.execPath,
         args: [fixture, "noisy-invalid-readiness", pidPath],
         label: "noisy fixture",
-        readyTimeoutMs: 500,
+        readyTimeoutMs: fixtureReadyTimeoutMs,
         watchdogTimeoutMs: 1_000,
         token,
       });
@@ -106,6 +108,7 @@ describe("native packaged sidecar parent watchdog smoke", () => {
     }
 
     expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toContain("OPTIONS /mcp returned HTTP 200");
     expect(failure.message).toContain("[REDACTED]");
     expect(failure.message).not.toContain(token);
     expect(Buffer.byteLength(failure.message)).toBeLessThan(10 * 1024);
