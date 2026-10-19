@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
@@ -64,7 +65,7 @@ describe("sidecar target and artifact consistency", () => {
       };
       syncBuiltinESMExports();
     `);
-    const result = command(process.execPath, ["--import", preload, f.script, ...(release ? ["--release"] : [])], {
+    const result = command(process.execPath, ["--import", pathToFileURL(preload).href, f.script, ...(release ? ["--release"] : [])], {
       cwd: f.root, env: { ...f.env, ...configured },
     });
     successful(result);
@@ -135,7 +136,9 @@ describe("sidecar target and artifact consistency", () => {
 });
 
 function fixture({ relativeTargetDir = false, lock = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "portmate sidecar target "));
+  // macOS resolves /var to /private/var in import.meta.url. Use one canonical
+  // root, and exercise URL escaping as well as Windows drive-letter imports.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "portmate sidecar # target ")));
   temporaryRoots.push(root);
   mkdirSync(join(root, "scripts"));
   mkdirSync(join(root, "src"));

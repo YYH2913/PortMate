@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Sidecar target regressions use canonical temporary paths and file-URL
+  preloads, covering macOS `/var` aliases, Windows drive letters and escaped
+  path characters without changing the production build or target assertions.
 - Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,
   avoiding Swiftly installer verification before its signing keys are imported.
   macOS keeps the pinned setup action and Swift SDK tests still run on both OSes.
