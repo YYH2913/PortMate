@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates gesftpserver lrzsz openssh-client openssh-server \
+    && apt-get install --yes --no-install-recommends ca-certificates gesftpserver lrzsz openssh-client openssh-server python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/sh portmate \
     && echo 'portmate:portmate' | chpasswd \

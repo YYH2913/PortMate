@@ -28,6 +28,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Shell-capable SSH compatibility images include Python 3, matching the safe
+  remote directory cleanup contract instead of failing at the first server.
 - Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,
   avoiding Swiftly installer verification before its signing keys are imported.
   macOS keeps the pinned setup action and Swift SDK tests still run on both OSes.

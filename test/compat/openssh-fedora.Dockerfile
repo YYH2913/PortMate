@@ -9,6 +9,7 @@ RUN dnf install --assumeyes \
         lrzsz \
         openssh-clients \
         openssh-server \
+        python3 \
         shadow-utils \
     && dnf clean all \
     && rm -rf /var/cache/dnf \

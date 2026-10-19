@@ -1,7 +1,7 @@
 ARG ALPINE_VERSION=3.20
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache build-base curl gzip tar dropbear openssh-client openssh-sftp-server \
+RUN apk add --no-cache build-base curl gzip tar dropbear openssh-client openssh-sftp-server python3 \
     && curl -fsSL https://ohse.de/uwe/releases/lrzsz-0.12.20.tar.gz -o /tmp/lrzsz.tar.gz \
     && tar -xzf /tmp/lrzsz.tar.gz -C /tmp \
     && cd /tmp/lrzsz-0.12.20 \
