@@ -19,7 +19,7 @@ describe("MCP client dependency locks", () => {
     for (const { version } of matrix("mcp-typescript-client-versions.json")) {
       const lock = jsonLock("mcp-typescript-client-check", version, "package-lock.json");
       expect(lock.packages["node_modules/qs"]).toBeDefined();
-      for (const name of ["qs", "fast-uri"]) {
+      for (const name of ["qs", "fast-uri", "hono", "ip-address", "proxy-addr"]) {
         const key = `node_modules/${name}`;
         const entry = lock.packages[key];
         // Older SDKs do not use fast-uri. Do not add unused dependencies.

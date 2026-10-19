@@ -83,6 +83,12 @@ or an unsigned artifact is not a production release. The complete release gates 
   This fix (`2f7bbe66`, 2026-10-09) is newer than the original 0.1.12 builds;
   slow Store writes in those older builds can stall every TFTP block.
 
+### Security
+
+- Upgrade the root TypeScript MCP SDK to 1.32.1 and refresh vulnerable npm
+  transitive dependencies; add the patched SDK to the locked interoperability
+  matrix and align its HTTP/parser dependencies with the audited root lock.
+
 ## [0.1.12] - 2026-10-08
 
 ### Added
