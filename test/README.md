@@ -60,6 +60,11 @@ API 文档中的 Rust 示例仍随公开 API 保留并由 rustdoc 验证，不�
 Docker、浏览器、原生 keyring 和 Windows/macOS 打包矩阵需要对应工具及系统。
 测试文件搬移不代表这些外部发布门禁已执行；完整清单见 [RELEASE.md](../RELEASE.md)。
 
+Python MCP SDK 运行器优先使用 `PORTMATE_PYTHON`，否则在 Windows 上优先使用
+PATH 选定的 `python`（兼容 setup-python/已激活 venv），仅在不可用时回退到 `py -3`。
+Windows 使用各 SDK 的 `requirements-windows.txt`，其他平台使用 `requirements.txt`；
+两者都要求实际安装的完整依赖快照精确匹配，不忽略平台专属依赖。
+
 ## SFTP 性能对照 / SFTP performance probes
 
 本地 OpenSSH 组件矩阵是显式启用的 ignored 测试，涵盖 russh/libssh 上传、

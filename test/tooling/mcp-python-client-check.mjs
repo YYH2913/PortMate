@@ -5,13 +5,14 @@ import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
 import { pythonSdkLockFilename } from "./python-sdk-lock-state.mjs";
+import { findMcpPython } from "./python-runtime.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const targetRoot = resolveCargoTargetDirectory(projectRoot);
 const binary = resolveMcpBinary(projectRoot);
 if (!existsSync(binary)) throw new Error(`MCP Python client check binary does not exist: ${binary}`);
 const fixture = createMcpClientFixture(["official-python-sdk-stdio-check", "official-python-sdk-http-check"]);
-const bootstrap = findPython();
+const bootstrap = findMcpPython({ projectRoot });
 const matrix = JSON.parse(readFileSync(join(projectRoot, "test", "tooling", "mcp-python-client-versions.json"), "utf8"));
 if (!Array.isArray(matrix) || !matrix.length || matrix.some((entry) => (
   typeof entry !== "object"
@@ -72,25 +73,6 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
       PORTMATE_MCP_EXPECTED_PROTOCOL_VERSION: protocolVersion,
     },
   });
-}
-
-function findPython() {
-  const configured = process.env.PORTMATE_PYTHON?.trim();
-  const candidates = configured
-    ? [{ command: configured, args: [] }]
-    : process.platform === "win32"
-      ? [{ command: "py", args: ["-3"] }, { command: "python", args: [] }]
-      : [{ command: "python3", args: [] }, { command: "python", args: [] }];
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate.command, [...candidate.args, "-c", "import sys; raise SystemExit(sys.version_info < (3, 10))"], {
-      cwd: projectRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-    });
-    if (!probe.error && probe.status === 0) return candidate;
-  }
-  throw new Error("MCP Python SDK checks require Python 3.10 or newer (set PORTMATE_PYTHON to override discovery)");
 }
 
 function run(command, args, options = {}) {

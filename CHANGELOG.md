@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows Python SDK checks honor the interpreter selected on PATH instead
+  of letting `py -3` override CI's configured Python version. Explicit Python
+  overrides remain authoritative, and the launcher is retained as a fallback.
 - Python SDK matrices use explicit Windows dependency snapshots, pinning
   Windows-only Colorama and applicable PyWin32 dependencies. Exact installed-package
   equality remains required, with expected/actual snapshots in failure logs.
