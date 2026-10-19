@@ -57,3 +57,7 @@ version = "0.9.117"
 
 [dependencies.thiserror]
 version = "2.0.20"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61.2"
+features = ["Win32_Foundation"]

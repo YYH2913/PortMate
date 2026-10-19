@@ -3312,6 +3312,7 @@ dependencies = [
  "libssh-rs-sys",
  "openssl-sys",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

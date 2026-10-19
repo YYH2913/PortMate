@@ -43,6 +43,7 @@ extern "C" {
 
 mod channel;
 mod error;
+mod owned_socket;
 mod sftp;
 
 pub use crate::channel::*;
@@ -200,7 +201,7 @@ pub(crate) struct SessionHolder {
     auth_callback:
         Option<Box<dyn FnMut(&str, bool, bool, Option<String>) -> SshResult<String> + Send>>,
     pending_agent_forward_channels: Vec<sys::ssh_channel>,
-    owned_socket: Option<std::net::TcpStream>,
+    owned_socket: Option<owned_socket::OwnedTcpSocket>,
 }
 unsafe impl Send for SessionHolder {}
 
@@ -265,9 +266,9 @@ impl Drop for SessionHolder {
     fn drop(&mut self) {
         self.clear_pending_agent_forward_channels();
         unsafe {
-            // ssh_free() closes the session socket unconditionally.  A socket supplied
-            // through SSH_OPTIONS_FD remains Rust-owned, so disconnect first to make
-            // libssh detach it before TcpStream drops the descriptor.
+            // Normal disconnect detaches SSH_OPTIONS_FD; native error paths may
+            // already have closed it. The identity-pinned guard handles either
+            // outcome after all native users are freed.
             if self.owned_socket.is_some() {
                 sys::ssh_disconnect(self.sess);
             }
@@ -1024,16 +1025,27 @@ impl Session {
 
     /// Configure a pre-connected TCP stream and retain ownership until the session is freed.
     ///
-    /// libssh 0.10 and newer do not close descriptors supplied through `SSH_OPTIONS_FD`, so
-    /// callers that transfer a stream to the session should use this method instead of
-    /// `SshOption::Socket`.
+    /// Native transport-error paths may close the supplied socket even though
+    /// normal disconnect borrows it. Identity-aware cleanup tolerates either
+    /// behavior without double-closing a recycled descriptor.
     pub fn set_owned_tcp_stream(&self, stream: std::net::TcpStream) -> SshResult<()> {
-        #[cfg(unix)]
-        let socket = std::os::fd::AsRawFd::as_raw_fd(&stream);
-        #[cfg(windows)]
-        let socket = std::os::windows::io::AsRawSocket::as_raw_socket(&stream);
-        self.set_option(SshOption::Socket(socket))?;
-        self.lock_session().owned_socket = Some(stream);
+        let socket = owned_socket::OwnedTcpSocket::new(stream)?;
+        let mut sess = self.lock_session();
+        if sess.owned_socket.is_some() || unsafe { sys::ssh_is_connected(**sess) } != 0 {
+            return Err(Error::fatal(
+                "cannot replace an owned or connected SSH socket",
+            ));
+        }
+        let raw = socket.raw_socket();
+        let result = unsafe {
+            sys::ssh_options_set(
+                **sess,
+                sys::ssh_options_e::SSH_OPTIONS_FD,
+                &raw as *const _ as _,
+            )
+        };
+        sess.basic_status(result, "failed to set owned SSH socket")?;
+        sess.owned_socket = Some(socket);
         Ok(())
     }
 

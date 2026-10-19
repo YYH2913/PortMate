@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Libssh proxy/Jump Host teardown tolerates native transport-error paths that
+  close a caller-supplied socket. Identity-pinned cleanup prevents an OwnedFd
+  abort, double-close or closure of an unrelated recycled descriptor.
 - macOS local moves use `RENAME_EXCL`, not `RENAME_SWAP`, preserving atomic
   no-overwrite behavior when the destination does not yet exist. Existing
   file, directory and final-symlink move/rename regressions cover this path.

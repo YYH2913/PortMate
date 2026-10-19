@@ -32,6 +32,11 @@ uses an isolated subsystem on the same authenticated SSH connection. It checks
 it never substitutes an overwriting rename or a remote-shell command. The
 original SFTP channel and its request queue remain untouched.
 
+Caller-supplied TCP sockets use identity-aware raw-slot cleanup. Although normal
+libssh disconnect borrows `SSH_OPTIONS_FD`, write-error paths can close it. A
+retained duplicate pins the underlying socket identity, preventing both Rust
+OwnedFd aborts and accidental closure of an unrelated recycled descriptor.
+
 Source-level attributes also allow the finite set of newer Clippy lints emitted
 by the otherwise unchanged 0.3.8 sources, so workspace `-D warnings` checks can
 keep treating this vendored package as a primary member.
