@@ -3329,12 +3329,29 @@ Host staging
   await sysmonDialog.waitFor({ state: "detached" });
 
   const sysmonRightResizer = page.getByRole("separator", { name: "调整右侧停靠区宽度", exact: true });
+  // Removing the dialog schedules inert/focus restoration on the next frame.
+  // Programmatic focus/press do not wait for that interaction boundary.
+  await page.waitForFunction(() => !document.body.hasAttribute("data-portmate-modal-open"));
   await sysmonRightResizer.focus();
-  await sysmonRightResizer.press("ArrowLeft");
-  await sysmonRightResizer.press("ArrowLeft");
-  await page.waitForFunction(() => JSON.parse(
-    localStorage.getItem("portmate.workspacePanels.v2") || "null",
-  )?.sizes?.right === 312);
+  assert(await sysmonRightResizer.evaluate(element => document.activeElement === element),
+    "Sysmon dock resizer did not receive keyboard focus after closing details");
+  for (const expectedSize of [296, 312]) {
+    await sysmonRightResizer.press("ArrowLeft");
+    try {
+      await page.waitForFunction(expected => JSON.parse(
+        localStorage.getItem("portmate.workspacePanels.v2") || "null",
+      )?.sizes?.right === expected, expectedSize);
+    } catch (error) {
+      const state = await sysmonRightResizer.evaluate(element => ({
+        stored: localStorage.getItem("portmate.workspacePanels.v2"),
+        visibleWidth: element.closest(".workspace-dock")?.getBoundingClientRect().width,
+        focused: document.activeElement?.outerHTML.slice(0, 600),
+        inert: Boolean(element.closest("[inert]")),
+        modalOpen: document.body.hasAttribute("data-portmate-modal-open"),
+      }));
+      throw new Error(`Sysmon dock resize did not reach ${expectedSize}: ${JSON.stringify(state)}`, { cause: error });
+    }
+  }
   await togglePanel("Sysmon 侧栏");
   await sysmonSidebar.waitFor({ state: "detached" });
   await togglePanel("Sysmon 侧栏");

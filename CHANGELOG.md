@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Sysmon dock keyboard regressions wait for modal focus/inert restoration,
+  verify both 16-pixel resize steps and retain hide/reopen persistence checks;
+  failures report the actual size, focus and interaction-boundary state.
 - Native regression fixtures use a fully qualified local TFTP source, compare
   canonical export directory identities and check platform-specific MCP shell
   syntax, preserving the Windows path and generated-command contracts.
