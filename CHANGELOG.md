@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Paced-send browser fixtures wait for notice removal and modal inert/focus
+  restoration before editing the next draft, retaining exact wire-payload and
+  post-write interval assertions rather than accepting stale test input.
 - MCP HTTP/desktop IPC reads retain their real absolute deadline when macOS
   rejects `SO_RCVTIMEO`, using bounded nonblocking reads rather than reporting
   an immediate false timeout or falling back to an unbounded blocking read.

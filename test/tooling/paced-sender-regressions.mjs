@@ -23,6 +23,10 @@ export async function checkPacedSender(context, appUrl) {
       const notice = page.locator('.notice-dialog');
       await notice.waitFor();
       await notice.getByRole('button', { name: '确定', exact: true }).click();
+      await notice.waitFor({ state: 'detached' });
+      // The modal boundary restores inert/focus state on the next frame. A
+      // programmatic fill before that frame can be blocked while looking set.
+      await page.waitForFunction(() => !document.body.hasAttribute('data-portmate-modal-open'));
     };
 
     await sender.getByRole('radio', { name: 'Hex(H)' }).check();
@@ -56,6 +60,7 @@ export async function checkPacedSender(context, appUrl) {
     // Delay the first actual write longer than the configured interval.
     // The next write must still wait a full interval after it completes.
     await text.fill('paced-wire');
+    assert.equal(await text.inputValue(), 'paced-wire');
     await count.fill('2');
     await interval.fill('200');
     await page.evaluate(() => { window.__deferTerminalSends = true; window.__pacedWrites = []; });
