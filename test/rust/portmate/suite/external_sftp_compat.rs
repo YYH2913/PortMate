@@ -17,6 +17,14 @@ fn external_sftp_server_compatibility() {
     let password = std::env::var("PORTMATE_COMPAT_SSH_PASSWORD").unwrap();
     let verify_extended_status_codes =
         std::env::var("PORTMATE_COMPAT_SFTP_EXTENDED_STATUS_CODES").as_deref() == Ok("1");
+    let safe_commit = match std::env::var("PORTMATE_COMPAT_SFTP_NO_REPLACE").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => panic!("{label} matrix must pin the safe SFTP commit capability"),
+    };
+    let safe_commit_error =
+        std::env::var("PORTMATE_COMPAT_SFTP_NO_REPLACE_ERROR").unwrap_or_default();
+    assert_eq!(safe_commit, safe_commit_error.is_empty());
     let root = std::env::temp_dir().join(format!(
         "portmate-external-sftp-{}-{}",
         label,
@@ -169,14 +177,28 @@ fn external_sftp_server_compatibility() {
             &format!("{remote_root}/"),
             &progress,
         )
-        .await
-        .unwrap_or_else(|error| panic!("{label} SFTP upload failed: {error}"));
-        assert_eq!(uploaded, payload.len() as u64);
+        .await;
+        let remote_source = format!("{remote_root}/source.bin");
+        let remote_source = if safe_commit {
+            assert_eq!(
+                uploaded.unwrap_or_else(|error| panic!("{label} SFTP upload failed: {error}")),
+                payload.len() as u64
+            );
+            remote_source
+        } else {
+            let error =
+                uploaded.expect_err("unsupported safe upload commit unexpectedly succeeded");
+            assert!(error.contains(&safe_commit_error), "{error}");
+            assert!(!sftp.try_exists(remote_source.clone()).await.unwrap());
+            let partial = remote_resume_part_path(&remote_source);
+            assert!(sftp.try_exists(partial.clone()).await.unwrap());
+            partial
+        };
 
         let downloaded = root.join("download.bin");
         let downloaded_bytes = sftp_download(
             &sftp,
-            &format!("{remote_root}/source.bin"),
+            &remote_source,
             &downloaded.display().to_string(),
             &progress,
         )
@@ -186,15 +208,33 @@ fn external_sftp_server_compatibility() {
         assert_eq!(fs::read(&downloaded).unwrap(), payload.as_bytes());
 
         let copied = format!("{remote_root}/copied.bin");
-        let copied_bytes = sftp_remote_copy(
+        let copied_bytes = sftp_remote_copy(&sftp, &remote_source, &copied, &progress).await;
+        let copied = if safe_commit {
+            assert_eq!(
+                copied_bytes
+                    .unwrap_or_else(|error| panic!("{label} SFTP remote copy failed: {error}")),
+                payload.len() as u64
+            );
+            copied
+        } else {
+            let error =
+                copied_bytes.expect_err("unsupported safe copy commit unexpectedly succeeded");
+            assert!(error.contains(&safe_commit_error), "{error}");
+            assert!(!sftp.try_exists(copied.clone()).await.unwrap());
+            let partial = remote_resume_part_path(&copied);
+            assert!(sftp.try_exists(partial.clone()).await.unwrap());
+            partial
+        };
+        let copied_download = root.join("copied-download.bin");
+        sftp_download(
             &sftp,
-            &format!("{remote_root}/source.bin"),
             &copied,
+            &copied_download.display().to_string(),
             &progress,
         )
         .await
-        .unwrap_or_else(|error| panic!("{label} SFTP remote copy failed: {error}"));
-        assert_eq!(copied_bytes, payload.len() as u64);
+        .unwrap_or_else(|error| panic!("{label} preserved copy download failed: {error}"));
+        assert_eq!(fs::read(copied_download).unwrap(), payload.as_bytes());
         if verify_extended_status_codes {
             let started = Instant::now();
             let error = sftp
@@ -210,7 +250,7 @@ fn external_sftp_server_compatibility() {
                 "{label} non-empty rmdir status exceeded the compatibility deadline"
             );
         }
-        sftp.remove_file(format!("{remote_root}/source.bin"))
+        sftp.remove_file(remote_source)
             .await
             .unwrap_or_else(|error| panic!("{label} SFTP source cleanup failed: {error}"));
         sftp.remove_file(copied)

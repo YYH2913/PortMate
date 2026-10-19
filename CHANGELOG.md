@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- SSH compatibility cases pin safe SFTP commit support per server. Peers without
+  a usable hardlink extension verify fail-closed uploads/copies/renames,
+  intact partial data and absent final destinations rather than claiming success.
 - Shell-capable SSH compatibility images include Python 3, matching the safe
   remote directory cleanup contract instead of failing at the first server.
 - Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,

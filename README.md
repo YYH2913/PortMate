@@ -606,6 +606,15 @@ Single-file SFTP/SCP transfers are unchanged. Batch paths are still revalidated
 by the selected transfer protocol at execution time; the plan is not a lock on
 future remote filesystem changes.
 
+SFTP uploads, remote copies and no-overwrite file moves require the
+`hardlink@openssh.com` extension for safe final commit. Peers without it (including
+the tested Paramiko, SFTPGo and Erlang configurations), or which reject the
+advertised operation (the tested rclone configuration), are explicitly rejected
+instead of falling back to a potentially overwriting rename. Upload/copy data
+remains in the `.portmate-part` file; downloads remain available. The SSH
+compatibility matrix pins this capability per server and checks either successful
+commit or the rejection, intact partial data and absent final destination.
+
 For passwordless SSH devices, choose **none** in the profile authentication order.
 This uses protocol-level `none` authentication, not an empty password; host-key
 verification and the configured connection policies still apply.

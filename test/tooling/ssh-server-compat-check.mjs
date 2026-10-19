@@ -87,6 +87,8 @@ for (const entry of matrix) {
         PORTMATE_COMPAT_SSH_USERNAME: "portmate",
         PORTMATE_COMPAT_SSH_PASSWORD: "portmate",
         PORTMATE_COMPAT_SFTP_EXTENDED_STATUS_CODES: entry.verifyExtendedSftpStatusCodes ? "1" : "0",
+        PORTMATE_COMPAT_SFTP_NO_REPLACE: entry.sftpNoReplace ? "1" : "0",
+        PORTMATE_COMPAT_SFTP_NO_REPLACE_ERROR: entry.sftpNoReplaceError ?? "",
       },
     });
     if (entry.runActiveTransferDisconnect !== false) {
@@ -125,6 +127,7 @@ for (const entry of matrix) {
         ? null
         : entry.modemDisconnectProtocol,
       extendedSftpStatusCodes: entry.verifyExtendedSftpStatusCodes === true,
+      sftpNoReplace: entry.sftpNoReplace,
     });
   } finally {
     run("docker", ["rm", "--force", container], { quiet: true, allowFailure: true, timeout: dockerControlTimeoutMs });
@@ -267,6 +270,9 @@ console.log(JSON.stringify({
   verifiedExtendedSftpStatusServers: results
     .filter(({ extendedSftpStatusCodes }) => extendedSftpStatusCodes)
     .map(({ name }) => name),
+  verifiedSafeCommitRejections: results
+    .filter(({ sftpNoReplace }) => !sftpNoReplace)
+    .map(({ name }) => name),
   verifiedHealthFaults,
   verifiedTransferFaults,
 }, null, 2));
@@ -277,6 +283,14 @@ function validateEntry(entry) {
   }
   if (typeof entry.dockerfile !== "string" || !entry.dockerfile.startsWith("test/compat/")) {
     throw new Error(`Invalid SSH compatibility Dockerfile: ${JSON.stringify(entry)}`);
+  }
+  if (typeof entry.sftpNoReplace !== "boolean") {
+    throw new Error(`SSH compatibility entries must pin their safe SFTP commit capability: ${entry.name}`);
+  }
+  if (entry.sftpNoReplace
+    ? entry.sftpNoReplaceError !== undefined
+    : typeof entry.sftpNoReplaceError !== "string" || entry.sftpNoReplaceError.length === 0) {
+    throw new Error(`SSH compatibility entries must pin exactly one safe-commit outcome: ${entry.name}`);
   }
   for (const [name, value] of Object.entries(entry.buildArgs ?? {})) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || typeof value !== "string" || !/^[a-zA-Z0-9._-]+$/.test(value)) {
