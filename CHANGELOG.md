@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Linux Native CI uses the existing SHA-512-pinned Swift archive bootstrap,
+  avoiding Swiftly installer verification before its signing keys are imported.
+  macOS keeps the pinned setup action and Swift SDK tests still run on both OSes.
 - Renaming a workspace tab now saves its session name, keeping the Explorer,
   sibling tabs and detached windows synchronized. Session renames clear stale
   aliases from open and closed views; failed saves retain the existing names

@@ -130,8 +130,21 @@ describe("CI command logging", () => {
     expect(workflow).toContain("- macos-15");
     expect(workflow).not.toContain("swift-actions/setup-swift@v2");
     const swiftSetup = workflowStep(workflow, "Install pinned Swift SDK client toolchain");
-    expect(swiftSetup).toContain("if: runner.os != 'Windows'");
+    expect(swiftSetup).toContain("if: runner.os == 'macOS'");
     expect(swiftSetup).toContain('swift-version: "6.3.3"');
+    expect(swiftSetup).not.toContain("skip-verify-signature: true");
+    const swiftCheck = workflowStep(workflow, "Verify MCP Swift SDK clients");
+    expect(swiftCheck).toContain("if: runner.os != 'Windows'");
+    const swiftRunner = readFileSync(
+      resolve(import.meta.dirname, "../tooling/mcp-swift-client-check.mjs"),
+      "utf8",
+    );
+    expect(swiftRunner).toContain('const actual = digest.digest("hex")');
+    expect(swiftRunner).toContain("actual !== archive.sha512");
+    const linuxDependencies = workflowStep(workflow, "Install Linux desktop dependencies");
+    for (const dependency of ["libcurl4-openssl-dev", "libedit-dev", "libpython3-dev", "libsqlite3-dev", "libxml2-dev", "zlib1g-dev"]) {
+      expect(linuxDependencies).toContain(dependency);
+    }
     expect(workflow).toContain("ilammy/setup-nasm@v1");
     expect(workflow).toContain("if: runner.os == 'Windows'");
     const nativePerl = workflowStep(workflow, "Install native Perl on Windows");
