@@ -21,7 +21,7 @@ fn is_log_shard_path(path: &Path) -> bool {
         })
 }
 
-fn relative_log_path(root: &Path, path: &Path) -> Result<String, String> {
+pub(super) fn relative_log_path(root: &Path, path: &Path) -> Result<String, String> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| format!("log shard escaped log root: {}", path.display()))?;

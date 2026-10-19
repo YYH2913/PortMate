@@ -69,11 +69,9 @@ pub(super) fn append_log_bytes(
         .map_err(|error| format!("failed to append log shard {}: {error}", path.display()))?;
     file.flush()
         .map_err(|error| format!("failed to flush log shard {}: {error}", path.display()))?;
-    let relative = path
-        .strip_prefix(log_root(store_path))
-        .unwrap_or(path.as_path())
-        .display()
-        .to_string();
+    // bytesRef paths share the inventory's portable '/' representation, not
+    // Windows Path::display() separators that the strict reader rejects.
+    let relative = relative_log_path(&log_root(store_path), &path)?;
     Ok(format!(
         "v2:{relative}:{offset}:{}:{}",
         bytes.len(),

@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Log byte references use the same forward-slash relative paths as the shard
+  inventory on Windows, restoring exact log reads, serial capture history and
+  raw segments in session exports without relaxing path or digest checks.
 - Paced-send browser fixtures wait for notice removal and modal inert/focus
   restoration before editing the next draft, retaining exact wire-payload and
   post-write interval assertions rather than accepting stale test input.

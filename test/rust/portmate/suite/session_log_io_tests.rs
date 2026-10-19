@@ -18,6 +18,14 @@ fn append_log_bytes_returns_stable_byte_refs() {
     assert!(first_ref.sha256.is_some());
     assert!(second_ref.sha256.is_some());
     assert!(raw_path.starts_with(log_root(&store_path)));
+    assert!(first_ref.relative.contains('/'));
+    assert!(!first_ref.relative.contains('\\'));
+    assert_eq!(first_ref.relative, second_ref.relative);
+    let shards = list_log_shards_inner(&store_path).unwrap();
+    assert_eq!(shards.len(), 1);
+    assert_eq!(first_ref.relative, shards[0].path);
+    assert_eq!(read_log_bytes_ref(&store_path, &first).unwrap().2, b"abc");
+    assert_eq!(read_log_bytes_ref(&store_path, &second).unwrap().2, b"de");
 
     let _ = fs::remove_dir_all(root);
 }

@@ -10,14 +10,23 @@ fn bytes_ref_detects_recreated_shards_and_reads_legacy_refs() {
         read_log_bytes_ref(&store_path, &legacy_ref).unwrap().2,
         b"AAAA"
     );
-    let ambiguous_path = log_root(&store_path).join("v2:legacy.raw");
-    fs::write(&ambiguous_path, b"CCCC").unwrap();
-    assert_eq!(
-        read_log_bytes_ref(&store_path, "v2:legacy.raw:0:4")
-            .unwrap()
-            .2,
-        b"CCCC"
-    );
+    let ambiguous_ref = parse_log_bytes_ref("v2:legacy.raw:0:4").unwrap();
+    assert_eq!(ambiguous_ref.relative, "v2:legacy.raw");
+    assert_eq!((ambiguous_ref.offset, ambiguous_ref.length), (0, 4));
+    assert!(ambiguous_ref.sha256.is_none());
+    // ':' is a legal filename character on Unix, but denotes an alternate
+    // data stream rather than a normal filename on Windows.
+    #[cfg(not(windows))]
+    {
+        let ambiguous_path = log_root(&store_path).join("v2:legacy.raw");
+        fs::write(&ambiguous_path, b"CCCC").unwrap();
+        assert_eq!(
+            read_log_bytes_ref(&store_path, "v2:legacy.raw:0:4")
+                .unwrap()
+                .2,
+            b"CCCC"
+        );
+    }
 
     delete_log_shards_inner(&store_path, std::slice::from_ref(&parsed.relative)).unwrap();
     let new_ref = append_log_bytes(&store_path, &profile, "raw", b"BBBB").unwrap();
