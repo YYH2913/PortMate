@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows keyring denial probes also accept the exact `ERROR_ACCESS_DENIED`
+  code returned after a successful normal-user read initializes the RPC binding,
+  while retaining both normal-token reads and rejecting unrelated error codes.
 - Windows keyring fault probes recognize the exact anonymous-token RPC binding
   rejection as well as explicit storage denial. The credential must be readable
   before impersonation and after restoring the token; missing entries and other

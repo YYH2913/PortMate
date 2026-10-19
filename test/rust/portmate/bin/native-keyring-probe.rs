@@ -216,11 +216,15 @@ fn is_expected_windows_denial(error: &Error) -> bool {
         Error::NoStorageAccess(_) => true,
         // CredRead can reject an anonymous identity at its RPC binding rather
         // than with ERROR_NO_SUCH_LOGON_SESSION. The pinned provider wraps this
-        // RPC_S_INVALID_BINDING (1702) in a private PlatformError type. Match
-        // its exact display text; never accept arbitrary platform failures or
-        // NoEntry as evidence of denied access. The real probe also verifies
+        // RPC_S_INVALID_BINDING (1702) and ERROR_ACCESS_DENIED (5) in a private
+        // PlatformError type. Match only those exact texts; never accept
+        // arbitrary platform failures or NoEntry as evidence of denied access.
+        // The real probe also verifies
         // the same credential before impersonation and after RevertToSelf.
-        Error::PlatformFailure(cause) => cause.to_string() == "Windows error code 1702",
+        Error::PlatformFailure(cause) => matches!(
+            cause.to_string().as_str(),
+            "Windows error code 5" | "Windows error code 1702"
+        ),
         _ => false,
     }
 }
@@ -269,16 +273,18 @@ mod tests {
         assert!(is_expected_windows_denial(&Error::NoStorageAccess(
             Box::new(std::io::Error::other("denied"))
         )));
-        assert!(is_expected_windows_denial(&Error::PlatformFailure(
-            Box::new(std::io::Error::other("Windows error code 1702"))
-        )));
+        for message in ["Windows error code 5", "Windows error code 1702"] {
+            assert!(is_expected_windows_denial(&Error::PlatformFailure(
+                Box::new(std::io::Error::other(message))
+            )));
+        }
     }
 
     #[test]
     fn windows_denial_rejects_missing_credentials_and_unrelated_platform_errors() {
         assert!(!is_expected_windows_denial(&Error::NoEntry));
         for message in [
-            "Windows error code 5",
+            "Windows error code 6",
             "Windows error code 17020",
             "unavailable provider",
         ] {
