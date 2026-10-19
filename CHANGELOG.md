@@ -28,6 +28,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows keyring fault probes recognize the exact anonymous-token RPC binding
+  rejection as well as explicit storage denial. The credential must be readable
+  before impersonation and after restoring the token; missing entries and other
+  platform errors still fail, and test credentials are always cleaned up.
 - Kotlin SDK fixtures await Ktor client/engine shutdown and finish the root
   coroutine before shutting down shared dispatchers. Bridge processes are
   reaped even when cleanup fails; protocol and cleanup deadlines remain strict.

@@ -162,7 +162,7 @@ fn run_phase(phase: &str) -> Result<(), String> {
         }
         "verify-locked" => verify_locked_provider(&entry),
         #[cfg(windows)]
-        "verify-denied" => verify_denied_windows_provider(&entry),
+        "verify-denied" => verify_denied_windows_provider(&entry, &secret),
         "cleanup" => match entry.delete_credential() {
             Ok(()) | Err(Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("native keyring probe cleanup failed: {error}")),
@@ -188,15 +188,16 @@ fn verify_locked_provider(entry: &Entry) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn verify_denied_windows_provider(entry: &Entry) -> Result<(), String> {
+fn verify_denied_windows_provider(entry: &Entry, expected: &str) -> Result<(), String> {
     use windows_sys::Win32::Security::{ImpersonateAnonymousToken, RevertToSelf};
     use windows_sys::Win32::System::Threading::GetCurrentThread;
 
+    expect_password(entry, expected, "before anonymous Windows token")?;
     if unsafe { ImpersonateAnonymousToken(GetCurrentThread()) } == 0 {
         return Err("impersonate anonymous Windows token failed".to_string());
     }
     let result = match entry.get_password() {
-        Err(Error::NoStorageAccess(_)) => Ok(()),
+        Err(error) if is_expected_windows_denial(&error) => Ok(()),
         Err(error) => Err(format!(
             "anonymous Windows credential probe returned the wrong error: {error}"
         )),
@@ -205,7 +206,23 @@ fn verify_denied_windows_provider(entry: &Entry) -> Result<(), String> {
     if unsafe { RevertToSelf() } == 0 {
         return Err("revert anonymous Windows token failed".to_string());
     }
+    expect_password(entry, expected, "after restoring Windows token")?;
     result
+}
+
+#[cfg(any(windows, test))]
+fn is_expected_windows_denial(error: &Error) -> bool {
+    match error {
+        Error::NoStorageAccess(_) => true,
+        // CredRead can reject an anonymous identity at its RPC binding rather
+        // than with ERROR_NO_SUCH_LOGON_SESSION. The pinned provider wraps this
+        // RPC_S_INVALID_BINDING (1702) in a private PlatformError type. Match
+        // its exact display text; never accept arbitrary platform failures or
+        // NoEntry as evidence of denied access. The real probe also verifies
+        // the same credential before impersonation and after RevertToSelf.
+        Error::PlatformFailure(cause) => cause.to_string() == "Windows error code 1702",
+        _ => false,
+    }
 }
 
 fn expect_password(entry: &Entry, expected: &str, label: &str) -> Result<(), String> {
@@ -241,4 +258,33 @@ fn probe_secret(label: &str) -> String {
     let mut secret = format!("portmate-native-keyring-{label}-{}", Uuid::new_v4());
     secret.extend(std::iter::repeat_n('x', PROBE_SECRET_BYTES - secret.len()));
     secret
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_denial_accepts_only_explicit_storage_or_rpc_binding_rejection() {
+        assert!(is_expected_windows_denial(&Error::NoStorageAccess(
+            Box::new(std::io::Error::other("denied"))
+        )));
+        assert!(is_expected_windows_denial(&Error::PlatformFailure(
+            Box::new(std::io::Error::other("Windows error code 1702"))
+        )));
+    }
+
+    #[test]
+    fn windows_denial_rejects_missing_credentials_and_unrelated_platform_errors() {
+        assert!(!is_expected_windows_denial(&Error::NoEntry));
+        for message in [
+            "Windows error code 5",
+            "Windows error code 17020",
+            "unavailable provider",
+        ] {
+            assert!(!is_expected_windows_denial(&Error::PlatformFailure(
+                Box::new(std::io::Error::other(message))
+            )));
+        }
+    }
 }
