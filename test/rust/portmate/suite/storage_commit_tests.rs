@@ -213,3 +213,40 @@ fn profile_and_profiles_committed_checkpoint_are_one_validated_transaction() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn migration_checkpoint_is_durable_even_when_the_store_payload_is_unchanged() {
+    let fixture = test_migration_journal_fixture();
+    let root = canonical_test_tempdir();
+    let store_path = root.path().join("portmate-store.sqlite3");
+    save_store(&store_path, &fixture.before).unwrap();
+    persist_profile_secret_migration_journal_event(
+        &store_path,
+        ProfileSecretMigrationJournalEvent::Prepared(fixture.journal.payload.clone()),
+    )
+    .unwrap();
+    persist_profile_secret_migration_journal_event(
+        &store_path,
+        ProfileSecretMigrationJournalEvent::Transition {
+            migration_id: fixture.journal.payload.migration_id.clone(),
+            state: ProfileSecretMigrationJournalState::TargetsVerified,
+        },
+    )
+    .unwrap();
+    save_store(&store_path, &fixture.after).unwrap();
+    let before = store_snapshot_version(&store_path).unwrap();
+    save_store_with_profile_secret_migration_checkpoint(
+        &store_path,
+        &fixture.after,
+        &fixture.journal.payload.migration_id,
+    )
+    .unwrap();
+    assert_ne!(store_snapshot_version(&store_path).unwrap(), before);
+    assert_eq!(
+        load_profile_secret_migration_journal(&store_path)
+            .unwrap()
+            .unwrap()
+            .state,
+        ProfileSecretMigrationJournalState::ProfilesCommitted
+    );
+}

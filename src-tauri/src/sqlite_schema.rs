@@ -1,8 +1,13 @@
 use rusqlite::{params, Connection as SqliteConnection};
 
 pub(super) const SQLITE_SCHEMA_VERSION: &str = "4";
+pub(super) const SQLITE_MIRROR_REBUILD_KEY: &str = "mirrorRebuildRequired";
 
-pub(super) fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), String> {
+/// Returns whether schema setup changed persistent state, requiring mirrors
+/// to be rebuilt even if the canonical Store payload itself is unchanged.
+pub(super) fn ensure_store_schema(connection: &SqliteConnection) -> Result<bool, String> {
+    let schema_before = sqlite_schema_generation(connection)?;
+    let changes_before = connection.total_changes();
     connection
         .execute_batch(
             "create table if not exists kv (
@@ -158,11 +163,32 @@ pub(super) fn ensure_store_schema(connection: &SqliteConnection) -> Result<(), S
     connection
         .execute(
             "insert into metadata (key, value) values ('schemaVersion', ?1)
-             on conflict(key) do update set value = excluded.value",
+             on conflict(key) do update set value = excluded.value
+             where metadata.value <> excluded.value",
             params![SQLITE_SCHEMA_VERSION],
         )
         .map_err(|error| format!("failed to update SQLite schema version: {error}"))?;
-    Ok(())
+    let changed = schema_before != sqlite_schema_generation(connection)?
+        || changes_before != connection.total_changes();
+    if changed {
+        // A load may perform DDL before the next save. Persist that the typed
+        // mirrors still need rebuilding, so an identical payload cannot skip
+        // the repair on a later connection or after an interrupted startup.
+        connection
+            .execute(
+                "insert into metadata (key, value) values (?1, '1')
+                 on conflict(key) do nothing",
+                params![SQLITE_MIRROR_REBUILD_KEY],
+            )
+            .map_err(|error| format!("failed to mark SQLite mirrors for rebuilding: {error}"))?;
+    }
+    Ok(changed)
+}
+
+fn sqlite_schema_generation(connection: &SqliteConnection) -> Result<i64, String> {
+    connection
+        .pragma_query_value(None, "schema_version", |row| row.get(0))
+        .map_err(|error| format!("failed to inspect SQLite schema generation: {error}"))
 }
 
 fn ensure_sqlite_column(

@@ -28,6 +28,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Idle SQLite loads and identical snapshot saves preserve Store bytes and
+  revisions instead of rebuilding mirrors and updating timestamps. Stale and
+  unknown-version rejection, schema/mirror repairs and durable credential
+  migration checkpoints still run with their existing safety guarantees.
 - Configuring an empty, not-yet-migrated command history no longer increments
   its revision on every startup. Policy validation, deferred legacy migration
   and revision-exhaustion checks for real input remain enforced.

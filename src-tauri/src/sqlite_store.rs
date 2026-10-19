@@ -1,12 +1,14 @@
 use std::{fs, path::Path};
 
 use portmate_core::SessionStore;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
 use super::{
-    journal_transition_allowed, sqlite_mirror::save_store_sqlite_tables,
-    sqlite_schema::ensure_store_schema, ProfileSecretMigrationJournalState,
+    journal_transition_allowed,
+    sqlite_mirror::save_store_sqlite_tables,
+    sqlite_schema::{ensure_store_schema, SQLITE_MIRROR_REBUILD_KEY},
+    ProfileSecretMigrationJournalState,
 };
 
 pub(super) const STORE_KEY: &str = "session-store";
@@ -58,7 +60,7 @@ pub(super) fn save_store_sqlite_with_profile_secret_migration_checkpoint(
     connection
         .execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|error| format!("failed to enable full SQLite synchronization: {error}"))?;
-    ensure_store_schema(&connection)?;
+    let schema_changed = ensure_store_schema(&connection)?;
     let bytes = serde_json::to_string_pretty(store)
         .map_err(|error| format!("failed to serialize PortMate store: {error}"))?;
 
@@ -67,6 +69,34 @@ pub(super) fn save_store_sqlite_with_profile_secret_migration_checkpoint(
     connection
         .execute_batch("BEGIN IMMEDIATE;")
         .map_err(|error| format!("failed to start PortMate SQLite transaction: {error}"))?;
+    let mirrors_need_rebuild = connection
+        .query_row(
+            "select exists(select 1 from metadata where key = ?1)",
+            params![SQLITE_MIRROR_REBUILD_KEY],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("failed to inspect SQLite mirror rebuild state: {error}"))?;
+    if !schema_changed && !mirrors_need_rebuild && migration_checkpoint.is_none() {
+        let previous = connection
+            .query_row(
+                "select value from kv where key = ?1",
+                params![STORE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                format!("failed to inspect existing PortMate Store snapshot: {error}")
+            })?;
+        if previous.as_deref() == Some(bytes.as_str()) {
+            // CAS validation already happened under the snapshot lock. Keep
+            // idle flushes byte-identical, but never skip schema repairs or a
+            // migration checkpoint's durable journal/revision barrier.
+            connection.execute_batch("COMMIT;").map_err(|error| {
+                format!("failed to commit PortMate SQLite transaction: {error}")
+            })?;
+            return Ok(());
+        }
+    }
     connection
         .execute(
             "insert into kv (key, value, updated_at) values (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now')) \
@@ -75,6 +105,12 @@ pub(super) fn save_store_sqlite_with_profile_secret_migration_checkpoint(
         )
         .map_err(|error| format!("failed to save PortMate SQLite store: {error}"))?;
     save_store_sqlite_tables(&connection, store)?;
+    connection
+        .execute(
+            "delete from metadata where key = ?1",
+            params![SQLITE_MIRROR_REBUILD_KEY],
+        )
+        .map_err(|error| format!("failed to clear SQLite mirror rebuild state: {error}"))?;
     if let Some((migration_id, state)) = migration_checkpoint {
         let current = connection
             .query_row(

@@ -188,8 +188,10 @@ fn loading_an_existing_store_does_not_advance_its_revision() {
     store.upsert_profile(test_shell_profile());
     save_store(&store_path, &store).unwrap();
     let mut first_instance_version = store_snapshot_version(&store_path).unwrap();
+    let bytes_before_load = fs::read(&store_path).unwrap();
 
     let second_instance = load_store(&store_path).unwrap();
+    assert_eq!(fs::read(&store_path).unwrap(), bytes_before_load);
     assert_eq!(
         store_snapshot_version(&store_path).unwrap(),
         first_instance_version
@@ -202,6 +204,118 @@ fn loading_an_existing_store_does_not_advance_its_revision() {
     .unwrap();
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn saving_an_identical_store_preserves_bytes_and_revision_but_real_edits_commit() {
+    let root = canonical_test_tempdir();
+    let store_path = root.path().join("portmate-store.sqlite3");
+    let mut store = SessionStore::default();
+    store.upsert_profile(test_shell_profile());
+    save_store(&store_path, &store).unwrap();
+    let before = fs::read(&store_path).unwrap();
+    let revision = store_snapshot_version(&store_path).unwrap();
+
+    for _ in 0..2 {
+        save_store(&store_path, &store).unwrap();
+        assert_eq!(fs::read(&store_path).unwrap(), before);
+        assert_eq!(store_snapshot_version(&store_path).unwrap(), revision);
+    }
+
+    store.profiles[0].name = "actual edit".to_string();
+    save_store(&store_path, &store).unwrap();
+    assert_ne!(fs::read(&store_path).unwrap(), before);
+    assert_ne!(store_snapshot_version(&store_path).unwrap(), revision);
+    assert_eq!(
+        load_store_sqlite(&store_path).unwrap().profiles[0].name,
+        "actual edit"
+    );
+    let connection = SqliteConnection::open(&store_path).unwrap();
+    let mirrored_name: String = connection
+        .query_row(
+            "select name from profiles where id = ?1",
+            params![store.profiles[0].id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mirrored_name, "actual edit");
+}
+
+#[test]
+fn identical_store_saves_still_reject_stale_and_unknown_versions() {
+    let root = canonical_test_tempdir();
+    let store_path = root.path().join("portmate-store.sqlite3");
+    let store = SessionStore::default();
+    save_store(&store_path, &store).unwrap();
+    let stale = store_snapshot_version(&store_path).unwrap();
+    let connection = SqliteConnection::open(&store_path).unwrap();
+    connection
+        .execute(
+            "update metadata set value = ?1 where key = 'storeRevision'",
+            params!["external-revision"],
+        )
+        .unwrap();
+    drop(connection);
+    let before = fs::read(&store_path).unwrap();
+    for (mut expected, diagnostic) in [
+        (stale, "另一实例修改"),
+        (StoreSnapshotVersion::UnknownAfterCommit, "上次提交后"),
+    ] {
+        let error = save_store_with_expected_snapshot_version(&store_path, &store, &mut expected)
+            .unwrap_err();
+        assert!(error.contains(diagnostic), "{error}");
+        assert_eq!(fs::read(&store_path).unwrap(), before);
+    }
+}
+
+#[test]
+fn identical_store_saves_still_upgrade_schema_and_rebuild_new_mirrors() {
+    for repair_during_load in [false, true] {
+        for damage in [
+            "drop table profiles",
+            "update metadata set value = '3' where key = 'schemaVersion'",
+        ] {
+            let root = canonical_test_tempdir();
+            let store_path = root.path().join("portmate-store.sqlite3");
+            let mut store = SessionStore::default();
+            store.upsert_profile(test_shell_profile());
+            save_store(&store_path, &store).unwrap();
+            let before = store_snapshot_version(&store_path).unwrap();
+            let connection = SqliteConnection::open(&store_path).unwrap();
+            connection.execute_batch(damage).unwrap();
+            drop(connection);
+            if repair_during_load {
+                load_store(&store_path).unwrap();
+            }
+            save_store(&store_path, &store).unwrap();
+            assert_ne!(store_snapshot_version(&store_path).unwrap(), before);
+            let connection = SqliteConnection::open(&store_path).unwrap();
+            let count: i64 = connection
+                .query_row("select count(*) from profiles", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+            let schema: String = connection
+                .query_row(
+                    "select value from metadata where key = 'schemaVersion'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(schema, crate::sqlite_schema::SQLITE_SCHEMA_VERSION);
+            let pending: bool = connection
+                .query_row(
+                    "select exists(select 1 from metadata where key = ?1)",
+                    params![crate::sqlite_schema::SQLITE_MIRROR_REBUILD_KEY],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!pending);
+            drop(connection);
+            let repaired = fs::read(&store_path).unwrap();
+            save_store(&store_path, &store).unwrap();
+            assert_eq!(fs::read(&store_path).unwrap(), repaired);
+        }
+    }
 }
 
 #[test]
