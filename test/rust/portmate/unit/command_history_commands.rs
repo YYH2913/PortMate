@@ -115,3 +115,23 @@ fn empty_legacy_history_migration_is_persistence_free() {
     migrated_store.command_history_migrated = true;
     assert!(!should_skip_empty_migration(&migrated_store, &[]));
 }
+
+#[test]
+fn pending_empty_history_configuration_does_not_advance_revision() {
+    let mut store = SessionStore::default();
+    for now in [1, 2, 3] {
+        configure_history_policy(&mut store, true, 10, 1, now).unwrap();
+        assert!(!store.command_history_migrated);
+        assert!(store.command_history.is_empty());
+        assert_eq!(store.command_history_revision, 0);
+    }
+    let before = serde_json::to_value(&store).unwrap();
+    assert!(configure_history_policy(&mut store, true, 0, 1, 4).is_err());
+    assert_eq!(serde_json::to_value(&store).unwrap(), before);
+
+    store.command_history_revision = (1_u64 << 53) - 1;
+    configure_history_policy(&mut store, true, 10, 1, 5).unwrap();
+    assert!(append_submissions(&mut store, vec!["real input".into()], None, 5).is_err());
+    assert!(store.command_history.is_empty());
+    assert!(!store.command_history_migrated);
+}

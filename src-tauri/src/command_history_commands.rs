@@ -91,9 +91,12 @@ fn configure_history_policy(
     } else {
         Vec::new()
     };
-    store.replace_command_history(&entries, limit, retention_days, now)?;
     if pending_migration {
-        store.command_history_migrated = false;
+        // Validate the policy without completing and undoing an empty legacy
+        // migration: that would advance the revision on every idle startup.
+        SessionStore::normalized_command_history(&entries, limit, retention_days, now)?;
+    } else {
+        store.replace_command_history(&entries, limit, retention_days, now)?;
     }
     store.command_history_policy = portmate_core::CommandHistoryPolicy {
         enabled,

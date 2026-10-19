@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Configuring an empty, not-yet-migrated command history no longer increments
+  its revision on every startup. Policy validation, deferred legacy migration
+  and revision-exhaustion checks for real input remain enforced.
 - Direct libssh connections try the remaining resolved addresses after a
   refused IPv6/IPv4 attempt instead of stopping at the first pending socket.
   The original hostname remains the Kerberos service and host-key identity;
