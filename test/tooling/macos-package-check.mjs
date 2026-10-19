@@ -11,6 +11,7 @@ import { sha256File, verifyMacAppBundle } from "../../scripts/native-package-lay
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
+import { mountVerifiedMacDmg } from "./macos-dmg-mount.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -82,14 +83,12 @@ try {
   });
   run("hdiutil", ["verify", dmg]);
   mkdirSync(mountPoint, { recursive: true });
-  run("hdiutil", [
-    "attach",
+  mountVerifiedMacDmg({
     dmg,
-    "-readonly",
-    "-nobrowse",
-    "-mountpoint",
     mountPoint,
-  ]);
+    cwd: projectRoot,
+    environment: packageEnvironment,
+  });
   mounted = true;
   const dmgApp = findSingleBundle(mountPoint);
   verifiedDmg = verifyApp(dmgApp, {

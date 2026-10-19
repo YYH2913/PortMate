@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- macOS package checks provide one bounded license acceptance when mounting
+  the verified repository-built DMG without a terminal. Read-only mounting,
+  checksum/license checks, real packaged lifecycle checks and detach remain.
 - Windows keyring denial probes also accept the exact `ERROR_ACCESS_DENIED`
   code returned after a successful normal-user read initializes the RPC binding,
   while retaining both normal-token reads and rejecting unrelated error codes.
