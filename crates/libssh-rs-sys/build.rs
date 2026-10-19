@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(libssh_has_sftp_hardlink)");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=vendored/include");
     println!("cargo:rerun-if-changed=vendored/src");
@@ -13,9 +14,20 @@ fn main() {
             .probe("libssh")
             .is_ok()
     {
+        // sftp_hardlink was added in libssh 0.11. Older system libraries are
+        // still supported for GSSAPI; do not introduce an unresolved symbol.
+        if pkg_config::Config::new()
+            .cargo_metadata(false)
+            .atleast_version("0.11.0")
+            .probe("libssh")
+            .is_ok()
+        {
+            println!("cargo:rustc-cfg=libssh_has_sftp_hardlink");
+        }
         return;
     }
 
+    println!("cargo:rustc-cfg=libssh_has_sftp_hardlink");
     let mut cfg = cc::Build::new();
     cfg.define("LIBSSH_STATIC", None);
     cfg.include("vendored/include");

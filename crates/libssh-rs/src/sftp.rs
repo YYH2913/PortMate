@@ -10,6 +10,8 @@ const FSYNC_EXTENSION_NAME: &[u8] = b"fsync@openssh.com\0";
 const FSYNC_EXTENSION_VERSION: &[u8] = b"1\0";
 use thiserror::Error;
 
+mod hardlink;
+
 fn sftp_v3_timestamp(time: SystemTime) -> SshResult<u32> {
     let seconds = time
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -240,11 +242,53 @@ impl Sftp {
 
     /// Create a hard link without replacing an existing destination.
     pub fn hardlink(&self, filename: &str, new_name: &str) -> SshResult<()> {
-        let filename = CString::new(filename)?;
-        let new_name = CString::new(new_name)?;
-        let (_sess, sftp) = self.lock_session();
-        let res = unsafe { sys::sftp_hardlink(sftp, filename.as_ptr(), new_name.as_ptr()) };
-        SftpError::result(sftp, res, ())
+        self.hardlink_impl(filename, new_name, None)
+    }
+
+    /// Create a hard link within the caller's absolute operation deadline.
+    pub fn hardlink_until(
+        &self,
+        filename: &str,
+        new_name: &str,
+        deadline: Instant,
+    ) -> SshResult<()> {
+        self.hardlink_impl(filename, new_name, Some(deadline))
+    }
+
+    fn hardlink_impl(
+        &self,
+        filename: &str,
+        new_name: &str,
+        deadline: Option<Instant>,
+    ) -> SshResult<()> {
+        let old_path = CString::new(filename)?;
+        let new_path = CString::new(new_name)?;
+        {
+            let (session, sftp) = self.lock_session();
+            if let Some(deadline) = deadline {
+                session.set_timeout_until(deadline)?;
+            }
+            if let Some(result) = unsafe {
+                sys::sftp_hardlink_if_available(sftp, old_path.as_ptr(), new_path.as_ptr())
+            } {
+                return SftpError::result(sftp, result, ());
+            }
+        }
+
+        // A separate subsystem keeps the original SFTP request queue intact.
+        // This is the same no-replace extension, never an overwriting rename or
+        // a remote-shell fallback. Modern/bundled libssh keeps its native path.
+        let session = crate::Session {
+            sess: Arc::clone(&self.inner.sess),
+            operation_gate: Arc::clone(&self.inner.operation_gate),
+        };
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
+        let channel = session.new_channel()?;
+        channel.set_session_timeout_until(deadline)?;
+        channel.open_session()?;
+        channel.set_session_timeout_until(deadline)?;
+        channel.request_subsystem("sftp")?;
+        hardlink::request_on_channel(&channel, filename, new_name, deadline)
     }
 
     /// Remove a file or an empty directory

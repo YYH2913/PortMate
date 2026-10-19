@@ -143,6 +143,7 @@ try {
         droppedRuntimeCapabilities: entry.capAdd,
       } : {}),
       verifiedPtyResize: entry.verifyPtyResize !== false,
+      verifiedSftpHardlink: (entry.implementation ?? "openssh") === "openssh",
       cases,
     });
   }
@@ -196,6 +197,7 @@ async function withServer(entry, image, gssapiAuthentication, callback, sftpMode
         kerberosVersion,
         version,
         verifyPtyResize: entry.verifyPtyResize !== false,
+        verifySftpHardlink: (entry.implementation ?? "openssh") === "openssh",
         ...ports,
       });
     } catch (error) {
@@ -425,6 +427,7 @@ function runCase(name, server, kerberos, cases) {
       PORTMATE_COMPAT_GSSAPI_HOST: "localhost",
       PORTMATE_COMPAT_GSSAPI_PORT: String(server.ssh),
       PORTMATE_COMPAT_GSSAPI_VERIFY_PTY_RESIZE: server.verifyPtyResize ? "1" : "0",
+      PORTMATE_COMPAT_GSSAPI_VERIFY_SFTP_HARDLINK: server.verifySftpHardlink ? "1" : "0",
       PORTMATE_COMPAT_LIBSSH_TRACE: "1",
     },
     timeout: 600_000,

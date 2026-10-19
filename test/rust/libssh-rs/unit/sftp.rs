@@ -73,3 +73,17 @@ fn file_handles_keep_the_sftp_session_alive() {
     drop(file);
     assert!(owner.upgrade().is_none());
 }
+
+#[test]
+fn hardlink_rejects_an_expired_deadline_before_calling_native_code() {
+    let session = crate::Session::new().unwrap();
+    let sftp = Sftp::new(
+        Arc::clone(&session.sess),
+        Arc::clone(&session.operation_gate),
+        std::ptr::null_mut(),
+    );
+    let error = sftp
+        .hardlink_until("old", "new", Instant::now() - Duration::from_secs(1))
+        .unwrap_err();
+    assert!(error.to_string().contains("deadline"));
+}

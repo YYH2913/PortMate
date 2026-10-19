@@ -25,6 +25,13 @@ value returned by some nonblocking libssh implementations when no data is ready.
 extension request. This matches the russh backend and keeps uploads compatible
 with SFTP servers that do not implement OpenSSH extensions.
 
+Safe hard links keep the native `sftp_hardlink` path on libssh 0.11 and newer.
+For older supported system libraries, a bounded, deadline-aware SFTP v3 exchange
+uses an isolated subsystem on the same authenticated SSH connection. It checks
+`hardlink@openssh.com` version 1 before requesting the same no-replace operation;
+it never substitutes an overwriting rename or a remote-shell command. The
+original SFTP channel and its request queue remain untouched.
+
 Source-level attributes also allow the finite set of newer Clippy lints emitted
 by the otherwise unchanged 0.3.8 sources, so workspace `-D warnings` checks can
 keep treating this vendored package as a primary member.

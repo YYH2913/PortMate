@@ -23,3 +23,14 @@ fn socket_type_matches_platform_handle() {
         std::mem::size_of::<std::os::raw::c_int>()
     );
 }
+
+#[test]
+fn hardlink_binding_is_optional_on_older_system_libraries() {
+    let result = unsafe {
+        super::sftp_hardlink_if_available(std::ptr::null_mut(), std::ptr::null(), std::ptr::null())
+    };
+    #[cfg(libssh_has_sftp_hardlink)]
+    assert_eq!(result, Some(super::SSH_ERROR));
+    #[cfg(not(libssh_has_sftp_hardlink))]
+    assert_eq!(result, None);
+}

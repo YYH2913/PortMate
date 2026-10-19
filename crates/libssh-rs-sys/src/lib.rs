@@ -2892,6 +2892,26 @@ extern "C" {
         newpath: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 }
+
+/// Call the hardlink API only when the selected libssh provides it.
+///
+/// # Safety
+/// The handles and C strings must satisfy `sftp_hardlink`'s requirements.
+pub unsafe fn sftp_hardlink_if_available(
+    sftp: sftp_session,
+    oldpath: *const ::std::os::raw::c_char,
+    newpath: *const ::std::os::raw::c_char,
+) -> Option<::std::os::raw::c_int> {
+    #[cfg(libssh_has_sftp_hardlink)]
+    {
+        Some(unsafe { sftp_hardlink(sftp, oldpath, newpath) })
+    }
+    #[cfg(not(libssh_has_sftp_hardlink))]
+    {
+        let _ = (sftp, oldpath, newpath);
+        None
+    }
+}
 extern "C" {
     pub fn sftp_statvfs(sftp: sftp_session, path: *const ::std::os::raw::c_char) -> sftp_statvfs_t;
 }

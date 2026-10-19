@@ -362,9 +362,12 @@ impl SftpBackendSession {
                     session,
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP no-replace rename",
-                    move |session, _| {
+                    move |session, deadline| {
                         session
-                            .hardlink(&old_path, &new_path)
+                            .hardlink_until(&old_path, &new_path, deadline)
+                            .map_err(|error| error.to_string())?;
+                        session
+                            .set_session_timeout_until(deadline)
                             .map_err(|error| error.to_string())?;
                         session
                             .remove_file(&old_path)

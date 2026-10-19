@@ -28,6 +28,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Linux builds support system libssh 0.9.7/0.10 without an unresolved
+  `sftp_hardlink` symbol. Safe SFTP commits use the same checked hardlink
+  extension on an isolated, deadline-bounded subsystem when that native API is
+  absent; modern and bundled libssh retain the direct native path. Existing
+  destinations remain protected, with no overwriting-rename or shell fallback.
 - Sidecar watchdog diagnostic fixtures allow child startup before testing an
   invalid readiness response. Token redaction, bounded diagnostics and the
   300 ms parent-watchdog deadline retain their explicit assertions.

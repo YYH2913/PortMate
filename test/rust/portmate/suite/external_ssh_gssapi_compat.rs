@@ -144,6 +144,13 @@ fn external_ssh_gssapi_runtime_matrix_case() {
                     assert!(health.sftp_error.is_none());
                 }
 
+                if case == "success"
+                    && std::env::var("PORTMATE_COMPAT_GSSAPI_VERIFY_SFTP_HARDLINK").as_deref()
+                        == Ok("1")
+                {
+                    exercise_gssapi_sftp_no_replace(&state, &profile.id).await;
+                }
+
                 resize_session_inner(&state, profile.id.clone(), 101, 37)
                     .await
                     .unwrap();
@@ -195,4 +202,64 @@ fn external_ssh_gssapi_runtime_matrix_case() {
     });
 
     fs::remove_dir_all(local_root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+async fn exercise_gssapi_sftp_no_replace(state: &AppState, session_id: &str) {
+    let lease = ssh_auxiliary_lease(state, session_id).unwrap();
+    let sftp = lease.sftp().await.unwrap();
+    assert!(matches!(&*sftp, SftpBackendSession::Libssh(_)));
+    let home = sftp.canonicalize(".").await.unwrap();
+    let root = remote_join_path(&home, &format!("portmate-hardlink-{}-界'", Uuid::new_v4()));
+    sftp.create_dir(root.clone()).await.unwrap();
+    let source = remote_join_path(&root, "source.part");
+    let destination = remote_join_path(&root, "destination");
+    let mut file = sftp
+        .open_with_flags(
+            source.clone(),
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .unwrap();
+    file.write_all(b"original").await.unwrap();
+    file.shutdown().await.unwrap();
+    let mut original_handle = sftp.open(source.clone()).await.unwrap();
+
+    sftp.rename_without_overwrite(source.clone(), destination.clone())
+        .await
+        .unwrap();
+    let mut original = [0; 8];
+    original_handle.read_exact(&mut original).await.unwrap();
+    original_handle.shutdown().await.unwrap();
+    assert_eq!(&original, b"original");
+    assert_eq!(sftp.metadata(destination.clone()).await.unwrap().len(), 8);
+    assert!(sftp.metadata(source.clone()).await.is_err());
+
+    let mut file = sftp
+        .open_with_flags(
+            source.clone(),
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .unwrap();
+    file.write_all(b"replacement").await.unwrap();
+    file.shutdown().await.unwrap();
+    let error = sftp
+        .rename_without_overwrite(source.clone(), destination.clone())
+        .await
+        .unwrap_err();
+    assert!(error.contains("SftpError"), "{error}");
+    for (path, expected) in [
+        (&source, b"replacement".as_slice()),
+        (&destination, b"original".as_slice()),
+    ] {
+        let mut file = sftp.open(path.clone()).await.unwrap();
+        let mut contents = vec![0; expected.len()];
+        file.read_exact(&mut contents).await.unwrap();
+        assert_eq!(contents, expected);
+        assert_eq!(file.read(&mut [0]).await.unwrap(), 0);
+        file.shutdown().await.unwrap();
+        sftp.remove_file(path.clone()).await.unwrap();
+    }
+    sftp.remove_dir(root).await.unwrap();
 }

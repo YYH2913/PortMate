@@ -16,5 +16,10 @@ PortMate carries two related Windows ABI fixes:
 The vendored build also reports the actual bundled libssh version, 0.11.4,
 instead of the stale 0.8.90 value from the upstream Rust build script.
 
+The build detects whether the selected system library provides the libssh 0.11
+`sftp_hardlink` API. The optional-call wrapper does not link this symbol on older
+system libraries; the safe Rust wrapper handles their protocol compatibility.
+Bundled libssh keeps the direct native call.
+
 The Rust wrapper remains MIT licensed. The vendored libssh source is licensed
 under LGPL-2.1; its `COPYING` and `BSD` notices are retained under `vendored/`.
