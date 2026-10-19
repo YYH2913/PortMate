@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cargoLockPinsPackage } from "../tooling/cargo-lock-state.mjs";
+import { pythonSdkLockFilename } from "../tooling/python-sdk-lock-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 
@@ -37,8 +38,25 @@ describe("MCP client dependency locks", () => {
     for (const { version } of matrix("mcp-python-client-versions.json")) {
       const requirements = textLock("mcp-python-client-check", version, "requirements.txt");
       expect(requirements.split(/\r?\n/)).toContain(`mcp==${version}`);
+      const windows = textLock("mcp-python-client-check", version, "requirements-windows.txt").trim().split(/\r?\n/);
+      const expected = requirements.trim().split(/\r?\n/);
+      expected.splice(expected.findIndex(line => line.startsWith("click==")) + 1, 0, "colorama==0.4.6");
+      if (version !== "1.9.4") {
+        expected.splice(expected.findIndex(line => line.startsWith("python-multipart==")) + 1, 0, "pywin32==312");
+      }
+      expect(windows).toEqual(expected);
+      expect(windows.every(line => /^[\w.-]+==\d+(?:\.\d+)*$/.test(line))).toBe(true);
     }
     expect(script("mcp-python-client-check.mjs")).toContain('"freeze", "--exclude", "pip"');
+    expect(script("mcp-python-client-check.mjs")).toContain("pythonSdkLockFilename()");
+  });
+
+  it.each([
+    ["win32", "requirements-windows.txt"],
+    ["linux", "requirements.txt"],
+    ["darwin", "requirements.txt"],
+  ])("selects the exact Python dependency snapshot for %s", (platform, filename) => {
+    expect(pythonSdkLockFilename(platform)).toBe(filename);
   });
 
   it("tracks and validates every Go SDK module graph", () => {

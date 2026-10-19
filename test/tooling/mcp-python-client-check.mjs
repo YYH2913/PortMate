@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
+import { pythonSdkLockFilename } from "./python-sdk-lock-state.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const targetRoot = resolveCargoTargetDirectory(projectRoot);
@@ -28,7 +29,7 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
     "mcp-python-client-check",
     "locks",
     sdkVersion,
-    "requirements.txt",
+    pythonSdkLockFilename(),
   );
   if (!existsSync(lockPath)) {
     throw new Error(`MCP Python SDK ${sdkVersion} lock file does not exist: ${lockPath}`);
@@ -59,7 +60,7 @@ for (const { version: sdkVersion, protocolVersion } of matrix) {
     installedSnapshot = pythonPackageSnapshot(environmentPython);
   }
   if (installedSnapshot !== expectedSnapshot) {
-    throw new Error(`MCP Python SDK ${sdkVersion} environment does not match its dependency lock`);
+    throw new Error(`MCP Python SDK ${sdkVersion} environment does not match its dependency lock (${lockPath})\nExpected:\n${expectedSnapshot}\nInstalled:\n${installedSnapshot}`);
   }
 
   run(environmentPython, [join(projectRoot, "test", "tooling", "mcp-python-client-check.py")], {

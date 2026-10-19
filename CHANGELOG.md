@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Python SDK matrices use explicit Windows dependency snapshots, pinning
+  Windows-only Colorama and applicable PyWin32 dependencies. Exact installed-package
+  equality remains required, with expected/actual snapshots in failure logs.
 - Native keyring and Tmux test probes require an opt-in Cargo feature instead
   of being bundled with the application. Test/Clippy runners enable them
   explicitly; all native package checks reject accidental probe payloads.
