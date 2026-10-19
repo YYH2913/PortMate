@@ -81,7 +81,7 @@ fn rename_local_path_without_overwrite(source: &Path, target: &Path) -> Result<(
                     source.as_ptr(),
                     libc::AT_FDCWD,
                     target.as_ptr(),
-                    0x0000_0002,
+                    libc::RENAME_EXCL,
                 )
             };
             if status == 0 {
@@ -499,3 +499,7 @@ pub(super) async fn chmod_path_inner(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../test/rust/portmate/unit/file_operations.rs"]
+mod tests;

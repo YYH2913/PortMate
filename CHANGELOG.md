@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- macOS local moves use `RENAME_EXCL`, not `RENAME_SWAP`, preserving atomic
+  no-overwrite behavior when the destination does not yet exist. Existing
+  file, directory and final-symlink move/rename regressions cover this path.
 - CI commands canonicalize their isolated temporary root, so macOS `/var` and
   `/tmp` aliases do not trip the Store's strict no-symlink parent checks during
   upgrade/runtime tests. The application still rejects symlinked Store paths.
