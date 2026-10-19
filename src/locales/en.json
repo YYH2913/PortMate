@@ -3930,5 +3930,7 @@
   "native-message-9343e77ea4d9": "The connection changed; the previous connection’s terminal write was not acknowledged",
   "native-message-4264c1194851": "Terminal input lacks a valid connection generation",
   "native-message-6f2fb18081c8": "SFTP cannot move symbolic links while guaranteeing link preservation and no overwrite",
-  "native-message-d36fcf9a174a": "SFTP cannot rename symbolic links while guaranteeing link preservation and no overwrite"
+  "native-message-d36fcf9a174a": "SFTP cannot rename symbolic links while guaranteeing link preservation and no overwrite",
+  "native-message-2974771c0626": "libssh SSH failed to take over the transport socket: {0}",
+  "native-message-c883dbdac706": "libssh failed to configure the transport socket: {0}"
 }

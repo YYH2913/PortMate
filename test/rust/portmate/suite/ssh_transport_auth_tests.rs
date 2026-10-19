@@ -225,7 +225,10 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
             panic!("expected SSH profile");
         };
-        ssh.endpoint.host = "127.0.0.1".to_string();
+        // The server listens on IPv4 only. On dual-stack hosts, localhost can
+        // resolve to ::1 first; the direct libssh transport must try IPv4 too
+        // without changing the hostname used for host-key trust or GSSAPI.
+        ssh.endpoint.host = "localhost".to_string();
         ssh.endpoint.port = port;
         ssh.username = openssh_test_username();
         ssh.reconnect = false;
@@ -273,6 +276,18 @@ fn libssh_gssapi_falls_back_to_ordered_explicit_public_keys() {
         assert_eq!(health.status, ssh_health::SshHealthStatus::Healthy);
         assert_eq!(health.backend, SshBackendKind::Libssh);
         assert_eq!(health.authentication_method, AuthMethod::PublicKey);
+        assert!(state
+            .store
+            .lock()
+            .unwrap()
+            .host_keys
+            .keys
+            .iter()
+            .any(|key| {
+                key.profile_id.as_deref() == Some(profile.id.as_str())
+                    && key.host == "localhost"
+                    && key.port == port
+            }));
         {
             use std::os::fd::{AsRawFd, BorrowedFd};
 

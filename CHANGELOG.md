@@ -28,6 +28,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Direct libssh connections try the remaining resolved addresses after a
+  refused IPv6/IPv4 attempt instead of stopping at the first pending socket.
+  The original hostname remains the Kerberos service and host-key identity;
+  direct, proxy and Jump Host setup share the same overall deadline.
 - Sysmon dock keyboard regressions wait for modal focus/inert restoration,
   verify both 16-pixel resize steps and retain hide/reopen persistence checks;
   failures report the actual size, focus and interaction-boundary state.

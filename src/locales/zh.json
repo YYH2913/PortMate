@@ -3930,5 +3930,7 @@
   "native-message-9343e77ea4d9": "连接已变化，未确认旧连接的终端写入",
   "native-message-4264c1194851": "终端输入缺少有效的连接代际",
   "native-message-6f2fb18081c8": "SFTP 符号链接移动无法保证保留链接且禁止覆盖",
-  "native-message-d36fcf9a174a": "SFTP 符号链接重命名无法保证保留链接且禁止覆盖"
+  "native-message-d36fcf9a174a": "SFTP 符号链接重命名无法保证保留链接且禁止覆盖",
+  "native-message-2974771c0626": "libssh SSH 接管传输 socket 失败: {0}",
+  "native-message-c883dbdac706": "libssh 设置传输 socket 失败: {0}"
 }

@@ -83,7 +83,8 @@ pub(super) async fn establish_libssh_gssapi_runtime(
     let username = ssh.username.clone();
     let host_key_alias = ssh.host_key_policy.alias.clone();
     let closed = Arc::new(AtomicBool::new(false));
-    let (proxy_stream, jump_sessions, mut transport_bridge_finished) = if !ssh.jumps.is_empty() {
+    let (transport_stream, jump_sessions, mut transport_bridge_finished) = if !ssh.jumps.is_empty()
+    {
         let remaining_jump_timeout = setup_deadline.remaining().ok_or_else(|| {
             format!(
                 "libssh Jump Host 连接超时（{} ms）",
@@ -131,35 +132,30 @@ pub(super) async fn establish_libssh_gssapi_runtime(
                     return Err(error);
                 }
             };
-        (Some(stream), jump_sessions, Some(bridge_finished))
-    } else if ssh.proxy.enabled {
-        let remaining_proxy_timeout = setup_deadline.remaining().ok_or_else(|| {
-            format!(
-                "libssh SSH 代理连接超时（{} ms）",
-                connect_timeout.as_millis()
-            )
-        })?;
+        (stream, jump_sessions, Some(bridge_finished))
+    } else {
+        let remaining_transport_timeout = setup_deadline
+            .remaining()
+            .ok_or_else(|| format!("libssh SSH 连接超时（{} ms）", connect_timeout.as_millis()))?;
+        // libssh's native nonblocking resolver retains the first pending
+        // address, even when it later refuses the connection and another DNS
+        // address is reachable. The shared dialer awaits each connection and
+        // falls through to the next address. Keep `host` unchanged below for
+        // GSSAPI service identity and host-key verification.
         let stream = tokio::time::timeout(
-            remaining_proxy_timeout,
+            remaining_transport_timeout,
             connect_target_stream(&host, port, &ssh.proxy, "libssh SSH"),
         )
         .await
-        .map_err(|_| {
-            format!(
-                "libssh SSH 代理连接超时（{} ms）",
-                connect_timeout.as_millis()
-            )
-        })??;
+        .map_err(|_| format!("libssh SSH 连接超时（{} ms）", connect_timeout.as_millis()))??;
         stream
             .set_nodelay(true)
             .map_err(|error| format!("libssh SSH 设置 TCP_NODELAY 失败: {error}"))?;
         configure_ssh_tcp_keepalive(&stream, "libssh SSH", ssh.tcp_keepalive_enabled)?;
         let stream = stream
             .into_std()
-            .map_err(|error| format!("libssh SSH 接管代理 socket 失败: {error}"))?;
-        (Some(stream), Vec::new(), None)
-    } else {
-        (None, Vec::new(), None)
+            .map_err(|error| format!("libssh SSH 接管传输 socket 失败: {error}"))?;
+        (stream, Vec::new(), None)
     };
     let Some(remaining_connect_timeout) = setup_deadline.remaining() else {
         cleanup_failed_libssh_runtime(
@@ -224,11 +220,9 @@ pub(super) async fn establish_libssh_gssapi_runtime(
         session
             .set_option(libssh_rs::SshOption::User(Some(username)))
             .map_err(|error| format!("libssh 设置用户名失败: {error}"))?;
-        if let Some(proxy_stream) = proxy_stream {
-            session
-                .set_owned_tcp_stream(proxy_stream)
-                .map_err(|error| format!("libssh 设置代理 socket 失败: {error}"))?;
-        }
+        session
+            .set_owned_tcp_stream(transport_stream)
+            .map_err(|error| format!("libssh 设置传输 socket 失败: {error}"))?;
         if let Some(identity_agent) = identity_agent {
             session
                 .set_option(libssh_rs::SshOption::IdentityAgent(Some(identity_agent)))

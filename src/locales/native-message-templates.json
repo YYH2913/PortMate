@@ -6185,5 +6185,19 @@
     "id": "native-message-d36fcf9a174a",
     "source": "SFTP 符号链接重命名无法保证保留链接且禁止覆盖",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-2974771c0626",
+    "source": "libssh SSH 接管传输 socket 失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-c883dbdac706",
+    "source": "libssh 设置传输 socket 失败: {0}",
+    "causeIndices": [
+      0
+    ]
   }
 ]
