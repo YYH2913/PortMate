@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
+import { extractLinuxRpm } from "./linux-rpm-extract.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
@@ -76,7 +77,7 @@ try {
   assertPortableTree(debRoot);
 
   const rpmRoot = join(auditRoot, "rpm");
-  extractRpm(rpm, rpmRoot);
+  extractLinuxRpm(rpm, rpmRoot, { environment: packageEnvironment });
   const rpmMain = join(rpmRoot, "usr", "bin", "portmate");
   assertPackagedMain("RPM", rpmMain, tauriConfig.identifier, productionCsp);
   runtimeSmokes.push(await checkPackagedApplication("RPM", rpmMain, "runtime-rpm"));
@@ -365,32 +366,6 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function extractRpm(archive, destination) {
-  mkdirSync(destination, { recursive: true });
-  let payload = spawnSync("rpm2cpio", [archive], {
-    encoding: null,
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  let extractor = "rpm2cpio";
-  let extractorArgs = [archive];
-  if (payload.error?.code === "ENOENT") {
-    extractor = "7z";
-    extractorArgs = ["x", "-so", archive];
-    payload = spawnSync(extractor, extractorArgs, {
-      encoding: null,
-      maxBuffer: 256 * 1024 * 1024,
-    });
-  }
-  assertCommandResult(extractor, extractorArgs, payload);
-  const unpack = spawnSync("cpio", ["-idmu", "--quiet", "--no-absolute-filenames"], {
-    cwd: destination,
-    input: payload.stdout,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  assertCommandResult("cpio", ["-idmu", "--quiet", "--no-absolute-filenames"], unpack);
-}
-
 function checkPackagedBridge(kind, bridge) {
   const bridgeEnvironment = { ...packageEnvironment, PORTMATE_MCP_BINARY: bridge };
   run(process.execPath, ["test/tooling/mcp-typescript-client-check.mjs"], {
@@ -430,14 +405,6 @@ function checkPackagedBridge(kind, bridge) {
     env: bridgeEnvironment,
   });
   console.log(`${kind} MCP sidecar protocol checks passed`);
-}
-
-function assertCommandResult(command, args, result) {
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    if (result.stderr) process.stderr.write(result.stderr);
-    throw new Error(`${command} ${args.join(" ")} failed with exit code ${result.status}`);
-  }
 }
 
 function run(command, args, options = {}) {
