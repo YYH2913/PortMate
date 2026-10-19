@@ -15,6 +15,7 @@ import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 import { extractLinuxRpm } from "./linux-rpm-extract.mjs";
+import { assertNoTestProbeExecutable } from "../../scripts/native-package-layout.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
@@ -267,6 +268,7 @@ function assertPortableTree(root) {
   for (const entry of readdirSync(root)) visit(join(root, entry));
 
   function visit(path) {
+    assertNoTestProbeExecutable(path);
     const metadata = lstatSync(path);
     if (metadata.isSymbolicLink()) {
       const target = readlinkSync(path);

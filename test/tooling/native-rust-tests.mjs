@@ -49,6 +49,7 @@ export function nativeRustTestArguments(suite, platform = process.platform) {
     throw new Error("native Rust test platform must be a non-empty string");
   }
   const args = [...configured];
+  args.splice(args.indexOf("--"), 0, "--features", "portmate/test-probes");
   if (platform === "win32") {
     // Vendored OpenSSL and libsodium must use the same release CRT as Rust on MSVC.
     args.splice(args.indexOf("--no-default-features") + 1, 0, "--release");

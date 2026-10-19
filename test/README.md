@@ -29,7 +29,7 @@ test/
 ```bash
 npm test
 npm run test:rustfmt
-cargo test --locked --workspace --no-default-features
+cargo test --locked --workspace --no-default-features --features portmate/test-probes
 npm run test:release-upgrade
 npm run test:portable-vault
 npm run test:terminal-compat
@@ -45,6 +45,8 @@ npx vitest run --config test/vitest.config.ts test/frontend/release-upgrade.test
 Rust 单元用例通过产品模块内的 `#[cfg(test)]` + `#[path]` / `include!` 挂载，
 而不是改成全部公开 API 或独立 Cargo workspace。原模块名、私有可见性和 `--exact`
 过滤器保持不变。Cargo 集成测试和探针路径显式登记在所属包的 `Cargo.toml` 中。
+两个探针还要求显式启用 `test-probes` feature；npm 原生测试运行器会自动启用，
+普通应用构建/打包不会启用，包检查也会拒绝意外夹带的探针可执行文件。
 仅保留必要的测试挂钩/条件编译字段；它们不进入非测试版本。
 API 文档中的 Rust 示例仍随公开 API 保留并由 rustdoc 验证，不作为独立测试文件搬移。
 

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { nativeRustTestArguments } from "../tooling/native-rust-tests.mjs";
 
 describe("native Rust CI test profiles", () => {
+  it("explicitly includes test-only probes in every suite without enabling them for package builds", () => {
+    for (const platform of ["linux", "darwin", "win32"]) {
+      for (const suite of ["portable-vault", "release-upgrade", "workspace"]) {
+        const args = nativeRustTestArguments(suite, platform);
+        const index = args.indexOf("--features");
+        expect(index).toBeGreaterThan(0);
+        expect(args[index + 1]).toBe("portmate/test-probes");
+        expect(index).toBeLessThan(args.indexOf("--"));
+      }
+    }
+  });
+
   it.each(["linux", "darwin"])("keeps the default test profile on %s", (platform) => {
     for (const suite of ["portable-vault", "release-upgrade", "workspace"]) {
       const args = nativeRustTestArguments(suite, platform);

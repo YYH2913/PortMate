@@ -662,7 +662,7 @@ npm run build
 npm run test:release-source
 npm run test:release-upgrade
 npm run test:rustfmt
-cargo test --locked --workspace
+cargo test --locked --workspace --features portmate/test-probes
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 

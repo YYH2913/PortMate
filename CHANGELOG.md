@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Native keyring and Tmux test probes require an opt-in Cargo feature instead
+  of being bundled with the application. Test/Clippy runners enable them
+  explicitly; all native package checks reject accidental probe payloads.
 - Linux package checks extract RPM file entries with `rpm2archive` rather
   than assuming a legacy archive-size tag that rpm-rs does not emit. Converter
   and extraction failures remain fatal; payload, mode and runtime checks stay.

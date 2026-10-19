@@ -159,6 +159,7 @@ export function inspectPortableTree(root) {
   return files;
 
   function visit(path) {
+    assertNoTestProbeExecutable(path);
     const metadata = lstatSync(path);
     if (metadata.isSymbolicLink()) {
       const target = readlinkSync(path);
@@ -179,6 +180,12 @@ export function inspectPortableTree(root) {
       return;
     }
     throw new Error(`Package contains an unsupported filesystem entry: ${path}`);
+  }
+}
+
+export function assertNoTestProbeExecutable(path) {
+  if (/^(?:native-keyring-probe|tmux-compat-probe)(?:\.exe)?$/i.test(basename(path))) {
+    throw new Error(`Package contains a test-only probe executable: ${path}`);
   }
 }
 

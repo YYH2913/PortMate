@@ -289,6 +289,7 @@ export function nativeKeyringProbeArguments(probeArguments, platform = process.p
     // does not need the desktop/Wry runtime. MSVC native dependencies use the
     // release CRT, just as in native-rust-tests.mjs.
     "--no-default-features",
+    "--features", "test-probes",
     ...(platform === "win32" ? ["--release"] : []),
     "--bin",
     "native-keyring-probe",

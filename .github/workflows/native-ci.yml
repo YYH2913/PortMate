@@ -234,7 +234,7 @@ jobs:
       - name: Verify workspace Rust tests
         run: node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log node test/tooling/native-rust-tests.mjs workspace
       - name: Verify workspace Clippy
-        run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets --features portmate/test-probes -- -D warnings
       - name: Verify native keyring lifecycle and faults
         run: node scripts/ci-command-log.mjs target/native-ci/native-keyring.log npm run test:native-keyring
       - name: Build Linux desktop smoke prerequisites

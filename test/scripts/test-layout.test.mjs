@@ -18,6 +18,18 @@ const productionRoots = [
 ].filter(path => existsSync(join(projectRoot, path)));
 
 describe("centralized test layout", () => {
+  it("requires an opt-in feature for Cargo test probes so Tauri cannot bundle them by default", () => {
+    const manifest = readFileSync(join(projectRoot, "src-tauri", "Cargo.toml"), "utf8");
+    expect(manifest).toMatch(/^test-probes = \[\]$/m);
+    expect(manifest.match(/^default = (.+)$/m)?.[1]).not.toContain("test-probes");
+    const bins = manifest.split("[[bin]]").slice(1);
+    expect(bins).toHaveLength(2);
+    for (const bin of bins) {
+      expect(bin).toMatch(/^path = "\.\.\/test\/rust\/portmate\/bin\/[^\"]+"$/m);
+      expect(bin).toMatch(/^required-features = \["test-probes"\]$/m);
+    }
+  });
+
   it("keeps test files and Vitest imports out of production source trees", () => {
     const misplaced = [];
     for (const root of productionRoots) {

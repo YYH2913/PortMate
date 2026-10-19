@@ -10,6 +10,7 @@ describe("native keyring probe build profile", () => {
     const phase = ["--phase", "verify-denied"];
     expect(nativeKeyringProbeArguments(phase, platform)).toEqual([
       "run", "--locked", "-p", "portmate", "--no-default-features",
+      "--features", "test-probes",
       ...(platform === "win32" ? ["--release"] : []),
       "--bin", "native-keyring-probe", "--", ...phase,
     ]);

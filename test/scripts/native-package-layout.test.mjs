@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertNoTestProbeExecutable,
   verifyMacAppBundle,
   verifyMacBundleMetadata,
   verifyWindowsPackageLayout,
@@ -30,6 +31,21 @@ afterEach(() => {
 });
 
 describe("native package layouts", () => {
+  it.each(["native-keyring-probe", "tmux-compat-probe", "NATIVE-KEYRING-PROBE.EXE", "tmux-compat-probe.exe"])(
+    "rejects test-only probe %s from package payloads", name => {
+      expect(() => assertNoTestProbeExecutable(join("/payload", name))).toThrow("test-only probe executable");
+    },
+  );
+
+  it("checks nested installer and application payloads for accidental test probes", () => {
+    const windows = windowsFixture();
+    write(join(windows.applicationDirectory, "native-keyring-probe.exe"), "test probe");
+    expect(() => verifyWindowsPackageLayout(windows)).toThrow("test-only probe executable");
+    const mac = macFixture();
+    write(join(mac.app, "Contents", "MacOS", "tmux-compat-probe"), "test probe");
+    expect(() => verifyMacAppBundle(mac)).toThrow("test-only probe executable");
+  });
+
   it("accepts a nested Windows installer payload", () => {
     const fixture = windowsFixture();
 

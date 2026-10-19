@@ -106,7 +106,7 @@ describe("CI command logging", () => {
       "rustfmt.log npm run test:rustfmt",
       "frontend-tests.log npm test",
       "frontend-build.log npm run build",
-      "clippy.log cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "clippy.log cargo clippy --locked --workspace --all-targets --features portmate/test-probes -- -D warnings",
     ]) {
       expect(workflow).toContain(`target/native-ci/${invocation}`);
     }
