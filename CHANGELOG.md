@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Explorer browser regressions wait for the failure notice to close and use
+  a real pointer focus before filtering. Tag/address checks require the exact
+  query as well as the filtered rows; failures include focus and Vite state.
 - Remote symlink moves/renames fail before mutation because hardlink source
   semantics vary by server OS and can dereference the link. Batch preflight
   preserves earlier files; final-link deletion still leaves its target intact.

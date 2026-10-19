@@ -3456,31 +3456,38 @@ Host staging
   assert(await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "close_session").length) === 1,
     "close-session control did not reach the backend exactly once");
   await closeFailure.getByRole("button", { name: "确定", exact: true }).click();
+  await closeFailure.waitFor({ state: "detached" });
   await page.evaluate(() => { window.__closeSessionError = false; });
 
   const explorerFilter = page.getByRole("textbox", { name: "筛选资源管理器会话", exact: true });
+  // A real pointer click waits for the just-closed overlay/terminal activation
+  // frame before editing, instead of inserting into a focus transition.
+  await explorerFilter.click();
   await explorerFilter.fill("production");
   try {
-    await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
+    await page.waitForFunction(() => document.querySelector('.workspace-dock-content.panel-explorer input[aria-label="筛选资源管理器会话"]')?.value === "production"
+      && document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
   } catch (error) {
     const state = await page.evaluate(() => ({
       query: document.querySelector('.workspace-dock-content.panel-explorer input[aria-label="筛选资源管理器会话"]')?.value ?? null,
       rows: [...document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session")].map((row) => row.textContent?.trim()),
       empty: document.querySelector(".workspace-dock-content.panel-explorer .empty-pane")?.textContent?.trim() ?? null,
+      focused: document.activeElement?.outerHTML.slice(0, 600) ?? null,
       sessions: window.__sessions.map((session) => ({
         id: session.profile.id,
         name: session.profile.name,
         tags: session.profile.tags,
       })),
     }));
-    throw new Error(`resource tag filter did not settle: ${JSON.stringify(state)}`, { cause: error });
+    throw new Error(`resource tag filter did not settle: ${JSON.stringify(state)}\nVite: ${viteOutput.slice(-4_000)}`, { cause: error });
   }
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session").count() === 1,
     "resource tag filter did not remove unrelated sessions");
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource tag filter missed Edge Router");
   await explorerFilter.fill("10.0.0.1");
-  await page.waitForFunction(() => document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
+  await page.waitForFunction(() => document.querySelector('.workspace-dock-content.panel-explorer input[aria-label="筛选资源管理器会话"]')?.value === "10.0.0.1"
+    && document.querySelectorAll(".workspace-dock-content.panel-explorer .tree-session").length === 1);
   assert(await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Edge Router" }).count() === 1,
     "resource endpoint filter missed Edge Router");
   await page.getByRole("button", { name: "清除筛选资源管理器会话", exact: true }).click();
