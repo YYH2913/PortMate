@@ -15,7 +15,7 @@ export function extractLinuxRpm(archive, destination, {
     maxBuffer: 256 * 1024 * 1024,
   });
   assertResult("rpm2archive", payload);
-  const unpack = run("tar", ["--extract", "--file", "-", "--no-same-owner"], {
+  const unpack = run("tar", ["--extract", "--file", "-", "--no-same-owner", "--same-permissions"], {
     cwd: destination,
     env: environment,
     input: payload.stdout,

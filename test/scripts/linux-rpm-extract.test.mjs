@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,37 @@ function destination() {
 }
 
 describe("Linux RPM extraction", () => {
+  it.skipIf(process.platform !== "linux")("preserves archive modes even with a restrictive host umask", () => {
+    const root = destination();
+    const source = join(root, "source");
+    mkdirSync(source, { recursive: true });
+    for (const [name, mode] of [["tool", 0o755], ["LICENSE", 0o644]]) {
+      writeFileSync(join(source, name), name);
+      chmodSync(join(source, name), mode);
+    }
+    const archive = join(root, "payload.tar");
+    const pack = spawnSync("tar", ["--create", "--file", archive, "--directory", source, "tool", "LICENSE"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    expect(pack.status, pack.stderr).toBe(0);
+    const extracted = join(root, "extracted");
+    // Set umask in a separate process, never in Vitest's shared worker.
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { spawnSync } from "node:child_process";
+      import { readFileSync } from "node:fs";
+      import { extractLinuxRpm } from ${JSON.stringify(new URL("../tooling/linux-rpm-extract.mjs", import.meta.url).href)};
+      process.umask(0o077);
+      extractLinuxRpm("fixture.rpm", process.argv[2], {
+        run: (command, args, options) => command === "rpm2archive"
+          ? { status: 0, stdout: readFileSync(process.argv[1]) }
+          : spawnSync(command, args, options),
+      });
+    `, archive, extracted], { encoding: "utf8", timeout: 10_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(statSync(join(extracted, "tool")).mode & 0o777).toBe(0o755);
+    expect(statSync(join(extracted, "LICENSE")).mode & 0o777).toBe(0o644);
+  });
+
   it("uses RPM file entries and passes their binary tar payload unchanged to the extractor", () => {
     const archive = "/build with spaces/PortMate.rpm";
     const root = destination();
@@ -29,7 +61,7 @@ describe("Linux RPM extraction", () => {
       ["rpm2archive", ["-n", archive], {
         env: environment, encoding: null, maxBuffer: 256 * 1024 * 1024,
       }],
-      ["tar", ["--extract", "--file", "-", "--no-same-owner"], {
+      ["tar", ["--extract", "--file", "-", "--no-same-owner", "--same-permissions"], {
         cwd: root, env: environment, input: stdout, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
       }],
     ]);

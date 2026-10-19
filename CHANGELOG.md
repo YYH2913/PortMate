@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- RPM verification preserves archived file modes even under a restrictive
+  host umask, so permission checks inspect the package rather than extraction
+  defaults. A separate-process `umask 077` regression covers the real tar step.
 - Windows Python SDK checks honor the interpreter selected on PATH instead
   of letting `py -3` override CI's configured Python version. Explicit Python
   overrides remain authoritative, and the launcher is retained as a fallback.
