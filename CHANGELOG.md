@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Failed Windows native tests retain MSVC import tables and inspect DLL exports
+  for loader failures such as `STATUS_ENTRYPOINT_NOT_FOUND`. Diagnostic builds
+  reuse the original locked/profile settings and never mask the test failure.
 - Libssh proxy/Jump Host teardown tolerates native transport-error paths that
   close a caller-supplied socket. Identity-pinned cleanup prevents an OwnedFd
   abort, double-close or closure of an unrelated recycled descriptor.

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectWindowsLoaderDiagnostics } from "./windows-loader-diagnostics.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -56,11 +57,19 @@ export function nativeRustTestArguments(suite, platform = process.platform) {
 }
 
 function main() {
-  const result = spawnSync("cargo", nativeRustTestArguments(process.argv[2]), {
+  const args = nativeRustTestArguments(process.argv[2]);
+  const result = spawnSync("cargo", args, {
     cwd: projectRoot,
     stdio: "inherit",
     windowsHide: true,
   });
+  if (process.platform === "win32" && !result.error && !result.signal && result.status !== 0) {
+    try {
+      collectWindowsLoaderDiagnostics(args, projectRoot);
+    } catch (error) {
+      console.error(`Windows test loader diagnostics: ${error.message}`);
+    }
+  }
   if (result.error) {
     console.error(`failed to execute cargo: ${result.error.message}`);
     process.exitCode = 1;
