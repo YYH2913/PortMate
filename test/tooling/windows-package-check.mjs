@@ -16,6 +16,7 @@ import { verifyWindowsReleaseBinary } from "../../scripts/windows-release-binary
 import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
+import { runSilentNsis } from "./windows-nsis-silent.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -86,7 +87,13 @@ try {
     }),
   });
 
-  run(nsis, ["/S", `/D=${nsisRoot}`]);
+  runSilentNsis({
+    executable: nsis,
+    installationDirectory: nsisRoot,
+    phase: "install",
+    cwd: projectRoot,
+    environment: packageEnvironment,
+  });
   verifiedNsis = verifyWindowsPackageLayout({
     root: nsisRoot,
     sourceMain,
@@ -125,7 +132,13 @@ try {
 } finally {
   if (existsSync(expectedUninstaller)) {
     try {
-      run(expectedUninstaller, ["/S", `_?=${nsisRoot}`]);
+      runSilentNsis({
+        executable: expectedUninstaller,
+        installationDirectory: nsisRoot,
+        phase: "uninstall",
+        cwd: projectRoot,
+        environment: packageEnvironment,
+      });
       if (verifiedNsis) assertNsisPayloadRemoved(verifiedNsis);
     } catch (error) {
       failure ??= error;

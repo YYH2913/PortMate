@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows NSIS package checks pass install/uninstall directory tails verbatim,
+  as required by NSIS, while quoting only the executable path and never using
+  a shell. Space-containing audit roots no longer fall back to other locations.
 - RPM verification preserves archived file modes even under a restrictive
   host umask, so permission checks inspect the package rather than extraction
   defaults. A separate-process `umask 077` regression covers the real tar step.
