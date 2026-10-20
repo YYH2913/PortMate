@@ -73,6 +73,8 @@ Windows 安装包检查单独限制 MSI 行政解包期限，并把原始 MSI �
 `target/native-ci/windows-msi-extract.log`，随 CI diagnostics 上传。错误输出包含有界的
 UTF-8/UTF-16 日志尾部，安装包生命周期也逐阶段打印进度，避免整项 job 超时后无法定位。
 Windows 包验证步骤另设 20 分钟上限，为后续始终执行的诊断/构建产物上传留出时间。
+MSI 属性参数按 `TARGETDIR="含空格路径"` 构造，并使用 verbatim 参数；安装器直接解析
+属性语法。对精确 CI MSI 的原生对照验证了此前超时且无日志、修复后成功解包并返回 0。
 
 Tauri 按包把主程序唯一的 `__TAURI_BUNDLE_TYPE_VAR_` 后三字节写成 `MSI`/`NSS`。
 安装包检查按显式包类型从同一 release EXE 构造期望字节，再计算整文件 SHA-256；

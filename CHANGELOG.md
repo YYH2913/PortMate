@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows MSI checks quote the TARGETDIR value using the installer's command
+  syntax and pass quoted file paths verbatim. Administrative extraction in
+  space-containing directories now completes and produces its installer log.
 - Windows package checks construct the exact MSI/NSIS main executable
   reference from Tauri's fixed bundle-type field. Full-file hashes now verify
   each package correctly when Tauri patches the final build for the next bundle.

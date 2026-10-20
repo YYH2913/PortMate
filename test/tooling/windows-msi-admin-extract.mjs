@@ -5,8 +5,17 @@ import { dirname } from "node:path";
 export function extractWindowsMsi({ installer, destination, logPath, diagnosticLogPath,
   cwd, environment, timeout = 300_000, run = spawnSync }) {
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("MSI extraction timeout must be a positive integer");
-  const result = run("msiexec.exe", ["/a", installer, "/qn", "/norestart", "/l*v", logPath, `TARGETDIR=${destination}`], {
-    cwd, env: environment, stdio: "inherit", shell: false, windowsHide: true, timeout,
+  const quote = path => {
+    if (typeof path !== "string" || !path || /[\x00-\x1f"]/.test(path)) {
+      throw new Error("MSI paths must be non-empty and contain no quotes or control characters");
+    }
+    return `"${path}"`;
+  };
+  // MSI parses PROPERTY="value with spaces" itself. CRT quoting of the
+  // whole property token makes msiexec wait before creating its log.
+  const result = run("msiexec.exe", ["/a", quote(installer), "/qn", "/norestart", "/l*v", quote(logPath), `TARGETDIR=${quote(destination)}`], {
+    cwd, env: environment, stdio: "inherit", shell: false, windowsHide: true,
+    windowsVerbatimArguments: true, timeout,
   });
   let log = "";
   let logFailure;

@@ -20,13 +20,24 @@ function options() {
 }
 
 describe("bounded MSI administrative extraction", () => {
-  it("preserves the administrative extraction arguments and a finite install budget", () => {
+  it("quotes only the property value using MSI syntax and retains a finite install budget", () => {
     const input = options();
     const run = vi.fn(() => ({ status: 0 }));
     extractWindowsMsi({ ...input, run });
     expect(run).toHaveBeenCalledExactlyOnceWith("msiexec.exe", [
-      "/a", input.installer, "/qn", "/norestart", "/l*v", input.logPath, `TARGETDIR=${input.destination}`,
-    ], { cwd: input.cwd, env: input.environment, stdio: "inherit", shell: false, windowsHide: true, timeout: 300_000 });
+      "/a", `"${input.installer}"`, "/qn", "/norestart", "/l*v", `"${input.logPath}"`, `TARGETDIR="${input.destination}"`,
+    ], { cwd: input.cwd, env: input.environment, stdio: "inherit", shell: false, windowsHide: true, windowsVerbatimArguments: true, timeout: 300_000 });
+    const commandLine = ["msiexec.exe", ...run.mock.calls[0][1]].join(" ");
+    expect(commandLine).toContain(` TARGETDIR="${input.destination}"`);
+    expect(commandLine).not.toContain(' "TARGETDIR=');
+  });
+
+  it.each(["installer", "destination", "logPath"])("refuses quotes and control characters in raw %s", field => {
+    for (const value of ['D:\\quoted "path"', "D:\\path\nextra", "D:\\path\0extra", ""]) {
+      const run = vi.fn();
+      expect(() => extractWindowsMsi({ ...options(), [field]: value, run })).toThrow("MSI paths");
+      expect(run).not.toHaveBeenCalled();
+    }
   });
 
   it.each(["utf8", "utf16le"])("retains the original %s installer log before workspace cleanup", encoding => {
@@ -60,7 +71,7 @@ describe("bounded MSI administrative extraction", () => {
     const input = options();
     const run = (_command, _args, settings) => spawnSync(process.execPath, [
       "-e", "require('node:fs').writeFileSync(process.argv[1], 'MSI phase entered\\n'); setInterval(() => {}, 1000)", input.logPath,
-    ], settings);
+    ], { ...settings, windowsVerbatimArguments: false });
     expect(() => extractWindowsMsi({ ...input, timeout: 2000, run })).toThrow("MSI phase entered");
     expect(readFileSync(input.diagnosticLogPath, "utf8")).toBe("MSI phase entered\n");
   });
