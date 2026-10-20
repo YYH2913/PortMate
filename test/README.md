@@ -65,6 +65,10 @@ PATH 选定的 `python`（兼容 setup-python/已激活 venv），仅在不可�
 Windows 使用各 SDK 的 `requirements-windows.txt`，其他平台使用 `requirements.txt`；
 两者都要求实际安装的完整依赖快照精确匹配，不忽略平台专属依赖。
 
+Maven 与 .NET SDK 引导在 Windows 上明确调用 `%SystemRoot%\System32\tar.exe`，
+避免 Ruby/MSYS2 的 GNU tar 把盘符当成远程主机或无法解包 ZIP。归档仍先做 SHA-512
+校验，解包失败/超时仍会中止；不重排全局 PATH 或改用未校验的工具下载。
+
 ## SFTP 性能对照 / SFTP performance probes
 
 本地 OpenSSH 组件矩阵是显式启用的 ignored 测试，涵盖 russh/libssh 上传、

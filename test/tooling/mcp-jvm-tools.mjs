@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveCargoTargetDirectory } from "./mcp-binary-path.mjs";
+import { extractSdkToolArchive } from "./sdk-tool-archive.mjs";
 
 export async function createMavenRunner({ projectRoot, manifestRoot, distribution }) {
   if (
@@ -83,7 +84,7 @@ async function ensureMaven(projectRoot, { version, sha512 }) {
   }
   writeFileSync(archive, body, { mode: 0o600 });
   rmSync(mavenRoot, { recursive: true, force: true });
-  run("tar", ["-xzf", archive, "-C", toolsRoot], { cwd: projectRoot, timeout: 30_000 });
+  extractSdkToolArchive({ archive, destination: toolsRoot, cwd: projectRoot });
   renameSync(archive, join(toolsRoot, archiveName));
   if (!hasMavenLauncher(mavenRoot)) {
     throw new Error(`Maven archive omitted its Classworlds launcher: ${mavenRoot}`);

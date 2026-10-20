@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows Maven and .NET SDK bootstraps use the operating system's native
+  tar instead of Ruby/MSYS2's PATH entry, preserving drive-letter archive
+  paths and ZIP support without relaxing checksum or extraction-failure checks.
 - Windows NSIS package checks pass install/uninstall directory tails verbatim,
   as required by NSIS, while quoting only the executable path and never using
   a shell. Space-containing audit roots no longer fall back to other locations.

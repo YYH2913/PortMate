@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createMcpClientFixture } from "./mcp-client-fixture.mjs";
 import { resolveCargoTargetDirectory, resolveMcpBinary } from "./mcp-binary-path.mjs";
+import { extractSdkToolArchive } from "./sdk-tool-archive.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const fixture = createMcpClientFixture(["official-csharp-sdk-stdio-check", "official-csharp-sdk-http-check"]);
@@ -162,7 +163,11 @@ async function ensureDotnet({ version, archives }, environment, targetRoot) {
     }
     rmSync(installRoot, { recursive: true, force: true });
     mkdirSync(installRoot, { recursive: true });
-    run("tar", [archiveExtension === ".zip" ? "-xf" : "-xzf", temporary, "-C", installRoot], {
+    extractSdkToolArchive({
+      archive: temporary,
+      destination: installRoot,
+      format: archiveExtension === ".zip" ? "zip" : "tar.gz",
+      cwd: projectRoot,
       timeout: 120_000,
     });
     rmSync(archivePath, { force: true });
