@@ -36,6 +36,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP Java compatibility includes SDK 2.1.0 for both stdio and HTTP
+  transports while retaining existing version coverage.
 - MCP Rust compatibility includes SDK 3.6.0 with a locked dependency graph
   for both stdio and HTTP transports.
 - MCP Go compatibility includes SDK 1.8.0 with a locked dependency graph
