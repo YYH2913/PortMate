@@ -36,6 +36,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP Ruby compatibility includes SDK 1.8.0 with pinned client dependencies
+  for both stdio and HTTP transports.
 - MCP Python compatibility covers SDK 2.3.0 with exact POSIX and Windows
   dependency snapshots, including the required Windows-only dependencies.
 - Frontend test concurrency reserves half the available CPU capacity and
