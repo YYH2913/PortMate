@@ -599,8 +599,14 @@ fn timed_out_terminal_input_ack_cancels_a_request_waiting_for_the_lane() {
     tauri::async_runtime::block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (observe_tx, observe_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Setup may take longer than the observation window on Windows.
+            // Keep the peer alive until the request has timed out and released its lane.
+            observe_rx
+                .await
+                .expect("input cancellation observation was not started");
             let mut byte = [0_u8; 1];
             matches!(
                 tokio::time::timeout(Duration::from_millis(250), socket.read_exact(&mut byte))
@@ -632,8 +638,9 @@ fn timed_out_terminal_input_ack_cancels_a_request_waiting_for_the_lane() {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("30 ms"));
+        assert!(error.contains("30 ms"), "{error}");
         drop(lane_guard);
+        observe_tx.send(()).unwrap();
 
         assert!(
             !server.await.unwrap(),

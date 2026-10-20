@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Terminal input cancellation regressions keep their TCP peer alive through
+  setup and begin observation after the request timeout and lane release,
+  preserving the 30 ms deadline and exact no-write assertion on Windows.
 - Windows MSI checks quote the TARGETDIR value using the installer's command
   syntax and pass quoted file paths verbatim. Administrative extraction in
   space-containing directories now completes and produces its installer log.
