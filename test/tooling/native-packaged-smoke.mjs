@@ -57,7 +57,8 @@ export async function smokePackagedApplication({
   let output = "";
   let processResult = null;
   const child = spawn(executable, args, {
-    cwd: dataDirectory,
+    // Migration may replace dataDirectory. Windows pins a process's cwd.
+    cwd: dirname(dataDirectory),
     env: {
       ...environment,
       PORTMATE_NATIVE_SMOKE_DATA_DIR: dataDirectory,
@@ -329,7 +330,7 @@ async function expectPackagedApplicationStartupRejection({
   let processResult = null;
   let endpointObserved = false;
   const child = spawn(executable, args, {
-    cwd: dataDirectory,
+    cwd: dirname(dataDirectory),
     env: {
       ...environment,
       PORTMATE_NATIVE_SMOKE_DATA_DIR: dataDirectory,

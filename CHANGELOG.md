@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Native package runtime checks launch from the isolated parent of their
+  data directory, allowing Windows legacy migration to replace the target
+  without the test process pinning it as its working directory.
 - Terminal input cancellation regressions keep their TCP peer alive through
   setup and begin observation after the request timeout and lane release,
   preserving the 30 ms deadline and exact no-write assertion on Windows.

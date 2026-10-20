@@ -175,10 +175,10 @@ describe("native packaged runtime smoke", () => {
           );
           process.exit(91);
         }
-        // Windows does not allow removing the process working directory.
-        process.chdir(dirname(data));
         rmSync(data, { recursive: true });
         renameSync(legacy, data);
+        // Relative operations must still work after replacing the data directory.
+        writeFileSync("fixture-migration-cwd-check", "cwd alive");
       }
       const store = join(data, "portmate-store.sqlite3");
       const endpoint = join(data, "portmate-ipc.json");
@@ -207,6 +207,7 @@ describe("native packaged runtime smoke", () => {
     });
 
     expect(result.legacyAppDataMigrated).toBe(true);
+    expect(readFileSync(join(dirname(dataDirectory), "fixture-migration-cwd-check"), "utf8")).toBe("cwd alive");
     expect(result.endpointCredentialRotatedAfterMigration).toBe(true);
     expect(result.migration.store).toEqual(result.second.store);
     expect(result.migration.endpointCredentialSha256).not.toBe(result.second.endpointCredentialSha256);
