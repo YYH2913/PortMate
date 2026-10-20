@@ -121,7 +121,11 @@ export function parseLatestSdkVersion(responseFormat, body) {
       return requireStableVersion(JSON.parse(body).version, "RubyGems latest version");
     case "maven": {
       const release = /<release>\s*([^<]+?)\s*<\/release>/.exec(body)?.[1];
-      return requireStableVersion(release, "Maven release version");
+      // Maven's release pointer can name a milestone or RC. Audit the newest
+      // stable version from its catalog instead of requiring that pointer.
+      const versions = [...body.matchAll(/<version>\s*([^<]+?)\s*<\/version>/g)]
+        .map((match) => match[1]);
+      return newestStableVersion([release, ...versions]);
     }
     case "nuget":
       return newestStableVersion(JSON.parse(body).versions ?? []);

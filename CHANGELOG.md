@@ -36,6 +36,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP SDK freshness checks select the newest stable Maven catalog version
+  even when its release pointer names a milestone; missing stable coverage
+  still fails the audit.
 - MCP Ruby compatibility includes SDK 1.8.0 with pinned client dependencies
   for both stdio and HTTP transports.
 - MCP Python compatibility covers SDK 2.3.0 with exact POSIX and Windows

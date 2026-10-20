@@ -46,6 +46,22 @@ describe("MCP SDK freshness audit", () => {
     );
   });
 
+  it("selects the newest stable Maven entry when release points to a milestone", () => {
+    const metadata = `<metadata><versioning><release>3.0.0-M1</release><versions>
+      <version>2.10.0</version><version>3.0.0-M1</version><version>2.9.0</version>
+      <version>2.11.0-RC1</version>
+    </versions></versioning></metadata>`;
+    expect(parseLatestSdkVersion("maven", metadata)).toBe("2.10.0");
+    expect(() => assertLatestCovered({ label: "Java", matrixFile: "java.json" }, ["2.9.0"],
+      parseLatestSdkVersion("maven", metadata))).toThrow("registry latest 2.10.0 is absent");
+  });
+
+  it("rejects a Maven catalog with no stable releases", () => {
+    expect(() => parseLatestSdkVersion("maven", `<metadata><versioning>
+      <release>3.0.0-M1</release><versions><version>3.0.0-M1</version></versions>
+    </versioning></metadata>`)).toThrow("did not contain a stable semantic version");
+  });
+
   it("retries transient registry failures within the configured bound", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response("busy", { status: 503 }))
