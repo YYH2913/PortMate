@@ -1,8 +1,20 @@
 # PortMate 当前进度与下一阶段目标
 
-更新日期：2026-10-08（v0.1.12；历史审查和验收保留各自日期）
+更新日期：2026-10-19（v0.1.13；历史审查和验收保留各自日期）
 
 本文档对照 [PLAN.md](./PLAN.md) 的最终目标、[README.md](./README.md) 的当前说明、以及当前源码实现，单独记录 PortMate 的实际完成度、缺口和下一阶段目标。
+
+## v0.1.13 更新
+
+当前源码的 npm、Tauri、六个 PortMate 自有 Cargo package、锁文件和 vcpkg manifest
+统一为 `0.1.13`，中英文 README 同步显示当前版本及便携构建路径。本轮累积的发送换行符、
+网卡地址选择、传输性能、会话名称同步及原生 CI 修复已归档到
+[CHANGELOG.md](./CHANGELOG.md) 的 0.1.13 条目。
+
+版本调整前的 `0.1.12` 主线提交 `00b4cedf` 已通过
+[Native CI 全部六项检查](https://github.com/YYH2913/PortMate/actions/runs/39376186871)，
+包括 Windows MSI/NSIS 构建、安装包生命周期、原生凭据和 SDK 兼容验证。
+该轮构建与校验记录位于本地 `tmp/native-ci-review/`；现有安装包对应 `0.1.12`。
 
 ## v0.1.12 更新
 

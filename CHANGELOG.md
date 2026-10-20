@@ -6,6 +6,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-10-19
+
 ### Added
 
 - TFTP timing regressions separate console setup from DATA/ACK pacing and
@@ -25,6 +27,12 @@ or an unsigned artifact is not a production release. The complete release gates 
   byte-exact; repeated/broadcast sends use the same content and ending snapshot.
   Each option explains its meaning and escape sequence (e.g. CR is carriage
   return, `\r`); the selected option also exposes its full label on hover.
+
+### Changed
+
+- Align npm, Tauri, all six PortMate-owned Cargo packages, lock files, and
+  the vcpkg manifest at 0.1.13; update the current README build paths and
+  archive this release's accumulated changes.
 
 ### Fixed
 
@@ -243,6 +251,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Replace yanked serialport 4.10.0 with 4.10.1. Refresh exact maintenance-warning
   reviews for the FreeBSD keyring backend and remove withdrawn GTK3 advisories;
   new or changed findings and yanked dependencies continue to fail the gate.
+
+### Migration
+
+- Preserve the existing application data directory and vault credentials when
+  upgrading. Startup continues to perform checked legacy migration and reject
+  conflicting Store locations; upgrade and rollback gates remain in RELEASE.md.
 
 ## [0.1.12] - 2026-10-08
 

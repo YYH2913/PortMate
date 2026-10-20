@@ -3,15 +3,22 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
-The local `0.1.12` Windows GNU x86-64 portable build is recorded in
+The current source version is `0.1.13`; its accumulated changes are recorded in
+[CHANGELOG.md](./CHANGELOG.md). The preceding `0.1.12` commit `00b4cedf` passed all
+six [Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/39376186871),
+including native Windows MSI/NSIS runtime and installer checks. Its artifacts and
+verification records are retained under the ignored `tmp/native-ci-review/` directory.
+Version `0.1.13` needs its own build artifacts and verification records.
+
+The earlier local `0.1.12` Windows GNU x86-64 portable build is recorded in
 `tmp/windows-release-0.1.12-2026-10-08.md`, including the source revision, payload
 hashes, PE/version/frontend checks, and executed tests. Files under `tmp/` are local
 review and build records, are ignored by Git, and are not included in commits.
-This version includes the centralized `test/` layout and newly covered native diagnostic
+That version includes the centralized `test/` layout and newly covered native diagnostic
 translations. The optional SSH/Tmux automatic-reconnect fingerprint bypass introduced
 in 0.1.11 is retained; its earlier local function-by-function recheck is in
 `tmp/reconnect-host-key-review-0.1.11-2026-10-07.md`.
-Native Windows runtime, installer, and signing acceptance remain pending.
+Signing acceptance remains pending.
 
 ## Version And Source
 
