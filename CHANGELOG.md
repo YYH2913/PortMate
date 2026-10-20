@@ -36,6 +36,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP Go compatibility includes SDK 1.8.0 with a locked dependency graph
+  for both stdio and HTTP transports.
 - MCP SDK freshness checks select the newest stable Maven catalog version
   even when its release pointer names a milestone; missing stable coverage
   still fails the audit.
