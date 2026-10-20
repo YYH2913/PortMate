@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Frontend test concurrency reserves half the available CPU capacity and
+  remains capped at four workers. Small native runners leave headroom for
+  transforms and child processes without changing test isolation or deadlines.
 - Native package runtime checks launch from the isolated parent of their
   data directory, allowing Windows legacy migration to replace the target
   without the test process pinning it as its working directory.
