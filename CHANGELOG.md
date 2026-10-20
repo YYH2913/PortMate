@@ -36,6 +36,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- MCP Python compatibility covers SDK 2.3.0 with exact POSIX and Windows
+  dependency snapshots, including the required Windows-only dependencies.
 - Frontend test concurrency reserves half the available CPU capacity and
   remains capped at four workers. Small native runners leave headroom for
   transforms and child processes without changing test isolation or deadlines.
