@@ -4,8 +4,7 @@ import {
   mkdirSync,
   readdirSync,
 } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   findUniqueRegularFile,
@@ -17,6 +16,7 @@ import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 import { runSilentNsis } from "./windows-nsis-silent.mjs";
+import { extractWindowsMsi } from "./windows-msi-admin-extract.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -53,15 +53,16 @@ let failure;
 try {
   mkdirSync(msiRoot, { recursive: true });
   const msiLog = join(auditRoot, "msi-extract.log");
-  run("msiexec.exe", [
-    "/a",
-    msi,
-    "/qn",
-    "/norestart",
-    "/l*v",
-    msiLog,
-    `TARGETDIR=${msiRoot}`,
-  ]);
+  console.log("Windows package check: MSI administrative extraction");
+  extractWindowsMsi({
+    installer: msi,
+    destination: msiRoot,
+    logPath: msiLog,
+    diagnosticLogPath: join(targetRoot, "native-ci", "windows-msi-extract.log"),
+    cwd: projectRoot,
+    environment: packageEnvironment,
+  });
+  console.log("Windows package check: verify extracted MSI payload");
   verifiedMsi = verifyWindowsPackageLayout({
     root: msiRoot,
     sourceMain,
@@ -69,6 +70,7 @@ try {
     sourceLicense,
     sourceThirdPartyLicense,
   });
+  console.log("Windows package check: MSI sidecar watchdog");
   sidecarWatchdogSmokes.push({
     package: "MSI",
     result: await smokePackagedSidecarParentWatchdog({
@@ -77,6 +79,7 @@ try {
       environment: packageEnvironment,
     }),
   });
+  console.log("Windows package check: MSI application lifecycle");
   runtimeSmokes.push({
     package: "MSI",
     result: await smokePackagedApplicationLifecycle({
@@ -87,6 +90,7 @@ try {
     }),
   });
 
+  console.log("Windows package check: NSIS silent installation");
   runSilentNsis({
     executable: nsis,
     installationDirectory: nsisRoot,
@@ -94,6 +98,7 @@ try {
     cwd: projectRoot,
     environment: packageEnvironment,
   });
+  console.log("Windows package check: verify installed NSIS payload");
   verifiedNsis = verifyWindowsPackageLayout({
     root: nsisRoot,
     sourceMain,
@@ -101,6 +106,7 @@ try {
     sourceLicense,
     sourceThirdPartyLicense,
   });
+  console.log("Windows package check: NSIS sidecar watchdog");
   sidecarWatchdogSmokes.push({
     package: "NSIS",
     result: await smokePackagedSidecarParentWatchdog({
@@ -109,6 +115,7 @@ try {
       environment: packageEnvironment,
     }),
   });
+  console.log("Windows package check: NSIS application lifecycle");
   runtimeSmokes.push({
     package: "NSIS",
     result: await smokePackagedApplicationLifecycle({
@@ -132,6 +139,7 @@ try {
 } finally {
   if (existsSync(expectedUninstaller)) {
     try {
+      console.log("Windows package check: NSIS silent uninstallation");
       runSilentNsis({
         executable: expectedUninstaller,
         installationDirectory: nsisRoot,
@@ -192,19 +200,6 @@ function findSingleArtifact(directory, extension, label) {
 function assertNsisPayloadRemoved(payload) {
   for (const path of [payload.main, payload.sidecar, payload.license, payload.thirdPartyLicense]) {
     if (existsSync(path)) throw new Error(`NSIS uninstall left an application payload file: ${path}`);
-  }
-}
-
-function run(command, args) {
-  const result = spawnSync(command, args, {
-    cwd: projectRoot,
-    env: packageEnvironment,
-    stdio: "inherit",
-    windowsHide: true,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`${basename(command)} failed with exit code ${result.status ?? 1}`);
   }
 }
 

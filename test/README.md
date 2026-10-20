@@ -69,6 +69,11 @@ Maven 与 .NET SDK 引导在 Windows 上明确调用 `%SystemRoot%\System32\tar.
 避免 Ruby/MSYS2 的 GNU tar 把盘符当成远程主机或无法解包 ZIP。归档仍先做 SHA-512
 校验，解包失败/超时仍会中止；不重排全局 PATH 或改用未校验的工具下载。
 
+Windows 安装包检查单独限制 MSI 行政解包期限，并把原始 MSI 日志保留在
+`target/native-ci/windows-msi-extract.log`，随 CI diagnostics 上传。错误输出包含有界的
+UTF-8/UTF-16 日志尾部，安装包生命周期也逐阶段打印进度，避免整项 job 超时后无法定位。
+Windows 包验证步骤另设 20 分钟上限，为后续始终执行的诊断/构建产物上传留出时间。
+
 ## SFTP 性能对照 / SFTP performance probes
 
 本地 OpenSSH 组件矩阵是显式启用的 ignored 测试，涵盖 russh/libssh 上传、

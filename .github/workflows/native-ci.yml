@@ -312,6 +312,7 @@ jobs:
           node scripts/ci-command-log.mjs target/native-ci/linux-package.log npm run test:linux-package'
       - name: Verify Windows packages, restart/migration, and conflict rejection
         if: runner.os == 'Windows'
+        timeout-minutes: 20
         run: node scripts/ci-command-log.mjs target/native-ci/windows-package.log npm run test:windows-package
       - name: Verify macOS packages, restart/migration, and conflict rejection
         if: runner.os == 'macOS'

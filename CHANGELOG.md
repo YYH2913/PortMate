@@ -28,6 +28,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows package checks bound MSI administrative extraction, retain its
+  original installer log with CI diagnostics, and report package lifecycle
+  phases. A separate package-step deadline leaves time to upload diagnostics
+  when a native check stalls.
 - Windows Maven and .NET SDK bootstraps use the operating system's native
   tar instead of Ruby/MSYS2's PATH entry, preserving drive-letter archive
   paths and ZIP support without relaxing checksum or extraction-failure checks.
