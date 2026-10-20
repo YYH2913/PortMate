@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Native CI retains Rust dependency caches after failed native checks to
+  shorten subsequent verification runs. Workspace outputs stay excluded and
+  every test, SDK and package validation still runs.
 - Windows package checks bound MSI administrative extraction, retain its
   original installer log with CI diagnostics, and report package lifecycle
   phases. A separate package-step deadline leaves time to upload diagnostics
