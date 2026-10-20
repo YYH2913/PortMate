@@ -15,6 +15,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { windowsBundleReference } from "./windows-bundle-reference.mjs";
 
 export function verifyWindowsPackageLayout({
   root,
@@ -22,6 +23,7 @@ export function verifyWindowsPackageLayout({
   sourceSidecar,
   sourceLicense,
   sourceThirdPartyLicense,
+  bundleType,
 }) {
   const files = inspectPortableTree(root);
   const main = findUniqueRegularFile(files, "portmate.exe", { caseInsensitive: true });
@@ -36,7 +38,15 @@ export function verifyWindowsPackageLayout({
     join(dirname(main), "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"),
     true,
   );
-  assertSameFile(sourceMain, main, "Windows main executable");
+  let mainBundleReference;
+  if (bundleType !== undefined) {
+    assertNonEmptyRegularFile(sourceMain, "Windows main executable source");
+    const { bytes, ...metadata } = windowsBundleReference(readFileSync(sourceMain), bundleType);
+    assertSameFile(sourceMain, main, "Windows main executable", bytes);
+    mainBundleReference = { bundleType, ...metadata };
+  } else {
+    assertSameFile(sourceMain, main, "Windows main executable");
+  }
   assertSameFile(sourceSidecar, sidecar, "Windows MCP sidecar");
   assertSameFile(sourceLicense, license, "Windows license");
   assertSameFile(sourceThirdPartyLicense, thirdPartyLicense, "Windows JetBrains Mono license");
@@ -48,6 +58,7 @@ export function verifyWindowsPackageLayout({
     sidecar,
     license,
     thirdPartyLicense,
+    ...(mainBundleReference ? { mainBundleReference } : {}),
     sha256: {
       main: sha256File(main),
       sidecar: sha256File(sidecar),
@@ -206,10 +217,11 @@ export function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function assertSameFile(expected, actual, label) {
+function assertSameFile(expected, actual, label, expectedBytes) {
   assertNonEmptyRegularFile(expected, `${label} source`);
   assertNonEmptyRegularFile(actual, label);
-  const expectedHash = sha256File(expected);
+  const expectedHash = expectedBytes === undefined
+    ? sha256File(expected) : createHash("sha256").update(expectedBytes).digest("hex");
   const actualHash = sha256File(actual);
   if (actualHash !== expectedHash) {
     throw new Error(

@@ -55,6 +55,42 @@ describe("native package layouts", () => {
     expect(verified.sha256.main).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it.each([["msi", "MSI"], ["nsis", "NSS"]])("verifies the exact %s-specific main against the final NSIS release reference", (bundleType, marker) => {
+    const fixture = windowsFixture();
+    write(fixture.sourceMain, "head|__TAURI_BUNDLE_TYPE_VAR_NSS|tail");
+    write(join(fixture.applicationDirectory, "portmate.exe"), `head|__TAURI_BUNDLE_TYPE_VAR_${marker}|tail`);
+    const verified = verifyWindowsPackageLayout({ ...fixture, bundleType });
+    expect(verified.mainBundleReference).toEqual({ bundleType, markerOffset: 5, sourceType: "NSS", expectedType: marker });
+    expect(verified.sha256.main).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each([
+    "HEAD|__TAURI_BUNDLE_TYPE_VAR_MSI|tail",
+    "head|__TAURI_BUNDLE_TYPE_VAR_MSI|changed tail",
+    "head|__TAURI_BUNDLE_TYPE_VAR_NSS|tail",
+    "head|__TAURI_BUNDLE_TYPE_VAR_MSI|tail extra bytes",
+  ])("rejects any other main-byte difference in an MSI payload: %s", payload => {
+    const fixture = windowsFixture();
+    write(fixture.sourceMain, "head|__TAURI_BUNDLE_TYPE_VAR_NSS|tail");
+    write(join(fixture.applicationDirectory, "portmate.exe"), payload);
+    expect(() => verifyWindowsPackageLayout({ ...fixture, bundleType: "msi" })).toThrow("Windows main executable SHA-256");
+  });
+
+  it("retains exact source-byte equality for portable payloads", () => {
+    const fixture = windowsFixture();
+    write(fixture.sourceMain, "head|__TAURI_BUNDLE_TYPE_VAR_NSS|tail");
+    write(join(fixture.applicationDirectory, "portmate.exe"), "head|__TAURI_BUNDLE_TYPE_VAR_MSI|tail");
+    expect(() => verifyWindowsPackageLayout(fixture)).toThrow("Windows main executable SHA-256");
+  });
+
+  it("keeps sidecar identity strict for package-specific main executables", () => {
+    const fixture = windowsFixture();
+    write(fixture.sourceMain, "head|__TAURI_BUNDLE_TYPE_VAR_NSS|tail");
+    write(join(fixture.applicationDirectory, "portmate.exe"), "head|__TAURI_BUNDLE_TYPE_VAR_MSI|tail");
+    write(join(fixture.applicationDirectory, "portmate-mcp.exe"), "wrong sidecar");
+    expect(() => verifyWindowsPackageLayout({ ...fixture, bundleType: "msi" })).toThrow("Windows MCP sidecar SHA-256");
+  });
+
   it("rejects a missing Windows sidecar", () => {
     const fixture = windowsFixture();
     rmSync(join(fixture.applicationDirectory, "portmate-mcp.exe"));

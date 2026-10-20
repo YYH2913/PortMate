@@ -65,6 +65,7 @@ try {
   console.log("Windows package check: verify extracted MSI payload");
   verifiedMsi = verifyWindowsPackageLayout({
     root: msiRoot,
+    bundleType: "msi",
     sourceMain,
     sourceSidecar,
     sourceLicense,
@@ -101,6 +102,7 @@ try {
   console.log("Windows package check: verify installed NSIS payload");
   verifiedNsis = verifyWindowsPackageLayout({
     root: nsisRoot,
+    bundleType: "nsis",
     sourceMain,
     sourceSidecar,
     sourceLicense,
@@ -170,7 +172,7 @@ console.log(JSON.stringify({
     "unique main executable, MCP sidecar, application license, and JetBrains Mono license",
     "PE32+ x86-64 GUI main executable with embedded production frontend assets",
     "non-empty regular payload files",
-    "release-binary and both license SHA-256 equality",
+    "package-specific main executable, MCP sidecar, and both license SHA-256 equality",
     "portable package symlinks",
     "MSI administrative extraction",
     "NSIS silent install and uninstall",

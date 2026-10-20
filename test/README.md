@@ -74,6 +74,10 @@ Windows 安装包检查单独限制 MSI 行政解包期限，并把原始 MSI �
 UTF-8/UTF-16 日志尾部，安装包生命周期也逐阶段打印进度，避免整项 job 超时后无法定位。
 Windows 包验证步骤另设 20 分钟上限，为后续始终执行的诊断/构建产物上传留出时间。
 
+Tauri 按包把主程序唯一的 `__TAURI_BUNDLE_TYPE_VAR_` 后三字节写成 `MSI`/`NSS`。
+安装包检查按显式包类型从同一 release EXE 构造期望字节，再计算整文件 SHA-256；
+标记缺失/重复/未知或其他字节变化均失败。Portable ZIP 仍与原始 EXE 逐字节匹配。
+
 ## SFTP 性能对照 / SFTP performance probes
 
 本地 OpenSSH 组件矩阵是显式启用的 ignored 测试，涵盖 russh/libssh 上传、

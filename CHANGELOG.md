@@ -28,6 +28,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows package checks construct the exact MSI/NSIS main executable
+  reference from Tauri's fixed bundle-type field. Full-file hashes now verify
+  each package correctly when Tauri patches the final build for the next bundle.
 - Native CI retains Rust dependency caches after failed native checks to
   shorten subsequent verification runs. Workspace outputs stay excluded and
   every test, SDK and package validation still runs.
