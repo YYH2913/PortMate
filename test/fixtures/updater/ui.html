@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Updater UI regression fixture</title></head><body><div id="root"></div><script type="module">
+import { createElement } from "react";
+import { createRoot } from "react-dom/client";
+import UpdateDialog from "/src/UpdateDialog.tsx";
+import { setLanguagePreference } from "/src/i18n.ts";
+import "/src/styles.css";
+setLanguagePreference("en");
+const root = createRoot(document.getElementById("root"));
+root.render(createElement(UpdateDialog, { onClose() { window.closedUpdater = true; root.render(null); } }));
+</script></body></html>

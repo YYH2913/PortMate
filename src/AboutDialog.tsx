@@ -33,7 +33,7 @@ const openSourceComponents = [
   { name: "JetBrains Mono", role: "bundled-monospace-font", license: "SIL OFL-1.1", url: "https://github.com/JetBrains/JetBrainsMono" },
 ] as const;
 
-export default function AboutDialog({ onClose }: { onClose: () => void }) {
+export default function AboutDialog({ onClose, onCheckUpdates }: { onClose: () => void; onCheckUpdates?: () => void }) {
   useLocale();
   const version = typeof packageJson.version === "string" ? packageJson.version : "unknown";
 
@@ -132,7 +132,7 @@ export default function AboutDialog({ onClose }: { onClose: () => void }) {
           <p className="about-notice">{t("portmate-is-under-active-development-verify-security-compatibility-and")}</p>
         </div>
 
-        <footer className="about-actions"><button type="button" onClick={onClose}>{t("close")}</button></footer>
+        <footer className="about-actions"><button type="button" onClick={onCheckUpdates} disabled={!onCheckUpdates}>{t("check-for-updates")}</button><button type="button" onClick={onClose}>{t("close")}</button></footer>
       </section>
     </div>
   );

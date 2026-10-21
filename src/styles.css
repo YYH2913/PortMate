@@ -10415,9 +10415,28 @@ fieldset label {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 18px 14px;
   border-top: 1px solid var(--line);
 }
+
+.update-backdrop { z-index: 135; padding: 16px; }
+.update-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); grid-template-rows: 46px minmax(0, 1fr) auto; }
+.update-content { min-height: 0; overflow: auto; padding: 20px 24px; line-height: 1.6; }
+.update-current { color: var(--muted); }
+.update-status { font-weight: 600; }
+.update-content progress { width: 100%; accent-color: var(--cyan); }
+.update-notes { margin-top: 18px; }
+.update-notes summary { cursor: pointer; }
+.update-notes pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; color: var(--muted); }
+.update-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #fda4af; }
+.update-manual { color: var(--muted); }
+.update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); }
+.update-actions > span { flex: 1; }
+.update-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); background: var(--control); color: var(--text); cursor: pointer; }
+.update-actions button.primary { border-color: var(--cyan); color: var(--cyan); }
+.update-actions button:hover:not(:disabled) { background: var(--control-hover); }
+.update-dialog button:disabled { opacity: 0.5; cursor: default; }
 
 .about-actions button {
   min-width: 92px;

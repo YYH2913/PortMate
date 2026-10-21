@@ -60,6 +60,7 @@ export const menuGroups = [
       "terminal-settings",
       "key-manager",
       "log-manager",
+      "check-for-updates",
       "about-portmate",
     ],
   },
@@ -91,7 +92,7 @@ const menuSections = {
   tools: [
     { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "tmux", "serial-analyzer", "sysmon"] },
     { label: "automation", items: ["one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge"] },
-    { label: "management", items: ["terminal-settings", "key-manager", "log-manager", "about-portmate"] },
+    { label: "management", items: ["terminal-settings", "key-manager", "log-manager", "check-for-updates", "about-portmate"] },
   ],
 } as const satisfies Record<(typeof menuGroups)[number]["label"], readonly MenuSection[]>;
 
