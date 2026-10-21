@@ -6,8 +6,14 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-10-21
+
 ### Added
 
+- Native CI archives verified Windows/Linux x64 and Apple Silicon portable
+  packages, plus the macOS app archive required for signed in-app updates.
+  Windows portable packages retain their manual-upgrade identity and receive
+  separate native application/sidecar lifecycle checks.
 - Local Windows test MSI rebuilds on Linux can reuse a checksum-verified native
   installer layout with the current production application, sidecar and WebView2
   loader. Package contents, hashes and preserved installer resources are verified.
@@ -37,6 +43,22 @@ or an unsigned artifact is not a production release. The complete release gates 
   scrolling, typography and keyboard access within the update dialog.
 - Preserve the signed updater test payload byte for byte during Windows Git
   checkout so automatic CRLF conversion cannot invalidate its signature.
+
+### Security
+
+- Updater packages must pass the embedded public key check and carry the exact
+  announced version in the signed trusted comment. Release URLs are bound to the
+  selected GitHub repository, tag, architecture and installer kind.
+- Release Markdown excludes executable HTML/URLs and opens external links with
+  isolated browsing context. Download/verification failures leave sessions running.
+
+### Migration
+
+- Existing profiles, sessions, stores and vault credentials keep the same app-data
+  identity. Confirmed updates flush state and stop owned runtimes before installation.
+- The signed 0.1.12 updater test MSI is the upgrade baseline for this release.
+  Earlier 0.1.13 packages do not include the updater; install this version once
+  manually to enable signed in-app updates for subsequent releases.
 
 ## [0.1.13] - 2026-10-19
 

@@ -3,12 +3,14 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
-The current source version is `0.1.13`; its accumulated changes are recorded in
+The current source version is `0.1.14`; its accumulated changes are recorded in
 [CHANGELOG.md](./CHANGELOG.md). The preceding `0.1.12` commit `00b4cedf` passed all
 six [Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/39376186871),
 including native Windows MSI/NSIS runtime and installer checks. Its artifacts and
 verification records are retained under the ignored `tmp/native-ci-review/` directory.
-Version `0.1.13` needs its own build artifacts and verification records.
+Version `0.1.14` needs its own build artifacts and verification records.
+The signed updater-enabled `0.1.12` test installer is the baseline for the
+0.1.14 upgrade test; previously published 0.1.13 packages remain unchanged.
 
 The earlier local `0.1.12` Windows GNU x86-64 portable build is recorded in
 `tmp/windows-release-0.1.12-2026-10-08.md`, including the source revision, payload
@@ -90,6 +92,11 @@ This is a local test packaging path; native Windows lifecycle checks remain requ
 before publishing a release. Existing signed MSI templates are rejected.
 
 ### Signing and publication
+
+After native package checks pass, Native CI also archives the portable packages
+and the macOS `.app.tar.gz` updater payload under `target/release/bundle/`.
+Windows portable executables carry the unknown bundle marker so they continue
+to offer manual upgrades instead of selecting an installer update.
 
 Update checks query the repository's latest stable GitHub release. The selected
 release must include `latest.json`, and each platform entry must point to an asset
