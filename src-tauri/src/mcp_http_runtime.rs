@@ -447,6 +447,8 @@ fn start_mcp_http_process(
         .mcp_http_process
         .lock()
         .map_err(|error| error.to_string())?;
+    #[cfg(any(feature = "desktop", test))]
+    update_commands::ensure_not_updating(state)?;
     reap_mcp_http_process(&mut registry)?;
     if registry.process.is_some() {
         return Err("MCP HTTP 服务已经由 PortMate 托管运行".to_string());

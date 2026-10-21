@@ -9,6 +9,18 @@
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "updater": {
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNGNTUxOThFNDE2OEI1MjEKUldRaHRXaEJqaGxWUDB1YytSRFE1WGs2YTRqeUlmcEVKQ21PRXdlOUJua0o1RnNkUzc3Wjk2UDUK",
+      "endpoints": [
+        "https://github.com/YYH2913/PortMate/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "app": {
     "windows": [
       {

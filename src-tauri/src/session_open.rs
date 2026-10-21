@@ -76,6 +76,8 @@ pub(super) fn register_session_open_cancellation(
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "session open cancellation registry poisoned".to_string())?;
+    #[cfg(any(feature = "desktop", test))]
+    update_commands::ensure_not_updating(state)?;
     cancellations.retain(|_, pending| {
         pending.retain(|cancellation| {
             cancellation

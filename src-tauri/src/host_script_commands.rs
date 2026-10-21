@@ -134,6 +134,8 @@ fn check_run(
     request: &RunHostScriptRequest,
     client: Option<&str>,
 ) -> Result<CustomScript, String> {
+    #[cfg(any(feature = "desktop", test))]
+    update_commands::ensure_not_updating(state)?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     check_run_in_store(&store, request, client)
 }
@@ -177,6 +179,8 @@ pub(super) async fn run_host_script_inner(
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .map_err(|e| e.to_string())?;
+        #[cfg(any(feature = "desktop", test))]
+        update_commands::ensure_not_updating(state)?;
         if runs.contains_key(&key) {
             return Err("duplicate host script run ID".into());
         }

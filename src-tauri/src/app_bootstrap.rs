@@ -20,6 +20,8 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update_commands::UpdateRuntime::default())
         .setup(|app| {
             // Tauri calls setup on RunEvent::Ready, after build() has returned,
             // and panics if this callback returns Err. Report and exit here so
@@ -155,7 +157,9 @@ pub fn run() {
             tunnel_commands::create_tunnel,
             tunnel_commands::list_tunnels,
             tunnel_commands::stop_tunnel,
-            mcp_commands::mcp_manifest
+            mcp_commands::mcp_manifest,
+            update_commands::check_for_updates,
+            update_commands::install_update,
         ])
         .build(tauri::generate_context!());
     let app = match app {
@@ -166,53 +170,52 @@ pub fn run() {
         }
     };
     app.run(|app_handle, event| {
-            if let tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Destroyed,
-                ..
-            } = &event
-            {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    // Retire state after destruction, not CloseRequested (which
-                    // can be cancelled), without invalidating another session view.
-                    terminal_input_stream::clear_owner_streams(&state.store_path, label);
-                    paced_send::clear_owner(&state.store_path, label);
-                    host_script_commands::cancel_owner(&state.store_path, Some(&format!("window:{label}")));
-                    session_credentials::clear_session_credentials_for_owner(
-                        state.inner(),
-                        label,
-                    );
-                }
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } = &event
+        {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                // Retire state after destruction, not CloseRequested (which
+                // can be cancelled), without invalidating another session view.
+                terminal_input_stream::clear_owner_streams(&state.store_path, label);
+                paced_send::clear_owner(&state.store_path, label);
+                host_script_commands::cancel_owner(
+                    &state.store_path,
+                    Some(&format!("window:{label}")),
+                );
+                session_credentials::clear_session_credentials_for_owner(state.inner(), label);
             }
-            if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    host_script_commands::cancel_owner(&state.store_path, None);
-                    shutdown_mcp_http_runtime(state.inner());
-                    shutdown_ipc_publication(state.inner());
-                    shutdown_tmux_controls(state.inner());
-                    shutdown_serial_runtimes(state.inner());
-                    shutdown_interactive_write_queues();
-                    shutdown_inbound_log_queues(Duration::from_secs(5));
-                    shutdown_system_event_sink(state.inner());
-                    if let Ok(store) = state.inner().store.lock() {
-                        if let Err(error) = persist_applied_store(
-                            &store,
-                            &state.inner().store_path,
-                            "terminal log shutdown flush",
-                        ) {
-                            eprintln!("PortMate: terminal log shutdown flush failed: {error}");
-                        }
-                    }
-                    if let Err(error) =
-                        flush_json_compatibility_snapshots(Duration::from_secs(5))
-                    {
-                        eprintln!(
-                            "PortMate: JSON compatibility snapshot did not flush during shutdown: {error}"
-                        );
-                    }
-                }
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                cleanup_before_process_exit(state.inner());
             }
-        });
+        }
+    });
+}
+
+/// Stop owned resources and flush data during a normal runtime exit.
+fn cleanup_before_process_exit(state: &AppState) {
+    host_script_commands::cancel_owner(&state.store_path, None);
+    shutdown_mcp_http_runtime(state);
+    shutdown_ipc_publication(state);
+    shutdown_tmux_controls(state);
+    shutdown_serial_runtimes(state);
+    shutdown_interactive_write_queues();
+    shutdown_inbound_log_queues(Duration::from_secs(5));
+    shutdown_system_event_sink(state);
+    if let Ok(store) = state.store.lock() {
+        if let Err(error) =
+            persist_applied_store(&store, &state.store_path, "terminal log shutdown flush")
+        {
+            eprintln!("PortMate: terminal log shutdown flush failed: {error}");
+        }
+    }
+    if let Err(error) = flush_json_compatibility_snapshots(Duration::from_secs(5)) {
+        eprintln!("PortMate: JSON compatibility snapshot did not flush during shutdown: {error}");
+    }
 }
 
 fn preflight_native_smoke_application() -> Result<(), Box<dyn std::error::Error>> {

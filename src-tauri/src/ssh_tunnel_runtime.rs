@@ -26,6 +26,8 @@ pub(super) async fn start_tunnel_runtime_with_validation(
     expected_runtime_id: Option<&str>,
     commit_validation: Option<CommitValidation>,
 ) -> Result<(TunnelSpec, Option<std::net::SocketAddr>, TunnelRuntimeOwner), String> {
+    #[cfg(any(feature = "desktop", test))]
+    update_commands::ensure_not_updating(state)?;
     if tunnel.egress == TunnelEgress::PortmateHost {
         return start_portmate_host_tunnel_runtime_with_validation(
             state,

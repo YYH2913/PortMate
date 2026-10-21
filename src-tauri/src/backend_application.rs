@@ -26,6 +26,10 @@ mod session_terminal;
 mod state;
 mod terminal_byte_events;
 mod terminal_input_stream;
+#[cfg(any(feature = "desktop", test))]
+mod update_commands;
+#[cfg(any(feature = "desktop", test))]
+mod update_policy;
 mod webkit_runtime;
 
 use app_data_migration::*;

@@ -142,6 +142,8 @@ async fn start_transfer_inner_with_context(
     required_ssh_runtime_id: Option<&str>,
     commit_validation: Option<CommitValidation>,
 ) -> Result<TransferTask, String> {
+    #[cfg(any(feature = "desktop", test))]
+    update_commands::ensure_not_updating(state)?;
     let profile = {
         let store = state.store.lock().map_err(|error| error.to_string())?;
         store
@@ -192,6 +194,8 @@ async fn start_transfer_inner_with_context(
     let queue_result = match state.store.lock() {
         Ok(mut store) => {
             commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
+                #[cfg(any(feature = "desktop", test))]
+                update_commands::ensure_not_updating(state)?;
                 ensure_transfer_profile_exists(next_store, &request.session_id)?;
                 ensure_transfer_queue_capacity(next_store, &request.session_id, 1)?;
                 next_store.record_transfer(task.clone());

@@ -383,6 +383,8 @@ struct InboundLogQueue {
 type InboundLogQueues = Mutex<HashMap<(PathBuf, String), InboundLogQueue>>;
 
 static INBOUND_LOG_QUEUES: OnceLock<InboundLogQueues> = OnceLock::new();
+type InboundLogDrains = Mutex<Vec<(PathBuf, Arc<InboundLogQueueState>)>>;
+static INBOUND_LOG_DRAINS: OnceLock<InboundLogDrains> = OnceLock::new();
 static INBOUND_LOG_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
 fn enqueue_inbound_log_persistence(
@@ -528,32 +530,69 @@ async fn persist_inbound_log_checkpoint(store: &Weak<Mutex<SessionStore>>, path:
 }
 
 pub(super) fn shutdown_inbound_log_queues(timeout: Duration) {
+    let _ = finish_inbound_log_queues(None, timeout, true);
+}
+
+pub(super) fn flush_inbound_log_queues(store_path: &Path, timeout: Duration) -> Result<(), String> {
+    finish_inbound_log_queues(Some(store_path), timeout, false)
+}
+
+fn finish_inbound_log_queues(
+    store_path: Option<&Path>,
+    timeout: Duration,
+    stop_accepting: bool,
+) -> Result<(), String> {
     let queues = INBOUND_LOG_QUEUES
         .get()
         .map(|queues| {
             let mut queues = queues
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
-            std::mem::take(&mut *queues)
+            if stop_accepting {
+                INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+            }
+            queues
+                .extract_if(|(path, _), _| store_path.is_none_or(|expected| path == expected))
+                .collect::<HashMap<_, _>>()
         })
         .unwrap_or_else(|| {
-            INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+            if stop_accepting {
+                INBOUND_LOG_ACCEPTING.store(false, Ordering::SeqCst);
+            }
             HashMap::new()
         });
     let deadline = Instant::now() + timeout;
-    let completions = queues
-        .into_values()
-        .map(|queue| {
+    let mut completions = queues
+        .into_iter()
+        .map(|((path, _), queue)| {
             drop(queue.sender);
-            queue.state
+            (path, queue.state)
         })
         .collect::<Vec<_>>();
-    for completion in completions {
+    let drains = INBOUND_LOG_DRAINS.get_or_init(|| Mutex::new(Vec::new()));
+    completions.extend(
+        drains
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extract_if(.., |(path, _)| {
+                store_path.is_none_or(|expected| path == expected)
+            }),
+    );
+    let mut pending = Vec::new();
+    for (path, completion) in completions {
         if !completion.wait_finished(deadline) {
             eprintln!("PortMate: inbound log queue did not flush before shutdown");
+            pending.push((path, completion));
         }
     }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    drains
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(pending);
+    Err("Inbound logs are still flushing; retry the update after disk activity completes".into())
 }
 
 fn persist_inbound_log_request(request: InboundLogPersistenceRequest) {
@@ -850,3 +889,7 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../test/rust/portmate/support/session_events.rs"
 ));
+
+#[cfg(test)]
+#[path = "../../test/rust/portmate/unit/update_log_flush.rs"]
+mod update_log_flush_tests;
