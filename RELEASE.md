@@ -65,6 +65,55 @@ Signing acceptance remains pending.
 - [ ] Confirm generated MCP commands contain the installed executable and exact Store path but no token or credential body.
 - [ ] Confirm Unix app-data endpoint/export files retain owner-only permissions where documented.
 
+## Signed In-App Updates
+
+Update checks query the repository's latest stable GitHub release. The selected
+release must include `latest.json`, and each platform entry must point to an asset
+in that exact release. The installed app pins `plugins.updater.pubkey` and requires
+the package signature's trusted comment to bind the announced version. Keep the
+corresponding private key in the release secret store and back it up securely;
+changing the embedded public key breaks updates for previously installed builds.
+This signature is separate from Windows Authenticode and Apple signing/notarization.
+
+1. Export `TAURI_SIGNING_PRIVATE_KEY_PATH` (or `TAURI_SIGNING_PRIVATE_KEY`) and, when
+   applicable, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the release secret store.
+   On CI, use repository secrets and restrict signed release builds to trusted refs.
+2. Run `npm run desktop:build:update` on the intended native architecture. The
+   additional updater config generates the macOS `.app.tar.gz` and signed bundle
+   artifacts. Normal `desktop:build` remains available for CI/development builds.
+3. Run the native package gates above. Create each platform's manifest **after**
+   all finalization/signing steps. The Linux AppImage finalizer changes its bytes;
+   the manifest command re-signs the final artifacts and verifies every signature
+   against the embedded public key before writing output.
+
+Use the same bilingual notes file, version/tag, and publication timestamp on all
+three native runners. For example, on Windows x64:
+
+```bash
+npm run release:update-manifest -- --artifacts target/release/bundle --target windows-x86_64 --notes release-notes.md --published-at 2026-10-20T00:00:00Z --output windows-update.json
+```
+
+Use `linux-x86_64` on Linux x64 and `darwin-aarch64` on Apple Silicon. A fragment
+keeps separate `windows-x86_64-msi`, `windows-x86_64-nsis`,
+`linux-x86_64-appimage`, and `darwin-aarch64-app` entries. Publish only architectures
+whose native package gates passed. DEB/RPM, Windows ZIP and Linux tar packages remain
+manual upgrades; do not map them to an incompatible updater target.
+
+Collect the platform fragments and merge them:
+
+```bash
+npm run release:update-manifest -- --merge windows-update.json --merge linux-update.json --merge macos-update.json --output latest.json
+```
+
+Upload the exact packages referenced by the manifest, their `.sig` files,
+`latest.json`, checksums, licenses and bilingual release notes to the matching
+stable GitHub Release. Upload the manifest after all package assets are present;
+keep tags, asset names and bytes immutable. Exercise a confirmed upgrade from a
+previous updater-enabled build on every supported native platform, including
+cancellation, invalid signature, declined elevation, failed installation, child
+process termination, data preservation and restart. A source build and mocked UI
+checks do not substitute for those installer lifecycle checks.
+
 ## Migration And Rollback
 
 - [x] `npm run test:release-upgrade` upgrades the versioned 0.1.0 app-data fixture with profiles, host keys, grants, logs, and workspace state, then saves and reloads it with the current code.

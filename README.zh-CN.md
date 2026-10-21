@@ -157,6 +157,19 @@ npm run dev
 
 SSH、Tmux、TCP、Telnet 和 Serial 的自动重连会在下一次尝试前重新读取最新 Profile。连接参数、认证策略、重连延迟或开关的修改不需要等待旧配置完成全部重试。
 
+### 检查更新
+
+选择 **工具 → 检查更新**，或在 **关于 PortMate** 中点击 **检查更新**。
+应用会检查 `YYH2913/PortMate` 的最新正式 Release，并显示更新说明。
+点击 **更新并重启** 并确认后开始下载。更新包的签名和版本验证成功后，
+PortMate 会关闭全部窗口和会话、取消传输和主机脚本、停止托管的本地进程，
+保存数据后安装更新并重启。请先保存终端中未保存的工作。
+
+应用内安装支持 Windows MSI/NSIS、Linux AppImage 和 macOS `.app`。
+DEB/RPM、Windows ZIP 和 Linux tar 便携版会提供版本页入口，请使用对应的包管理器或完整解压包升级。
+没有签名 `latest.json` 的 Release 同样采用手动升级。下载或签名验证失败时，会话继续运行。
+签名更新的发布流程见 [RELEASE.md](./RELEASE.md#signed-in-app-updates)。
+
 ## 桌面文件传输
 
 SFTP 可直接在桌面应用中使用，不要求启动 MCP Bridge，也不要求配置 MCP 授权。连接一个已启用 SFTP 的 SSH 或 Tmux 会话后，可以打开 `工作区 -> 文件管理器`，使用双栏浏览、拖放和批量传输；也可以打开 `工具 -> 传输任务`，手动填写来源和目标。

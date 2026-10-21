@@ -164,6 +164,21 @@ Full-screen terminal applications can request X10/VT200/SGR mouse tracking. Port
 
 SSH, Tmux, TCP, Telnet, and Serial reconnect workers reload the latest Profile before the next attempt. Changes to connection settings, authentication policy, reconnect delay, or the reconnect switch do not need to wait for an obsolete retry cycle to finish.
 
+### Check for Updates
+
+Choose **Tools → Check for updates**, or **Check for updates** in **About PortMate**.
+PortMate checks the latest stable release in `YYH2913/PortMate` and shows its notes.
+Choose **Update and restart** and confirm to download the package. After its signature
+and version pass verification, PortMate closes its windows and sessions, cancels
+transfers and host scripts, stops managed local processes, saves data and installs
+the update. Save unsaved terminal work before confirming.
+
+In-app installation supports Windows MSI/NSIS, Linux AppImage and macOS `.app` bundles.
+DEB/RPM, Windows portable ZIP and Linux portable tar installations use the release page and the matching
+package manager or complete archive. Releases without a signed `latest.json` also
+offer manual upgrade. Download or signature failure leaves sessions running.
+Signed update publication is described in [RELEASE.md](./RELEASE.md#signed-in-app-updates).
+
 ## Desktop File Transfers
 
 SFTP works directly in the desktop application and does not require MCP, an MCP grant, or a running MCP Bridge. Connect an SSH or Tmux session with SFTP enabled, then use either `Workspace -> File Manager` for two-pane browsing, drag and drop, and batch transfers, or `Tools -> Transfer Tasks` for an explicit source and destination.

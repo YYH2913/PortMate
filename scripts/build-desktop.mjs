@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { prepareAppImageBuildEnvironment } from "./appimage-runtime.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const updater = process.argv.includes("--updater");
+if (updater && !process.env.TAURI_SIGNING_PRIVATE_KEY && !process.env.TAURI_SIGNING_PRIVATE_KEY_PATH) {
+  throw new Error("Signed updater builds require TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH");
+}
 const targetRoot = resolveTargetDirectory(projectRoot);
 rmSync(join(targetRoot, "release", "bundle"), { recursive: true, force: true });
 if (process.platform !== "win32") {
@@ -37,6 +41,7 @@ try {
     "build",
     "--config",
     "src-tauri/tauri.bundle.conf.json",
+    ...(updater ? ["--config", "src-tauri/tauri.updater.conf.json"] : []),
     "--",
     "--locked",
   ], appImageRuntime.env);

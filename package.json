@@ -100,7 +100,12 @@
     "presidecar:build": "node scripts/ensure-node-version.mjs",
     "sidecar:build": "node scripts/prepare-sidecar.mjs --release",
     "preicon": "node scripts/ensure-node-version.mjs",
-    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/icons/icon.png --output src-tauri/icons"
+    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/icons/icon.png --output src-tauri/icons",
+    "predesktop:build:update": "node scripts/ensure-node-version.mjs",
+    "desktop:build:update": "node scripts/build-desktop.mjs --updater",
+    "release:update-manifest": "node scripts/create-update-manifest.mjs",
+    "pretest:updater-ui": "node scripts/ensure-node-version.mjs",
+    "test:updater-ui": "node test/tooling/update-ui-check.mjs"
   },
   "dependencies": {
     "@serialpilot/cobs": "^0.1.0",

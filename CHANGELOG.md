@@ -6,6 +6,27 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Added
+
+- **Tools → Check for updates** and the About dialog can check the latest stable
+  GitHub release, show its notes and offer a confirmed update with download progress.
+  Windows MSI/NSIS, Linux AppImage and macOS app updates require a release signature
+  bound to the announced version. Download or verification failure leaves sessions running.
+- Confirmed updates close sessions, cancel transfers and host scripts, stop managed
+  MCP/tunnel processes, flush data and automatically exit/restart for installation.
+  Concurrent or expired update requests are rejected; unsupported package types and
+  releases without signed metadata offer a manual download path.
+- Signed updater builds and platform manifest generation/merging are available for
+  future releases, with independent verification against the embedded public key.
+
+### Changed
+
+- Use Tauri 2.12 and updater 2.14 for signed-version checks, installer launch error
+  handling, and safer app bundle replacement. Update the matching desktop API/CLI.
+- Update Vite to the patched compatible release to address launch-editor advisories.
+- Exclude legacy ZIP updater support and remove obsolete RustSec warning entries
+  for Unicode crates no longer present in the Tauri dependency graph.
+
 ## [0.1.13] - 2026-10-19
 
 ### Added
