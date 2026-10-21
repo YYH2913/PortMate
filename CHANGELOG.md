@@ -27,6 +27,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Exclude legacy ZIP updater support and remove obsolete RustSec warning entries
   for Unicode crates no longer present in the Tauri dependency graph.
 
+### Fixed
+
+- Preserve the signed updater test payload byte for byte during Windows Git
+  checkout so automatic CRLF conversion cannot invalidate its signature.
+
 ## [0.1.13] - 2026-10-19
 
 ### Added

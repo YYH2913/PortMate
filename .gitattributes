@@ -1,0 +1,2 @@
+# This payload is signed; checkout must preserve its exact bytes on every OS.
+test/fixtures/updater/payload.txt -text
