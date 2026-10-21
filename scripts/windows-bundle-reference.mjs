@@ -1,5 +1,5 @@
 const markerPrefix = Buffer.from("__TAURI_BUNDLE_TYPE_VAR_", "ascii");
-const windowsTypes = new Map([["msi", "MSI"], ["nsis", "NSS"]]);
+const windowsTypes = new Map([["msi", "MSI"], ["nsis", "NSS"], ["portable", "UNK"]]);
 const referenceTypes = new Set(["UNK", "MSI", "NSS"]);
 
 export function windowsBundleReference(reference, bundleType) {

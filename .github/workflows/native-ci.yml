@@ -321,6 +321,12 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/ci-command-log.mjs target/native-ci/macos-package.log npm run test:macos-package
 
+      - name: Archive verified portable packages and macOS updater bundle
+        run: node scripts/ci-command-log.mjs target/native-ci/release-archives.log node scripts/archive-native-bundles.mjs
+      - name: Verify Windows portable application lifecycle and MCP sidecar
+        if: runner.os == 'Windows'
+        run: node scripts/ci-command-log.mjs target/native-ci/windows-portable-package.log node test/tooling/windows-portable-package-check.mjs
+
       - name: Upload native package bundles
         if: always()
         uses: actions/upload-artifact@v7
