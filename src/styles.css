@@ -10421,14 +10421,41 @@ fieldset label {
 }
 
 .update-backdrop { z-index: 135; padding: 16px; }
-.update-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 32px); grid-template-rows: 46px minmax(0, 1fr) auto; }
-.update-content { min-height: 0; overflow: auto; padding: 20px 24px; line-height: 1.6; }
+.update-dialog { width: min(800px, calc(100vw - 32px)); max-height: calc(100vh - 32px); grid-template-rows: 46px minmax(0, 1fr) auto; }
+.update-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 24px; line-height: 1.6; overflow-wrap: anywhere; }
 .update-current { color: var(--muted); }
 .update-status { font-weight: 600; }
 .update-content progress { width: 100%; accent-color: var(--cyan); }
-.update-notes { margin-top: 18px; }
-.update-notes summary { cursor: pointer; }
-.update-notes pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; color: var(--muted); }
+.update-notes { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.update-notes summary { cursor: pointer; font-weight: 600; }
+.update-notes summary:focus-visible, .update-release-notes a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; border-radius: 2px; }
+.update-release-notes { margin-top: 16px; font-size: 13px; line-height: 1.75; }
+.update-release-notes > :first-child { margin-top: 0; }
+.update-release-notes > :last-child { margin-bottom: 0; }
+.update-release-notes :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 12px; line-height: 1.4; }
+.update-release-notes h1 { font-size: 22px; }
+.update-release-notes h2 { padding-bottom: 8px; border-bottom: 1px solid var(--line-soft); font-size: 18px; }
+.update-release-notes h3 { font-size: 15px; }
+.update-release-notes :is(h4, h5, h6) { font-size: 13px; }
+.update-release-notes :is(p, ul, ol, blockquote, pre, .update-notes-table) { margin: 12px 0; }
+.update-release-notes :is(ul, ol) { padding-left: 1.8em; }
+.update-release-notes li { margin: 4px 0; }
+.update-release-notes li > :is(ul, ol) { margin: 4px 0; }
+.update-release-notes a { color: var(--cyan); text-decoration: underline; text-underline-offset: 3px; }
+.update-release-notes a:hover { color: var(--text); }
+.update-release-notes a[aria-disabled="true"] { color: var(--muted); cursor: default; }
+.update-release-notes code { border-radius: 4px; padding: 2px 5px; background: var(--panel-2); font-family: var(--mono); font-size: 12px; }
+.update-release-notes pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: var(--control); white-space: pre; overflow-wrap: normal; }
+.update-release-notes pre code { padding: 0; background: transparent; }
+.update-release-notes blockquote { border-left: 3px solid var(--cyan); padding: 1px 14px; color: var(--muted); background: var(--panel-2); }
+.update-notes-table { max-width: 100%; overflow-x: auto; }
+.update-release-notes table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.update-release-notes :is(th, td) { min-width: 100px; border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
+.update-release-notes th { background: var(--panel-2); font-weight: 600; }
+.update-release-notes tr:nth-child(even) { background: var(--control); }
+.update-release-notes hr { margin: 20px 0; border: 0; border-top: 1px solid var(--line); }
+.update-release-notes ul.contains-task-list { list-style: none; padding-left: 0; }
+.update-release-notes input[type="checkbox"] { width: 14px; height: 14px; margin: 0 6px 0 0; accent-color: var(--cyan); vertical-align: middle; }
 .update-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #fda4af; }
 .update-manual { color: var(--muted); }
 .update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); }

@@ -6,6 +6,7 @@ import { invokeBackend, isBackendAvailable } from "./api";
 import { t, useLocale } from "./i18n";
 import { formatBytes } from "./display-formatters";
 import { normalizeTerminalWebLink, openIsolatedWebLink } from "./terminal-web-link";
+import ReleaseNotes from "./ReleaseNotes";
 
 export type UpdateCheckResult = {
   currentVersion: string;
@@ -89,10 +90,17 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
     }} onKeyDown={(event) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) onClose(); }
       if (event.key === "Tab") {
-        const controls = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]:not([aria-disabled="true"]), summary')]
+          .filter((control) => {
+            const collapsed = control.closest("details:not([open])");
+            return control.getClientRects().length > 0 && (!collapsed || collapsed.querySelector("summary") === control);
+          });
         if (!controls.length) { event.preventDefault(); return; }
-        const index = controls.indexOf(document.activeElement as HTMLButtonElement);
-        event.preventDefault(); controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        event.preventDefault();
+        const next = index < 0 ? (event.shiftKey ? controls.length - 1 : 0)
+          : (index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length;
+        controls[next]?.focus();
       }
     }}>
       <section className="wind-dialog update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-title" aria-busy={busy}>
@@ -116,7 +124,10 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
           </div>
           {result?.manualReason && <p className="update-manual">{t(result.manualReason === "unsupported-package" ? "update-manual-package" : "update-manual-unsigned")}</p>}
           {result?.available && result.candidateId && <p>{t("update-exit-note")}</p>}
-          {result?.available && result.notes && <details className="update-notes"><summary>{t("update-release-notes")}</summary><pre>{result.notes}</pre></details>}
+          {result?.available && result.notes && <details className="update-notes" open>
+            <summary>{t("update-release-notes")}</summary>
+            <ReleaseNotes notes={result.notes} releaseUrl={result.releaseUrl} disabled={busy} />
+          </details>}
           {error && <p className="update-error" role="alert">{error}</p>}
         </div>
         <footer className="update-actions">
