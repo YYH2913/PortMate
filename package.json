@@ -105,7 +105,7 @@
   "dependencies": {
     "@serialpilot/cobs": "^0.1.0",
     "@serialpilot/modbus-rtu": "^0.1.0",
-    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "2.7.3",
     "@xterm/addon-clipboard": "0.2.0",
     "@xterm/addon-fit": "^0.11.0",
@@ -124,7 +124,7 @@
   "devDependencies": {
     "@babel/parser": "8.0.5",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/cli": "^2.12.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@types/slip": "^1.0.0",
