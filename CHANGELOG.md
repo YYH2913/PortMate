@@ -8,6 +8,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- Local Windows test MSI rebuilds on Linux can reuse a checksum-verified native
+  installer layout with the current production application, sidecar and WebView2
+  loader. Package contents, hashes and preserved installer resources are verified.
 - **Tools → Check for updates** and the About dialog can check the latest stable
   GitHub release, show its notes and offer a confirmed update with download progress.
   Windows MSI/NSIS, Linux AppImage and macOS app updates require a release signature

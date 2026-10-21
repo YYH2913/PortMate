@@ -67,6 +67,30 @@ Signing acceptance remains pending.
 
 ## Signed In-App Updates
 
+### Local Windows MSI test builds on Linux
+
+When a Windows runner is unavailable, `desktop:build:windows-msi-local` can rebuild
+an unsigned test MSI using a previously verified native MSI of the **same version**.
+Install `msitools` and `gcab`, or supply an extracted Ubuntu tools directory with
+`--tools-root`. The template checksum must come from its native build record:
+
+```bash
+npm run desktop:build:windows-msi-local -- --template /path/to/verified.msi --template-sha256 <verified-sha256>
+```
+
+The command builds the current Windows GNU production frontend/application/sidecar,
+preserves the template's installation UI, UpgradeCode and upgrade rules, assigns new
+ProductCode/PackageCode values, and includes the required WebView2 loader. It rebuilds
+the embedded cabinet and MSI file hashes, repairs the executable's PE checksum after
+setting its MSI bundle marker, then extracts the MSI and compares every application
+file with its build source. Installer UI/resource streams and unrelated tables must
+remain unchanged. Output, checksums and a build record go to `target/release-artifacts/`.
+Use `--skip-build` only immediately after a successful production Windows GNU build.
+This is a local test packaging path; native Windows lifecycle checks remain required
+before publishing a release. Existing signed MSI templates are rejected.
+
+### Signing and publication
+
 Update checks query the repository's latest stable GitHub release. The selected
 release must include `latest.json`, and each platform entry must point to an asset
 in that exact release. The installed app pins `plugins.updater.pubkey` and requires

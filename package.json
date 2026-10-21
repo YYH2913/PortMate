@@ -95,6 +95,8 @@
     "desktop:build": "node scripts/build-desktop.mjs",
     "predesktop:build:windows-gnu": "node scripts/ensure-node-version.mjs",
     "desktop:build:windows-gnu": "node scripts/build-windows-portable.mjs",
+    "predesktop:build:windows-msi-local": "node scripts/ensure-node-version.mjs",
+    "desktop:build:windows-msi-local": "node scripts/build-windows-msi-local.mjs",
     "presidecar:dev": "node scripts/ensure-node-version.mjs",
     "sidecar:dev": "node scripts/prepare-sidecar.mjs",
     "presidecar:build": "node scripts/ensure-node-version.mjs",
