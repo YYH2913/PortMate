@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verifyWindowsPackageLayout } from "./native-package-layout.mjs";
@@ -37,10 +37,13 @@ if (process.platform === "win32" && process.arch === "x64") {
   const folder = join(bundle, "portable");
   mkdirSync(folder, { recursive: true });
   const archive = join(folder, `${name}-portable.zip`);
-  run("tar.exe", ["-a", "-c", "-f", archive, "-C", work, name]);
+  // Git/MSYS can put GNU tar ahead of Windows BSD tar on PATH. Use the
+  // native ZIP implementation and keep drive letters out of archive names.
+  const windowsTar = join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  run(windowsTar, ["-a", "-c", "-f", basename(archive), "-C", work, name], folder);
   const extracted = join(work, "extracted");
   mkdirSync(extracted);
-  run("tar.exe", ["-x", "-f", archive, "-C", extracted]);
+  run(windowsTar, ["-x", "-f", basename(archive), "-C", extracted], folder);
   verifyWindowsPackageLayout({ root: extracted, sourceMain: windows.main, sourceSidecar: windows.sidecar, sourceLicense: windows.license, sourceThirdPartyLicense: windows.thirdPartyLicense });
   artifacts.push(archive);
 } else if (process.platform === "darwin" && process.arch === "arm64") {

@@ -38,6 +38,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Create Windows portable ZIPs with the system BSD tar and relative archive
+  names so Git/MSYS tar cannot interpret drive letters as remote hosts.
 - Allow the isolated SSH GSSAPI runtime test build up to 30 minutes on cold CI
   runners, preserving the existing deadlines for individual compatibility cases.
 - Render update release notes as GitHub-flavored Markdown, including headings,
