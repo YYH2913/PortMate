@@ -38,6 +38,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Allow the isolated SSH GSSAPI runtime test build up to 30 minutes on cold CI
+  runners, preserving the existing deadlines for individual compatibility cases.
 - Render update release notes as GitHub-flavored Markdown, including headings,
   lists, tables, links and code blocks. Expand notes by default and improve
   scrolling, typography and keyboard access within the update dialog.

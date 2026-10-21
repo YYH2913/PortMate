@@ -445,7 +445,9 @@ function prebuildRuntimeTest() {
     "external_ssh_gssapi_runtime_matrix_case",
   ], {
     env: baseEnvironment,
-    timeout: 600_000,
+    // This isolated target starts with a cold desktop dependency graph on CI.
+    // Keep its compilation deadline separate from individual matrix cases.
+    timeout: 1_800_000,
   });
 }
 
