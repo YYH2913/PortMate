@@ -179,6 +179,23 @@ package manager or complete archive. Releases without a signed `latest.json` als
 offer manual upgrade. Download or signature failure leaves sessions running.
 Signed update publication is described in [RELEASE.md](./RELEASE.md#signed-in-app-updates).
 
+### EasyTier Networking
+
+Open **Tools → EasyTier networking** without opening a terminal session. The
+configuration and running-status pages follow the official EasyTier GUI workflow:
+choose a public server, manual peers or a standalone network, enter matching network
+names and secrets, then connect. Running status shows the local virtual IP and peer
+routes, latency, traffic and logs; advanced settings and component management have
+separate controls.
+
+Install the optional official 2.6.4 component from **Settings** (Windows/Linux x64
+and macOS Apple Silicon), or select an existing program directory. Downloads show
+progress and verify a pinned SHA-256. Creating a virtual adapter requires platform
+network-administration privileges; relay-only mode works without an adapter.
+Closing the dialog keeps the network running. Disconnecting, exiting PortMate or
+preparing a verified update stops it. See [EasyTier integration](./docs/EASYTIER.md)
+for configuration, secret handling and upstream licensing.
+
 ## Desktop File Transfers
 
 SFTP works directly in the desktop application and does not require MCP, an MCP grant, or a running MCP Bridge. Connect an SSH or Tmux session with SFTP enabled, then use either `Workspace -> File Manager` for two-pane browsing, drag and drop, and batch transfers, or `Tools -> Transfer Tasks` for an explicit source and destination.

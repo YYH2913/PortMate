@@ -6,6 +6,29 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Added
+
+- **Tools → EasyTier networking** manages an optional EasyTier 2.6.4 core, with
+  network configuration and running-status pages modeled on the official GUI.
+  Choose a public server, manual peers or an independent network; use DHCP,
+  static IPv4 or relay-only mode, and inspect peer routes, latency, traffic and logs.
+- Download the official component with progress and pinned SHA-256 verification
+  on Windows/Linux x64 and macOS Apple Silicon, or select an existing 2.6.4 directory.
+  Advanced listeners, MTU and latency preference are configurable in all six languages.
+- Managed EasyTier processes stop on disconnect, PortMate exit and verified update
+  preparation. Network secrets stay out of saved preferences and status responses;
+  runtime configuration is private and removed on normal cleanup, and logs redact secrets.
+
+### 新增（中文）
+
+- 新增 **工具 → EasyTier 组网**，参考官方 GUI 分为配置网络与运行状态两页，
+  支持公共服务器、手动连接、独立组网，以及 DHCP、静态 IPv4、仅中继模式。
+  可查看节点路由、延迟、收发流量与运行日志，高级设置提供监听地址、MTU 和低延迟优先。
+- Windows/Linux x64 与 macOS Apple Silicon 可下载官方 2.6.4 组件，显示下载进度并校验
+  固定 SHA-256，也可选择已有程序目录；界面覆盖六种语言。
+- 断开、退出和已验证更新的准备阶段会停止托管进程。密钥不保存到偏好配置或返回状态，
+  运行期私有配置在正常清理时删除，日志中的密钥脱敏。
+
 ## [0.1.14] - 2026-10-21
 
 ### Added
