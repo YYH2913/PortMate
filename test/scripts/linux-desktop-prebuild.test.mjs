@@ -9,8 +9,9 @@ describe("native Linux desktop prebuild", () => {
       LD_LIBRARY_PATH: "/python/lib", LD_PRELOAD: "/ide/injected.so",
     }, run });
     expect(["npm", process.execPath]).toContain(run.mock.calls[0][0]);
-    expect(run.mock.calls[0][1].slice(-2)).toEqual(["run", "sidecar:dev"]);
-    expect(run.mock.calls[1].slice(0, 2)).toEqual(["cargo", ["build", "--locked", "-p", "portmate", "--bin", "portmate"]]);
+    expect(run.mock.calls[0][1].slice(-2)).toEqual(["run", "easytier:prepare"]);
+    expect(run.mock.calls[1][1].slice(-2)).toEqual(["run", "sidecar:dev"]);
+    expect(run.mock.calls[2].slice(0, 2)).toEqual(["cargo", ["build", "--locked", "-p", "portmate", "--bin", "portmate"]]);
     for (const [, , options] of run.mock.calls) {
       expect(options.env).toMatchObject({ CARGO_TARGET_DIR: "/build/cache", PKG_CONFIG_PATH: "/build/pkgconfig" });
       expect(options.env).not.toHaveProperty("LD_LIBRARY_PATH");

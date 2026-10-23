@@ -17,7 +17,7 @@ export function prebuildLinuxDesktop({
   // usable when the timed development launch builds its application target.
   const env = buildDesktopEnvironment(environment, platform);
   const sidecar = npmInvocation(["run", "sidecar:dev"], { environment: env, platform });
-  const commands = [sidecar, {
+  const commands = [npmInvocation(["run", "easytier:prepare"], { environment: env, platform }), sidecar, {
     command: "cargo",
     args: ["build", "--locked", "-p", "portmate", "--bin", "portmate"],
   }];

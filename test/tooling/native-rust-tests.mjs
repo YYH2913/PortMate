@@ -6,6 +6,10 @@ import { collectWindowsLoaderDiagnostics, prepareWindowsNativeTestManifests } fr
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const suiteArguments = new Map([
+  ["easytier", [
+    "test", "--locked", "-p", "portmate", "--no-default-features",
+    "--lib", "easytier::", "--", "--test-threads=1",
+  ]],
   ["portable-vault", [
     "test",
     "--locked",
@@ -50,6 +54,7 @@ export function nativeRustTestArguments(suite, platform = process.platform) {
   }
   const args = [...configured];
   args.splice(args.indexOf("--"), 0, "--features", "portmate/test-probes");
+  if (suite === "easytier") args.splice(args.indexOf("--"), 0, "--features", "portmate/bundled-easytier");
   if (platform === "win32") {
     // Vendored OpenSSL and libsodium must use the same release CRT as Rust on MSVC.
     args.splice(args.indexOf("--no-default-features") + 1, 0, "--release");
