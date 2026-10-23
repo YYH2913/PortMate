@@ -188,13 +188,14 @@ names and secrets, then connect. Running status shows the local virtual IP and p
 routes, latency, traffic and logs; advanced settings and component management have
 separate controls.
 
-Install the optional official 2.6.4 component from **Settings** (Windows/Linux x64
-and macOS Apple Silicon), or select an existing program directory. Downloads show
-progress and verify a pinned SHA-256. Creating a virtual adapter requires platform
+EasyTier 2.6.4 is included in Windows/Linux x64 and macOS Apple Silicon installers,
+portable editions and updater packages. The core and CLI are embedded in PortMate;
+connecting prepares and verifies the local runtime without a separate download or
+program-directory selection. Creating a virtual adapter requires platform
 network-administration privileges; relay-only mode works without an adapter.
 Closing the dialog keeps the network running. Disconnecting, exiting PortMate or
 preparing a verified update stops it. See [EasyTier integration](./docs/EASYTIER.md)
-for configuration, secret handling and upstream licensing.
+for configuration, source builds, secret handling and upstream licensing.
 
 ## Desktop File Transfers
 
