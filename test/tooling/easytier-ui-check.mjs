@@ -14,9 +14,9 @@ try {
     const page = await browser.newPage({ viewport });
     await page.addInitScript(mode => {
       if (mode === "browser") return;
-      const config = { binaryDirectory: "", networkName: "PortMate", hostname: "", addressMode: "dhcp", virtualIpv4: "", peers: [], listeners: ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"], latencyFirst: false, mtu: 1360 };
+      const config = { networkName: "PortMate", hostname: "", addressMode: "dhcp", virtualIpv4: "", peers: [], listeners: ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"], latencyFirst: false, mtu: 1360 };
       window.calls = [];
-      window.network = { config, componentReady: false, componentVersion: "2.6.4", downloadSupported: true, status: { phase: "idle", pid: null, virtualIpv4: "", hostname: "", peers: [], logs: [], error: null } };
+      window.network = { config, componentReady: true, componentVersion: "2.6.4", status: { phase: "idle", pid: null, virtualIpv4: "", hostname: "", peers: [], logs: [], error: null } };
       window.__TAURI_INTERNALS__ = {
         transformCallback: () => 1, unregisterCallback() {},
         async invoke(command, args) {
@@ -37,12 +37,6 @@ try {
           }
           if (command === "stop_easy_tier") {
             window.network.status = { ...window.network.status, phase: "idle", pid: null, peers: [], virtualIpv4: "" };
-            return structuredClone(window.network);
-          }
-          if (command === "install_easy_tier") {
-            window.installChannel = args.onProgress;
-            await new Promise(resolve => { window.installFinished = resolve; });
-            window.network.componentReady = true;
             return structuredClone(window.network);
           }
           throw Error(`Unexpected command ${command}`);
@@ -96,18 +90,14 @@ try {
   await dialog.getByRole("button", { name: "Disconnect network" }).click();
   await dialog.getByText("Disconnected", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Settings", exact: true }).click();
-  await dialog.getByRole("button", { name: "Download EasyTier 2.6.4" }).click();
-  await page.waitForFunction(() => window.installChannel);
-  await page.evaluate(() => window.installChannel.onmessage({ downloaded: 1024, total: 4096 }));
-  await page.waitForFunction(() => document.querySelector("progress")?.value === 1024);
-  assert.equal(await dialog.getByRole("progressbar").getAttribute("value"), "1024");
-  await page.evaluate(() => window.installFinished());
-  await dialog.getByText("EasyTier 2.6.4 is ready.", { exact: true }).waitFor();
+  await dialog.getByText("EasyTier 2.6.4 is built into PortMate.", { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: /download|install component/i }).count(), 0);
+  assert.equal(await dialog.getByRole("textbox").count(), 0, "built-in networking must not require an external program directory");
   await page.evaluate(() => { window.failStart = true; });
   await dialog.getByRole("tab", { name: "1 Configure network" }).click();
   await dialog.getByLabel("Network secret", { exact: true }).fill("retry-secret");
   await connect.click();
-  await dialog.getByRole("alert").getByText(/Download EasyTier or select/).waitFor();
+  await dialog.getByRole("alert").getByText(/bundled EasyTier core is unavailable/).waitFor();
   await dialog.getByRole("tab", { name: "2 Running status" }).click();
   await dialog.getByRole("button", { name: "Refresh", exact: true }).click();
   assert(await dialog.getByRole("alert").isVisible(), "a periodic refresh must not erase action errors");
@@ -158,7 +148,7 @@ try {
   await preview.getByText("EasyTier networking is available in the desktop application.", { exact: true }).waitFor();
   assert(await preview.getByRole("button", { name: "Connect network", exact: true }).isDisabled());
   await preview.close();
-  console.log("EasyTier UI passed: save without secret persistence, duplicate start guard, secret clearing, actual peer presentation, disconnect, verified component progress, persistent action errors, address validation, compact layouts and browser fallback.");
+  console.log("EasyTier UI passed: built-in core with no download/directory setup, save without secrets, duplicate start guard, secret clearing, peer presentation, disconnect, persistent errors, address validation, compact layouts and browser fallback.");
 } finally {
   await browser?.close();
   await server.close();

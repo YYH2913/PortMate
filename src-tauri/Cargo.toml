@@ -9,7 +9,8 @@ default-run = "portmate"
 
 [features]
 default = ["desktop"]
-desktop = ["tauri/wry"]
+desktop = ["tauri/wry", "bundled-easytier"]
+bundled-easytier = []
 test-probes = []
 
 [lib]
@@ -28,6 +29,9 @@ required-features = ["test-probes"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
+serde_json.workspace = true
+sha2.workspace = true
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [dependencies]
 portmate-core = { path = "../crates/portmate-core" }
@@ -76,7 +80,6 @@ uuid.workspace = true
 url.workspace = true
 zeroize = "1.9.0"
 zmodem2 = "0.7.2"
-zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

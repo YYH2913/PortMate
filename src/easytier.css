@@ -39,7 +39,7 @@
 .easytier-address-heading { display: flex; align-items: center; gap: 18px; margin-bottom: -8px; }
 .easytier-dialog .easytier-checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; font-size: 12px; }
 .easytier-checkbox input { accent-color: var(--et-accent); width: 15px; height: 15px; }
-.easytier-password, .easytier-directory { display: flex; align-items: center; position: relative; gap: 8px; }
+.easytier-password { display: flex; align-items: center; position: relative; gap: 8px; }
 .easytier-secret-field { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
 .easytier-password > input { padding-inline-end: 42px !important; }
 .easytier-password > button { position: absolute; inset-inline-end: 3px; border: none; background: none; padding: 4px; width: 30px; min-height: 28px; color: var(--muted); }
@@ -91,15 +91,12 @@
 .easytier-component-status > span.ready { color: var(--et-accent); background: var(--et-tint); }
 .easytier-component-status > div { display: flex; flex-direction: column; gap: 7px; }
 .easytier-component-status strong { font-size: 13px; font-weight: 500; line-height: 1.6; }
-.easytier-component-panel fieldset > button { align-self: flex-start; }
 .easytier-feedback { flex: none; padding: 0 24px; font-size: 12px; }
 .easytier-feedback p { margin: 8px 0; }
 .easytier-feedback [role=alert] { color: #f79d95; overflow-wrap: anywhere; }
-.easytier-feedback progress { display: block; width: 100%; margin: 7px 0; accent-color: var(--et-accent); }
 .easytier-actions { flex: none; display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 12px 24px; border-top: 1px solid var(--line); background: var(--panel); }
 .easytier-actions > span { flex: 1; }
 .easytier-actions > small { max-width: 35%; }
-.easytier-actions > .easytier-component-link { border: 0; background: transparent; color: var(--et-accent); padding-inline: 0; }
 @media (max-width: 720px) {
   .wind-dialog.easytier-dialog { width: calc(100vw - 16px); height: calc(100dvh - 20px); max-height: calc(100dvh - 20px); }
   .easytier-toolbar { padding: 12px 16px; gap: 8px; flex-wrap: wrap; }
@@ -119,6 +116,5 @@
   .easytier-node-mark { display: none; }
   .easytier-actions { padding: 10px 16px; }
   .easytier-actions > small { display: none; }
-  .easytier-actions > .easytier-component-link { max-width: 25%; font-size: 11px; text-align: start; }
 }
 @media (prefers-reduced-motion: reduce) { .easytier-dialog * { transition: none !important; } }

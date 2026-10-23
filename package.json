@@ -109,7 +109,9 @@
     "pretest:updater-ui": "node scripts/ensure-node-version.mjs",
     "test:updater-ui": "node test/tooling/update-ui-check.mjs",
     "pretest:easytier-ui": "node scripts/ensure-node-version.mjs",
-    "test:easytier-ui": "node test/tooling/easytier-ui-check.mjs"
+    "test:easytier-ui": "node test/tooling/easytier-ui-check.mjs",
+    "preeasytier:prepare": "node scripts/ensure-node-version.mjs",
+    "easytier:prepare": "node scripts/prepare-easytier.mjs"
   },
   "dependencies": {
     "@serialpilot/cobs": "^0.1.0",

@@ -46,34 +46,61 @@ fn saves_only_nonsecret_settings_and_redacts_runtime_output() {
     );
 }
 
-fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    for (name, content) in files {
-        zip.start_file(*name, zip::write::SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(content).unwrap();
+#[test]
+fn prepares_embedded_files_offline_and_repairs_corruption() {
+    const CORE: &[u8] = b"core";
+    let hash: String = Sha256::digest(CORE)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let files = [bundled::EmbeddedFile {
+        name: "easytier-core",
+        bytes: CORE,
+        sha256: Box::leak(hash.into_boxed_str()),
+    }];
+    let root = tempfile::tempdir().unwrap();
+    let directory = bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
+    let binary = directory.join("easytier-core");
+    assert_eq!(fs::read(&binary).unwrap(), CORE);
+    assert!(directory.join("LICENSE").exists());
+    assert!(directory.join("COPYING").exists());
+    let modified = fs::metadata(&binary).unwrap().modified().unwrap();
+    assert_eq!(
+        bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap(),
+        directory
+    );
+    assert_eq!(
+        fs::metadata(&binary).unwrap().modified().unwrap(),
+        modified,
+        "an intact core should not be rewritten"
+    );
+    fs::write(&binary, b"evil").unwrap(); // Same length; existence/size are insufficient.
+    bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
+    assert_eq!(fs::read(&binary).unwrap(), CORE);
+    fs::remove_file(&binary).unwrap();
+    bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
+    assert_eq!(fs::read(&binary).unwrap(), CORE);
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o600)).unwrap();
+        bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
+        assert_ne!(
+            fs::metadata(&binary).unwrap().permissions().mode() & 0o100,
+            0
+        );
     }
-    zip.finish().unwrap().into_inner()
+    assert!(bundled::prepare_files(root.path(), &[], "missing").is_err());
 }
 
-#[test]
-fn installs_only_required_files_and_preserves_previous_component_on_failure() {
+#[cfg(feature = "bundled-easytier")]
+#[tokio::test]
+async fn bundled_core_and_cli_run_without_an_external_installation() {
     let root = tempfile::tempdir().unwrap();
-    let valid = archive(&[
-        ("release/easytier-core", b"core"),
-        ("release/easytier-cli", b"cli"),
-        ("release/easytier-web", b"unused"),
-    ]);
-    install::extract_component(root.path(), &valid, false).unwrap();
-    let installed = root.path().join(format!("component-{VERSION}"));
-    assert_eq!(fs::read(installed.join("easytier-core")).unwrap(), b"core");
-    assert!(!installed.join("easytier-web").exists());
-    for invalid in [
-        archive(&[("../escape", b"bad")]),
-        archive(&[("release/easytier-core", b"partial")]),
-    ] {
-        assert!(install::extract_component(root.path(), &invalid, false).is_err());
-        assert_eq!(fs::read(installed.join("easytier-core")).unwrap(), b"core");
+    let directory = bundled::prepare(root.path()).unwrap();
+    for name in ["easytier-core", "easytier-cli"] {
+        let binary = bundled::executable(&directory, name).unwrap();
+        let version = command_output(&binary, &["--version"]).await.unwrap();
+        assert!(String::from_utf8_lossy(&version).contains(VERSION));
     }
 }
 
@@ -109,15 +136,13 @@ async fn kills_command_descendants_when_the_output_deadline_expires() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "bundled-easytier"))]
 #[tokio::test]
-#[ignore = "requires PORTMATE_EASYTIER_TEST_DIR with official EasyTier 2.6.4 binaries"]
 async fn real_easytier_configuration_rpc_and_cleanup() {
-    let binaries = PathBuf::from(
-        std::env::var("PORTMATE_EASYTIER_TEST_DIR").expect("set PORTMATE_EASYTIER_TEST_DIR"),
-    );
-    let core = install::executable(&binaries, "easytier-core").unwrap();
-    let cli = install::executable(&binaries, "easytier-cli").unwrap();
+    let bundled_root = tempfile::tempdir().unwrap();
+    let binaries = bundled::prepare(bundled_root.path()).unwrap();
+    let core = bundled::executable(&binaries, "easytier-core").unwrap();
+    let cli = bundled::executable(&binaries, "easytier-cli").unwrap();
     let files = tempfile::tempdir().unwrap();
     let id = Uuid::new_v4().to_string();
     let config = EasyTierConfig {

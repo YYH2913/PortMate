@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Channel } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import { Download, Eye, EyeOff, FolderOpen, Network, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Square, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, Network, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Square, Trash2, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { t, useLocale } from "./i18n";
-import { formatBytes } from "./display-formatters";
 import { defaultEasyTierConfig, easyTierConfigValid, easyTierEndpoints, easyTierSecretValid } from "./easytier-state";
 import type { EasyTierConfig, EasyTierView } from "./easytier-state";
 import "./easytier.css";
@@ -24,7 +21,6 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [refreshError, setRefreshError] = useState("");
-  const [progress, setProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const revision = useRef(0);
   const pending = useRef(false);
   const loaded = useRef(false);
@@ -69,23 +65,16 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
 
   function patch(value: Partial<EasyTierConfig>) { setConfig(current => ({ ...current, ...value })); }
 
-  async function perform(action: "save" | "install" | "connect" | "disconnect") {
+  async function perform(action: "save" | "connect" | "disconnect") {
     if (pending.current || !desktop) return;
-    if ((action === "save" || action === "install" || action === "connect") && !valid) return;
+    if ((action === "save" || action === "connect") && !valid) return;
     if (action === "connect" && (!loaded.current || !easyTierSecretValid(secret))) return;
     pending.current = true;
     const token = ++revision.current;
-    setBusy(action); setError(""); setProgress(null);
+    setBusy(action); setError("");
     try {
       let next: EasyTierView;
-      if (action === "install") {
-        const channel = new Channel<{ downloaded: number; total: number | null }>();
-        channel.onmessage = next => { if (token === revision.current) setProgress(next); };
-        next = await invokeBackend<EasyTierView>("install_easy_tier", { onProgress: channel });
-        // A newly downloaded component becomes the selected engine only after
-        // its verified installation has succeeded.
-        next = await invokeBackend<EasyTierView>("save_easy_tier_config", { config: { ...draft, binaryDirectory: "" } });
-      } else if (action === "connect") {
+      if (action === "connect") {
         next = await invokeBackend<EasyTierView>("start_easy_tier", { config: draft, networkSecret: secret });
       } else if (action === "disconnect") {
         next = await invokeBackend<EasyTierView>("stop_easy_tier", {});
@@ -100,16 +89,8 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
       if (token === revision.current) setError(errorMessage(failure));
     } finally {
       pending.current = false;
-      if (token === revision.current) { setBusy(""); setProgress(null); }
+      if (token === revision.current) setBusy("");
     }
-  }
-
-  async function browse() {
-    if (locked || pending.current) return;
-    try {
-      const directory = await open({ directory: true, multiple: false, title: t("easytier-directory") });
-      if (typeof directory === "string") patch({ binaryDirectory: directory });
-    } catch (failure) { setError(errorMessage(failure)); }
   }
 
   const connectionText = phase === "starting" ? t("easytier-starting")
@@ -126,7 +107,7 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
 
   function newConfiguration() {
     if (locked) return;
-    setConfig({ ...defaultEasyTierConfig(), binaryDirectory: config.binaryDirectory }); setPeers(""); setListeners(defaultEasyTierConfig().listeners.join("\n"));
+    setConfig(defaultEasyTierConfig()); setPeers(""); setListeners(defaultEasyTierConfig().listeners.join("\n"));
     setMethod("standalone"); setSecret(""); setShowSecret(false); setError(""); setPage("config");
   }
 
@@ -194,18 +175,17 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
           {logsOpen && <label className="easytier-logs">{t("easytier-logs")}<pre tabIndex={0}>{view?.status.logs.join("\n") || t("easytier-no-logs")}</pre></label>}
         </section>
         {page === "component" && <section className="easytier-component-panel" aria-label={t("easytier-component")}>
-          <div className="easytier-section-heading"><h2>{t("easytier-component")}</h2><span>v2.6.4</span></div>
-          <div className="easytier-component-status"><span className={view?.componentReady ? "ready" : ""}>{view?.componentReady ? <ShieldCheck size={20} /> : <Download size={20} />}</span><div><strong>{view?.componentReady ? t("easytier-component-ready", [view.componentVersion]) : t("easytier-component-missing")}</strong><small>{t("easytier-download-note")}</small></div></div>
-          <fieldset disabled={locked}><label>{t("easytier-directory")}<div className="easytier-directory"><input value={config.binaryDirectory} placeholder={t("easytier-managed-component")} onChange={event => patch({ binaryDirectory: event.target.value })} /><button type="button" aria-label={t("easytier-browse")} onClick={() => void browse()}><FolderOpen size={17} /></button></div></label><button type="button" className="primary" disabled={view?.downloadSupported === false || !valid} onClick={() => void perform("install")}><Download size={15} />{t("easytier-download", ["2.6.4"])}</button></fieldset>
+          <div className="easytier-section-heading"><h2>{t("easytier-component")}</h2><span>v{view?.componentVersion ?? "2.6.4"}</span></div>
+          <div className="easytier-component-status"><span className="ready"><ShieldCheck size={20} /></span><div><strong>{t("easytier-component-ready", [view?.componentVersion ?? "2.6.4"])}</strong><small>{t("easytier-bundled-note")}</small></div></div>
+          <p className="easytier-permissions">{t("easytier-license-note")}</p>
         </section>}
       </div>
       <div className="easytier-feedback" aria-live="polite">
         {!desktop && <p>{t("easytier-desktop-only")}</p>}
-        {busy === "install" && <div><span>{t("easytier-downloading")}{progress ? ` · ${formatBytes(progress.downloaded)}${progress.total ? ` / ${formatBytes(progress.total)}` : ""}` : ""}</span><progress aria-label={t("easytier-downloading")} max={progress?.total || undefined} value={progress?.total ? progress.downloaded : undefined} /></div>}
         {(error || refreshError || view?.status.error) && <p role="alert">{error || refreshError || errorMessage(view?.status.error)}</p>}
       </div>
       <footer className="easytier-actions">
-        {desktop && view && !view.componentReady && !config.binaryDirectory ? <button type="button" className="easytier-component-link" onClick={() => setPage("component")}><Download size={14} />{t("easytier-install-component")}</button> : <small title={t("easytier-lifetime")}>{t("easytier-managed-note")}</small>}<span />
+        <small title={t("easytier-lifetime")}>{t("easytier-managed-note")}</small><span />
         {!active && <button type="button" disabled={locked || !valid} onClick={() => void perform("save")}><Save size={14} />{t("save")}</button>}
         {active ? <button type="button" disabled={Boolean(busy) || phase === "stopping"} onClick={() => void perform("disconnect")}><Square size={14} />{t("easytier-disconnect")}</button>
           : <button type="button" className="primary" disabled={!desktop || !loaded.current || Boolean(busy) || !valid || !easyTierSecretValid(secret)} onClick={() => void perform("connect")}><Play size={14} />{busy === "connect" ? t("easytier-starting") : t("easytier-connect")}</button>}
@@ -225,8 +205,8 @@ function errorMessage(error: unknown): string {
   const known: Record<string, string> = {
     "invalid-network": "easytier-error-network", "invalid-secret": "easytier-error-secret", "invalid-endpoint": "easytier-error-endpoint",
     "invalid-address": "easytier-error-address", "invalid-config": "easytier-error-config", "component-missing": "easytier-component-missing",
-    "version-mismatch": "easytier-error-version", "invalid-download": "easytier-error-integrity", "download-failed": "easytier-error-download",
-    "already-running": "easytier-error-running", busy: "easytier-error-busy", "unsupported-platform": "easytier-error-platform",
+    "version-mismatch": "easytier-error-version",
+    "already-running": "easytier-error-running", busy: "easytier-error-busy",
   };
   if (known[code]) return t(known[code]);
   const detail = error && typeof error === "object" && "detail" in error ? String(error.detail) : String(error);

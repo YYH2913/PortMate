@@ -13,7 +13,6 @@ pub(crate) enum AddressMode {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub(crate) struct EasyTierConfig {
-    pub binary_directory: String,
     pub network_name: String,
     pub hostname: String,
     pub address_mode: AddressMode,
@@ -27,7 +26,6 @@ pub(crate) struct EasyTierConfig {
 impl Default for EasyTierConfig {
     fn default() -> Self {
         Self {
-            binary_directory: String::new(),
             network_name: "PortMate".into(),
             hostname: String::new(),
             address_mode: AddressMode::Dhcp,
@@ -48,17 +46,8 @@ impl EasyTierConfig {
                 "Network name must contain 1–128 characters",
             ));
         }
-        if invalid_text(&self.hostname, 128) || invalid_text(&self.binary_directory, 4096) {
-            return Err(failure(
-                "invalid-config",
-                "Invalid hostname or executable directory",
-            ));
-        }
-        if !self.binary_directory.is_empty() && !Path::new(&self.binary_directory).is_absolute() {
-            return Err(failure(
-                "invalid-config",
-                "Executable directory must be absolute",
-            ));
+        if invalid_text(&self.hostname, 128) {
+            return Err(failure("invalid-config", "Invalid hostname"));
         }
         if self.address_mode == AddressMode::Static {
             let ip = self
@@ -178,8 +167,15 @@ pub(super) fn load_config(root: &Path) -> Result<EasyTierConfig, EasyTierError> 
     if bytes.len() > 64 * 1024 {
         return Err(failure("config-failed", "Configuration exceeds 64 KiB"));
     }
-    let config: EasyTierConfig =
+    let mut stored: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| failure("config-failed", e))?;
+    // Early development builds allowed a separate executable directory.
+    // Always use the core shipped with PortMate when migrating that draft.
+    if let Some(object) = stored.as_object_mut() {
+        object.remove("binaryDirectory");
+    }
+    let config: EasyTierConfig =
+        serde_json::from_value(stored).map_err(|e| failure("config-failed", e))?;
     config.validate()?;
     Ok(config)
 }

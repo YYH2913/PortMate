@@ -4,8 +4,8 @@
   "version": "0.1.14",
   "identifier": "dev.portmate.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build && npm run sidecar:build",
+    "beforeDevCommand": "npm run easytier:prepare && npm run dev",
+    "beforeBuildCommand": "npm run easytier:prepare && npm run build && npm run sidecar:build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },

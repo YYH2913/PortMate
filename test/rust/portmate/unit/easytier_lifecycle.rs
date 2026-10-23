@@ -35,11 +35,8 @@ fn app(root: &Path) -> (TestApp, WebviewWindow) {
 }
 
 #[test]
-#[ignore = "requires PORTMATE_EASYTIER_TEST_DIR with official EasyTier 2.6.4 binaries"]
 fn real_two_node_commands_and_lifecycle() {
     tauri::async_runtime::block_on(async {
-        let binaries =
-            std::env::var("PORTMATE_EASYTIER_TEST_DIR").expect("set PORTMATE_EASYTIER_TEST_DIR");
         let root = tempfile::tempdir().unwrap();
         let (first, first_window) = app(&root.path().join("first"));
         let (second, second_window) = app(&root.path().join("second"));
@@ -52,7 +49,6 @@ fn real_two_node_commands_and_lifecycle() {
         let address = format!("tcp://{}", listener.local_addr().unwrap());
         drop(listener);
         let config = EasyTierConfig {
-            binary_directory: binaries,
             network_name: Uuid::new_v4().to_string(),
             hostname: "PortMate-node-A".into(),
             address_mode: AddressMode::Relay,

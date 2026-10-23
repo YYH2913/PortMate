@@ -11,7 +11,7 @@ describe("desktop development startup", () => {
     const launcher = readFileSync(resolve(projectRoot, "scripts/desktop-dev.mjs"), "utf8");
 
     expect(packageJson.scripts.desktop).toBe("node scripts/desktop-dev.mjs");
-    expect(tauriConfig.build.beforeDevCommand).toBe("npm run dev");
+    expect(tauriConfig.build.beforeDevCommand).toBe("npm run easytier:prepare && npm run dev");
     expect(launcher.indexOf('["run", "sidecar:dev"]')).toBeGreaterThanOrEqual(0);
     expect(launcher.indexOf('"dev",')).toBeGreaterThan(launcher.indexOf('["run", "sidecar:dev"]'));
   });

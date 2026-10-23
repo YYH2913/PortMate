@@ -1,5 +1,4 @@
 export type EasyTierConfig = {
-  binaryDirectory: string;
   networkName: string;
   hostname: string;
   addressMode: "dhcp" | "static" | "relay";
@@ -16,7 +15,6 @@ export type EasyTierView = {
   config: EasyTierConfig;
   componentReady: boolean;
   componentVersion: string;
-  downloadSupported: boolean;
   status: {
     phase: "idle" | "starting" | "running" | "stopping" | "failed";
     pid: number | null;
@@ -29,7 +27,7 @@ export type EasyTierView = {
 };
 
 export const defaultEasyTierConfig = (): EasyTierConfig => ({
-  binaryDirectory: "", networkName: "PortMate", hostname: "", addressMode: "dhcp", virtualIpv4: "",
+  networkName: "PortMate", hostname: "", addressMode: "dhcp", virtualIpv4: "",
   peers: [], listeners: ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"], latencyFirst: false, mtu: 1360,
 });
 
@@ -39,7 +37,7 @@ export function easyTierEndpoints(value: string): string[] {
 
 export function easyTierConfigValid(config: EasyTierConfig): boolean {
   const safe = (value: string, max: number) => [...value].length <= max && !/[\x00-\x1f\x7f-\x9f]/.test(value) && !value.includes("${");
-  if (!config.networkName.trim() || !safe(config.networkName, 128) || !safe(config.hostname, 128) || !safe(config.binaryDirectory, 4096)) return false;
+  if (!config.networkName.trim() || !safe(config.networkName, 128) || !safe(config.hostname, 128)) return false;
   if (!Number.isInteger(config.mtu) || config.mtu < 576 || config.mtu > 9000) return false;
   if (config.addressMode === "static") {
     const parts = config.virtualIpv4.split(".");

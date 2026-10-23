@@ -163,7 +163,6 @@ pub fn run() {
             update_commands::install_update,
             easytier::easy_tier_status,
             easytier::save_easy_tier_config,
-            easytier::install_easy_tier,
             easytier::start_easy_tier,
             easytier::stop_easy_tier,
         ])

@@ -1,12 +1,12 @@
-//! Optional, explicitly started EasyTier component. No system service is installed.
+//! Built-in EasyTier networking, explicitly started by the user.
 use super::*;
 use config::EasyTierConfig;
 use tauri::Manager;
 
+mod bundled;
 mod config;
-mod install;
 
-const VERSION: &str = "2.6.4";
+const VERSION: &str = env!("PORTMATE_EASYTIER_VERSION");
 const MAX_LOG_LINES: usize = 160;
 
 #[derive(Clone, Debug, Serialize)]
@@ -21,12 +21,6 @@ fn failure(code: &'static str, detail: impl ToString) -> EasyTierError {
         code,
         detail: detail.to_string(),
     }
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct InstallProgress {
-    downloaded: u64,
-    total: Option<u64>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -96,7 +90,6 @@ pub(crate) struct EasyTierView {
     config: EasyTierConfig,
     component_ready: bool,
     component_version: &'static str,
-    download_supported: bool,
     status: NetworkStatus,
 }
 
@@ -150,17 +143,14 @@ fn inner(runtime: &EasyTierRuntime) -> std::sync::MutexGuard<'_, Inner> {
 fn view(state: &AppState, runtime: &EasyTierRuntime) -> Result<EasyTierView, EasyTierError> {
     let root = root(state)?;
     let config = config::load_config(&root)?;
-    let directory = install::component_directory(&root, &config);
     let mut status = inner(runtime).status.clone();
     if status.phase.is_empty() {
         status.phase = "idle";
     }
     Ok(EasyTierView {
         config,
-        component_ready: install::executable(&directory, "easytier-core").is_ok()
-            && install::executable(&directory, "easytier-cli").is_ok(),
+        component_ready: !bundled::FILES.is_empty(),
         component_version: VERSION,
-        download_supported: install::release_asset().is_ok(),
         status,
     })
 }
@@ -202,24 +192,6 @@ pub(crate) async fn save_easy_tier_config(
         .map_err(|_| failure("busy", "EasyTier operation is already running"))?;
     ensure_idle(&runtime)?;
     config::save_config(&root(&state)?, &config)?;
-    view(&state, &runtime)
-}
-
-#[tauri::command]
-pub(crate) async fn install_easy_tier(
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    runtime: State<'_, EasyTierRuntime>,
-    on_progress: tauri::ipc::Channel<InstallProgress>,
-) -> Result<EasyTierView, EasyTierError> {
-    authorize(&window)?;
-    let _gate = runtime
-        .gate
-        .try_lock()
-        .map_err(|_| failure("busy", "EasyTier operation is already running"))?;
-    ensure_idle(&runtime)?;
-    update_commands::ensure_not_updating(&state).map_err(|e| failure("busy", e))?;
-    install::install_component(root(&state)?, on_progress).await?;
     view(&state, &runtime)
 }
 
@@ -320,9 +292,13 @@ pub(crate) async fn start_easy_tier(
     config.validate()?;
     config::validate_secret(&secret)?;
     let root = root(&state)?;
-    let directory = install::component_directory(&root, &config);
-    let core = install::executable(&directory, "easytier-core")?;
-    let cli = install::executable(&directory, "easytier-cli")?;
+    update_commands::ensure_not_updating(&state).map_err(|e| failure("busy", e))?;
+    let component_root = root.clone();
+    let directory = tauri::async_runtime::spawn_blocking(move || bundled::prepare(&component_root))
+        .await
+        .map_err(|e| failure("component-failed", e))??;
+    let core = bundled::executable(&directory, "easytier-core")?;
+    let cli = bundled::executable(&directory, "easytier-cli")?;
     for binary in [&core, &cli] {
         let output = command_output(binary, &["--version"]).await?;
         if !String::from_utf8_lossy(&output)
@@ -691,6 +667,11 @@ pub(super) fn shutdown_for_app(state: &AppState) {
 #[path = "../../../test/rust/portmate/unit/easytier.rs"]
 mod tests;
 
-#[cfg(all(test, target_os = "linux", not(feature = "desktop")))]
+#[cfg(all(
+    test,
+    target_os = "linux",
+    not(feature = "desktop"),
+    feature = "bundled-easytier"
+))]
 #[path = "../../../test/rust/portmate/unit/easytier_lifecycle.rs"]
 mod lifecycle_tests;
