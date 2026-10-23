@@ -349,6 +349,9 @@ async fn prepare_for_update(
         downloaded: 0,
         total: None,
     });
+    super::easytier::stop_before_update(state)
+        .await
+        .map_err(|error| failure("prepare-failed", error))?;
     let state_copy = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
         host_script_commands::cancel_owner(&state_copy.store_path, None);

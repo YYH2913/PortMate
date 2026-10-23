@@ -6,6 +6,8 @@ mod app_data_migration;
 mod command_history_commands;
 mod command_types;
 mod custom_script_commands;
+#[cfg(any(feature = "desktop", test))]
+mod easytier;
 mod host_script_commands;
 mod host_script_process;
 mod locale_commands;

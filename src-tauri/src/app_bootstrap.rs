@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(update_commands::UpdateRuntime::default())
+        .manage(easytier::EasyTierRuntime::default())
         .setup(|app| {
             // Tauri calls setup on RunEvent::Ready, after build() has returned,
             // and panics if this callback returns Err. Report and exit here so
@@ -160,6 +161,11 @@ pub fn run() {
             mcp_commands::mcp_manifest,
             update_commands::check_for_updates,
             update_commands::install_update,
+            easytier::easy_tier_status,
+            easytier::save_easy_tier_config,
+            easytier::install_easy_tier,
+            easytier::start_easy_tier,
+            easytier::stop_easy_tier,
         ])
         .build(tauri::generate_context!());
     let app = match app {
@@ -198,6 +204,7 @@ pub fn run() {
 
 /// Stop owned resources and flush data during a normal runtime exit.
 fn cleanup_before_process_exit(state: &AppState) {
+    easytier::shutdown_for_app(state);
     host_script_commands::cancel_owner(&state.store_path, None);
     shutdown_mcp_http_runtime(state);
     shutdown_ipc_publication(state);
