@@ -150,6 +150,7 @@ const LazyCredentialDialog = lazy(() => import("./CredentialDialog"));
 const LazyNoticeDialog = lazy(() => import("./NoticeDialog"));
 const LazyAboutDialog = lazy(() => import("./AboutDialog"));
 const LazyUpdateDialog = lazy(() => import("./UpdateDialog"));
+const LazyEasyTierDialog = lazy(() => import("./EasyTierDialog"));
 const LazySessionContextMenu = lazy(() => import("./ContextMenus").then(({ SessionContextMenu }) => ({ default: SessionContextMenu })));
 const LazyTerminalContextMenu = lazy(() => import("./ContextMenus").then(({ TerminalContextMenu }) => ({ default: TerminalContextMenu })));
 const LazySessionExplorerPanel = lazy(() => import("./WorkspaceUtilityPanels").then(({ SessionExplorerPanel }) => ({ default: SessionExplorerPanel })));
@@ -217,7 +218,7 @@ const terminalKeyModeMenuItems: Partial<Record<string, TerminalKeyMode>> = {
 
 type SettingsDialog = "terminal" | "session" | null;
 type SessionSettingsMode = "create" | "edit";
-type UtilityDialog = "transfer" | "tunnel" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "about" | "updates" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
+type UtilityDialog = "transfer" | "tunnel" | "easytier" | "tmux" | "sysmon" | "search" | "logs" | "keys" | "mcp" | "about" | "updates" | "one-keys" | "quick-commands" | "custom-scripts" | "session-import" | null;
 type ConnectionInteraction = "interactive" | "silent";
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 type NoticeState = { title: string; message: string; link?: string; diagnostic?: boolean } | null;
@@ -2069,6 +2070,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     if (item === "check-for-updates") {
       setUtilityDialog("updates");
+      return;
+    }
+    if (item === "easytier-network") {
+      setUtilityDialog("easytier");
       return;
     }
     if (item === "log-manager") {
@@ -5235,6 +5240,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {utilityDialog === "updates" && (
         <Suspense fallback={null}>
           <LazyUpdateDialog onClose={() => setUtilityDialog(null)} />
+        </Suspense>
+      )}
+      {utilityDialog === "easytier" && (
+        <Suspense fallback={null}>
+          <LazyEasyTierDialog onClose={() => setUtilityDialog(null)} />
         </Suspense>
       )}
       {utilityDialog === "one-keys" && (

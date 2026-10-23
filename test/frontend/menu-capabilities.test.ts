@@ -44,7 +44,7 @@ describe("top menu capabilities", () => {
     expect(tools).toBeDefined();
     const sections = menuSectionsForGroup("tools", tools?.items ?? []);
     expect(sections.map((section) => section.label)).toEqual(["connection-tools", "automation", "management"]);
-    expect(sections[0]?.items).toEqual(["transfer-tasks", "port-forwarding", "tmux", "serial-analyzer", "sysmon"]);
+    expect(sections[0]?.items).toEqual(["transfer-tasks", "port-forwarding", "easytier-network", "tmux", "serial-analyzer", "sysmon"]);
     expect(sections[2]?.items).toEqual(["terminal-settings", "key-manager", "log-manager", "check-for-updates", "about-portmate"]);
   });
 

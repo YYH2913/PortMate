@@ -107,7 +107,9 @@
     "desktop:build:update": "node scripts/build-desktop.mjs --updater",
     "release:update-manifest": "node scripts/create-update-manifest.mjs",
     "pretest:updater-ui": "node scripts/ensure-node-version.mjs",
-    "test:updater-ui": "node test/tooling/update-ui-check.mjs"
+    "test:updater-ui": "node test/tooling/update-ui-check.mjs",
+    "pretest:easytier-ui": "node scripts/ensure-node-version.mjs",
+    "test:easytier-ui": "node test/tooling/easytier-ui-check.mjs"
   },
   "dependencies": {
     "@serialpilot/cobs": "^0.1.0",

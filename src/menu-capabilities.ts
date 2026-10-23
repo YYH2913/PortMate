@@ -49,6 +49,7 @@ export const menuGroups = [
     items: [
       "transfer-tasks",
       "port-forwarding",
+      "easytier-network",
       "tmux",
       "serial-analyzer",
       "sysmon",
@@ -90,7 +91,7 @@ const menuSections = {
     { label: "", items: ["restore-layout"] },
   ],
   tools: [
-    { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "tmux", "serial-analyzer", "sysmon"] },
+    { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "easytier-network", "tmux", "serial-analyzer", "sysmon"] },
     { label: "automation", items: ["one-keys", "quick-commands", "custom-scripts", "triggers", "mcp-bridge"] },
     { label: "management", items: ["terminal-settings", "key-manager", "log-manager", "check-for-updates", "about-portmate"] },
   ],
