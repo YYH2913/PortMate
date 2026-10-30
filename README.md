@@ -246,6 +246,12 @@ response remains authoritative.
 
 ### Recommended Setup
 
+If HTTP requests reach the Bridge but command input reports desktop IPC unavailable,
+inspect `mcp_bridge_status` for `desktopIpcAvailable` and `desktopIpcIssue`. The desktop
+retries listener/endpoint startup failures; the Bridge briefly refreshes and reconnects
+before sending a request. Requests with an unknown outcome after sending are never
+automatically replayed. Windows local Shell command submission uses CR (Enter) per line.
+
 1. Keep the PortMate desktop application running.
 2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.
 3. Enable per-operation confirmation for write scopes so the desktop can approve or reject each request.

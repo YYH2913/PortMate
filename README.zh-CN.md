@@ -270,6 +270,10 @@ cargo build --locked -p portmate-mcp
 
 bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoint，因此桌面重启或 IPC Token 轮换通常不要求重启长驻 stdio 客户端。
 
+如果 HTTP 能连接，但命令报告桌面 IPC 不可用，可调用 `mcp_bridge_status` 查看
+`desktopIpcAvailable` 与 `desktopIpcIssue`。桌面监听或端点发布失败会自动重试，
+桥接在发送请求前短暂重试并刷新端点；发送后结果未知的命令不会自动重发。
+
 ### HTTP 模式
 
 - 默认监听 `127.0.0.1:8787`，端点为 `/mcp`。

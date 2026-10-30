@@ -177,6 +177,12 @@ transport、Store、桌面 IPC 和托管 HTTP 状态；reload_mcp 只刷新当�
 PortMate。restart_mcp 不需要参数，但需要 manage-mcp；托管 HTTP sidecar 不能在自己的
 请求中重启自己，请从 stdio Bridge 或桌面端执行。
 
+`desktopIpcAvailable` 表示桥接是否实际连接到桌面后端；不可用时，`desktopIpcIssue`
+给出缺少端点、端点无法读取、配置无效或本机连接失败的原因（不会返回 Token）。
+`HTTP` 可访问不等于桌面 `IPC` 可用，部分只读工具仍能读取保存的快照。
+桌面 IPC 启动或端点发布失败时会重试；桥接只在请求尚未发送时短暂重新发现端点并重连。
+若报错明确指出发送后结果未知，请先检查屏幕或日志，避免重复执行命令。
+
 export_session_bundle 使用与 read_screen 相同的 sessionId 参数，返回脱敏的会话元数据、
 日志和诊断信息；不会包含凭据、私钥或未批准的本地路径。
 
@@ -234,7 +240,8 @@ home、end、page-up、page-down、insert、f1-f12、space 和受限 ctrl+字母
     { "sessionId": "edge-router", "command": "show version" }
 
 run_command 根据会话类型发送到 SSH/Tmux/Shell/Serial/Telnet/TCP，并追加协议终止符；
-Serial 会把每一行作为独立命令，以 `CR` 结束，因此保存的多行自定义脚本会逐行执行。
+Serial 与 Windows 本地 Shell 会把每一行作为独立命令，以 `CR`（Enter，`\r`）结束，
+因此保存的多行自定义脚本会逐行执行。Windows ConPTY 中单独的 `LF` 不能代替 Enter。
 run_local_command 只允许已有的 PortMate Shell Profile 和 live PTY；MCP 不能选择 shell
 程序、argv 或 cwd。
 

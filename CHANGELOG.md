@@ -6,6 +6,24 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Fixed
+
+- Recover from temporary desktop IPC listener/endpoint startup failures. The MCP
+  Bridge briefly reloads the endpoint and retries connections before sending any
+  request, reports specific IPC failure reasons, and never replays a write whose
+  response was lost. Bridge status includes a secret-free `desktopIpcIssue`.
+- Submit Windows local Shell commands with CR (Enter) for every line so
+  `run_command`, `run_local_command` and command scripts execute in ConPTY/cmd.exe
+  without requiring a separate Enter key.
+
+### 修复（中文）
+
+- 桌面 IPC 监听或端点发布暂时失败后自动恢复；MCP 在发送前短暂刷新端点并重连，
+  返回具体失败原因，`mcp_bridge_status` 增加不含密钥的 `desktopIpcIssue`。
+  请求已发送但结果未知时不会自动重发，避免重复执行。
+- Windows 本地 Shell 的逐行命令改用 CR（Enter），修复 `run_command`、
+  `run_local_command` 和命令脚本只有回显、需要额外按回车才执行的问题。
+
 ### Added
 
 - **Tools → EasyTier networking** integrates a built-in EasyTier 2.6.4 core, with
