@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn ipc_startup_recovers_after_endpoint_publication_temporarily_fails() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let endpoint_path = root.path().join("portmate-ipc.json");
+        fs::create_dir(&endpoint_path).unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        start_ipc_server(
+            state.clone(),
+            endpoint_path.clone(),
+            "startup-recovery-token".into(),
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        fs::remove_dir(&endpoint_path).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(Some(endpoint)) = read_private_ipc_endpoint_file(&endpoint_path) {
+                    let mut stream = TcpStream::connect(&endpoint.addr).await.unwrap();
+                    stream
+                        .write_all(br#"{"token":"invalid","command":"list_sessions","args":{}}"#)
+                        .await
+                        .unwrap();
+                    stream.shutdown().await.unwrap();
+                    let mut bytes = Vec::new();
+                    stream.read_to_end(&mut bytes).await.unwrap();
+                    let response: IpcResponse = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(response.error.as_deref(), Some("invalid IPC token"));
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(retire_ipc_publication_with(&state, |_| Ok(())).is_empty());
+        result.expect("IPC did not recover after a temporary publication failure");
+    });
+}
+
+#[test]
+fn ipc_startup_retry_cannot_republish_after_shutdown() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let endpoint_path = root.path().join("portmate-ipc.json");
+        fs::create_dir(&endpoint_path).unwrap();
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        start_ipc_server(
+            state.clone(),
+            endpoint_path.clone(),
+            "shutdown-recovery-token".into(),
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(retire_ipc_publication_with(&state, |_| Ok(())).is_empty());
+        fs::remove_dir(&endpoint_path).unwrap();
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(!endpoint_path.exists());
+    });
+}
+
+#[test]
 fn ipc_identity_is_bound_to_the_desktop_selected_client() {
     let root = std::env::temp_dir().join(format!("portmate-ipc-identity-{}", Uuid::new_v4()));
     let state = test_app_state(test_ssh_profile(), root.join("portmate-store.sqlite3"));

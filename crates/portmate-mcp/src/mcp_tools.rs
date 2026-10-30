@@ -185,13 +185,13 @@ impl PortMateMcp {
                 serde_json::to_string_pretty(&self.host_script_definitions()?)?
             }
             "send_text" | "send_bytes" | "send_key" | "run_command" | "run_local_command" => {
-                if let Some(output) = self.write_tool(name, &arguments)? {
-                    output
-                } else {
-                    is_error = true;
-                    format!(
-                        "{name} was NOT executed: desktop IPC is not available, so no session input was sent."
-                    )
+                match self.write_tool(name, &arguments) {
+                    Ok(output) => output,
+                    Err(error) if error.is::<super::desktop_ipc::IpcUnavailable>() => {
+                        is_error = true;
+                        format!("{name} was NOT executed: desktop IPC is not available, so no session input was sent. {error}")
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             "serial_send_break" => {
@@ -321,15 +321,14 @@ impl PortMateMcp {
                     }))?
                 }
             }
-            "attach_tmux" => {
-                if let Some(output) = self.write_tool(name, &arguments)? {
-                    output
-                } else {
+            "attach_tmux" => match self.write_tool(name, &arguments) {
+                Ok(output) => output,
+                Err(error) if error.is::<super::desktop_ipc::IpcUnavailable>() => {
                     is_error = true;
-                    "attach_tmux was NOT executed: desktop IPC is not available, so tmux was not attached."
-                        .to_string()
+                    format!("attach_tmux was NOT executed: desktop IPC is not available, so tmux was not attached. {error}")
                 }
-            }
+                Err(error) => return Err(error),
+            },
             _ => return Err(anyhow!("unknown tool: {name}")),
         };
 
@@ -340,7 +339,14 @@ impl PortMateMcp {
     }
 
     fn bridge_status(&self) -> Result<Value> {
-        let runtime = self.call_ipc_value("mcp_http_runtime_status", json!({}))?;
+        let (runtime, issue) =
+            match self.call_ipc_value_detailed("mcp_http_runtime_status", json!({})) {
+                Ok(runtime) => (Some(runtime), Value::Null),
+                Err(error) => match error.downcast_ref::<super::desktop_ipc::IpcUnavailable>() {
+                    Some(issue) => (None, serde_json::to_value(issue)?),
+                    None => return Err(error),
+                },
+            };
         let desktop_ipc_available = runtime.is_some();
         let runtime = runtime.unwrap_or_else(
             || json!({ "phase": "unavailable", "message": "desktop IPC is not available" }),
@@ -352,6 +358,7 @@ impl PortMateMcp {
             "configuredHttpClientId": self.store.mcp_http_settings.client_id,
             "storePath": self.store_path.as_ref().map(|path| path.display().to_string()),
             "desktopIpcAvailable": desktop_ipc_available,
+            "desktopIpcIssue": issue,
             "managedHttp": runtime,
         }))
     }
@@ -382,15 +389,11 @@ impl PortMateMcp {
         }))
     }
 
-    fn write_tool(&self, name: &str, arguments: &Value) -> Result<Option<String>> {
-        if let Some(value) = self.call_ipc_value(name, arguments.clone())? {
-            let event = serde_json::from_value::<SessionEvent>(value)
-                .map_err(|error| anyhow!("invalid desktop event response: {error}"))?;
-            return serde_json::to_string_pretty(&redact_session_event(event))
-                .map(Some)
-                .map_err(Into::into);
-        }
-        Ok(None)
+    fn write_tool(&self, name: &str, arguments: &Value) -> Result<String> {
+        let value = self.call_ipc_value_detailed(name, arguments.clone())?;
+        let event = serde_json::from_value::<SessionEvent>(value)
+            .map_err(|error| anyhow!("invalid desktop event response: {error}"))?;
+        serde_json::to_string_pretty(&redact_session_event(event)).map_err(Into::into)
     }
 
     pub(super) fn start_transfer_tool(&self, arguments: &Value) -> Result<Value> {

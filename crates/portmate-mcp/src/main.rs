@@ -209,15 +209,23 @@ impl PortMateMcp {
     }
 
     fn call_ipc_value(&self, command: &str, args: Value) -> Result<Option<Value>> {
-        let Some(endpoint) = &self.ipc else {
-            return Ok(None);
-        };
+        match self.call_ipc_value_detailed(command, args) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.is::<desktop_ipc::IpcUnavailable>() => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn call_ipc_value_detailed(&self, command: &str, args: Value) -> Result<Value> {
         let store_path = self
             .store_path
             .as_deref()
-            .ok_or_else(|| anyhow!("desktop IPC endpoint has no configured store path"))?;
+            .ok_or_else(|| desktop_ipc::IpcUnavailable {
+                code: "store-not-configured",
+                message: "PORTMATE_STORE_PATH is not configured for the desktop Store".into(),
+            })?;
         call_desktop_ipc_value(
-            endpoint,
+            self.ipc.as_ref(),
             store_path,
             &self.client_id,
             self.allow_write,

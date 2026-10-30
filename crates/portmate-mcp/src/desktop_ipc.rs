@@ -16,6 +16,8 @@ const MAX_IPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_TOKEN_BYTES: usize = 4096;
 const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const IPC_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
+const IPC_DISCOVERY_ATTEMPTS: usize = 5;
 const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const IPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -59,19 +61,88 @@ struct IpcResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IpcUnavailable {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+}
+
+impl std::fmt::Display for IpcUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for IpcUnavailable {}
+
+fn unavailable(code: &'static str, message: impl Into<String>) -> IpcUnavailable {
+    IpcUnavailable {
+        code,
+        message: message.into(),
+    }
+}
+
+fn connect_current_endpoint(
+    initial: Option<&IpcEndpointFile>,
+    store_path: &Path,
+) -> Result<(TcpStream, IpcEndpointFile)> {
+    let deadline = Instant::now() + IPC_DISCOVERY_TIMEOUT;
+    let mut last = unavailable(
+        "endpoint-missing",
+        "The desktop IPC endpoint file is missing. Keep PortMate running with the same Store.",
+    );
+    for attempt in 0..IPC_DISCOVERY_ATTEMPTS {
+        let endpoint = if attempt == 0 && initial.is_some() {
+            Ok(initial.cloned())
+        } else {
+            load_ipc_endpoint_checked(store_path)
+        };
+        match endpoint {
+            Ok(Some(endpoint)) => {
+                // Never retry invalid identities, non-loopback destinations or
+                // insecure files by falling back to a cached endpoint.
+                let addr = validate_ipc_endpoint(&endpoint, store_path)
+                    .map_err(|error| unavailable("endpoint-invalid", error.to_string()))?;
+                let timeout = IPC_CONNECT_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+                if timeout.is_zero() { break; }
+                match TcpStream::connect_timeout(&addr, timeout) {
+                    Ok(stream) => return Ok((stream, endpoint)),
+                    Err(error) => last = unavailable("connect-failed", format!("Cannot connect to the desktop loopback listener: {error}. The desktop may be restarting or its IPC listener failed to start.")),
+                }
+            }
+            Ok(None) => last = unavailable("endpoint-missing", "The desktop IPC endpoint file is missing. Keep PortMate running with the same Store."),
+            Err(error) => {
+                if let Some(io_error) = error.downcast_ref::<io::Error>() {
+                    last = unavailable("endpoint-unreadable", format!("Cannot read the desktop IPC endpoint: {io_error}"));
+                } else {
+                    return Err(unavailable("endpoint-invalid", error.to_string()).into());
+                }
+            }
+        }
+        if attempt + 1 < IPC_DISCOVERY_ATTEMPTS {
+            let delay = Duration::from_millis(50 << attempt.min(2));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(delay.min(remaining));
+        }
+    }
+    Err(last.into())
+}
+
 pub(crate) fn call_ipc_value(
-    endpoint: &IpcEndpointFile,
+    endpoint: Option<&IpcEndpointFile>,
     store_path: &Path,
     client_id: &str,
     trusted_write: bool,
     command: &str,
     args: Value,
-) -> Result<Option<Value>> {
-    let addr = validate_ipc_endpoint(endpoint, store_path)?;
-    let mut stream = match TcpStream::connect_timeout(&addr, IPC_CONNECT_TIMEOUT) {
-        Ok(stream) => stream,
-        Err(_) => return Ok(None),
-    };
+) -> Result<Value> {
+    // Recovery ends at connect(). Once any request bytes may have reached the
+    // desktop, replaying a write could execute the command twice.
+    let (mut stream, endpoint) = connect_current_endpoint(endpoint, store_path)?;
     // Some socket runtimes reject SO_SNDTIMEO with EINVAL. The request is
     // bounded and the IPC endpoint is loopback, so a blocking write is safe;
     // the response still has an explicit deadline below.
@@ -81,7 +152,7 @@ pub(crate) fn call_ipc_value(
         }
     }
     let request = IpcRequest {
-        token: endpoint_ipc_token(endpoint)?,
+        token: endpoint_ipc_token(&endpoint)?,
         client_id: client_id.to_string(),
         trusted_write,
         command: command.to_string(),
@@ -90,15 +161,17 @@ pub(crate) fn call_ipc_value(
     let request = encode_ipc_request(&request, MAX_IPC_REQUEST_BYTES)?;
     stream
         .write_all(&request)
-        .context("failed to write desktop IPC request")?;
+        .context("desktop IPC request write failed; execution status is unknown, do not automatically repeat the command")?;
     stream
         .shutdown(Shutdown::Write)
-        .context("failed to finish desktop IPC request")?;
+        .context("desktop IPC request shutdown failed; execution status is unknown, do not automatically repeat the command")?;
     let raw =
-        read_ipc_response_with_limits(&mut stream, MAX_IPC_RESPONSE_BYTES, IPC_RESPONSE_TIMEOUT)?;
-    let response = serde_json::from_slice::<IpcResponse>(&raw)?;
+        read_ipc_response_with_limits(&mut stream, MAX_IPC_RESPONSE_BYTES, IPC_RESPONSE_TIMEOUT)
+            .context("desktop IPC response failed after sending the request; execution status is unknown, do not automatically repeat the command")?;
+    let response = serde_json::from_slice::<IpcResponse>(&raw)
+        .context("desktop IPC returned an invalid response after sending the request; execution status is unknown, do not automatically repeat the command")?;
     if response.ok {
-        Ok(Some(response.value.unwrap_or(Value::Null)))
+        Ok(response.value.unwrap_or(Value::Null))
     } else {
         Err(anyhow!(
             "desktop IPC error: {}",
@@ -110,6 +183,16 @@ pub(crate) fn call_ipc_value(
 }
 
 pub(crate) fn load_ipc_endpoint(store_path: &Path) -> Option<IpcEndpointFile> {
+    match load_ipc_endpoint_checked(store_path) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("PortMate MCP ignored unusable desktop IPC endpoint: {error}");
+            None
+        }
+    }
+}
+
+fn load_ipc_endpoint_checked(store_path: &Path) -> Result<Option<IpcEndpointFile>> {
     let endpoint_path = store_path.with_file_name("portmate-ipc.json");
     let raw = match read_ipc_endpoint_file(&endpoint_path) {
         Ok(raw) => raw,
@@ -118,19 +201,16 @@ pub(crate) fn load_ipc_endpoint(store_path: &Path) -> Option<IpcEndpointFile> {
                 .downcast_ref::<io::Error>()
                 .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
         {
-            return None;
+            return Ok(None);
         }
         Err(error) => {
-            eprintln!("PortMate MCP ignored unreadable desktop IPC endpoint: {error}");
-            return None;
+            return Err(error);
         }
     };
-    let endpoint = serde_json::from_slice::<IpcEndpointFile>(&raw).ok()?;
-    if let Err(error) = validate_ipc_endpoint(&endpoint, store_path) {
-        eprintln!("PortMate MCP ignored invalid desktop IPC endpoint: {error}");
-        return None;
-    }
-    Some(endpoint)
+    let endpoint = serde_json::from_slice::<IpcEndpointFile>(&raw)
+        .map_err(|_| anyhow!("desktop IPC endpoint contains invalid JSON or fields"))?;
+    validate_ipc_endpoint(&endpoint, store_path)?;
+    Ok(Some(endpoint))
 }
 
 pub(crate) fn read_ipc_endpoint_file(path: &Path) -> Result<Vec<u8>> {

@@ -55,69 +55,97 @@ pub(super) struct IpcResponse {
 
 pub(super) fn start_ipc_server(state: AppState, endpoint_path: PathBuf, token: String) {
     tauri::async_runtime::spawn(async move {
-        let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
-            Ok(listener) => listener,
-            Err(error) => {
-                eprintln!("PortMate: failed to bind MCP IPC server: {error}");
-                return;
-            }
-        };
-        let addr = match listener.local_addr() {
-            Ok(addr) => addr.to_string(),
-            Err(error) => {
-                eprintln!("PortMate: failed to inspect MCP IPC server addr: {error}");
-                return;
-            }
-        };
-        if let Some(parent) = endpoint_path.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                eprintln!("PortMate: failed to create IPC endpoint directory: {error}");
-                return;
-            }
-        }
-        let endpoint = inline_ipc_endpoint(&addr, &token, &state.store_path);
-        match publish_ipc_endpoint(&state, &endpoint_path, &endpoint) {
-            Ok(previous_token_ref) => {
-                if let Some(previous_token_ref) = previous_token_ref {
-                    if let Err(error) = delete_secret_from_keyring(&previous_token_ref) {
-                        eprintln!(
-                            "PortMate: failed to retire previous MCP IPC token {previous_token_ref}: {error}"
-                        );
-                    }
+        let mut previous_error = None;
+        while !ipc_is_shutting_down(&state) {
+            if let Err(error) = serve_ipc(&state, &endpoint_path, &token).await {
+                if previous_error.as_ref() != Some(&error) {
+                    eprintln!("PortMate: MCP IPC unavailable, retrying: {error}");
+                    previous_error = Some(error);
                 }
-            }
-            Err(error) => {
-                if let Some(token_ref) = endpoint.token_ref.as_deref() {
-                    if let Err(cleanup_error) = delete_secret_from_keyring(token_ref) {
-                        eprintln!(
-                            "PortMate: failed to clean up unused MCP IPC token {token_ref}: {cleanup_error}"
-                        );
-                    }
-                }
-                eprintln!("PortMate: failed to write MCP IPC endpoint: {error}");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            } else {
                 return;
-            }
-        }
-        let connection_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IPC_CONNECTIONS));
-
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    spawn_ipc_client(
-                        state.clone(),
-                        token.clone(),
-                        stream,
-                        Arc::clone(&connection_slots),
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    eprintln!("PortMate: MCP IPC accept failed: {error}");
-                    break;
-                }
             }
         }
     });
+}
+
+fn ipc_is_shutting_down(state: &AppState) -> bool {
+    state
+        .ipc_publication
+        .lock()
+        .map(|publication| publication.shutting_down)
+        .unwrap_or(true)
+}
+
+async fn serve_ipc(state: &AppState, endpoint_path: &Path, token: &str) -> Result<(), String> {
+    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            return Err(format!("failed to bind MCP IPC server: {error}"));
+        }
+    };
+    let addr = match listener.local_addr() {
+        Ok(addr) => addr.to_string(),
+        Err(error) => {
+            return Err(format!("failed to inspect MCP IPC server addr: {error}"));
+        }
+    };
+    if let Some(parent) = endpoint_path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            return Err(format!("failed to create IPC endpoint directory: {error}"));
+        }
+    }
+    let endpoint = inline_ipc_endpoint(&addr, token, &state.store_path);
+    let publication_state = state.clone();
+    let publication_path = endpoint_path.to_path_buf();
+    let publication_endpoint = endpoint.clone();
+    let publication = tauri::async_runtime::spawn_blocking(move || {
+        publish_ipc_endpoint(&publication_state, &publication_path, &publication_endpoint)
+    })
+    .await
+    .map_err(|error| format!("MCP IPC publication task failed: {error}"))?;
+    match publication {
+        Ok(previous_token_ref) => {
+            if let Some(previous_token_ref) = previous_token_ref {
+                if let Err(error) = delete_secret_from_keyring(&previous_token_ref) {
+                    eprintln!(
+                            "PortMate: failed to retire previous MCP IPC token {previous_token_ref}: {error}"
+                        );
+                }
+            }
+        }
+        Err(error) => {
+            if let Some(token_ref) = endpoint.token_ref.as_deref() {
+                if let Err(cleanup_error) = delete_secret_from_keyring(token_ref) {
+                    eprintln!(
+                            "PortMate: failed to clean up unused MCP IPC token {token_ref}: {cleanup_error}"
+                        );
+                }
+            }
+            return Err(format!("failed to write MCP IPC endpoint: {error}"));
+        }
+    }
+    let connection_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IPC_CONNECTIONS));
+
+    while !ipc_is_shutting_down(state) {
+        match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
+            Ok(Ok((stream, _))) => {
+                spawn_ipc_client(
+                    state.clone(),
+                    token.to_string(),
+                    stream,
+                    Arc::clone(&connection_slots),
+                )
+                .await;
+            }
+            Ok(Err(error)) => {
+                return Err(format!("MCP IPC accept failed: {error}"));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn inline_ipc_endpoint(addr: &str, token: &str, store_path: &Path) -> IpcEndpointFile {
