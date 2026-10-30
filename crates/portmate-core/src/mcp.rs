@@ -198,7 +198,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "run_command",
             "Run Command",
-            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; UTF-8 commands are limited to 64 KiB, SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, Serial uses CR for every command line, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
+            "Write a command followed by its protocol terminator to one currently connected authorized session. Requires write-input; UTF-8 commands are limited to 64 KiB, SSH/Tmux commands run remotely, Shell commands run inside the saved local Shell PTY, Serial and Windows local Shell use CR for every command line, and Telnet receives its protocol-specific line ending. It does not accept a program path, working directory, password, or private key from MCP.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],
@@ -209,7 +209,7 @@ pub fn tool_definitions() -> Vec<McpToolDefinition> {
         tool(
             "run_local_command",
             "Run Local Command",
-            "Run a command followed by newline in a connected PortMate local Shell session. Requires write-input, an existing saved Shell profile, and its live PTY; the MCP caller cannot choose the shell program, arguments, or working directory. The same grant, confirmation, revalidation, redaction, and audit rules as other terminal input apply.",
+            "Run a command in a connected PortMate local Shell session, using CR (Enter) per line on Windows and the normal terminal line ending on Unix. Requires write-input, an existing saved Shell profile, and its live PTY; the MCP caller cannot choose the shell program, arguments, or working directory. The same grant, confirmation, revalidation, redaction, and audit rules as other terminal input apply.",
             json!({
                 "type":"object",
                 "required":["sessionId","command"],

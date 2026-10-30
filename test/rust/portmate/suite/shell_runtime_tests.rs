@@ -1,5 +1,55 @@
 use super::*;
 
+#[test]
+fn mcp_commands_submit_each_line_in_a_real_local_shell() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let mut profile = test_shell_profile();
+        let ConnectionConfig::Shell(shell) = &mut profile.connection else {
+            unreachable!()
+        };
+        shell.cwd = Some(root.path().display().to_string());
+        #[cfg(windows)]
+        {
+            shell.program = "cmd.exe".into();
+            shell.args = vec!["/D".into(), "/Q".into()];
+        }
+        #[cfg(unix)]
+        {
+            shell.program = "/bin/sh".into();
+        }
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        state.store.lock().unwrap().grants.push(McpGrant {
+            client_id: "shell-line-ending-test".into(),
+            name: "Shell command submission".into(),
+            scopes: vec![McpScope::WriteInput],
+            allowed_sessions: vec![profile.id.clone()],
+            confirm_writes: false,
+            expires_at: None,
+            revoked_at: None,
+        });
+        open_shell_session(&state, profile.clone()).unwrap();
+        let result: Result<(), String> = async {
+            for action in ["run_command", "run_local_command"] {
+                handle_ipc_request(state.clone(), IpcRequest {
+                    token: "test-token".into(), client_id: "shell-line-ending-test".into(), trusted_write: false,
+                    command: action.into(), args: serde_json::json!({"sessionId":profile.id,"command":format!("echo first>{action}-one.txt\necho second>{action}-two.txt")}),
+                }).await?;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !root.path().join(format!("{action}-two.txt")).exists() { tokio::time::sleep(Duration::from_millis(20)).await; }
+                }).await.map_err(|_| format!("{action} did not execute both lines without an extra Enter"))?;
+                for (name, expected) in [("one", "first"), ("two", "second")] {
+                    let value = fs::read_to_string(root.path().join(format!("{action}-{name}.txt"))).map_err(|e| e.to_string())?;
+                    if value.trim() != expected { return Err(format!("unexpected {action} output: {value:?}")); }
+                }
+            }
+            Ok(())
+        }.await;
+        close_session_inner(&state, profile.id).await.unwrap();
+        result.unwrap();
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn shell_blocked_write_is_cancellable_without_blocking_async_timers() {
