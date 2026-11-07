@@ -21,6 +21,7 @@ import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regression
 import { checkSshReconnectSettings } from "./ssh-reconnect-settings-regressions.mjs";
 import { checkSessionRename } from "./session-rename-regressions.mjs";
 import { checkTftpProgress } from "./tftp-progress-regressions.mjs";
+import { checkStartupPerformance } from "./startup-performance-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1994,6 +1995,11 @@ try {
   if (process.env.PORTMATE_UI_SSH_RECONNECT_ONLY === "1") {
     await checkSshReconnectSettings(context, appUrl);
     console.log("SSH reconnect fingerprint settings regressions passed");
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_STARTUP_PERF_ONLY === "1") {
+    await checkStartupPerformance(context, appUrl, screenshotPrefix);
     await context.close();
     break checks;
   }

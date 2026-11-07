@@ -5,6 +5,7 @@ import { parse } from "@babel/parser";
 import vm from "node:vm";
 import { startupCredentialsReady } from "../../src/startup-connection-state";
 import { createSshConnection } from "../../src/session-profile-helpers";
+import { BackgroundConnectionQueue } from "../../src/background-connection-queue";
 
 describe("current App startup effect", () => {
   it("keeps a locked vault target pending and starts it once after unlock", async () => {
@@ -38,18 +39,21 @@ describe("current App startup effect", () => {
       terminalPrefs: { startupMode: "last", startupSessions: [] }, workspaceRoot: {}, activePaneId: "pane", activeId: "ssh", tabColors: {},
       reconcileWorkspaceSnapshot: value => value, resolveStartupSessionIds: () => ["ssh"],
       sessionConnectionAction: () => "connect", startupCredentialsReady,
-      connectSession: async id => { attempts.push(id); },
+      connectSession: async (...args) => { attempts.push(args); },
+      startupConnectionsRef: { current: new BackgroundConnectionQueue() },
     });
+    context.sessionsRef = { current: context.sessions };
     const effect = vm.runInContext(stripTypeScriptTypes(`(${callback})`, { mode: "strip" }), context);
     effect();
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setTimeout(resolve, 20));
     expect(attempts).toEqual([]);
     expect(context.startupAppliedRef.current).toBe(false);
     context.portableVaultStatus.unlocked = true;
     effect();
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setTimeout(resolve, 20));
     effect();
-    expect(attempts).toEqual(["ssh"]);
+    expect(attempts).toEqual([["ssh", undefined, false, "silent"]]);
     expect(context.startupAppliedRef.current).toBe(true);
+    context.startupConnectionsRef.current.dispose();
   });
 });

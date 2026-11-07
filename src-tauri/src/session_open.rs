@@ -222,8 +222,6 @@ pub(super) async fn open_session_under_lifecycle_lock(
     credentials: SessionOpenCredentials,
     cancellation: Arc<SessionOpenCancellation>,
 ) -> Result<SessionSummary, String> {
-    ensure_session_can_open(&state, &session_id)?;
-    clear_active_command(&state.session_io(), &session_id);
     let SessionOpenCredentials {
         username,
         password,
@@ -232,7 +230,13 @@ pub(super) async fn open_session_under_lifecycle_lock(
         isolate_saved_ssh_credentials,
         credential_binding,
     } = credentials;
-    let profile = {
+    let prepare_state = state.clone();
+    let prepare_session_id = session_id.clone();
+    let profile = tauri::async_runtime::spawn_blocking(move || {
+        let state = prepare_state;
+        let session_id = prepare_session_id;
+        ensure_session_can_open(&state, &session_id)?;
+        clear_active_command(&state.session_io(), &session_id);
         let mut store = state.store.lock().map_err(|error| error.to_string())?;
         let saved_profile = store
             .profile(&session_id)
@@ -258,8 +262,10 @@ pub(super) async fn open_session_under_lifecycle_lock(
                 .into_iter()
                 .collect();
             Ok((profile, event_ids))
-        })?
-    };
+        })
+    })
+    .await
+    .map_err(|error| format!("session startup checkpoint failed: {error}"))??;
 
     if cancellation.is_cancelled() {
         return Err(cancel_session_open_under_lifecycle_lock(&state, &session_id).await);

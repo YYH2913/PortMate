@@ -1,5 +1,40 @@
 use super::*;
 
+#[tokio::test(flavor = "current_thread")]
+async fn startup_store_lock_does_not_block_async_input_or_paint_timers() {
+    let root = canonical_test_tempdir();
+    let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+    let holding_state = state.clone();
+    let (ready, acquired) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _lock = holding_state.store.lock().unwrap();
+        ready.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+    });
+    acquired.recv_timeout(Duration::from_secs(2)).unwrap();
+    let opening_state = state.clone();
+    let opening = tokio::spawn(async move {
+        open_session_inner(
+            opening_state,
+            "session:1".into(),
+            SessionOpenCredentials::default(),
+        )
+        .await
+    });
+    let start = Instant::now();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let elapsed = start.elapsed();
+    holder.join().unwrap();
+    let _ = opening.await.unwrap();
+    close_session_inner(&state, "session:1".into())
+        .await
+        .unwrap();
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "startup blocked async timers for {elapsed:?}"
+    );
+}
+
 #[tokio::test]
 async fn delete_session_profile_persists_and_cleans_runtime_state() {
     let temp = tempfile::tempdir().unwrap();

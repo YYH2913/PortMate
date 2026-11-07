@@ -79,6 +79,8 @@ import { normalizeProxyConfig } from "./proxy-settings";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
 import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMMAND_STORAGE_KEY, quickCommandDispatch } from "./quick-command-state";
 import { startupCredentialsReady } from "./startup-connection-state";
+import { BackgroundConnectionQueue } from "./background-connection-queue";
+import { reconcileSessionSummaries } from "./session-summary-identity";
 import type { QuickCommand } from "./quick-command-state";
 import LanguageSelector from "./LanguageSelector";
 import { normalizeSerialConnectionSettings } from "./serial-connection-settings";
@@ -431,6 +433,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const credentialRequestIdRef = useRef(0);
   const startupAppliedRef = useRef(false);
   const pendingStartupRef = useRef<Set<string> | null>(null);
+  const startupConnectionsRef = useRef<BackgroundConnectionQueue | null>(null);
+  useEffect(() => {
+    startupConnectionsRef.current = new BackgroundConnectionQueue(4);
+    return () => { startupConnectionsRef.current?.dispose(); startupConnectionsRef.current = null; };
+  }, []);
+  useEffect(() => {
+    window.addEventListener("pagehide", flushLocalSessionSummaries);
+    return () => { window.removeEventListener("pagehide", flushLocalSessionSummaries); flushLocalSessionSummaries(); };
+  }, []);
   const syncInputDispatcherRef = useRef(new SyncInputDispatcher());
   const directInputPumpRef = useRef<TerminalInputPumpRegistry | null>(null);
   const terminalInputStreamsRef = useRef(new TerminalInputStreams(invokeBackend));
@@ -1302,14 +1313,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       }
     }
     startupAppliedRef.current = pendingStartupRef.current.size === 0;
-    void (async () => {
-      for (const sessionId of ready) {
-        const session = sessions.find((item) => item.profile.id === sessionId);
+    for (const sessionId of ready) {
+      startupConnectionsRef.current?.enqueue(sessionId, async () => {
+        const session = sessionsRef.current.find((item) => item.profile.id === sessionId);
         if (session && sessionConnectionAction(session.runtime.status) === "connect") {
-          await connectSession(sessionId, undefined, true, "silent");
+          await connectSession(sessionId, undefined, false, "silent");
         }
-      }
-    })();
+      });
+    }
   }, [sessions, workspaceWindowId, portableVaultStatusReady, portableVaultStatus?.unlocked]);
 
   useEffect(() => {
@@ -1650,8 +1661,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
   useEffect(() => {
     if (!activeId || !isBackendAvailable()) return;
-    if (!activeStatus || activeStatus === "disconnected") return;
     void refreshActiveLog(activeId);
+    if (!activeStatus || activeStatus === "disconnected" || activeStatus === "error") return;
     const timer = window.setInterval(() => {
       void refreshActiveLog(activeId);
     }, activeStatus === "connected" ? 2000 : 1200);
@@ -1876,10 +1887,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       await supplementalHydration;
 
       if (!gate.isCurrent("summaries", token)) return;
-      for (const session of nextSessions) {
-        if (!gate.isCurrent("summaries", token)) return;
-        await refreshActiveLog(session.profile.id, 160);
-      }
+      const visible = new Set(workspacePaneLeaves(workspaceRootRef.current).map(pane => workspacePaneActiveView(pane).sessionId));
+      if (activeIdRef.current) visible.add(activeIdRef.current);
+      await Promise.all([...visible].map(async sessionId => {
+        if (gate.isCurrent("summaries", token)) await refreshActiveLog(sessionId, 160);
+      }));
     } catch (error) {
       if (gate.isCurrent("summaries", token)) {
         setNotice({ diagnostic: true, title: t("failed-to-load-sessions"), message: formatError(error) });
@@ -1978,7 +1990,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       const signature = sessionsSignature(nextSessions);
       if (sessionsSignatureRef.current === signature) return;
       sessionsSignatureRef.current = signature;
-      const snapshot = cloneSessionSummaries(nextSessions);
+      const snapshot = reconcileSessionSummaries(sessionsRef.current, nextSessions);
       setSessions(snapshot);
       saveLocalSessionSummaries(snapshot);
     } catch {
@@ -3779,9 +3791,30 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
     const attemptIsCurrent = () => connectionAttemptGateRef.current.isCurrent(session.profile.id, attemptToken);
     try {
-      const credentials = interaction === "silent"
-        ? emptyConnectionCredentials()
-        : await requestSessionCredentials(session.profile);
+      if (interaction === "silent") {
+        // Startup uses the saved profile as-is. Re-saving every profile and
+        // hydrating every hidden terminal generated serial Store checkpoints,
+        // many full-app renders and tab activation during startup.
+        sessionSummaryRefreshGateRef.current.invalidate("summaries");
+        setSessions(current => mergeSessionSummaries(current, setSessionStatus(session, "connecting")));
+        try {
+          const saved = isBackendAvailable()
+            ? await invokeBackend<SessionSummary>("open_session", { request: { sessionId: session.profile.id, credentialHandle: null } })
+            : setSessionStatus(session, "connected");
+          if (!attemptIsCurrent()) return;
+          setSessions(current => mergeSessionSummaries(current, saved));
+          saveLocalSessionSummaries(sessionsRef.current);
+          if (workspacePaneLeaves(workspaceRootRef.current).some(pane => workspacePaneActiveView(pane).sessionId === session.profile.id)) {
+            void refreshActiveLog(session.profile.id, 160);
+          }
+        } catch (error) {
+          if (!attemptIsCurrent()) return;
+          const current = sessionsRef.current.find(item => item.profile.id === session.profile.id) ?? session;
+          setSessions(sessions => mergeSessionSummaries(sessions, setSessionStatus(current, "error", formatError(error))));
+        }
+        return;
+      }
+      const credentials = await requestSessionCredentials(session.profile);
       if (!attemptIsCurrent() || credentials === null) return;
       let profileForConnect: SessionProfile;
       let createdConnectionSecretRefs: string[] = [];
@@ -3860,9 +3893,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         replaceSessionLog(failureProfile.id, nextLog);
         sessionSummaryRefreshGateRef.current.invalidate("summaries");
         setSessions((current) => mergeSessionSummaries(current, failed));
-        if (interaction === "silent") {
-          return;
-        }
         if (isSshLikeProfile(failureProfile) && isHostKeyFailure(message)) {
           void openHostKeyPrompt(failureProfile, message, credentials);
         } else {
@@ -3981,6 +4011,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function disconnectSession(sessionId = activeIdRef.current, activateWorkspace = true, reportError = true): Promise<SessionSummary | null> {
+    startupConnectionsRef.current?.cancel(sessionId);
+    pendingStartupRef.current?.delete(sessionId);
     const closeToken = beginSessionDisconnect(sessionId);
     if (closeToken === null) return null;
     // In-flight IPC from the old runtime must not append stale errors or
@@ -7047,6 +7079,19 @@ function mergeSessionSummaries(current: SessionSummary[], saved: SessionSummary)
 }
 
 function saveLocalSessionSummaries(sessions: SessionSummary[]) {
+  pendingSessionSummaryCache = sessions;
+  if (sessionSummaryCacheTimer !== null) return;
+  sessionSummaryCacheTimer = window.setTimeout(flushLocalSessionSummaries, 100);
+}
+
+let pendingSessionSummaryCache: SessionSummary[] | null = null;
+let sessionSummaryCacheTimer: number | null = null;
+function flushLocalSessionSummaries() {
+  if (sessionSummaryCacheTimer !== null) window.clearTimeout(sessionSummaryCacheTimer);
+  sessionSummaryCacheTimer = null;
+  const sessions = pendingSessionSummaryCache;
+  pendingSessionSummaryCache = null;
+  if (!sessions) return;
   try {
     window.localStorage.setItem("portmate.sessions", JSON.stringify({ version: 1, sessions }));
   } catch {
@@ -7055,6 +7100,7 @@ function saveLocalSessionSummaries(sessions: SessionSummary[]) {
 }
 
 async function openWorkspaceWindow(windowId: string): Promise<void> {
+  flushLocalSessionSummaries();
   const path = buildWorkspaceWindowPath({ windowId });
   if (!isBackendAvailable()) {
     const popup = window.open(
@@ -7097,6 +7143,7 @@ async function openDetachedPaneWindow(
   request: DetachedPaneRequest,
   sessionName: string,
 ): Promise<DetachedPaneWindowController> {
+  flushLocalSessionSummaries();
   const path = buildDetachedPanePath(request);
   if (!isBackendAvailable()) {
     const popup = window.open(path, request.windowId, "popup,width=960,height=680,resizable=yes");
