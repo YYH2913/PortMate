@@ -188,7 +188,7 @@ fn session_profile_normalization_bounds_metadata_and_terminal_settings() {
 }
 
 #[test]
-fn ssh_auth_success_hint_respects_the_current_policy() {
+fn ssh_auth_success_hint_never_reorders_the_configured_policy() {
     let mut profile = test_ssh_profile();
     let ConnectionConfig::Ssh(ssh) = &mut profile.connection else {
         panic!("test profile must be SSH");
@@ -197,7 +197,7 @@ fn ssh_auth_success_hint_respects_the_current_policy() {
     ssh.identity_policy.last_successful = Some(AuthMethod::PublicKey);
     assert_eq!(
         ordered_auth_methods(ssh),
-        vec![AuthMethod::PublicKey, AuthMethod::Password]
+        vec![AuthMethod::Password, AuthMethod::PublicKey]
     );
 
     ssh.identity_policy.last_successful = Some(AuthMethod::KeyboardInteractive);
@@ -217,6 +217,27 @@ fn ssh_auth_success_hint_respects_the_current_policy() {
         panic!("normalized test profile must remain SSH");
     };
     assert_eq!(ssh.identity_policy.last_successful, None);
+}
+
+#[test]
+fn ssh_auth_order_keeps_all_methods_and_deduplicates_without_reordering() {
+    let profile = test_ssh_profile();
+    let ConnectionConfig::Ssh(mut ssh) = profile.connection else {
+        panic!("test profile must be SSH");
+    };
+    let expected = vec![
+        AuthMethod::None,
+        AuthMethod::Password,
+        AuthMethod::GssapiWithMic,
+        AuthMethod::PublicKey,
+        AuthMethod::KeyboardInteractive,
+    ];
+    ssh.identity_policy.auth_order = expected.clone();
+    ssh.identity_policy.auth_order.push(AuthMethod::None);
+    ssh.identity_policy.last_successful = Some(AuthMethod::KeyboardInteractive);
+    assert_eq!(ordered_auth_methods(&ssh), expected);
+    ssh.identity_policy.auth_order = vec![AuthMethod::PublicKey];
+    assert_eq!(ordered_auth_methods(&ssh), vec![AuthMethod::PublicKey]);
 }
 
 #[test]

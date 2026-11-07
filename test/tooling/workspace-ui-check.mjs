@@ -5256,17 +5256,11 @@ Host staging
     && await page.getByLabel("用户名:(U)", { exact: true }).inputValue() === "root",
     "advanced SSH settings recombined or discarded the separate host and username fields");
   await selectSessionSection(advancedSessionDialog, "公钥");
-  const authOrderSelect = page.locator(".session-settings-dialog .dialog-field", { hasText: "顺序:(O)" }).locator("select");
-  const authOrderOptions = await authOrderSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
-  assert(authOrderOptions.length === 16
-    && new Set(authOrderOptions).size === 16
-    && authOrderOptions.includes("keyboard-interactive>public-key")
-    && authOrderOptions.includes("password>keyboard-interactive>public-key")
-    && authOrderOptions.includes("none"),
-  `SSH authentication orders are incomplete: ${JSON.stringify(authOrderOptions)}`);
-  await authOrderSelect.selectOption("keyboard-interactive>public-key");
-  assert(await authOrderSelect.inputValue() === "keyboard-interactive>public-key",
-    "SSH authentication order selector did not retain a valid non-default order");
+  const authOrderEditor = page.getByRole("group", { name: "SSH 认证顺序", exact: true });
+  assert(await authOrderEditor.locator(".ssh-auth-order-row").count() === 5, "SSH methods must have one consistent configurable list");
+  await authOrderEditor.locator('[data-auth-method="keyboard-interactive"]').getByRole("button").first().click();
+  await authOrderEditor.locator('[data-auth-method="password"]').getByRole("checkbox").uncheck();
+  assert(await authOrderEditor.locator(".ssh-auth-order-row").first().getAttribute("data-auth-method") === "keyboard-interactive", "authentication move did not change the explicit order");
   const recordAuthSuccess = page.locator(".session-settings-dialog .dialog-field", { hasText: "记住成功方式:(R)" }).getByRole("button");
   assert(await recordAuthSuccess.getAttribute("aria-pressed") === "true", "SSH successful-auth recording is not enabled by default");
   await recordAuthSuccess.click();

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, ReactNode } from "react";
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   Cable,
   CircleAlert,
   FolderTree,
@@ -58,7 +60,8 @@ import {
 } from "./session-settings-state";
 import type { ProtocolTab, QuickConnectField, QuickConnectIssue } from "./session-settings-state";
 import { COMMON_SERIAL_BAUD_RATES, serialConnectionBounds } from "./serial-connection-settings";
-import { SSH_AUTH_ORDER_OPTIONS, sshConnectionBounds } from "./ssh-connection-settings";
+import { sshConnectionBounds } from "./ssh-connection-settings";
+import SshAuthOrderEditor from "./SshAuthOrderEditor";
 import { tcpConnectionBounds } from "./tcp-connection-settings";
 import {
   MAX_TERMINAL_FONT_FAMILY_CHARACTERS,
@@ -1899,11 +1902,13 @@ function SshAdvancedFields({
       ?? identities[0]
       ?? createIdentityRef();
     const selectedIdentityIndex = identities.findIndex((identity) => identity.id === selectedIdentity.id);
-    const authOrderValue = ssh.identityPolicy.authOrder.join(">");
-    const authOrderIsPreset = SSH_AUTH_ORDER_OPTIONS.some((option) => option === authOrderValue);
-    const authOrderOptions: readonly string[] = authOrderIsPreset
-      ? SSH_AUTH_ORDER_OPTIONS
-      : [authOrderValue, ...SSH_AUTH_ORDER_OPTIONS];
+    const moveIdentity = (offset: -1 | 1) => {
+      const target = selectedIdentityIndex + offset;
+      if (selectedIdentityIndex < 0 || target < 0 || target >= identities.length) return;
+      const next = [...identities];
+      [next[selectedIdentityIndex], next[target]] = [next[target], next[selectedIdentityIndex]];
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: next } });
+    };
     const updateIdentity = (patch: Partial<IdentityRef>) => {
       const identity = { ...selectedIdentity, ...patch };
       const nextIdentities = selectedIdentityIndex < 0
@@ -1913,7 +1918,7 @@ function SshAdvancedFields({
     };
     const addIdentity = () => {
       const identity = createIdentityRef();
-      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [identity, ...identities] } });
+      onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityRefs: [...identities, identity] } });
       onSelectedIdentityIdChange(identity.id);
     };
     const removeIdentity = () => {
@@ -1966,15 +1971,7 @@ function SshAdvancedFields({
             <option value="agent">{t("ui-profile-agent")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("order-o")}>
-          <select value={ssh.identityPolicy.authOrder.join(">")} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, authOrder: event.target.value.split(">") as AuthMethod[] } } })}>
-            {authOrderOptions.map((option, index) => (
-              <option key={option} value={option}>
-                {option.replaceAll(">", " > ")}{!authOrderIsPreset && index === 0 ? t("current-settings") : ""}
-              </option>
-            ))}
-          </select>
-        </DialogField>
+        <SshAuthOrderEditor order={ssh.identityPolicy.authOrder} onChange={authOrder => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, authOrder, lastSuccessful: authOrder.includes(ssh.identityPolicy.lastSuccessful!) ? ssh.identityPolicy.lastSuccessful : null } } })} />
         <DialogToggleField
           label={t("remember-successful-method-r")}
           checked={ssh.identityPolicy.recordSuccess}
@@ -2005,8 +2002,10 @@ function SshAdvancedFields({
           <div className="inline-actions">
             <select value={selectedIdentity.id} onChange={(event) => onSelectedIdentityIdChange(event.target.value)} disabled={!identities.length} aria-label={t("client-identity-selection")}>
               {!identities.length ? <option value="">{t("no-identity-configured")}</option> : null}
-              {identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.label} · {identitySourceLabel(identity.source)}</option>)}
+              {identities.map((identity, index) => <option key={identity.id} value={identity.id}>{index + 1}. {identity.label} · {identitySourceLabel(identity.source)}</option>)}
             </select>
+            <button type="button" disabled={selectedIdentityIndex <= 0} aria-label={t("ssh-identity-move-up")} onClick={() => moveIdentity(-1)}><ArrowUp size={14} /></button>
+            <button type="button" disabled={selectedIdentityIndex < 0 || selectedIdentityIndex === identities.length - 1} aria-label={t("ssh-identity-move-down")} onClick={() => moveIdentity(1)}><ArrowDown size={14} /></button>
             <button type="button" onClick={addIdentity} title={t("add-client-identity")}>{t("add")}</button>
             <button type="button" onClick={removeIdentity} disabled={selectedIdentityIndex < 0} title={t("remove-current-identity-reference")}>{t("remove")}</button>
           </div>

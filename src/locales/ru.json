@@ -4026,5 +4026,13 @@
   "easytier-remove-endpoint": "Удалить адрес {0}",
   "easytier-add-endpoint": "Добавить адрес",
   "easytier-bundled-note": "Входит в установочные и переносимые версии. Отдельная загрузка или выбор папки программы не нужны.",
-  "easytier-license-note": "EasyTier использует LGPL-3.0. PortMate включает текст лицензии и ссылку на соответствующий исходный код."
+  "easytier-license-note": "EasyTier использует LGPL-3.0. PortMate включает текст лицензии и ссылку на соответствующий исходный код.",
+  "ssh-auth-order": "Порядок аутентификации SSH",
+  "ssh-auth-order-note": "Выберите методы и порядок попыток. Последний успешный метод не меняет этот порядок.",
+  "ssh-auth-none": "Без аутентификации (none)",
+  "ssh-auth-move-up": "Переместить {0} вверх",
+  "ssh-auth-move-down": "Переместить {0} вниз",
+  "ssh-auth-gssapi-note": "GSSAPI / Kerberos требует совместимую сборку Linux libssh.",
+  "ssh-identity-move-up": "Переместить текущий ключ вверх",
+  "ssh-identity-move-down": "Переместить текущий ключ вниз"
 }

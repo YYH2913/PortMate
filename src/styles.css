@@ -5996,8 +5996,10 @@ fieldset label {
 
 .session-form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 11px;
+  min-width: 0;
   min-height: 0;
   padding: 18px;
   overflow: auto;
@@ -13516,3 +13518,16 @@ fieldset label {
     scroll-behavior: auto !important;
   }
 }
+
+.ssh-auth-order { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 8px 0 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; }
+.ssh-auth-order > strong { font-size: 12px; font-weight: 600; }
+.ssh-auth-order > small { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.ssh-auth-order-row { display: flex; align-items: center; gap: 6px; min-height: 31px; }
+.ssh-auth-order-row > label { display: flex; flex-direction: row; align-items: center; gap: 9px; flex: 1; min-width: 0; font-size: 12px; }
+.ssh-auth-order-row input { accent-color: var(--cyan); }
+.ssh-auth-rank { width: 20px; font: 11px var(--mono); color: var(--muted); text-align: center; }
+.ssh-auth-order-row button { display: grid; place-items: center; padding: 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--control); color: var(--text); cursor: pointer; }
+.ssh-auth-order-row button:disabled { opacity: .35; cursor: default; }
+.session-identity-selector { display: grid; min-width: 0; gap: 8px; font-size: 12px; }
+.session-identity-selector .inline-actions { flex-wrap: wrap; }
+.session-identity-selector select { flex: 1 1 160px; min-width: 0; max-width: 100%; height: 35px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--control); color: var(--text); }

@@ -4026,5 +4026,13 @@
   "easytier-remove-endpoint": "حذف العنوان {0}",
   "easytier-add-endpoint": "إضافة عنوان",
   "easytier-bundled-note": "متضمن في حزم التثبيت والنسخ المحمولة. لا حاجة لتنزيل منفصل أو اختيار مجلد البرنامج.",
-  "easytier-license-note": "يستخدم EasyTier ترخيص LGPL-3.0. يتضمن PortMate نص الترخيص ومرجع الشفرة المصدرية المطابقة."
+  "easytier-license-note": "يستخدم EasyTier ترخيص LGPL-3.0. يتضمن PortMate نص الترخيص ومرجع الشفرة المصدرية المطابقة.",
+  "ssh-auth-order": "ترتيب مصادقة SSH",
+  "ssh-auth-order-note": "فعّل الطرق ورتّب المحاولات. لا تغيّر آخر طريقة ناجحة هذا الترتيب.",
+  "ssh-auth-none": "بلا مصادقة (none)",
+  "ssh-auth-move-up": "نقل {0} لأعلى",
+  "ssh-auth-move-down": "نقل {0} لأسفل",
+  "ssh-auth-gssapi-note": "يتطلب GSSAPI / Kerberos إصدار Linux libssh متوافقًا.",
+  "ssh-identity-move-up": "نقل المفتاح الحالي لأعلى",
+  "ssh-identity-move-down": "نقل المفتاح الحالي لأسفل"
 }

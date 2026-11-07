@@ -331,10 +331,20 @@ pub(super) async fn authenticate_ssh_with_agent_socket<H: client::Handler>(
                         .flatten();
                     for identity in identities {
                         let label = identity.label.clone();
-                        let key = match load_identity_private_key(
-                            identity,
-                            effective_passphrase.as_deref(),
-                        ) {
+                        let loading_identity = identity.clone();
+                        let loading_passphrase = effective_passphrase.clone();
+                        // Encrypted-key KDFs and file/vault I/O can be slow.
+                        // They must not stall the async workers carrying live
+                        // terminal output while background sessions reconnect.
+                        let loaded_key = tauri::async_runtime::spawn_blocking(move || {
+                            load_identity_private_key(
+                                &loading_identity,
+                                loading_passphrase.as_deref(),
+                            )
+                        })
+                        .await
+                        .map_err(|error| format!("SSH private-key loading task failed: {error}"))?;
+                        let key = match loaded_key {
                             Ok(Some(key)) => key,
                             Ok(None) => continue,
                             Err(error) => {
@@ -506,11 +516,8 @@ pub(super) async fn authenticate_keyboard_interactive<H: client::Handler>(
 
 pub(super) fn ordered_auth_methods(ssh: &SshConnection) -> Vec<AuthMethod> {
     let mut ordered = Vec::new();
-    if let Some(last) = ssh.identity_policy.last_successful.filter(|method| {
-        ssh.identity_policy.record_success && ssh.identity_policy.auth_order.contains(method)
-    }) {
-        ordered.push(last);
-    }
+    // Success is diagnostic information, not permission to reorder the explicit
+    // user-selected policy. Keep UI order and actual attempts identical.
     for method in &ssh.identity_policy.auth_order {
         if !ordered.contains(method) {
             ordered.push(*method);

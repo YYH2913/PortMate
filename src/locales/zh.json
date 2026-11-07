@@ -4026,5 +4026,13 @@
   "easytier-remove-endpoint": "删除地址 {0}",
   "easytier-add-endpoint": "添加地址",
   "easytier-bundled-note": "安装包和便携版均已包含，可直接使用，无需另行下载或选择程序目录。",
-  "easytier-license-note": "EasyTier 使用 LGPL-3.0 许可证，许可文本与对应上游源码链接随 PortMate 提供。"
+  "easytier-license-note": "EasyTier 使用 LGPL-3.0 许可证，许可文本与对应上游源码链接随 PortMate 提供。",
+  "ssh-auth-order": "SSH 认证顺序",
+  "ssh-auth-order-note": "勾选要使用的方式，并用上下按钮调整尝试顺序。可以只保留一种；上次成功方式不会改变此顺序。",
+  "ssh-auth-none": "无需认证（none）",
+  "ssh-auth-move-up": "上移 {0}",
+  "ssh-auth-move-down": "下移 {0}",
+  "ssh-auth-gssapi-note": "GSSAPI / Kerberos 需要支持此功能的 Linux libssh 构建。",
+  "ssh-identity-move-up": "上移当前密钥",
+  "ssh-identity-move-down": "下移当前密钥"
 }

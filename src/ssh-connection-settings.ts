@@ -22,24 +22,22 @@ export function sshUsesNoneAuthenticationOnly(connection: SshConnection): boolea
     && connection.identityPolicy.authOrder.every(method => method === "none");
 }
 
-export const SSH_AUTH_ORDER_OPTIONS = [
-  "public-key>keyboard-interactive>password",
-  "public-key>password>keyboard-interactive",
-  "public-key>keyboard-interactive",
-  "public-key>password",
-  "public-key",
-  "keyboard-interactive>public-key>password",
-  "keyboard-interactive>password>public-key",
-  "keyboard-interactive>public-key",
-  "keyboard-interactive>password",
-  "keyboard-interactive",
-  "password>public-key>keyboard-interactive",
-  "password>keyboard-interactive>public-key",
-  "password>public-key",
-  "password>keyboard-interactive",
-  "password",
-  "none",
-] as const;
+export const SSH_AUTH_METHODS: readonly AuthMethod[] = ["public-key", "keyboard-interactive", "password", "gssapi-with-mic", "none"];
+
+export function moveSshAuthMethod(order: readonly AuthMethod[], method: AuthMethod, offset: -1 | 1): AuthMethod[] {
+  const next = [...order];
+  const index = next.indexOf(method);
+  const target = index + offset;
+  if (index < 0 || target < 0 || target >= next.length) return next;
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+export function toggleSshAuthMethod(order: readonly AuthMethod[], method: AuthMethod): AuthMethod[] {
+  return order.includes(method)
+    ? order.length > 1 ? order.filter(current => current !== method) : [...order]
+    : [...order, method];
+}
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;

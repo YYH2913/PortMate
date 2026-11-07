@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { proxyDefaults } from "../../src/proxy-settings";
 import {
   normalizeSshConnectionSettings,
-  SSH_AUTH_ORDER_OPTIONS,
+  SSH_AUTH_METHODS,
+  moveSshAuthMethod,
+  toggleSshAuthMethod,
   sshConnectionBounds,
   sshConnectionDefaults,
   sshUsesNoneAuthenticationOnly,
@@ -39,12 +41,15 @@ describe("SSH connection settings", () => {
     expect(sshUsesNoneAuthenticationOnly(ssh)).toBe(false);
   });
   it("offers the supported authentication methods, including explicit none authentication", () => {
-    expect(SSH_AUTH_ORDER_OPTIONS).toHaveLength(16);
-    expect(new Set(SSH_AUTH_ORDER_OPTIONS).size).toBe(16);
-    expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive>public-key");
-    expect(SSH_AUTH_ORDER_OPTIONS).toContain("password>keyboard-interactive>public-key");
-    expect(SSH_AUTH_ORDER_OPTIONS).toContain("keyboard-interactive");
-    expect(SSH_AUTH_ORDER_OPTIONS).toContain("none");
+    expect(SSH_AUTH_METHODS).toHaveLength(5);
+    expect(new Set(SSH_AUTH_METHODS).size).toBe(5);
+    expect(SSH_AUTH_METHODS).toContain("gssapi-with-mic");
+    expect(SSH_AUTH_METHODS).toContain("none");
+    const order = ["public-key", "password", "none"] as const;
+    expect(moveSshAuthMethod(order, "password", -1)).toEqual(["password", "public-key", "none"]);
+    expect(toggleSshAuthMethod(["none"], "none")).toEqual(["none"]);
+    expect(toggleSshAuthMethod(order, "password")).toEqual(["public-key", "none"]);
+    expect(toggleSshAuthMethod(order, "keyboard-interactive")).toEqual([...order, "keyboard-interactive"]);
   });
 
   it("fills health defaults for legacy profiles", () => {
