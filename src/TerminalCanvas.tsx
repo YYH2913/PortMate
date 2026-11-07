@@ -74,6 +74,9 @@ import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./termina
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalTimestampIndex } from "./terminal-timestamp-index";
+import TerminalTimestampGutter from "./TerminalTimestampGutter";
+import { TerminalTimestampViewportStore } from "./terminal-timestamp-viewport";
+import type { TerminalTimestampViewport } from "./terminal-timestamp-viewport";
 import { trackTerminalCommandInput } from "./terminal-command-line-tracker";
 import { useTerminalEditorSubmission } from "./use-terminal-editor-submission";
 import { activeModalLayer, MODAL_LAYER_ACTIVATED_EVENT } from "./modal-interaction-boundary";
@@ -81,7 +84,6 @@ import type { ModalLayerActivatedDetail } from "./modal-interaction-boundary";
 import {
   MAX_TERMINAL_TIMESTAMPS,
   changedAlternateTerminalRows,
-  formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
   placeTerminalTimestampLabels,
   rebaseTerminalTimestamps,
@@ -89,7 +91,7 @@ import {
   updateAlternateTerminalTimestamps,
   visibleTerminalTimestamps,
 } from "./terminal-timestamp-state";
-import type { TerminalTimestampEntry, VisibleTerminalTimestamp } from "./terminal-timestamp-state";
+import type { TerminalTimestampEntry } from "./terminal-timestamp-state";
 import {
   clearTerminalByteCache,
   readTerminalDisplayMode,
@@ -178,12 +180,6 @@ type TerminalGotoLineContext = {
 type TerminalTimestampMarker = {
   marker: IMarker;
   ts: string;
-};
-type TerminalTimestampViewport = {
-  bufferType: "normal" | "alternate";
-  screenTop: number;
-  cellHeight: number;
-  entries: VisibleTerminalTimestamp[];
 };
 type TerminalSemanticLogicalLine = {
   text: string;
@@ -511,7 +507,9 @@ function TerminalCanvas({
   const completionDismissedLineRef = useRef("");
   const [completionSelection, setCompletionSelection] = useState(0);
   const [completionAnchor, setCompletionAnchor] = useState({ top: 8, cursorBottom: 0, shift: 0 });
-  const [timestampViewport, setTimestampViewport] = useState<TerminalTimestampViewport>(emptyTerminalTimestampViewport);
+  const timestampStoreRef = useRef<TerminalTimestampViewportStore | null>(null);
+  timestampStoreRef.current ??= new TerminalTimestampViewportStore();
+  const [timestampBufferType, setTimestampBufferType] = useState<"normal" | "alternate">("normal");
   const privateInputRetained = privateInputLine || (freeInputSource !== null && freeInputSensitiveRef.current);
   const privateInputActive = manualPrivateInput || detectedPrivateInput || privateInputRetained;
   const changeFontSize = useCallback((action: TerminalFontZoomAction) => {
@@ -1396,11 +1394,15 @@ function TerminalCanvas({
       }
       const existing = timestampIndex.has(trackedLine);
       let changed = false;
-      if (existing || (hadContent && normalTimestampAt(trackedLine))) {
+      if (hadContent && (existing || normalTimestampAt(trackedLine))) {
         tracked.marker.dispose();
       } else if (cursorLine === trackedLine && !term.buffer.normal.getLine(trackedLine)?.translateToString(true)) {
         tracked.marker.dispose();
       } else {
+        // Erase/clear controls may leave an interval on a blank row. Its next
+        // real content must get the arrival time of that content, not the old
+        // screen-clear/prompt timestamp.
+        if (existing) timestampIndex.removeRange(trackedLine, trackedLine);
         changed = timestampIndex.add(tracked.marker, tracked.ts);
       }
       if (cursorLine !== trackedLine) {
@@ -1502,8 +1504,8 @@ function TerminalCanvas({
       host.dataset.terminalTimestampMarkerCount = String(timestampIndex.size);
       host.dataset.terminalTimestampRows = String(term.rows);
       if (!region || !screen || cellHeight <= 0) return;
-      const next: TerminalTimestampViewport = { bufferType, screenTop, cellHeight, entries };
-      setTimestampViewport((current) => sameTerminalTimestampViewport(current, next) ? current : next);
+      timestampStoreRef.current!.publish({ bufferType, screenTop, cellHeight, entries });
+      setTimestampBufferType(current => current === bufferType ? current : bufferType);
     };
     const scheduleTimestampGutter = () => {
       if (terminalDisposed || timestampFrame !== null) return;
@@ -1550,6 +1552,7 @@ function TerminalCanvas({
     let synchronousDrainTimer: number | null = null;
     let eventWriteDrainQueued = false;
     let scheduleEventWriteDrain = () => {};
+    let lastParsedTimestamp: string | null = null;
 
     const compactPendingEventWrites = () => {
       if (pendingEventWriteHead === 0) return;
@@ -1580,6 +1583,10 @@ function TerminalCanvas({
         && byteLength < TERMINAL_WRITE_BATCH_MAX_BYTES) {
         const next = pendingEventWrites[pendingEventWriteHead];
         if (!next || next.waitingForRaw || !next.rawBytes || next.event.direction !== "inbound") break;
+        // Do not assign the first packet's timestamp to later packets. xterm
+        // already drains successive write callbacks in its 12ms time slices,
+        // so distinct timestamp boundaries need not introduce a timer per frame.
+        if (next.event.ts !== first.event.ts || next.event.stream !== first.event.stream) break;
         if (byteLength + next.rawBytes.byteLength > TERMINAL_WRITE_BATCH_MAX_BYTES) break;
         pendingEventWriteHead += 1;
         batch.push(next);
@@ -1652,6 +1659,7 @@ function TerminalCanvas({
       let callbackCompleted = false;
       let writeReturned = false;
       writeTerminalEvent(term, event, rawBytes, () => {
+        lastParsedTimestamp = first.event.ts;
         let timestampChanged = false;
         if (eventText && event.direction !== "outbound") {
           const afterBuffer = term.buffer.active;
@@ -2198,8 +2206,8 @@ function TerminalCanvas({
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
-      if (normalRedrawSnapshot && replayBoundary.timestamp) {
-        if (commitNormalRedraw(replayBoundary.timestamp)) scheduleTimestampGutter();
+      if (normalRedrawSnapshot && lastParsedTimestamp) {
+        if (commitNormalRedraw(lastParsedTimestamp)) scheduleTimestampGutter();
       }
       settleSemanticHighlighting();
       scheduleCompletionAnchorRefresh();
@@ -2526,7 +2534,8 @@ function TerminalCanvas({
   }, [serialContextKey, serialColumns]);
 
   useEffect(() => {
-    setTimestampViewport(emptyTerminalTimestampViewport);
+    timestampStoreRef.current!.publish(emptyTerminalTimestampViewport);
+    setTimestampBufferType("normal");
   }, [stateCacheKey]);
 
   useEffect(() => {
@@ -3035,7 +3044,7 @@ function TerminalCanvas({
             />
           </div>
           <div className={`terminal-workspace mode-${displayMode}`}>
-            {serialContextRef.current.enabled && displayMode !== "hex" && timestampViewport.bufferType === "normal"
+            {serialContextRef.current.enabled && displayMode !== "hex" && timestampBufferType === "normal"
               && (serialColumnSuggestion || serialColumns !== configuredSerialColumns) ? (
               <aside className="terminal-serial-columns-hint" aria-label={t("passive-serial-column-detection")}>
                 {serialColumnSuggestion ? <>
@@ -3069,31 +3078,7 @@ function TerminalCanvas({
               </aside>
             ) : null}
             <div className={`terminal-terminal-region${focused && freeInputOpen ? " free-input-open" : ""}`} aria-hidden={displayMode === "hex"} inert={displayMode === "hex"}>
-              <div
-                className="terminal-timestamp-gutter"
-                role="list"
-                aria-label={t("terminal-line-timestamps")}
-                data-buffer-type={timestampViewport.bufferType}
-                data-timestamp-count={timestampViewport.entries.length}
-                style={{
-                  "--terminal-timestamp-cell-height": `${timestampViewport.cellHeight}px`,
-                  transform: completionShiftTransform,
-                } as CSSProperties}
-              >
-                {timestampViewport.entries.map((entry) => (
-                  <time
-                    key={`${entry.line}:${entry.ts}`}
-                    role="listitem"
-                    dateTime={entry.ts}
-                    title={formatTerminalTimestampTitle(entry.ts)}
-                    style={{
-                      "--terminal-timestamp-offset": `${timestampViewport.screenTop + entry.row * timestampViewport.cellHeight}px`,
-                    } as CSSProperties}
-                  >
-                    {formatTerminalTimestampClock(entry.ts)}
-                  </time>
-                ))}
-              </div>
+              <TerminalTimestampGutter store={timestampStoreRef.current} transform={completionShiftTransform} />
               <div
                 ref={hostRef}
                 className={`terminal-host${active.profile.connection.kind === "serial" ? " terminal-host-serial" : ""}`}
@@ -3619,29 +3604,12 @@ function concatTerminalWriteBytes(frames: readonly Uint8Array[]): Uint8Array {
   return merged;
 }
 
-function sameTerminalTimestampViewport(
-  left: TerminalTimestampViewport,
-  right: TerminalTimestampViewport,
-): boolean {
-  if (left.bufferType !== right.bufferType
-    || Math.abs(left.screenTop - right.screenTop) >= 0.25
-    || Math.abs(left.cellHeight - right.cellHeight) >= 0.25
-    || left.entries.length !== right.entries.length) return false;
-  return left.entries.every((entry, index) => {
-    const other = right.entries[index];
-    return entry.line === other?.line && entry.row === other.row && entry.ts === other.ts;
-  });
-}
 
 function modalBlocksTerminalCommand(host: HTMLElement | null): boolean {
   const layer = activeModalLayer();
   return Boolean(layer && (!host || !layer.contains(host)));
 }
 
-function formatTerminalTimestampTitle(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : `${date.toLocaleString()} · ${value}`;
-}
 
 function clearDocumentSelectionWithin(container: Element | null) {
   if (!container) return;
@@ -3663,4 +3631,17 @@ function formatTerminalCanvasError(error: unknown): string {
   }
 }
 
-export default memo(TerminalCanvas);
+export default memo(TerminalCanvas, (previous, next) => {
+  for (const key of Object.keys({ ...previous, ...next }) as Array<keyof TerminalCanvasProps>) {
+    if (key !== "active" && previous[key] !== next[key]) return false;
+  }
+  const before = previous.active;
+  const after = next.active;
+  if (!before || !after) return before === after;
+  // Output counters/activity are sidebar metadata, not terminal presentation.
+  // They change on every status poll even when the connection and input epoch
+  // have not changed. Real profile/status/reconnection changes still render.
+  return before.profile === after.profile
+    && before.runtime.status === after.runtime.status
+    && before.runtime.connectedSince === after.runtime.connectedSince;
+});

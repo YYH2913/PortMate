@@ -6,6 +6,7 @@ import { checkTerminalStreamRegressions } from "./terminal-stream-regressions.mj
 import { checkTerminalCompletionRegressions } from "./terminal-completion-regressions.mjs";
 import { checkTerminalPrivateInputRegressions } from "./terminal-private-input-regressions.mjs";
 import { checkTerminalLongSession } from "./terminal-long-session-regressions.mjs";
+import { checkTerminalTimestampPerformance } from "./terminal-timestamp-performance-check.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -461,6 +462,12 @@ checks: try {
   if (process.env.PORTMATE_UI_LONG_SESSION_ONLY === "1") {
     console.log(JSON.stringify(await checkTerminalLongSession(page), null, 2));
     assert(!pageErrors.length, `long-session browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_TIMESTAMP_PERF_ONLY === "1") {
+    await checkTerminalTimestampPerformance(page);
+    assert(!pageErrors.length, `timestamp/performance browser errors: ${JSON.stringify(pageErrors)}`);
     await context.close();
     break checks;
   }
