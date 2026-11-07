@@ -27,7 +27,7 @@
     "pretest:workspace-ui": "node scripts/ensure-node-version.mjs",
     "test:workspace-ui": "node test/tooling/workspace-ui-check.mjs",
     "pretest:ui-performance": "node scripts/ensure-node-version.mjs",
-    "test:ui-performance": "node test/tooling/ui-performance-check.mjs",
+    "test:ui-performance": "npm run build && node test/tooling/ui-performance-check.mjs",
     "docs:screenshots": "node scripts/readme-screenshots.mjs",
     "pretest:mcp-http-client": "node scripts/ensure-node-version.mjs",
     "test:mcp-http-client": "cargo build --locked -p portmate-mcp && node test/tooling/mcp-http-client-check.mjs",

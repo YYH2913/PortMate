@@ -162,6 +162,14 @@ Only visible terminal histories are loaded initially. The timestamp gutter follo
 each output frame's recorded time, including after clearing the screen, without
 rerendering the terminal's input and completion UI on every output update.
 
+Terminal rendering prefers hardware-accelerated WebGL. Known software rasterizers
+(including SwiftShader, llvmpipe and WARP) and unavailable/major-performance-caveat
+contexts fall back to the DOM renderer so GPU emulation does not stall the window.
+Output correlation is batch-scheduled; timestamps, TUI color/style changes and the
+configured scrollback remain intact. No output or history is intentionally dropped
+as a performance shortcut. `npm run test:ui-performance` also checks the production
+bundle with two continuously updating TUI panes and simultaneous keyboard input.
+
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
 session and detached windows follow the new name. Renaming through the Explorer

@@ -8,6 +8,16 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Improve sustained terminal output with one shared raw/text correlation timer
+  per view and cancellable MessageChannel yields instead of nested timer delays.
+  Preserve packet ordering, individual timestamps and configured scrollback.
+- Avoid software WebGL/major-performance-caveat contexts, using the DOM renderer
+  when acceleration is unavailable; retain WebGL on hardware-accelerated GPUs.
+  TUI row comparison uses exact compact snapshots instead of per-cell JSON arrays.
+- Cache bounded timestamp normalization, reuse gutter geometry until layout/font
+  changes, and reconcile log-metadata bursts with one scan/copy per session.
+  Add production-bundle dual-pane TUI/keyboard performance checks alongside the
+  existing long-history and timestamp regressions.
 - Preserve each canonical terminal frame's timestamp instead of assigning the
   first frame's time to an entire output batch. Cleared rows receive the time
   of their next content, and delayed history polls do not retime live output.
@@ -32,6 +42,15 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 修复（中文）
 
+- 终端原始字节与文本关联改为每个视图共享一个定时器，批量释放兼容输出；同步积压
+  使用可取消的 MessageChannel 任务让出执行权，避免嵌套定时器的逐轮延迟。
+  保留包顺序、逐包时间戳和配置的历史长度，不以丢弃输出换取性能。
+- 加速不可用或识别到已知软件 WebGL 渲染器时使用 DOM，避免软件 GPU 提交阻塞整个
+  窗口；硬件加速正常时继续使用 WebGL。TUI 屏幕差异比较改用无损紧凑快照，
+  不再为每个单元格分配多层数组和 JSON。
+- 有界缓存时间戳规范化结果，字体、尺寸或布局不变时复用时间戳栏几何信息；
+  日志元数据批次按会话只扫描、复制一次。新增正式构建双终端 TUI 与输入响应检查，
+  与长历史、逐行时间戳回归一起运行。
 - 终端每个原始输出帧保留自己的时间戳，不再将一批输出全部标为首帧时间；
   清屏后的空行写入新内容时更新为新时间，延迟的历史轮询不会重新标记实时输出。
 - 时间戳栏独立刷新，不再带动终端输入、补全及整块终端重渲染；状态轮询复用未变的

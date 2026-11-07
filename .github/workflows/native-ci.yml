@@ -424,6 +424,8 @@ jobs:
       - run: node scripts/ci-command-log.mjs target/native-ci/tmux-version-compat.log npm run test:tmux-version-compat
       - run: node scripts/ci-command-log.mjs target/native-ci/vttest-compat.log npm run test:vttest-compat
       - run: node scripts/ci-command-log.mjs target/native-ci/terminal-compat.log npm run test:terminal-compat
+        env:
+          PORTMATE_UI_FORCE_WEBGL: "1"
       - run: node scripts/ci-command-log.mjs target/native-ci/ui-performance.log npm run test:ui-performance
       - run: node scripts/ci-command-log.mjs target/native-ci/tmux-workflow.log npm run test:tmux-workflow
       - run: node scripts/ci-command-log.mjs target/native-ci/workspace-ui.log npm run test:workspace-ui
