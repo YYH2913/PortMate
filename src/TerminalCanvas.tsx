@@ -73,6 +73,8 @@ import { mapTerminalSemanticRow, terminalSemanticCellSegments } from "./terminal
 import type { TerminalSemanticBufferCell, TerminalSemanticCell } from "./terminal-semantic-cells";
 import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotIds, terminalStateCache, terminalStateCacheKey } from "./terminal-state-cache";
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
+import { TerminalRawCorrelator } from "./terminal-raw-correlator";
+import { TerminalTaskScheduler } from "./terminal-task-scheduler";
 import { TerminalTimestampIndex } from "./terminal-timestamp-index";
 import TerminalTimestampGutter from "./TerminalTimestampGutter";
 import { TerminalTimestampViewportStore } from "./terminal-timestamp-viewport";
@@ -196,7 +198,6 @@ type PendingTerminalWrite = {
   event: SessionEvent;
   rawBytes?: Uint8Array;
   waitingForRaw?: boolean;
-  fallbackTimer?: number;
   serialDetectionKey?: string;
 };
 
@@ -1544,15 +1545,22 @@ function TerminalCanvas({
     });
     const pendingEventIds = new Set<string>();
     const pendingEventWrites: PendingTerminalWrite[] = [];
-    const pendingTextEvents = new Map<string, PendingTerminalWrite>();
     let fastPathTextDecoder = new TextDecoder();
     let pendingEventWriteHead = 0;
     let eventWriteActive = false;
     let eventWriteDraining = false;
-    let synchronousDrainTimer: number | null = null;
+    const synchronousDrain = new TerminalTaskScheduler(() => drainEventWrites());
     let eventWriteDrainQueued = false;
     let scheduleEventWriteDrain = () => {};
     let lastParsedTimestamp: string | null = null;
+    const pendingTextEvents = new TerminalRawCorrelator<PendingTerminalWrite>(
+      TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS,
+      expired => {
+        for (const pending of expired) pending.waitingForRaw = false;
+        fastPathTextDecoder = new TextDecoder();
+        scheduleEventWriteDrain();
+      },
+    );
 
     const compactPendingEventWrites = () => {
       if (pendingEventWriteHead === 0) return;
@@ -1725,7 +1733,7 @@ function TerminalCanvas({
       return callbackCompleted;
     };
     drainEventWrites = () => {
-      if (terminalDisposed || restorePending || eventWriteActive || eventWriteDraining || synchronousDrainTimer !== null) return;
+      if (terminalDisposed || restorePending || eventWriteActive || eventWriteDraining || synchronousDrain.pending) return;
       eventWriteDraining = true;
       try {
         let synchronousBatches = 0;
@@ -1735,10 +1743,7 @@ function TerminalCanvas({
           // once per event overflowed the stack on a large backlog and permanently
           // stopped the queue. Drain iteratively, yielding after a bounded burst.
           if (++synchronousBatches >= 128) {
-            synchronousDrainTimer = window.setTimeout(() => {
-              synchronousDrainTimer = null;
-              drainEventWrites();
-            }, 0);
+            synchronousDrain.schedule();
             return;
           }
         }
@@ -1759,8 +1764,6 @@ function TerminalCanvas({
     };
     const enqueueFallback = (pending: PendingTerminalWrite, rawMatched = false) => {
       pending.waitingForRaw = false;
-      pending.fallbackTimer = undefined;
-      pendingTextEvents.delete(pending.event.id);
       if (!rawMatched) fastPathTextDecoder = new TextDecoder();
       scheduleEventWriteDrain();
     };
@@ -1779,8 +1782,7 @@ function TerminalCanvas({
       if (!rememberTerminalEventId(seenEventsRef.current, pendingEventIds, event.id)) return false;
       if (isLiveInboundText && awaitRaw) {
         const pending: PendingTerminalWrite = { event, waitingForRaw: true };
-        pending.fallbackTimer = window.setTimeout(() => enqueueFallback(pending), TERMINAL_RAW_EVENT_CORRELATION_WAIT_MS);
-        pendingTextEvents.set(event.id, pending);
+        pendingTextEvents.add(event.id, pending);
         queueEventWrite(pending, replay);
       } else {
         queueEventWrite({ event }, replay);
@@ -1800,9 +1802,8 @@ function TerminalCanvas({
           fastPathTextDecoder = new TextDecoder();
           return false;
         }
-        const pendingText = pendingTextEvents.get(bytesEvent.eventId);
+        const pendingText = pendingTextEvents.take(bytesEvent.eventId);
         if (pendingText) {
-          if (pendingText.fallbackTimer !== undefined) window.clearTimeout(pendingText.fallbackTimer);
           pendingText.rawBytes = rawBytes;
           pendingText.event = {
             ...pendingText.event,
@@ -1866,9 +1867,8 @@ function TerminalCanvas({
         && packet.event.annotations.origin !== "interactive-write-worker") {
         invalidateExternalInputState();
       }
-      const pendingText = pendingTextEvents.get(packet.event.id);
+      const pendingText = pendingTextEvents.take(packet.event.id);
       if (pendingText) {
-        if (pendingText.fallbackTimer !== undefined) window.clearTimeout(pendingText.fallbackTimer);
         pendingText.rawBytes = packet.truncated ? undefined : Uint8Array.from(packet.bytes);
         pendingText.event = {
           ...packet.event,
@@ -2436,7 +2436,7 @@ function TerminalCanvas({
         resizeReportTimer = null;
       }
       pendingEventWrites.length = 0;
-      if (synchronousDrainTimer !== null) window.clearTimeout(synchronousDrainTimer);
+      synchronousDrain.dispose();
       resizeObserver.disconnect();
       semanticWriteDisposable.dispose();
       semanticScrollDisposable.dispose();
@@ -2463,10 +2463,7 @@ function TerminalCanvas({
       if (writeTerminalLiveRef.current === writeTerminalLive) writeTerminalLiveRef.current = null;
       deferredTerminalBytesRef.current = [];
       deferredTerminalLiveRef.current = [];
-      for (const pending of pendingTextEvents.values()) {
-        if (pending.fallbackTimer !== undefined) window.clearTimeout(pending.fallbackTimer);
-      }
-      pendingTextEvents.clear();
+      pendingTextEvents.dispose();
       fastPathTextDecoder.decode();
       mouseEncodingSetDisposable.dispose();
       mouseEncodingResetDisposable.dispose();

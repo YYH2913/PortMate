@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 
 /** Real TerminalCanvas path: distinct output timestamps, not one giant write. */
 export async function checkTerminalLongSession(page) {
@@ -33,6 +34,12 @@ export async function checkTerminalLongSession(page) {
       await page.waitForFunction(count => Number(document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalTimestampMarkerCount) >= count, start);
       console.log(`Long-session restore: ${Date.now() - restoredAt}ms (${start} timestamps)`);
     }
+    let profiler;
+    if (start === 20_000 && process.env.PORTMATE_TERMINAL_CPU_PROFILE) {
+      profiler = await page.context().newCDPSession(page);
+      await profiler.send("Profiler.enable");
+      await profiler.send("Profiler.start");
+    }
     const elapsed = await page.evaluate(async ({ start, count }) => {
       const started = performance.now();
       for (let i = start; i < start + count; i += 1) {
@@ -51,6 +58,11 @@ export async function checkTerminalLongSession(page) {
       });
       return performance.now() - started;
     }, { start, count });
+    if (profiler) {
+      const { profile } = await profiler.send("Profiler.stop");
+      writeFileSync(process.env.PORTMATE_TERMINAL_CPU_PROFILE, JSON.stringify(profile));
+      await profiler.detach();
+    }
     results.push({ historyRows: start, appendedRows: count, milliseconds: Math.round(elapsed) });
     console.log(`Long-session batch: ${JSON.stringify(results.at(-1))}`);
   }
@@ -86,8 +98,8 @@ export async function checkTerminalLongSession(page) {
   await page.keyboard.type("status");
   await page.waitForFunction(() => window.__invokeCalls.filter(call => call.command === "send_text" && call.args.sessionId === "session-a")
     .map(call => call.args.text ?? "").join("").includes("status"));
-  // A deliberately generous end-to-end budget; complexity is tested separately
-  // using marker-access counts rather than machine-dependent timing assertions.
-  assert(results.at(-1).milliseconds < 10_000, "input processing stalled after a long interaction");
+  // The old per-packet fallback timers took several seconds for this burst.
+  // Allow ample CI variance, but fail a regression to that scheduling pattern.
+  assert(results.every(result => result.milliseconds < 1_500), "text-only output regressed to per-packet timer delays");
   return { batches: results, retainedLines: 21_000, redrawTimestamp: true, keyboardInput: true, synchronousBacklog: { events: 12_000, milliseconds: backlogMilliseconds } };
 }
