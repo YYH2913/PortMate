@@ -11,9 +11,13 @@ or an unsigned artifact is not a production release. The complete release gates 
 - Improve sustained terminal output with one shared raw/text correlation timer
   per view and cancellable MessageChannel yields instead of nested timer delays.
   Preserve packet ordering, individual timestamps and configured scrollback.
-- Avoid software WebGL/major-performance-caveat contexts, using the DOM renderer
+- Avoid known software WebGL contexts, using the DOM renderer
   when acceleration is unavailable; retain WebGL on hardware-accelerated GPUs.
   TUI row comparison uses exact compact snapshots instead of per-cell JSON arrays.
+- Validate xterm's actual WebGL canvas rather than its 2D hyperlink layer or
+  a separate temporary context. Remove probe-only decisions and extra probe
+  allocations that could reject working hardware. Clean partially activated addons, ignore stale
+  imports/context-loss callbacks and safely fall back after GPU context loss.
 - Cache bounded timestamp normalization, reuse gutter geometry until layout/font
   changes, and reconcile log-metadata bursts with one scan/copy per session.
   Add production-bundle dual-pane TUI/keyboard performance checks alongside the
@@ -48,6 +52,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 - 加速不可用或识别到已知软件 WebGL 渲染器时使用 DOM，避免软件 GPU 提交阻塞整个
   窗口；硬件加速正常时继续使用 WebGL。TUI 屏幕差异比较改用无损紧凑快照，
   不再为每个单元格分配多层数组和 JSON。
+- 硬件加速以 xterm 实际的 WebGL 画布为准，不误读 2D 超链接层，也不因临时严格探测
+  无结果就关闭可用的硬件上下文。初始化失败清理半创建的插件，忽略过期导入与回调，
+  GPU 上下文丢失后安全回退，避免重复创建或画布累积。
 - 有界缓存时间戳规范化结果，字体、尺寸或布局不变时复用时间戳栏几何信息；
   日志元数据批次按会话只扫描、复制一次。新增正式构建双终端 TUI 与输入响应检查，
   与长历史、逐行时间戳回归一起运行。

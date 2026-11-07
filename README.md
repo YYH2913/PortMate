@@ -165,10 +165,17 @@ rerendering the terminal's input and completion UI on every output update.
 Terminal rendering prefers hardware-accelerated WebGL. Known software rasterizers
 (including SwiftShader, llvmpipe and WARP) and unavailable/major-performance-caveat
 contexts fall back to the DOM renderer so GPU emulation does not stall the window.
+The final decision checks the context actually used by xterm, separately from its
+2D link layer, without extra probe-context allocations or probe-only hardware
+rejections. Context loss releases the addon and restores DOM output/input;
+renderer transitions retain the same terminal buffer rather than recreating it.
 Output correlation is batch-scheduled; timestamps, TUI color/style changes and the
 configured scrollback remain intact. No output or history is intentionally dropped
 as a performance shortcut. `npm run test:ui-performance` also checks the production
 bundle with two continuously updating TUI panes and simultaneous keyboard input.
+The WebGL lifecycle fixture uses a simulated driver identity with the real addon;
+it is not a hardware-GPU benchmark. Native GPU/driver performance requires testing
+on that device.
 
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
