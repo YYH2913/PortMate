@@ -154,6 +154,14 @@ Open <http://127.0.0.1:1420/>. Browser mode is useful for layout and frontend in
 
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
+Startup recovery runs in the background with at most four simultaneous connections.
+It preserves the selected tab and never opens credential, fingerprint or failure
+dialogs. Failures remain visible in session status; other targets continue.
+Targets that depend on a locked Stronghold vault wait until it is unlocked.
+Only visible terminal histories are loaded initially. The timestamp gutter follows
+each output frame's recorded time, including after clearing the screen, without
+rerendering the terminal's input and completion UI on every output update.
+
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
 session and detached windows follow the new name. Renaming through the Explorer
@@ -219,9 +227,16 @@ to the same session stay queued to avoid races on shared destinations and partia
 
 ## SSH Trust and Credentials
 
-For devices that accept SSH protocol-level `none` authentication, select the `none`
-authentication preset in Session Settings. No password or client identity is required
+For devices that accept SSH protocol-level `none` authentication, enable only `none`
+in the SSH authentication list in Session Settings. No password or client identity is required
 for that method; the server's host key is still verified.
+
+In **Session Settings → Public key**, the authentication list always exposes the
+same five methods. Enable just one, or enable several and use the up/down controls
+to choose their attempt order. GSSAPI / Kerberos requires a supported Linux libssh
+build. Remembering a successful method records it but does not change this order.
+Client private keys are also numbered and can be moved up/down; new keys append
+to the end. SSH-agent before/after policy remains a separate setting.
 
 PortMate manages two distinct types of keys:
 

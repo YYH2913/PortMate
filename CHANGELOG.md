@@ -8,6 +8,20 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Preserve each canonical terminal frame's timestamp instead of assigning the
+  first frame's time to an entire output batch. Cleared rows receive the time
+  of their next content, and delayed history polls do not retime live output.
+- Isolate timestamp-gutter rendering from terminal input/completion, reuse
+  unchanged profiles on status polls, coalesce local session-cache writes and
+  load only visible terminal histories during startup.
+- Restore startup sessions in a shared four-connection background queue without
+  selecting tabs or opening credential, host-key or error dialogs. One failed
+  connection does not block the rest; vault-dependent targets wait for unlock.
+  Store startup checkpoints and private-key loading no longer block async workers.
+- Replace inconsistent SSH authentication permutations with one ordered list:
+  enable a single method or choose and reorder multiple methods. Private-key
+  references have explicit numbered ordering; new keys append to the list.
+  A remembered successful method no longer overrides the configured order.
 - Recover from temporary desktop IPC listener/endpoint startup failures. The MCP
   Bridge briefly reloads the endpoint and retries connections before sending any
   request, reports specific IPC failure reasons, and never replays a write whose
@@ -18,6 +32,15 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 修复（中文）
 
+- 终端每个原始输出帧保留自己的时间戳，不再将一批输出全部标为首帧时间；
+  清屏后的空行写入新内容时更新为新时间，延迟的历史轮询不会重新标记实时输出。
+- 时间戳栏独立刷新，不再带动终端输入、补全及整块终端重渲染；状态轮询复用未变的
+  Profile，合并本地会话缓存写入，启动时仅加载可见终端历史。
+- 启动恢复改为共享队列后台执行，最多同时连接 4 个会话，不切换标签，不弹出凭据、
+  指纹或错误窗口；单个失败不阻塞其他会话，依赖 Vault 的目标在解锁后继续。
+  启动存储检查点及私钥读取、解密移出异步工作线程。
+- SSH 认证统一为可勾选、编号和上下排序的列表，可只启用一种方式；私钥引用也支持
+  明确排序，新密钥追加到末尾。「记住成功方式」不再擅自改变用户配置的认证顺序。
 - 桌面 IPC 监听或端点发布暂时失败后自动恢复；MCP 在发送前短暂刷新端点并重连，
   返回具体失败原因，`mcp_bridge_status` 增加不含密钥的 `desktopIpcIssue`。
   请求已发送但结果未知时不会自动重发，避免重复执行。
