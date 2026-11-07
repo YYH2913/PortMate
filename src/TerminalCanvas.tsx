@@ -76,8 +76,8 @@ import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-
 import { TerminalRawCorrelator } from "./terminal-raw-correlator";
 import { TerminalTaskScheduler } from "./terminal-task-scheduler";
 import { alternateTerminalScreenSnapshot } from "./terminal-screen-snapshot";
-import { probeTerminalWebgl } from "./terminal-renderer";
-import type { TerminalWebglSupport } from "./terminal-renderer";
+import { inspectTerminalWebglCanvases } from "./terminal-renderer";
+import { TerminalRendererController } from "./terminal-renderer-controller";
 import { TerminalTimestampIndex } from "./terminal-timestamp-index";
 import TerminalTimestampGutter from "./TerminalTimestampGutter";
 import { TerminalTimestampViewportStore } from "./terminal-timestamp-viewport";
@@ -170,7 +170,6 @@ let terminalInstanceSequence = 0;
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 type WebglAddonModule = typeof import("@xterm/addon-webgl");
 let webglAddonModulePromise: Promise<WebglAddonModule> | null = null;
-let terminalWebglSupport: TerminalWebglSupport | null = null;
 type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
   anchor: LocalNavigationPosition | null;
@@ -1872,60 +1871,31 @@ function TerminalCanvas({
     writeTerminalLiveRef.current = writeTerminalLive;
     const deferredLive = deferredTerminalLiveRef.current.splice(0);
     for (const { packet, replay } of deferredLive) writeTerminalLive(packet, replay);
-    let webglAddon: WebglAddonInstance | null = null;
-    let webglContextLossDisposable: { dispose: () => void } | null = null;
-    let webglGeneration = 0;
     const webglEnabled = shouldEnableTerminalWebgl(isBackendAvailable(), navigator.userAgent);
-    const configureWebgl = (enabled: boolean) => {
-      const generation = ++webglGeneration;
-      if (!enabled) {
-        webglContextLossDisposable?.dispose();
-        webglContextLossDisposable = null;
-        webglAddon?.dispose();
-        webglAddon = null;
-        host.dataset.terminalRenderer = "dom";
-        host.dataset.terminalWebgl = webglEnabled ? "disabled-transparency" : "disabled-webkitgtk";
-        refreshTimestampGeometry();
-        return;
-      }
-      if (webglAddon) return;
-      void loadTerminalWebglAddon().then(({ WebglAddon }) => {
-        if (terminalDisposed || generation !== webglGeneration || termRef.current !== term) return;
-        const support = terminalWebglSupport ??= probeTerminalWebgl();
-        if (support !== "accelerated") {
-          host.dataset.terminalRenderer = "dom";
-          host.dataset.terminalWebgl = `disabled-${support}`;
-          return;
+    const renderer = new TerminalRendererController<WebglAddonInstance>({
+      load: async () => {
+        const { WebglAddon } = await loadTerminalWebglAddon();
+        // Pixel-capture compatibility tests preserve the back buffer. Normal
+        // desktop rendering does not, avoiding an extra copy on each frame.
+        return () => new WebglAddon(navigator.webdriver);
+      },
+      activate: addon => term.loadAddon(addon),
+      inspect: () => inspectTerminalWebglCanvases(host.querySelectorAll<HTMLCanvasElement>(".xterm-screen canvas")),
+      publish: state => {
+        host.dataset.terminalRenderer = state.renderer;
+        host.dataset.terminalWebgl = state.reason;
+        if (state.context) {
+          host.dataset.terminalGpuRenderer = state.context.renderer.slice(0, 256);
+          host.dataset.terminalGpuVendor = state.context.vendor.slice(0, 128);
+        } else {
+          delete host.dataset.terminalGpuRenderer;
+          delete host.dataset.terminalGpuVendor;
         }
-        // Chromium automation can discard the WebGL back buffer before Playwright
-        // captures it, which makes rendered cursor checks observe an empty canvas.
-        const nextAddon = new WebglAddon(navigator.webdriver);
-        term.loadAddon(nextAddon);
-        webglAddon = nextAddon;
-        host.dataset.terminalRenderer = "webgl";
-        host.dataset.terminalWebgl = "active";
         refreshTimestampGeometry();
-        webglContextLossDisposable = nextAddon.onContextLoss(() => {
-          const lostAddon = webglAddon;
-          webglAddon = null;
-          webglContextLossDisposable?.dispose();
-          webglContextLossDisposable = null;
-          lostAddon?.dispose();
-          host.dataset.terminalRenderer = "dom";
-          host.dataset.terminalWebgl = "fallback";
-          refreshTimestampGeometry();
-        });
-      }).catch(() => {
-        if (generation !== webglGeneration) return;
-        webglContextLossDisposable?.dispose();
-        webglContextLossDisposable = null;
-        webglAddon?.dispose();
-        webglAddon = null;
-        host.dataset.terminalRenderer = "dom";
-        host.dataset.terminalWebgl = "fallback";
-        refreshTimestampGeometry();
-      });
-    };
+      },
+      disabledReason: webglEnabled ? "disabled-transparency" : "disabled-webkitgtk",
+    });
+    const configureWebgl = (enabled: boolean) => { void renderer.configure(enabled); };
     configureWebglRef.current = configureWebgl;
     configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
     if (focused && displayModeRef.current !== "hex") term.focus();
@@ -2449,7 +2419,6 @@ function TerminalCanvas({
       mouseEncodingResetDisposable.dispose();
       for (const disposable of timestampRedrawDisposables) disposable.dispose();
       normalRedrawSnapshot?.marker.dispose();
-      webglContextLossDisposable?.dispose();
       if (restorePending || pendingEventIds.size) {
         for (const eventId of pendingEventIds) seenEventsRef.current.delete(eventId);
       } else {
@@ -2488,12 +2457,10 @@ function TerminalCanvas({
           // Serialization must not prevent terminal disposal.
         }
       }
+      renderer.dispose();
       term.dispose();
       if (searchRef.current === search) searchRef.current = null;
       if (configureWebglRef.current === configureWebgl) configureWebglRef.current = () => {};
-      webglGeneration += 1;
-      webglContextLossDisposable?.dispose();
-      webglAddon?.dispose();
       termRef.current = null;
     };
   }, [active?.profile.id, stateCacheKey, viewId]);

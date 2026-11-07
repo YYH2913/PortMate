@@ -8,6 +8,7 @@ import { checkTerminalPrivateInputRegressions } from "./terminal-private-input-r
 import { checkTerminalLongSession } from "./terminal-long-session-regressions.mjs";
 import { checkTerminalTimestampPerformance } from "./terminal-timestamp-performance-check.mjs";
 import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
+import { checkTerminalRendererLifecycle } from "./terminal-renderer-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -324,30 +325,43 @@ checks: try {
   browser = await chromium.launch({
     executablePath: chromeExecutable,
     headless: true,
-    args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
+    args: ["--no-sandbox", "--enable-unsafe-swiftshader",
+      // CDP emulation alone changes devicePixelRatio but not ResizeObserver's
+      // physical-pixel box. Match the browser's native scale for HiDPI checks.
+      ...(process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" ? ["--force-device-scale-factor=2"] : [])],
   });
   const context = await browser.newContext({
     locale: "zh-CN",
     viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" ? 2 : 1,
     reducedMotion: "reduce",
   });
   if (process.env.PORTMATE_UI_FORCE_WEBGL === "1") {
     // Exercise the hardware-renderer code path on a headless software-GPU
     // runner. Never use this override for performance measurements.
-    await context.addInitScript(() => {
+    await context.addInitScript(({ strictProbeUnavailable }) => {
       const getContext = HTMLCanvasElement.prototype.getContext;
+      const patched = new WeakSet();
+      window.__gpuStrictProbes = 0;
       HTMLCanvasElement.prototype.getContext = function(type, options, ...rest) {
-        if (type !== "webgl2" || !options?.failIfMajorPerformanceCaveat) return getContext.call(this, type, options, ...rest);
-        const gl = getContext.call(this, type, { ...options, failIfMajorPerformanceCaveat: false });
-        if (gl) {
+        if (type !== "webgl2") return getContext.call(this, type, options, ...rest);
+        if (options?.failIfMajorPerformanceCaveat) {
+          window.__gpuStrictProbes++;
+          if (strictProbeUnavailable) return null;
+        }
+        const gl = getContext.call(this, type, { ...(options ?? {}), failIfMajorPerformanceCaveat: false });
+        if (gl && !patched.has(gl)) {
+          patched.add(gl);
           const getParameter = gl.getParameter.bind(gl);
-          gl.getParameter = parameter => parameter === 0x9246 ? "Test hardware WebGL path" : getParameter(parameter);
+          gl.getParameter = parameter => parameter === 0x9246
+            ? "Test hardware WebGL path"
+            : parameter === 0x9245 ? "Test hardware vendor" : getParameter(parameter);
         }
         return gl;
       };
-    });
+    }, { strictProbeUnavailable: process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" });
   }
-  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1") {
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1") {
     // Screenshot checks preserve the WebGL back buffer for capture. Performance
     // checks need the non-preserved configuration used by real desktop users.
     await context.addInitScript(() => Object.defineProperty(navigator, "webdriver", { get: () => false }));
@@ -381,6 +395,7 @@ checks: try {
     }
     window.__invokeCalls = [];
     window.__terminalCompatLogs = initialEvents;
+    window.__terminalCompatSessions = initialSessions;
     window.__clipboardWrites = [];
     window.__tauriCallbacks = new Map();
     window.__tauriEventListeners = new Map();
@@ -482,6 +497,13 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1") {
+    assert(process.env.PORTMATE_UI_FORCE_WEBGL === "1", "renderer lifecycle test requires its explicit simulated-driver fixture");
+    await checkTerminalRendererLifecycle(page);
+    assert(!pageErrors.length, `renderer lifecycle browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1") {
     await checkTerminalFluidity(page);
     assert(!pageErrors.length, `fluidity browser errors: ${JSON.stringify(pageErrors)}`);
@@ -564,6 +586,14 @@ checks: try {
   assert(initial.every((pane) => pane.keyMode === "remote" && pane.cursor === "bar"),
     `persisted terminal modes did not restore as Insert/bar cursors: ${JSON.stringify(initial)}`);
   assert(initial[0].size !== initial[1].size, `test panes need distinct dimensions: ${JSON.stringify(initial)}`);
+  if (process.env.PORTMATE_UI_FORCE_WEBGL === "1") {
+    await page.waitForFunction(() => [...document.querySelectorAll(".terminal-host")]
+      .every(host => host.dataset.terminalRenderer === "webgl" && host.dataset.terminalWebgl === "active"));
+    const forcedRendererState = await page.evaluate(() => [...document.querySelectorAll(".terminal-host")]
+      .map(host => ({ renderer: host.dataset.terminalRenderer, webgl: host.dataset.terminalWebgl })));
+    assert(forcedRendererState.every(state => state.renderer === "webgl" && state.webgl === "active"),
+      `forced hardware WebGL path did not activate: ${JSON.stringify(forcedRendererState)}`);
+  }
   const activeHost = page.locator('[data-pane-id="pane-a"] .terminal-host');
   const inspectSemanticRendering = async (host, expectedColors) => {
     await page.waitForTimeout(100);

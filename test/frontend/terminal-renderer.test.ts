@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeTerminalWebgl, terminalWebglRendererIsSoftware } from "../../src/terminal-renderer";
+import { inspectTerminalWebglCanvases, inspectTerminalWebglContext, terminalWebglRendererIsSoftware } from "../../src/terminal-renderer";
 
 describe("terminal renderer acceleration", () => {
   it("rejects known software rasterizers without disabling hardware GPUs", () => {
@@ -10,21 +10,26 @@ describe("terminal renderer acceleration", () => {
       expect(terminalWebglRendererIsSoftware(name)).toBe(false);
     }
   });
-  it("requests acceleration and releases both software and hardware probe contexts", () => {
-    for (const [renderer, expected] of [["SwiftShader", "software"], ["Apple M3", "accelerated"]]) {
-      const loseContext = vi.fn();
-      const getContext = vi.fn(() => ({
-        RENDERER: 0x1f01,
-        getExtension: (name: string) => name === "WEBGL_debug_renderer_info" ? { UNMASKED_RENDERER_WEBGL: 0x9246 } : { loseContext },
-        getParameter: () => renderer,
-      }));
-      expect(probeTerminalWebgl(() => ({ getContext }) as unknown as HTMLCanvasElement)).toBe(expected);
-      expect(getContext).toHaveBeenCalledWith("webgl2", { failIfMajorPerformanceCaveat: true });
-      expect(loseContext).toHaveBeenCalledOnce();
-    }
-  });
-  it("falls back safely when an accelerated context is unavailable or throws", () => {
-    expect(probeTerminalWebgl(() => ({ getContext: () => null }) as unknown as HTMLCanvasElement)).toBe("unavailable");
-    expect(probeTerminalWebgl(() => { throw Error("driver unavailable"); })).toBe("unavailable");
+  it("inspects the context used by the actual xterm canvas, not only a preflight context", () => {
+    const gl = {
+      RENDERER: 0x1f01,
+      VENDOR: 0x1f00,
+      isContextLost: () => false,
+      getExtension: (name: string) => name === "WEBGL_debug_renderer_info"
+        ? { UNMASKED_RENDERER_WEBGL: 0x9246, UNMASKED_VENDOR_WEBGL: 0x9245 }
+        : null,
+      getParameter: (parameter: number) => parameter === 0x9246 ? "ANGLE (NVIDIA RTX 4070)" : "NVIDIA",
+    } as unknown as WebGL2RenderingContext;
+    expect(inspectTerminalWebglContext(gl)).toEqual({ support: "accelerated", renderer: "ANGLE (NVIDIA RTX 4070)", vendor: "NVIDIA" });
+    expect(inspectTerminalWebglContext(null).support).toBe("unavailable");
+    const lost = { ...gl, isContextLost: () => true } as unknown as WebGL2RenderingContext;
+    expect(inspectTerminalWebglContext(lost).support).toBe("unavailable");
+    const linkCanvas = { getContext: vi.fn(() => null) } as unknown as HTMLCanvasElement;
+    const gpuCanvas = { getContext: vi.fn(() => gl) } as unknown as HTMLCanvasElement;
+    expect(inspectTerminalWebglCanvases([linkCanvas, gpuCanvas]).support).toBe("accelerated");
+    expect(linkCanvas.getContext).toHaveBeenCalledWith("webgl2");
+    expect(gpuCanvas.getContext).toHaveBeenCalledWith("webgl2");
+    const throwing = { isContextLost: () => false, getExtension: () => { throw Error("driver unavailable"); } } as unknown as WebGL2RenderingContext;
+    expect(inspectTerminalWebglContext(throwing).support).toBe("unavailable");
   });
 });
