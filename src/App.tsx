@@ -81,6 +81,7 @@ import { normalizeQuickCommandLibrary, QUICK_BAR_VISIBLE_STORAGE_KEY, QUICK_COMM
 import { startupCredentialsReady } from "./startup-connection-state";
 import { BackgroundConnectionQueue } from "./background-connection-queue";
 import { reconcileSessionSummaries } from "./session-summary-identity";
+import { reconcileSessionEventUpdates } from "./session-event-updates";
 import type { QuickCommand } from "./quick-command-state";
 import LanguageSelector from "./LanguageSelector";
 import { normalizeSerialConnectionSettings } from "./serial-connection-settings";
@@ -741,21 +742,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     // replacement work interruptible so keyboard input remains responsive
     // while a busy transport finishes its log shards.
     startTransition(() => setLogs((current) => {
-      let next = current;
-      const changedSessions = new Set<string>();
-      for (const updated of pending) {
-        const existing = current[updated.sessionId];
-        if (!existing) continue;
-        const index = existing.findIndex((candidate) => candidate.id === updated.id);
-        if (index < 0 || existing[index] === updated) continue;
-        if (next === current) next = { ...current };
-        const sessionEvents = next[updated.sessionId] === existing
-          ? existing.slice()
-          : [...(next[updated.sessionId] ?? existing)];
-        sessionEvents[index] = updated;
-        next[updated.sessionId] = sessionEvents;
-        changedSessions.add(updated.sessionId);
-      }
+      const { logs: next, changedSessions } = reconcileSessionEventUpdates(current, pending);
       for (const sessionId of changedSessions) {
         logSignatureRef.current[sessionId] = logSignature(next[sessionId] ?? []);
       }
