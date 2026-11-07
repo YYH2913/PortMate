@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   changedAlternateTerminalRows,
   formatTerminalTimestampClock,
   normalizeTerminalTimestamps,
+  normalizeTerminalTimestampValue,
   placeTerminalTimestampLabels,
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
@@ -12,6 +13,20 @@ import {
 } from "../../src/terminal-timestamp-state";
 
 describe("terminal timestamp state", () => {
+  it("reuses normalized UTC stamps without losing fractional precision or offsets", () => {
+    const parse = vi.spyOn(Date, "parse");
+    try {
+      const input = "2137-03-12T13:14:15.123456789+08:00";
+      const normalized = "2137-03-12T05:14:15.123456Z";
+      for (let i = 0; i < 1_000; i++) {
+        expect(normalizeTerminalTimestampValue(input)).toBe(normalized);
+        expect(normalizeTerminalTimestampValue(normalized)).toBe(normalized);
+      }
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(normalizeTerminalTimestampValue("invalid")).toBeNull();
+    } finally { parse.mockRestore(); }
+  });
+
   it("keeps labels beside the first content row of each visible interval", () => {
     const entries = [
       { line: 100, row: 0, ts: "first" },

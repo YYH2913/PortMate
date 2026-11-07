@@ -9,6 +9,8 @@ export interface VisibleTerminalTimestamp extends TerminalTimestampEntry {
 
 export const MAX_TERMINAL_TIMESTAMPS = 10_000_000;
 const RFC3339_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i;
+const normalizedTimestampCache = new Map<string, string>();
+const MAX_CACHED_TIMESTAMPS = 2_048;
 
 export function normalizeTerminalTimestamps(
   value: unknown,
@@ -191,6 +193,8 @@ function normalizeTerminalTimestampLine(value: unknown): number | null {
 
 export function normalizeTerminalTimestampValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
+  const cached = normalizedTimestampCache.get(value);
+  if (cached) return cached;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return null;
   const match = value.match(RFC3339_TIMESTAMP);
@@ -198,7 +202,15 @@ export function normalizeTerminalTimestampValue(value: unknown): string | null {
     ? match[2].slice(0, 6).padEnd(6, "0")
     : new Date(parsed).toISOString().match(/\.(\d{3})Z$/)?.[1].padEnd(6, "0") ?? "000000";
   const utcSecond = new Date(Math.floor(parsed / 1_000) * 1_000).toISOString().slice(0, 19);
-  return `${utcSecond}.${fraction}Z`;
+  const normalized = `${utcSecond}.${fraction}Z`;
+  // Parser callbacks, viewport labels and alternate-screen updates repeatedly
+  // normalize the same stamps. Retain only a bounded set of short, valid keys.
+  if (value.length <= 64 && match) normalizedTimestampCache.set(value, normalized);
+  if (RFC3339_TIMESTAMP.test(normalized)) normalizedTimestampCache.set(normalized, normalized);
+  while (normalizedTimestampCache.size > MAX_CACHED_TIMESTAMPS) {
+    normalizedTimestampCache.delete(normalizedTimestampCache.keys().next().value!);
+  }
+  return normalized;
 }
 
 function padClock(value: number): string {

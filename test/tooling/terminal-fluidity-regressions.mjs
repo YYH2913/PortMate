@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+
+/** Sustained output in both visible panes, with real xterm keyboard handling. */
+export async function checkTerminalFluidity(page) {
+  await page.evaluate(() => {
+    window.__fluidSend = (id, sessionId, text, ts) => {
+      const event = { id, sessionId, paneId: `${sessionId}:main`, ts, direction: "inbound", stream: "stdout", text, bytesRef: null, annotations: {} };
+      const bytes = Array.from(new TextEncoder().encode(text));
+      window.__emitTauriEvent("portmate-terminal-live", { event, bytes, originalLength: bytes.length, truncated: false });
+    };
+    for (const id of ["session-a", "session-b"]) {
+      window.__fluidSend(`fluid-enter-${id}`, id, "\x1b[?1049h", "2026-11-07T03:00:00.000000Z");
+    }
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll(".terminal-host")].every(host => host.dataset.terminalBuffer === "alternate"));
+  await page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea').focus();
+  await page.waitForTimeout(300);
+  let profiler;
+  if (process.env.PORTMATE_TERMINAL_CPU_PROFILE) {
+    profiler = await page.context().newCDPSession(page);
+    await profiler.send("Profiler.enable");
+    await profiler.send("Profiler.start");
+    await profiler.send("Tracing.start", { categories: "devtools.timeline,disabled-by-default-devtools.timeline", transferMode: "ReturnAsStream" });
+  }
+  await page.evaluate(() => {
+    const nativeInvoke = window.__TAURI_INTERNALS__.invoke;
+    const nativeBounds = Element.prototype.getBoundingClientRect;
+    const key = event => { if (event.key === "x") window.__fluidLastKey = performance.now(); };
+    document.addEventListener("keydown", key, true);
+    window.__fluidInputs = [];
+    window.__fluidLayouts = 0;
+    window.__fluidFrames = 0;
+    window.__fluidGaps = [];
+    window.__TAURI_INTERNALS__.invoke = function(command, args, ...rest) {
+      if (command === "send_text" && args?.sessionId === "session-a" && args.text.includes("x")) {
+        window.__fluidInputs.push(performance.now() - window.__fluidLastKey);
+      }
+      return nativeInvoke.call(this, command, args, ...rest);
+    };
+    Element.prototype.getBoundingClientRect = function(...args) {
+      if (this.classList.contains("terminal-host") || this.classList.contains("xterm-screen")) window.__fluidLayouts++;
+      return nativeBounds.apply(this, args);
+    };
+    let last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      window.__fluidGaps.push(now - last);
+      last = now;
+      window.__fluidRaf = requestAnimationFrame(tick);
+    };
+    window.__fluidRaf = requestAnimationFrame(tick);
+    const sizes = [...document.querySelectorAll(".terminal-host")].map(host => host.dataset.terminalSize.split("x").map(Number));
+    window.__fluidTimer = setInterval(() => {
+      const frame = window.__fluidFrames++;
+      const ts = new Date(Date.UTC(2026, 10, 7, 3) + frame * 33 + 1).toISOString();
+      for (const [index, id] of ["session-a", "session-b"].entries()) {
+        const [cols, rows] = sizes[index];
+        let text = "\x1b[H";
+        for (let row = 0; row < rows; row++) {
+          text += `\x1b[${row + 1};1H\x1b[${31 + row % 6}m${`${frame} CPU ${row} ${"abcdefghij".repeat(20)}`.slice(0, cols - 1)}\x1b[0m`;
+        }
+        window.__fluidSend(`fluid-${id}-${frame}`, id, text, ts);
+      }
+    }, 33);
+    window.__fluidStop = () => {
+      clearInterval(window.__fluidTimer);
+      cancelAnimationFrame(window.__fluidRaf);
+      document.removeEventListener("keydown", key, true);
+      window.__TAURI_INTERNALS__.invoke = nativeInvoke;
+      Element.prototype.getBoundingClientRect = nativeBounds;
+      return { frames: window.__fluidFrames, gaps: window.__fluidGaps, inputs: window.__fluidInputs, geometryReads: window.__fluidLayouts,
+        renderers: [...document.querySelectorAll(".terminal-host")].map(host => ({ renderer: host.dataset.terminalRenderer, webgl: host.dataset.terminalWebgl })) };
+    };
+  });
+  let result;
+  try {
+    for (let index = 0; index < 20; index++) {
+      await page.keyboard.type("x");
+      await page.waitForTimeout(100);
+    }
+    await page.waitForFunction(() => window.__fluidInputs.length === 20);
+  } finally {
+    result = await page.evaluate(() => window.__fluidStop());
+    if (profiler) {
+      const { profile } = await profiler.send("Profiler.stop");
+      writeFileSync(process.env.PORTMATE_TERMINAL_CPU_PROFILE, JSON.stringify(profile));
+      const traceReady = new Promise(resolve => profiler.once("Tracing.tracingComplete", resolve));
+      await profiler.send("Tracing.end");
+      const { stream } = await traceReady;
+      let trace = "";
+      while (true) {
+        const chunk = await profiler.send("IO.read", { handle: stream });
+        trace += chunk.base64Encoded ? Buffer.from(chunk.data, "base64").toString("utf8") : chunk.data;
+        if (chunk.eof) break;
+      }
+      await profiler.send("IO.close", { handle: stream });
+      writeFileSync(`${process.env.PORTMATE_TERMINAL_CPU_PROFILE}.trace.json`, trace);
+      await profiler.detach();
+    }
+  }
+  const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * fraction)];
+  const frameP95 = percentile(result.gaps, .95);
+  const inputP95 = percentile(result.inputs, .95);
+  console.log(JSON.stringify({ dualPaneTuiFrames: result.frames, frameP95Milliseconds: Math.round(frameP95), maxFrameGapMilliseconds: Math.round(Math.max(...result.gaps)), inputP95Milliseconds: Math.round(inputP95), keysDelivered: result.inputs.length, geometryReads: result.geometryReads, renderers: result.renderers }));
+  assert(result.frames >= 40, "sustained TUI output did not continue during keyboard input");
+  assert.equal(result.inputs.length, 20, "keyboard input was lost during output");
+  assert(frameP95 < 75, `TUI output stalled animation frames: p95=${frameP95}ms`);
+  assert(inputP95 < 75, `TUI output stalled keyboard dispatch: p95=${inputP95}ms`);
+  assert(Math.max(...result.gaps) < 500, "dual-pane output caused a half-second UI freeze");
+  assert(result.geometryReads < result.frames, "output repeatedly forced timestamp geometry measurements without a resize");
+  for (const id of ["session-a", "session-b"]) {
+    await page.evaluate(sessionId => window.__fluidSend(`fluid-exit-${sessionId}`, sessionId, "\x1b[?1049l", "2026-11-07T03:01:00Z"), id);
+  }
+}

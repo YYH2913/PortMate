@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 
 export async function checkTerminalTimestampPerformance(page) {
   const sessionId = "session-a";
@@ -14,6 +15,12 @@ export async function checkTerminalTimestampPerformance(page) {
     window.__timestampBurst("burst-clear", "\x1b[?1049l\x1b[2J\x1b[3J\x1b[H", "2026-11-07T00:00:00.000000Z");
   });
   await page.waitForTimeout(60);
+  let profiler;
+  if (process.env.PORTMATE_TERMINAL_CPU_PROFILE) {
+    profiler = await page.context().newCDPSession(page);
+    await profiler.send("Profiler.enable");
+    await profiler.send("Profiler.start");
+  }
   const result = await page.evaluate(async () => {
     const frames = 2400;
     const started = performance.now();
@@ -28,6 +35,7 @@ export async function checkTerminalTimestampPerformance(page) {
       const ts = new Date(Date.UTC(2026, 10, 7) + i * 1000).toISOString().replace(".000Z", ".123456Z");
       events.push(window.__timestampBurst(`burst-${i}`, `TIMED-ROW-${i}\r\n`, ts));
     }
+    const admissionMilliseconds = performance.now() - started;
     const { requestTerminalTextExport } = await import("/src/terminal-export-event.ts");
     let text = "";
     while (!text.includes(`TIMED-ROW-${frames - 1}`)) {
@@ -38,8 +46,13 @@ export async function checkTerminalTimestampPerformance(page) {
     cancelAnimationFrame(raf);
     const elapsed = performance.now() - started;
     window.__terminalCompatLogs["session-a"] = events.slice(-600);
-    return { text, elapsed, maxFrameGap: Math.max(...gaps), frames };
+    return { text, elapsed, admissionMilliseconds, maxFrameGap: Math.max(...gaps), frames };
   });
+  if (profiler) {
+    const { profile } = await profiler.send("Profiler.stop");
+    writeFileSync(process.env.PORTMATE_TERMINAL_CPU_PROFILE, JSON.stringify(profile));
+    await profiler.detach();
+  }
   const lines = result.text.split("\n");
   for (let i = 0; i < result.frames; i++) {
     const ts = new Date(Date.UTC(2026, 10, 7) + i * 1000).toISOString().replace(".000Z", ".123456Z");
@@ -93,5 +106,5 @@ export async function checkTerminalTimestampPerformance(page) {
   assert.equal(await page.evaluate(() => window.__perfStreamDone), false, "input waited for ongoing output to finish");
   assert(inputMilliseconds < 500, `input stalled for ${inputMilliseconds}ms during output`);
   await page.waitForFunction(() => window.__perfStreamDone);
-  console.log(JSON.stringify({ canonicalFrames: result.frames, milliseconds: Math.round(result.elapsed), maxFrameGap: Math.round(result.maxFrameGap), timestampsChecked: result.frames, pollingStable: true, clearAndTuiStable: true, inputDuringOutputMilliseconds: inputMilliseconds }));
+  console.log(JSON.stringify({ canonicalFrames: result.frames, milliseconds: Math.round(result.elapsed), admissionMilliseconds: Math.round(result.admissionMilliseconds), maxFrameGap: Math.round(result.maxFrameGap), timestampsChecked: result.frames, pollingStable: true, clearAndTuiStable: true, inputDuringOutputMilliseconds: inputMilliseconds }));
 }

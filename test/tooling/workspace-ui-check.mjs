@@ -5422,7 +5422,12 @@ Host staging
     `terminal theme did not update in place: ${JSON.stringify({ lightThemeState, lightTerminalPixel })}`);
   await page.screenshot({ path: `${screenshotPrefix}-terminal-light-theme.png`, fullPage: true });
   await setActiveSessionTheme("portmate-dark");
-  await page.locator('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"][data-terminal-renderer="webgl"]').waitFor();
+  await page.waitForFunction(() => {
+    const host = document.querySelector('.terminal-pane.active .terminal-host[data-terminal-theme="portmate-dark"]');
+    if (!host) return false;
+    return host.dataset.terminalRenderer === "webgl" && host.dataset.terminalWebgl === "active"
+      || host.dataset.terminalRenderer === "dom" && ["disabled-software", "disabled-unavailable", "disabled-webkitgtk"].includes(host.dataset.terminalWebgl);
+  });
   assert(await activeXterm.getAttribute("data-theme-test-identity") === "retained",
     "restoring the terminal theme replaced the live XTerm instance");
 

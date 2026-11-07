@@ -7,6 +7,7 @@ import { checkTerminalCompletionRegressions } from "./terminal-completion-regres
 import { checkTerminalPrivateInputRegressions } from "./terminal-private-input-regressions.mjs";
 import { checkTerminalLongSession } from "./terminal-long-session-regressions.mjs";
 import { checkTerminalTimestampPerformance } from "./terminal-timestamp-performance-check.mjs";
+import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -309,6 +310,7 @@ const appUrl = `http://127.0.0.1:${port}/`;
 let viteOutput = "";
 const vite = spawn(process.execPath, [
   "node_modules/vite/bin/vite.js",
+  ...(process.env.PORTMATE_UI_PRODUCTION === "1" ? ["preview"] : []),
   "--host", "127.0.0.1",
   "--port", String(port),
   "--strictPort",
@@ -329,6 +331,27 @@ checks: try {
     viewport: { width: 1440, height: 900 },
     reducedMotion: "reduce",
   });
+  if (process.env.PORTMATE_UI_FORCE_WEBGL === "1") {
+    // Exercise the hardware-renderer code path on a headless software-GPU
+    // runner. Never use this override for performance measurements.
+    await context.addInitScript(() => {
+      const getContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function(type, options, ...rest) {
+        if (type !== "webgl2" || !options?.failIfMajorPerformanceCaveat) return getContext.call(this, type, options, ...rest);
+        const gl = getContext.call(this, type, { ...options, failIfMajorPerformanceCaveat: false });
+        if (gl) {
+          const getParameter = gl.getParameter.bind(gl);
+          gl.getParameter = parameter => parameter === 0x9246 ? "Test hardware WebGL path" : getParameter(parameter);
+        }
+        return gl;
+      };
+    });
+  }
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1") {
+    // Screenshot checks preserve the WebGL back buffer for capture. Performance
+    // checks need the non-preserved configuration used by real desktop users.
+    await context.addInitScript(() => Object.defineProperty(navigator, "webdriver", { get: () => false }));
+  }
   await context.route("https://www.google.com/**", (route) => route.fulfill({
     contentType: "text/html",
     body: "<!doctype html><title>PortMate online search test</title>",
@@ -459,6 +482,12 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1") {
+    await checkTerminalFluidity(page);
+    assert(!pageErrors.length, `fluidity browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_LONG_SESSION_ONLY === "1") {
     console.log(JSON.stringify(await checkTerminalLongSession(page), null, 2));
     assert(!pageErrors.length, `long-session browser errors: ${JSON.stringify(pageErrors)}`);

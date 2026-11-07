@@ -75,6 +75,9 @@ import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotId
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalRawCorrelator } from "./terminal-raw-correlator";
 import { TerminalTaskScheduler } from "./terminal-task-scheduler";
+import { alternateTerminalScreenSnapshot } from "./terminal-screen-snapshot";
+import { probeTerminalWebgl } from "./terminal-renderer";
+import type { TerminalWebglSupport } from "./terminal-renderer";
 import { TerminalTimestampIndex } from "./terminal-timestamp-index";
 import TerminalTimestampGutter from "./TerminalTimestampGutter";
 import { TerminalTimestampViewportStore } from "./terminal-timestamp-viewport";
@@ -87,6 +90,7 @@ import {
   MAX_TERMINAL_TIMESTAMPS,
   changedAlternateTerminalRows,
   normalizeTerminalTimestamps,
+  normalizeTerminalTimestampValue,
   placeTerminalTimestampLabels,
   rebaseTerminalTimestamps,
   resizeAlternateTerminalTimestamps,
@@ -166,6 +170,7 @@ let terminalInstanceSequence = 0;
 type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
 type WebglAddonModule = typeof import("@xterm/addon-webgl");
 let webglAddonModulePromise: Promise<WebglAddonModule> | null = null;
+let terminalWebglSupport: TerminalWebglSupport | null = null;
 type LocalNavigationPosition = { row: number; column: number };
 type LocalNavigationState = LocalNavigationPosition & {
   anchor: LocalNavigationPosition | null;
@@ -253,52 +258,6 @@ function readTerminalSemanticLogicalLine(term: XTerm, startRow: number): Termina
     while (row < buffer.length && buffer.getLine(row)?.isWrapped) row += 1;
   }
   return { text: characters.join(""), cells, nextRow: Math.max(startRow + 1, row) };
-}
-
-function alternateTerminalScreenSnapshot(term: XTerm): string[] {
-  const buffer = term.buffer.active;
-  if (buffer.type !== "alternate") return [];
-  const snapshot: string[] = [];
-  const reusableCell = buffer.getNullCell();
-  for (let row = 0; row < term.rows; row += 1) {
-    const line = buffer.getLine(row);
-    if (!line) {
-      snapshot.push("missing");
-      continue;
-    }
-    const cells: unknown[] = [line.isWrapped];
-    for (let column = 0; column < Math.min(term.cols, line.length); column += 1) {
-      const cell = line.getCell(column, reusableCell);
-      if (!cell) continue;
-      const chars = cell.getChars();
-      const width = cell.getWidth();
-      if (!chars && width === 1 && cell.isAttributeDefault()) continue;
-      const flags = [
-        cell.isBold(),
-        cell.isItalic(),
-        cell.isDim(),
-        cell.isUnderline(),
-        cell.isBlink(),
-        cell.isInverse(),
-        cell.isInvisible(),
-        cell.isStrikethrough(),
-        cell.isOverline(),
-      ].map(Number).join("");
-      cells.push([
-        column,
-        chars,
-        cell.getCode(),
-        width,
-        cell.getFgColorMode(),
-        cell.getFgColor(),
-        cell.getBgColorMode(),
-        cell.getBgColor(),
-        flags,
-      ]);
-    }
-    snapshot.push(JSON.stringify(cells));
-  }
-  return snapshot;
 }
 
 function terminalTextMayMoveRows(text: string): boolean {
@@ -1290,6 +1249,7 @@ function TerminalCanvas({
     serialColumnDetectorRef.current = serialColumnDetector;
     let serialDetectorKey = serialContextRef.current.key;
     let timestampFrame: number | null = null;
+    let timestampGeometry: { screenTop: number; cellHeight: number } | null = null;
     let resizeReportTimer: number | null = null;
     let enterScrollFrame: number | null = null;
     let outputFollowDeadline = 0;
@@ -1367,23 +1327,24 @@ function TerminalCanvas({
 
     const registerTimestampLine = (line: number, ts: string): boolean => {
       if (term.buffer.active.type !== "normal") return false;
-      const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
-      if (!normalized) return false;
-      if (timestampIndex.has(normalized.line)) return false;
+      if (!Number.isSafeInteger(line) || line < 0) return false;
+      const normalized = normalizeTerminalTimestampValue(ts);
+      if (!normalized || timestampIndex.has(line)) return false;
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
-      const marker = term.registerMarker(normalized.line - cursorLine);
+      const marker = term.registerMarker(line - cursorLine);
       if (!marker || marker.line < 0) return false;
-      return timestampIndex.add(marker, normalized.ts);
+      return timestampIndex.add(marker, normalized);
     };
     const trackTimestampLine = (line: number, ts: string): TerminalTimestampMarker | null => {
       if (term.buffer.active.type !== "normal") return null;
-      const normalized = normalizeTerminalTimestamps([{ line, ts }], 1)[0];
+      if (!Number.isSafeInteger(line) || line < 0) return null;
+      const normalized = normalizeTerminalTimestampValue(ts);
       if (!normalized) return null;
       const normal = term.buffer.normal;
       const cursorLine = normal.baseY + normal.cursorY;
-      const marker = term.registerMarker(normalized.line - cursorLine);
-      return marker ? { marker, ts: normalized.ts } : null;
+      const marker = term.registerMarker(line - cursorLine);
+      return marker ? { marker, ts: normalized } : null;
     };
     const normalTimestampAt = (line: number): string | null => timestampIndex.timestampAt(line);
     const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number, hadContent: boolean): boolean => {
@@ -1486,12 +1447,16 @@ function TerminalCanvas({
       if (terminalDisposed) return;
       const buffer = term.buffer.active;
       const bufferType = buffer.type === "alternate" ? "alternate" : "normal";
-      const screen = host.querySelector<HTMLElement>(".xterm-screen");
-      const region = host.parentElement;
-      const hostRect = host.getBoundingClientRect();
-      const screenRect = screen?.getBoundingClientRect();
-      const screenTop = screenRect ? host.offsetTop + screenRect.top - hostRect.top : 0;
-      const cellHeight = screenRect ? screenRect.height / Math.max(1, term.rows) : 0;
+      if (!timestampGeometry) {
+        const screen = host.querySelector<HTMLElement>(".xterm-screen");
+        if (!screen || !host.parentElement) return;
+        const hostRect = host.getBoundingClientRect();
+        const screenRect = screen.getBoundingClientRect();
+        const cellHeight = screenRect.height / Math.max(1, term.rows);
+        if (cellHeight <= 0) return;
+        timestampGeometry = { screenTop: host.offsetTop + screenRect.top - hostRect.top, cellHeight };
+      }
+      const { screenTop, cellHeight } = timestampGeometry;
       const intervals = bufferType === "normal"
         ? timestampIndex.visible(buffer.viewportY, term.rows)
         : visibleTerminalTimestamps(alternateTimestamps, 0, term.rows);
@@ -1504,7 +1469,7 @@ function TerminalCanvas({
       host.dataset.terminalTimestampCount = String(entries.length);
       host.dataset.terminalTimestampMarkerCount = String(timestampIndex.size);
       host.dataset.terminalTimestampRows = String(term.rows);
-      if (!region || !screen || cellHeight <= 0) return;
+      recordTerminalViewport();
       timestampStoreRef.current!.publish({ bufferType, screenTop, cellHeight, entries });
       setTimestampBufferType(current => current === bufferType ? current : bufferType);
     };
@@ -1512,7 +1477,11 @@ function TerminalCanvas({
       if (terminalDisposed || timestampFrame !== null) return;
       timestampFrame = window.requestAnimationFrame(renderTimestampGutter);
     };
-    refreshTimestampGutterRef.current = scheduleTimestampGutter;
+    const refreshTimestampGeometry = () => {
+      timestampGeometry = null;
+      scheduleTimestampGutter();
+    };
+    refreshTimestampGutterRef.current = refreshTimestampGeometry;
 
     if (cachedState) {
       term.write(cachedState.serialized + terminalMouseEncodingSequence(mouseEncoding), () => {
@@ -1526,8 +1495,10 @@ function TerminalCanvas({
     term.open(host);
     const recordTerminalViewport = () => {
       const buffer = term.buffer.active;
-      host.dataset.terminalViewportY = String(buffer.viewportY);
-      host.dataset.terminalBaseY = String(buffer.baseY);
+      const viewportY = String(buffer.viewportY);
+      const baseY = String(buffer.baseY);
+      if (host.dataset.terminalViewportY !== viewportY) host.dataset.terminalViewportY = viewportY;
+      if (host.dataset.terminalBaseY !== baseY) host.dataset.terminalBaseY = baseY;
     };
     recordTerminalViewport();
     host.dataset.terminalBuffer = terminalBufferType(term);
@@ -1692,9 +1663,7 @@ function TerminalCanvas({
             }
           } else {
             trackedNormalStart?.marker.dispose();
-            const normalizedTimestamp = normalizeTerminalTimestamps([
-              { line: 0, ts: first.event.ts },
-            ], 1)[0]?.ts ?? null;
+            const normalizedTimestamp = normalizeTerminalTimestampValue(first.event.ts);
             alternateLatestTimestamp = normalizedTimestamp ?? alternateLatestTimestamp;
             if (beforeBufferType === "alternate") {
               const changedRows = inspectAlternateRows
@@ -1916,11 +1885,18 @@ function TerminalCanvas({
         webglAddon = null;
         host.dataset.terminalRenderer = "dom";
         host.dataset.terminalWebgl = webglEnabled ? "disabled-transparency" : "disabled-webkitgtk";
+        refreshTimestampGeometry();
         return;
       }
       if (webglAddon) return;
       void loadTerminalWebglAddon().then(({ WebglAddon }) => {
         if (terminalDisposed || generation !== webglGeneration || termRef.current !== term) return;
+        const support = terminalWebglSupport ??= probeTerminalWebgl();
+        if (support !== "accelerated") {
+          host.dataset.terminalRenderer = "dom";
+          host.dataset.terminalWebgl = `disabled-${support}`;
+          return;
+        }
         // Chromium automation can discard the WebGL back buffer before Playwright
         // captures it, which makes rendered cursor checks observe an empty canvas.
         const nextAddon = new WebglAddon(navigator.webdriver);
@@ -1928,6 +1904,7 @@ function TerminalCanvas({
         webglAddon = nextAddon;
         host.dataset.terminalRenderer = "webgl";
         host.dataset.terminalWebgl = "active";
+        refreshTimestampGeometry();
         webglContextLossDisposable = nextAddon.onContextLoss(() => {
           const lostAddon = webglAddon;
           webglAddon = null;
@@ -1936,6 +1913,7 @@ function TerminalCanvas({
           lostAddon?.dispose();
           host.dataset.terminalRenderer = "dom";
           host.dataset.terminalWebgl = "fallback";
+          refreshTimestampGeometry();
         });
       }).catch(() => {
         if (generation !== webglGeneration) return;
@@ -1945,12 +1923,14 @@ function TerminalCanvas({
         webglAddon = null;
         host.dataset.terminalRenderer = "dom";
         host.dataset.terminalWebgl = "fallback";
+        refreshTimestampGeometry();
       });
     };
     configureWebglRef.current = configureWebgl;
     configureWebgl(webglEnabled && terminalSettings.backgroundOpacity === 100);
     if (focused && displayModeRef.current !== "hex") term.focus();
     const fitTerminal = () => {
+      timestampGeometry = null;
       if (!serialKeyModeRef.current) {
         fit.fit();
         return;
@@ -2218,11 +2198,11 @@ function TerminalCanvas({
       if (outputFollowDeadline > performance.now()) followTerminalOutput();
     });
     const semanticScrollDisposable = term.onScroll(() => {
-      recordTerminalViewport();
       scheduleSemanticHighlighting();
       scheduleTimestampGutter();
     });
     const semanticResizeDisposable = term.onResize(() => {
+      timestampGeometry = null;
       if (term.buffer.active.type === "alternate") {
         alternateTimestamps = resizeAlternateTerminalTimestamps(
           alternateTimestamps,
@@ -2451,7 +2431,7 @@ function TerminalCanvas({
       if (refreshSemanticHighlightingRef.current === scheduleSemanticHighlighting) {
         refreshSemanticHighlightingRef.current = () => {};
       }
-      if (refreshTimestampGutterRef.current === scheduleTimestampGutter) {
+      if (refreshTimestampGutterRef.current === refreshTimestampGeometry) {
         refreshTimestampGutterRef.current = () => {};
       }
       if (exportTimestampSnapshotRef.current === exportTimestampSnapshot) {
