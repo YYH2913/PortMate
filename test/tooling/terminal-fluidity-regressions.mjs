@@ -5,8 +5,8 @@ import { latencySummary } from "./latency-summary.mjs";
 /** Sustained output in both visible panes, with real xterm keyboard handling. */
 export async function checkTerminalFluidity(page) {
   await page.evaluate(() => {
-    window.__fluidSend = (id, sessionId, text, ts) => {
-      const event = { id, sessionId, paneId: `${sessionId}:main`, ts, direction: "inbound", stream: "stdout", text, bytesRef: null, annotations: {} };
+    window.__fluidSend = (id, sessionId, text, ts, direction = "inbound") => {
+      const event = { id, sessionId, paneId: `${sessionId}:main`, ts, direction, stream: direction === "inbound" ? "stdout" : "control", text, bytesRef: null, annotations: { origin: "interactive" } };
       const bytes = Array.from(new TextEncoder().encode(text));
       window.__emitTauriEvent("portmate-terminal-live", { event, bytes, originalLength: bytes.length, truncated: false });
     };
@@ -32,6 +32,7 @@ export async function checkTerminalFluidity(page) {
     window.__fluidInputs = [];
     window.__fluidLayouts = 0;
     window.__fluidFrames = 0;
+    window.__fluidTxPackets = 0;
     window.__fluidGaps = [];
     window.__TAURI_INTERNALS__.invoke = function(command, args, ...rest) {
       if (command === "send_text" && args?.sessionId === "session-a" && args.text.includes("x")) {
@@ -64,13 +65,19 @@ export async function checkTerminalFluidity(page) {
         window.__fluidSend(`fluid-${id}-${frame}`, id, text, ts);
       }
     }, 33);
+    const txPayload = "x".repeat(32_768);
+    window.__fluidTxTimer = setInterval(() => {
+      const sequence = window.__fluidTxPackets++;
+      window.__fluidSend(`fluid-tx-${sequence}`, "session-a", txPayload, new Date(Date.UTC(2026, 10, 7, 3) + sequence).toISOString(), "outbound");
+    }, 8);
     window.__fluidStop = () => {
       clearInterval(window.__fluidTimer);
+      clearInterval(window.__fluidTxTimer);
       cancelAnimationFrame(window.__fluidRaf);
       document.removeEventListener("keydown", key, true);
       window.__TAURI_INTERNALS__.invoke = nativeInvoke;
       Element.prototype.getBoundingClientRect = nativeBounds;
-      return { frames: window.__fluidFrames, gaps: window.__fluidGaps, inputs: window.__fluidInputs, geometryReads: window.__fluidLayouts,
+      return { frames: window.__fluidFrames, txPackets: window.__fluidTxPackets, gaps: window.__fluidGaps, inputs: window.__fluidInputs, geometryReads: window.__fluidLayouts,
         renderers: [...document.querySelectorAll(".terminal-host")].map(host => ({ renderer: host.dataset.terminalRenderer, webgl: host.dataset.terminalWebgl })) };
     };
   });
@@ -102,8 +109,9 @@ export async function checkTerminalFluidity(page) {
   }
   const frameLatency = latencySummary(result.gaps), inputLatency = latencySummary(result.inputs);
   const frameP95 = frameLatency.p95, inputP95 = inputLatency.p95;
-  console.log(JSON.stringify({ dualPaneTuiFrames: result.frames, frameP95Milliseconds: frameP95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputP95Milliseconds: inputP95, inputP99Milliseconds: inputLatency.p99, frameLatency, inputLatency, keysDelivered: result.inputs.length, geometryReads: result.geometryReads, renderers: result.renderers }));
+  console.log(JSON.stringify({ dualPaneTuiFrames: result.frames, simultaneousTxMiB: Math.round(result.txPackets * 32768 / 1024 / 1024), frameP95Milliseconds: frameP95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputP95Milliseconds: inputP95, inputP99Milliseconds: inputLatency.p99, frameLatency, inputLatency, keysDelivered: result.inputs.length, geometryReads: result.geometryReads, renderers: result.renderers }));
   assert(result.frames >= 40, "sustained TUI output did not continue during keyboard input");
+  assert(result.txPackets >= 150, "TX stream stalled while the TUI was rendering");
   assert.equal(result.inputs.length, 20, "keyboard input was lost during output");
   assert(frameP95 < 75, `TUI output stalled animation frames: p95=${frameP95}ms`);
   assert(inputP95 < 75, `TUI output stalled keyboard dispatch: p95=${inputP95}ms`);

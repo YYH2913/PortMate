@@ -75,6 +75,7 @@ import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotId
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalRawCorrelator } from "./terminal-raw-correlator";
 import { TerminalTaskScheduler } from "./terminal-task-scheduler";
+import { terminalWriteHasOutput } from "./terminal-write-state";
 import { alternateTerminalScreenSnapshot } from "./terminal-screen-snapshot";
 import { inspectTerminalWebglCanvases } from "./terminal-renderer";
 import { TerminalRendererController } from "./terminal-renderer-controller";
@@ -1581,6 +1582,12 @@ function TerminalCanvas({
       const rawBytes = first.rawBytes
         ? concatTerminalWriteBytes(batch.map((pending) => pending.rawBytes!))
         : undefined;
+      if (!terminalWriteHasOutput(first.event, rawBytes)) {
+        // TX payloads are captured and deduplicated but cannot affect xterm.
+        // In a TUI they previously took a full-screen cell snapshot anyway.
+        for (const pending of batch) settleTerminalEventId(seenEventsRef.current, pendingEventIds, pending.event.id);
+        return true;
+      }
       const eventText = batch.map((pending) => pending.event.text ?? "").join("");
       // Consume each admitted inbound packet once, in render order. Historical
       // replays, truncated frames and old-connection packets are not evidence.
