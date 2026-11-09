@@ -10,6 +10,7 @@ import { checkTerminalTimestampPerformance } from "./terminal-timestamp-performa
 import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
 import { checkTerminalRendererLifecycle } from "./terminal-renderer-regressions.mjs";
 import { checkTerminalByteLoad } from "./terminal-byte-load-regressions.mjs";
+import { checkTerminalTailLatency } from "./terminal-tail-latency-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -363,7 +364,7 @@ checks: try {
       };
     }, { strictProbeUnavailable: process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" });
   }
-  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" || process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1") {
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" || process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1" || process.env.PORTMATE_UI_TAIL_LATENCY_ONLY === "1") {
     // Screenshot checks preserve the WebGL back buffer for capture. Performance
     // checks need the non-preserved configuration used by real desktop users.
     await context.addInitScript(() => Object.defineProperty(navigator, "webdriver", { get: () => false }));
@@ -499,6 +500,12 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_TAIL_LATENCY_ONLY === "1") {
+    await checkTerminalTailLatency(page);
+    assert(!pageErrors.length, `tail-latency browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1") {
     await checkTerminalByteLoad(page);
     assert(!pageErrors.length, `byte-load browser errors: ${JSON.stringify(pageErrors)}`);
