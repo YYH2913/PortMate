@@ -33,6 +33,14 @@ export interface TerminalByteRow {
   omittedBytes: number;
 }
 
+export interface TerminalByteRowIndex {
+  frames: readonly TerminalByteFrame[];
+  bytesPerRow: number;
+  /** Prefix row counts, one per transport frame; no byte-level expansion. */
+  starts: readonly number[];
+  rowCount: number;
+}
+
 export interface TerminalByteSelection {
   frameId: string;
   byteIndex: number;
@@ -126,78 +134,149 @@ export function appendTerminalByteEvents(
   events: readonly TerminalBytesEvent[],
   limits: TerminalByteBufferLimits = defaultTerminalByteBufferLimits,
 ): TerminalByteBuffer {
-  const maxBytes = Math.max(0, Math.trunc(limits.maxBytes));
-  const maxFrames = Math.max(0, Math.trunc(limits.maxFrames));
-  if (maxBytes === 0 || maxFrames === 0 || !events.length) return current;
+  const capture = new TerminalByteCapture(current, limits);
+  capture.append(events);
+  return capture.snapshot();
+}
 
-  let frames: TerminalByteFrame[] = [...current.frames];
-  const frameIds = new Set(frames.map((frame) => frame.id));
-  let frameHead = 0;
-  let capturedBytes = current.capturedBytes;
-  let droppedBytes = current.droppedBytes;
-  let droppedFrames = current.droppedFrames;
-  let nextOffset = current.nextOffset;
-  let revision = current.revision;
-  let changed = false;
+/** Mutable bounded capture, immutable snapshots only when a reader needs one. */
+export class TerminalByteCapture {
+  private frames: Array<TerminalByteFrame | undefined>;
+  private head = 0;
+  readonly frameIds: Set<string>;
+  private readonly eventCounts = new Map<string, number>();
+  private cached: TerminalByteBuffer | null;
+  private capturedBytes: number;
+  private droppedBytes: number;
+  private droppedFrames: number;
+  private nextOffset: number;
+  private revision: number;
+  private readonly maxBytes: number;
+  private readonly maxFrames: number;
 
-  for (const event of events) {
-    if (!event.id || frameIds.has(event.id)) continue;
-    const normalizedBytes = (Array.isArray(event.bytes) ? event.bytes : [])
-      .filter((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)
-      .slice(0, maxBytes);
-    if (!normalizedBytes.length) continue;
-
-    const originalLength = Math.max(normalizedBytes.length, Math.trunc(event.originalLength) || 0);
-    const frame: TerminalByteFrame = {
-      ...event,
-      bytes: normalizedBytes,
-      originalLength,
-      truncated: event.truncated || normalizedBytes.length < originalLength,
-      startOffset: nextOffset,
-    };
-    frames.push(frame);
-    frameIds.add(frame.id);
-    capturedBytes += frame.bytes.length;
-    nextOffset += originalLength;
-    revision += 1;
-    changed = true;
-
-    while (frames.length - frameHead > maxFrames || capturedBytes > maxBytes) {
-      const removed = frames[frameHead];
-      frameHead += 1;
-      if (!removed) break;
-      frameIds.delete(removed.id);
-      capturedBytes = Math.max(0, capturedBytes - removed.bytes.length);
-      droppedBytes += removed.bytes.length;
-      droppedFrames += 1;
-    }
-    if (frameHead >= 256 && frameHead * 2 >= frames.length) {
-      frames = frames.slice(frameHead);
-      frameHead = 0;
-    }
+  constructor(current = emptyTerminalByteBuffer(), limits = defaultTerminalByteBufferLimits) {
+    this.frames = [...current.frames];
+    this.frameIds = new Set(current.frames.map(frame => frame.id));
+    for (const frame of current.frames) this.addEventId(frame.eventId);
+    this.cached = current;
+    this.capturedBytes = current.capturedBytes;
+    this.droppedBytes = current.droppedBytes;
+    this.droppedFrames = current.droppedFrames;
+    this.nextOffset = current.nextOffset;
+    this.revision = current.revision;
+    this.maxBytes = Math.max(0, Math.trunc(limits.maxBytes));
+    this.maxFrames = Math.max(0, Math.trunc(limits.maxFrames));
   }
 
-  if (!changed) return current;
-  if (frameHead) frames = frames.slice(frameHead);
-  return {
-    frames,
-    capturedBytes,
-    droppedBytes,
-    droppedFrames,
-    nextOffset,
-    revision,
-  };
+  hasEventId(id: string): boolean { return this.eventCounts.has(id); }
+
+  append(events: readonly TerminalBytesEvent[]): boolean {
+    if (!this.maxBytes || !this.maxFrames) return false;
+    let changed = false;
+    for (const event of events) {
+      if (!event.id || this.frameIds.has(event.id)) continue;
+      const bytes = event.bytes instanceof Uint8Array
+        ? event.bytes.length <= this.maxBytes ? event.bytes : event.bytes.slice(0, this.maxBytes)
+        : Uint8Array.from((Array.isArray(event.bytes) ? event.bytes : [])
+          .filter(byte => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)
+          .slice(0, this.maxBytes));
+      if (!bytes.length) continue;
+      const originalLength = Math.max(bytes.length, Math.trunc(event.originalLength) || 0);
+      const frame: TerminalByteFrame = { ...event, bytes, originalLength,
+        truncated: event.truncated || bytes.length < originalLength, startOffset: this.nextOffset };
+      this.frames.push(frame);
+      this.frameIds.add(frame.id);
+      this.addEventId(frame.eventId);
+      this.capturedBytes += bytes.length;
+      this.nextOffset += originalLength;
+      this.revision++;
+      changed = true;
+      while (this.frames.length - this.head > this.maxFrames || this.capturedBytes > this.maxBytes) {
+        const removed = this.frames[this.head]!;
+        this.frames[this.head++] = undefined; // Release evicted byte storage immediately.
+        this.frameIds.delete(removed.id);
+        if (removed.eventId) {
+          const count = this.eventCounts.get(removed.eventId)! - 1;
+          if (count) this.eventCounts.set(removed.eventId, count);
+          else this.eventCounts.delete(removed.eventId);
+        }
+        this.capturedBytes -= removed.bytes.length;
+        this.droppedBytes += removed.bytes.length;
+        this.droppedFrames++;
+      }
+      if (this.head >= 256 && this.head * 2 >= this.frames.length) {
+        this.frames = this.frames.slice(this.head);
+        this.head = 0;
+      }
+    }
+    if (changed) this.cached = null;
+    return changed;
+  }
+
+  snapshot(): TerminalByteBuffer {
+    return this.cached ??= { frames: this.frames.slice(this.head) as TerminalByteFrame[],
+      capturedBytes: this.capturedBytes, droppedBytes: this.droppedBytes, droppedFrames: this.droppedFrames,
+      nextOffset: this.nextOffset, revision: this.revision };
+  }
+
+  clear(): TerminalByteBuffer {
+    this.frames = [];
+    this.head = 0;
+    this.frameIds.clear();
+    this.eventCounts.clear();
+    this.capturedBytes = this.droppedBytes = this.droppedFrames = this.nextOffset = 0;
+    this.revision++;
+    return this.cached = { ...emptyTerminalByteBuffer(), revision: this.revision };
+  }
+
+  private addEventId(id: string | null | undefined): void {
+    if (id) this.eventCounts.set(id, (this.eventCounts.get(id) ?? 0) + 1);
+  }
 }
 
 export function terminalByteRows(
   frames: readonly TerminalByteFrame[],
   bytesPerRow = TERMINAL_BYTE_BYTES_PER_ROW,
 ): TerminalByteRow[] {
-  const width = Math.max(1, Math.trunc(bytesPerRow));
-  const rows: TerminalByteRow[] = [];
+  const index = indexTerminalByteRows(frames, bytesPerRow);
+  return terminalByteRowRange(index, 0, index.rowCount);
+}
+
+export function indexTerminalByteRows(
+  frames: readonly TerminalByteFrame[],
+  bytesPerRow = TERMINAL_BYTE_BYTES_PER_ROW,
+): TerminalByteRowIndex {
+  const width = Number.isFinite(bytesPerRow) ? Math.max(1, Math.trunc(bytesPerRow)) : TERMINAL_BYTE_BYTES_PER_ROW;
+  const starts: number[] = [];
+  let rowCount = 0;
   for (const frame of frames) {
-    for (let frameByteOffset = 0; frameByteOffset < frame.bytes.length; frameByteOffset += width) {
-      const bytes = frame.bytes.slice(frameByteOffset, frameByteOffset + width);
+    starts.push(rowCount);
+    rowCount += Math.ceil(frame.bytes.length / width);
+  }
+  return { frames, bytesPerRow: width, starts, rowCount };
+}
+
+/** Materialize only the viewport, not 65k–131k rows for a full 1 MiB capture. */
+export function terminalByteRowRange(index: TerminalByteRowIndex, firstRow: number, count: number): TerminalByteRow[] {
+  const start = Math.max(0, Math.trunc(firstRow) || 0);
+  const end = Math.min(index.rowCount, start + Math.max(0, Math.trunc(count) || 0));
+  const rows: TerminalByteRow[] = [];
+  if (end <= start) return rows;
+  let low = 0, high = index.frames.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (index.starts[middle] <= start) low = middle + 1;
+    else high = middle;
+  }
+  const width = index.bytesPerRow;
+  for (let frameIndex = Math.max(0, low - 1); frameIndex < index.frames.length; frameIndex++) {
+    const frame = index.frames[frameIndex];
+    const frameStart = index.starts[frameIndex];
+    if (frameStart >= end) break;
+    const firstByte = Math.max(0, start - frameStart) * width;
+    const lastByte = Math.min(frame.bytes.length, (end - frameStart) * width);
+    for (let frameByteOffset = firstByte; frameByteOffset < lastByte; frameByteOffset += width) {
+      const bytes = Array.from(frame.bytes.slice(frameByteOffset, frameByteOffset + width));
       const capturedEnd = frameByteOffset + bytes.length;
       rows.push({
         id: `${frame.id}:${frameByteOffset}`,
@@ -342,10 +421,11 @@ export function terminalByteBufferStats(buffer: TerminalByteBuffer) {
 
 type TerminalByteCacheEntry = {
   sessionId: string;
-  buffer: TerminalByteBuffer;
-  frameIds: Set<string>;
-  eventIds: Set<string>;
+  capture: TerminalByteCapture;
   listeners: Set<() => void>;
+  presentationListeners: Set<() => void>;
+  presentation: TerminalByteBuffer | null;
+  presentationTimer: ReturnType<typeof setTimeout> | null;
   touchedAt: number;
 };
 
@@ -360,10 +440,11 @@ function terminalByteCacheEntry(sessionId: string): TerminalByteCacheEntry {
   }
   const entry = {
     sessionId,
-    buffer: emptyTerminalByteBuffer(),
-    frameIds: new Set<string>(),
-    eventIds: new Set<string>(),
+    capture: new TerminalByteCapture(),
     listeners: new Set<() => void>(),
+    presentationListeners: new Set<() => void>(),
+    presentation: null,
+    presentationTimer: null,
     touchedAt: ++cacheClock,
   };
   terminalByteCache.set(sessionId, entry);
@@ -374,7 +455,7 @@ function terminalByteCacheEntry(sessionId: string): TerminalByteCacheEntry {
 function trimTerminalByteCache() {
   while (terminalByteCache.size > MAX_TERMINAL_BYTE_CACHE_SESSIONS) {
     const candidate = [...terminalByteCache.entries()]
-      .filter(([, entry]) => entry.listeners.size === 0)
+      .filter(([, entry]) => entry.listeners.size === 0 && entry.presentationListeners.size === 0)
       .sort((left, right) => left[1].touchedAt - right[1].touchedAt)[0];
     if (!candidate) return;
     terminalByteCache.delete(candidate[0]);
@@ -383,15 +464,15 @@ function trimTerminalByteCache() {
 
 export function terminalByteCacheSnapshot(sessionId: string): TerminalByteBuffer {
   if (!sessionId) return emptyBuffer;
-  return terminalByteCache.get(sessionId)?.buffer ?? emptyBuffer;
+  return terminalByteCache.get(sessionId)?.capture.snapshot() ?? emptyBuffer;
 }
 
 export function terminalByteCacheHasFrameId(sessionId: string, frameId: string): boolean {
-  return Boolean(sessionId && frameId && terminalByteCache.get(sessionId)?.frameIds.has(frameId));
+  return Boolean(sessionId && frameId && terminalByteCache.get(sessionId)?.capture.frameIds.has(frameId));
 }
 
 export function terminalByteCacheHasEventId(sessionId: string, eventId: string): boolean {
-  return Boolean(sessionId && eventId && terminalByteCache.get(sessionId)?.eventIds.has(eventId));
+  return Boolean(sessionId && eventId && terminalByteCache.get(sessionId)?.capture.hasEventId(eventId));
 }
 
 export function appendTerminalByteCacheEvent(event: TerminalBytesEvent): TerminalByteBuffer {
@@ -418,11 +499,7 @@ export function appendTerminalByteCacheEvents(
   }
   for (const [sessionId, sessionEvents] of eventsBySession) {
     const entry = terminalByteCacheEntry(sessionId);
-    const next = appendTerminalByteEvents(entry.buffer, sessionEvents);
-    if (next === entry.buffer) continue;
-    entry.buffer = next;
-    entry.frameIds = new Set(next.frames.map((frame) => frame.id));
-    entry.eventIds = new Set(next.frames.flatMap((frame) => frame.eventId ? [frame.eventId] : []));
+    if (!entry.capture.append(sessionEvents)) continue;
     changedEntries.add(entry);
   }
   const changedSessionIds = [...changedEntries].map((entry) => entry.sessionId);
@@ -438,17 +515,49 @@ export function notifyTerminalByteCacheSessions(sessionIds: readonly string[]): 
   }
   for (const entry of notified) {
     for (const listener of entry.listeners) listener();
+    if (entry.presentationListeners.size && entry.presentationTimer === null) {
+      // Auxiliary counters/Hex refresh at 10 Hz. Raw capture and live terminal
+      // delivery are independent and still consume every packet immediately.
+      entry.presentationTimer = setTimeout(() => publishTerminalBytePresentation(entry), 100);
+    }
   }
+}
+
+function publishTerminalBytePresentation(entry: TerminalByteCacheEntry): void {
+  if (entry.presentationTimer !== null) clearTimeout(entry.presentationTimer);
+  entry.presentationTimer = null;
+  entry.presentation = entry.capture.snapshot();
+  for (const listener of entry.presentationListeners) listener();
+}
+
+export function terminalBytePresentationSnapshot(sessionId: string): TerminalByteBuffer {
+  const entry = terminalByteCache.get(sessionId);
+  return entry?.presentation ?? entry?.capture.snapshot() ?? emptyBuffer;
+}
+
+export function subscribeTerminalBytePresentation(sessionId: string, listener: () => void): () => void {
+  if (!sessionId) return () => {};
+  const entry = terminalByteCacheEntry(sessionId);
+  entry.presentation ??= entry.capture.snapshot();
+  entry.presentationListeners.add(listener);
+  return () => {
+    entry.presentationListeners.delete(listener);
+    if (!entry.presentationListeners.size) {
+      if (entry.presentationTimer !== null) clearTimeout(entry.presentationTimer);
+      entry.presentationTimer = null;
+      entry.presentation = null;
+    }
+    trimTerminalByteCache();
+  };
 }
 
 export function clearTerminalByteCache(sessionId: string): TerminalByteBuffer {
   if (!sessionId) return emptyBuffer;
   const entry = terminalByteCacheEntry(sessionId);
-  entry.buffer = { ...emptyTerminalByteBuffer(), revision: entry.buffer.revision + 1 };
-  entry.frameIds.clear();
-  entry.eventIds.clear();
+  const cleared = entry.capture.clear();
   for (const listener of entry.listeners) listener();
-  return entry.buffer;
+  publishTerminalBytePresentation(entry);
+  return cleared;
 }
 
 export function subscribeTerminalByteCache(sessionId: string, listener: () => void): () => void {
@@ -462,6 +571,9 @@ export function subscribeTerminalByteCache(sessionId: string, listener: () => vo
 }
 
 export function resetTerminalByteCacheForTests() {
+  for (const entry of terminalByteCache.values()) {
+    if (entry.presentationTimer !== null) clearTimeout(entry.presentationTimer);
+  }
   terminalByteCache.clear();
   cacheClock = 0;
 }

@@ -34,6 +34,19 @@ afterEach(() => {
 });
 
 describe("terminal byte event bridge", () => {
+  it("validates wire arrays once and shares compact bytes across live views, replay and capture", () => {
+    let live: Uint8Array | undefined;
+    const stop = subscribeTerminalLiveEvents("session-a", packet => { live = packet.bytes as Uint8Array; });
+    const bytes = [0, 0x80, 0xff, 13, 10];
+    dispatchTerminalLiveEventForTests({ event: { id: "compact-shared", sessionId: "session-a", paneId: "session-a:main", ts: "2026-11-08T00:00:00Z", direction: "inbound", stream: "stdout", text: "", bytesRef: null, annotations: {} }, bytes, originalLength: bytes.length, truncated: false });
+    flushTerminalByteEventsForTests();
+    expect(live).toBeInstanceOf(Uint8Array);
+    expect(terminalByteCacheSnapshot("session-a").frames[0].bytes).toBe(live);
+    const stopMirror = subscribeTerminalLiveEvents("session-a", packet => { expect(packet.bytes).toBe(live); });
+    bytes.fill(1); // Wire-array ownership was not retained.
+    expect(Array.from(live!)).toEqual([0, 0x80, 0xff, 13, 10]);
+    stopMirror(); stop();
+  });
   it("delivers one canonical packet with metadata and bytes and replays it once", () => {
     const received: string[] = [];
     const replayed: boolean[] = [];
@@ -142,7 +155,7 @@ describe("terminal byte event bridge", () => {
     const unsubscribe = subscribeTerminalByteEvents("session-a", (event) => received.push(event));
 
     expect(received.map((event) => event.id)).toEqual(["before-mount"]);
-    expect(received[0]?.bytes).toEqual([0xe5, 0xad]);
+    expect(Array.from(received[0]?.bytes ?? [])).toEqual([0xe5, 0xad]);
     unsubscribe();
   });
 

@@ -15,6 +15,7 @@ import {
   terminalByteRows,
   terminalByteSelectionPosition,
   writeTerminalDisplayMode,
+  TerminalByteCapture,
 } from "../../src/terminal-byte-state";
 import type { TerminalBytesEvent } from "../../src/types";
 
@@ -42,7 +43,8 @@ afterEach(() => resetTerminalByteCacheForTests());
 describe("terminal byte buffer", () => {
   it("preserves non-UTF-8 bytes without text re-encoding", () => {
     const buffer = appendTerminalByteEvent(emptyTerminalByteBuffer(), byteEvent("binary", [0x00, 0x80, 0xff, 0x41]));
-    expect(buffer.frames[0].bytes).toEqual([0x00, 0x80, 0xff, 0x41]);
+    expect(Array.from(buffer.frames[0].bytes)).toEqual([0x00, 0x80, 0xff, 0x41]);
+    expect(buffer.frames[0].bytes).toBeInstanceOf(Uint8Array);
     expect(buffer.capturedBytes).toBe(4);
   });
 
@@ -104,6 +106,50 @@ describe("terminal byte buffer", () => {
     expect(buffer.droppedFrames).toBe(572);
     expect(buffer.nextOffset).toBe(700);
     expect(buffer.revision).toBe(700);
+  });
+  it("does not rescan or copy the full retained RX/TX capture for each new transport frame", () => {
+    let oldFrameReads = 0;
+    const initial = emptyTerminalByteBuffer();
+    initial.frames = Array.from({ length: 512 }, (_, index) => ({
+      ...byteEvent(String(index), [13]), startOffset: index,
+      get id() { oldFrameReads++; return String(index); },
+    }));
+    initial.capturedBytes = initial.nextOffset = initial.revision = 512;
+    const capture = new TerminalByteCapture(initial, { maxBytes: 512, maxFrames: 512 });
+    oldFrameReads = 0;
+    for (let index = 512; index < 612; index++) capture.append([byteEvent(String(index), [13])]);
+    expect(oldFrameReads).toBe(100); // Only one old ID per actual eviction.
+    const next = capture.snapshot();
+    expect(next.frames).toHaveLength(512);
+    expect(next.frames[0].id).toBe("100");
+    expect(next.capturedBytes).toBe(512);
+    expect(capture.snapshot()).toBe(next);
+    expect(initial.frames[0].id).toBe("0"); // Published history is immutable.
+  });
+  it("keeps byte/event dedupe and offsets valid through sustained capture eviction and clear", () => {
+    const capture = new TerminalByteCapture(undefined, { maxBytes: 1024, maxFrames: 8 });
+    const bytes = new Uint8Array(128).fill(0xff);
+    for (let index = 0; index < 10_000; index++) capture.append([byteEvent(String(index), [], { bytes, originalLength: 128, eventId: "shared-event" })]);
+    expect(capture.snapshot()).toMatchObject({ capturedBytes: 1024, nextOffset: 1_280_000, droppedFrames: 9992, revision: 10_000 });
+    expect(capture.frameIds.size).toBe(8);
+    expect(capture.hasEventId("shared-event")).toBe(true);
+    capture.clear();
+    expect(capture.frameIds.size).toBe(0);
+    expect(capture.hasEventId("shared-event")).toBe(false);
+    expect(capture.snapshot()).toMatchObject({ capturedBytes: 0, nextOffset: 0, revision: 10_001 });
+  });
+  it("stays bounded after tens of MiB of traffic without clearing records", () => {
+    const capture = new TerminalByteCapture();
+    const bytes = new Uint8Array(2048).fill(0xff);
+    for (let index = 0; index < 20_000; index++) capture.append([byteEvent(String(index), [], { bytes, originalLength: bytes.length, eventId: `event-${index}` })]);
+    const snapshot = capture.snapshot();
+    expect(snapshot.capturedBytes).toBe(1_048_576);
+    expect(snapshot.frames).toHaveLength(512);
+    expect(capture.frameIds.size).toBe(512);
+    expect(capture.hasEventId("event-0")).toBe(false);
+    expect(capture.hasEventId("event-19999")).toBe(true);
+    expect(snapshot.nextOffset).toBe(40_960_000);
+    expect(snapshot.frames.at(-1)?.bytes).toBe(bytes);
   });
 });
 

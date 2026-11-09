@@ -64,16 +64,27 @@ function normalizeTerminalByteFrame(value: unknown): TerminalBytesEvent | null {
     || typeof frame.ts !== "string" || !frame.ts
     || (frame.direction !== "inbound" && frame.direction !== "outbound")
     || !["stdout", "stderr", "control", "audit"].includes(frame.stream ?? "")
-    || !Array.isArray(frame.bytes)
+    || !(Array.isArray(frame.bytes) || frame.bytes instanceof Uint8Array)
     || frame.bytes.length > TERMINAL_BYTE_FRAME_MAX_BYTES
-    || frame.bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)
     || !Number.isSafeInteger(frame.originalLength)
     || (frame.originalLength ?? -1) < frame.bytes.length
     || typeof frame.truncated !== "boolean"
     || (frame.eventId !== undefined && frame.eventId !== null && typeof frame.eventId !== "string")) {
     return null;
   }
-  return frame as TerminalBytesEvent;
+  const bytes = compactTerminalWireBytes(frame.bytes);
+  return bytes ? { ...frame, bytes } as TerminalBytesEvent : null;
+}
+
+function compactTerminalWireBytes(bytes: number[] | Uint8Array): Uint8Array | null {
+  if (bytes instanceof Uint8Array) return bytes;
+  const compact = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) return null;
+    compact[i] = byte;
+  }
+  return compact;
 }
 
 function dispatchTerminalByteFrame(frame: TerminalBytesEvent) {
@@ -102,14 +113,14 @@ function normalizeTerminalLiveEvent(value: unknown): TerminalLiveEvent | null {
     || (event.text !== undefined && event.text !== null && typeof event.text !== "string")
     || (event.bytesRef !== undefined && event.bytesRef !== null && typeof event.bytesRef !== "string")
     || !["stdout", "stderr", "control", "audit"].includes(event.stream)
-    || !Array.isArray(packet.bytes)
+    || !(Array.isArray(packet.bytes) || packet.bytes instanceof Uint8Array)
     || packet.bytes.length > TERMINAL_BYTE_FRAME_MAX_BYTES
-    || packet.bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)
     || !Number.isSafeInteger(packet.originalLength)
     || (packet.originalLength ?? -1) < packet.bytes.length
     || typeof packet.truncated !== "boolean"
     || (!packet.truncated && packet.originalLength !== packet.bytes.length)) return null;
-  return packet as TerminalLiveEvent;
+  const bytes = compactTerminalWireBytes(packet.bytes);
+  return bytes ? { ...packet, bytes } as TerminalLiveEvent : null;
 }
 
 function dispatchTerminalLiveEvent(packet: TerminalLiveEvent) {
@@ -308,7 +319,7 @@ export function resetTerminalByteEventBridgeForTests() {
 }
 
 function terminalLiveEventSize(packet: TerminalLiveEvent): number {
-  return packet.bytes.length + (packet.event.text?.length ?? 0) + 512;
+  return packet.bytes.length + (packet.event.text?.length ?? 0) * 2 + 512;
 }
 
 function trimTerminalLiveEventCache() {

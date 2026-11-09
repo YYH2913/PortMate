@@ -322,7 +322,8 @@ export interface TerminalBytesEvent {
   ts: string;
   direction: "inbound" | "outbound";
   stream: "stdout" | "stderr" | "control" | "audit";
-  bytes: number[];
+  /** JSON arrays on the wire; compact, shared read-only-by-convention storage in the UI. */
+  bytes: number[] | Uint8Array;
   originalLength: number;
   truncated: boolean;
   eventId?: string | null;
@@ -331,7 +332,7 @@ export interface TerminalBytesEvent {
 
 export interface TerminalLiveEvent {
   event: SessionEvent;
-  bytes: number[];
+  bytes: number[] | Uint8Array;
   originalLength: number;
   truncated: boolean;
 }
