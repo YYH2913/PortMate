@@ -8,6 +8,15 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Reuse byte-inspector viewport row/cell DOM instead of remounting it for each
+  capture update. Keep byte identities at row level and limit overscan while
+  preserving live offsets, accessible labels, selection and Hex/ASCII hover pairing.
+- Compile bounded, application-owned localization templates once instead of
+  reparsing placeholders for every byte cell. Interpolation values and arbitrary
+  server/user fallback messages are never cached.
+- Skip screen snapshots and display preparation for TX-only captures and empty
+  acknowledgements. RX/control/binary output, capture counters and event dedupe
+  remain intact; the TUI performance check now includes simultaneous bulk TX.
 - Gate terminal tail latency with nearest-rank P99, sample counts, maximums and
   50/100/250 ms outlier counts. A sustained production-frontend RX/TX test checks
   at least 1,000 real keyboard events, periodic traffic bursts, retained output,
@@ -60,6 +69,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 修复（中文）
 
+- 字节视图复用可见行和单元格 DOM，不再因每批收发记录变化而整块销毁重建；字节身份
+  提升到行级并缩减预渲染范围，偏移、无障碍标签、选择和 Hex/ASCII 悬停对应保持正确。
+- 对程序自带的本地化模板进行有界编译缓存，避免每个字节单元格反复解析占位符；
+  不缓存插值内容或任意服务端/用户回退消息。
+- TX 记录和空确认帧不再执行屏幕快照及显示准备；保留 RX/控制/二进制输出、捕获统计
+  和事件去重。TUI 性能检查新增同时进行大块 TX 的负载。
 - 终端性能检查增加最近秩 P99、样本量、最大延迟及超过 50/100/250 ms 的次数。
   正式前端持续收发检查至少 1,000 次真实按键、周期突发、保留输出、积压恢复和内存样本，
   全程不清字节记录。文本帧/输入 P99 门禁为 50 ms，帧停顿不得达到 250 ms；短时

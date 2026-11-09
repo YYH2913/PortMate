@@ -188,6 +188,14 @@ terminal text or scrollback. Performance gates include full-cache text mode
 after screen clear and sustained high-rate RX/TX; no fixed-latency guarantee
 can cover arbitrary traffic, device/driver speed or an overloaded system.
 
+The byte inspector reuses viewport DOM slots as new captures arrive rather than
+recreating every byte button. Delegated interactions resolve the current frame
+and offset, including after row reuse. Application-owned localization templates
+are compiled in a bounded cache, without retaining interpolated values or raw
+fallback messages. Outbound capture and empty acknowledgement packets bypass
+screen snapshots; this avoids unnecessary screen scans during simultaneous TUI
+rendering and bulk TX, without suppressing capture or changing incoming bytes.
+
 Tail latency is checked separately from average/P95 performance. The CI stress
 check runs for at least 60 seconds with a full byte cache, periodic bursts and
 at least 1,000 real keyboard events. It reports nearest-rank P99, sample counts,
