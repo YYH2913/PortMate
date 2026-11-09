@@ -11,7 +11,6 @@ import {
   indexTerminalByteRows,
   terminalByteRowRange,
   terminalByteSelectionAt,
-  terminalByteSelectionKey,
   terminalByteSelectionPosition,
   terminalByteSelectionRowIndex,
   TERMINAL_BYTE_BYTES_PER_ROW,
@@ -29,7 +28,7 @@ type TerminalByteInspectorProps = {
 
 const TERMINAL_BYTE_HEADER_HEIGHT = 25;
 const TERMINAL_BYTE_ROW_HEIGHT = 24;
-const TERMINAL_BYTE_ROW_OVERSCAN = 10;
+const TERMINAL_BYTE_ROW_OVERSCAN = 4;
 
 export default function TerminalByteInspector({
   snapshot,
@@ -165,8 +164,10 @@ export default function TerminalByteInspector({
             <span role="columnheader">{t("status")}</span>
           </div>
           {!rowIndex.rowCount ? <div className="terminal-byte-empty">{t("waiting-for-live-bytes")}</div> : null}
+          {/* Rows have no local state; reuse viewport slots while capture IDs
+              and every interaction target follow the current row props. */}
           {visibleRows.map((row, visibleIndex) => <ByteRowView
-            key={row.id} row={row} rowIndex={firstVisibleRow + visibleIndex} rowWidth={rowWidth} byteInfo={byteInfo}
+            key={visibleIndex} row={row} rowIndex={firstVisibleRow + visibleIndex} rowWidth={rowWidth} byteInfo={byteInfo}
             selectionIndex={selectionIndexForRow(row, selection)} highlightedIndex={selectionIndexForRow(row, highlighted)}
           />)}
         </div>
@@ -189,6 +190,7 @@ const ByteRowView = memo(function ByteRowView({ row, rowIndex, rowWidth, byteInf
                 style={{ top: `${TERMINAL_BYTE_HEADER_HEIGHT + rowIndex * TERMINAL_BYTE_ROW_HEIGHT}px` }}
                 data-frame-id={row.frameId}
                 data-row-offset={row.offset}
+                data-frame-byte-offset={row.frameByteOffset}
               >
                 <span role="gridcell" title={timestamp.title}>{timestamp.time}</span>
                 <strong role="gridcell" title={`${row.direction === "inbound" ? t("receive") : t("send")} · ${row.stream}`}>
@@ -199,10 +201,8 @@ const ByteRowView = memo(function ByteRowView({ row, rowIndex, rowWidth, byteInf
                   {Array.from({ length: rowWidth }, (_, index) => {
                     const byte = row.bytes[index];
                     if (byte === undefined) return <span key={index} className="terminal-byte-cell-placeholder" aria-hidden="true" />;
-                    const cell = { frameId: row.frameId, byteIndex: row.frameByteOffset + index };
                     const selected = selectionIndex === index;
                     const linked = highlightedIndex === index;
-                    const key = terminalByteSelectionKey(cell);
                     return (
                       <button
                         key={index}
@@ -212,9 +212,8 @@ const ByteRowView = memo(function ByteRowView({ row, rowIndex, rowWidth, byteInf
                         aria-pressed={selected}
                         title={`0x${(row.offset + index).toString(16).padStart(8, "0").toUpperCase()} · ${byteInfo[byte].label}`}
                         tabIndex={-1}
-                        data-byte-key={key}
                         data-byte-column="hex"
-                        data-byte-index={row.frameByteOffset + index}
+                        data-byte-cell={index}
                       >{byteInfo[byte].hex}</button>
                     );
                   })}
@@ -223,10 +222,8 @@ const ByteRowView = memo(function ByteRowView({ row, rowIndex, rowWidth, byteInf
                   {Array.from({ length: rowWidth }, (_, index) => {
                     const byte = row.bytes[index];
                     if (byte === undefined) return <span key={index} className="terminal-byte-cell-placeholder" aria-hidden="true" />;
-                    const cell = { frameId: row.frameId, byteIndex: row.frameByteOffset + index };
                     const selected = selectionIndex === index;
                     const linked = highlightedIndex === index;
-                    const key = terminalByteSelectionKey(cell);
                     return (
                       <button
                         key={index}
@@ -236,9 +233,8 @@ const ByteRowView = memo(function ByteRowView({ row, rowIndex, rowWidth, byteInf
                         aria-pressed={selected}
                         title={`0x${(row.offset + index).toString(16).padStart(8, "0").toUpperCase()} · ${byteInfo[byte].label}`}
                         tabIndex={-1}
-                        data-byte-key={key}
                         data-byte-column="ascii"
-                        data-byte-index={row.frameByteOffset + index}
+                        data-byte-cell={index}
                       >{byteInfo[byte].char}</button>
                     );
                   })}
@@ -262,9 +258,10 @@ function selectionIndexForRow(row: TerminalByteRow, selection: TerminalByteSelec
 
 function byteSelectionFromTarget(target: EventTarget | null): TerminalByteSelection | null {
   if (!(target instanceof Element)) return null;
-  const button = target.closest<HTMLElement>("button[data-byte-index]");
-  const frameId = button?.closest<HTMLElement>(".terminal-byte-row")?.dataset.frameId;
-  const byteIndex = Number(button?.dataset.byteIndex);
+  const button = target.closest<HTMLElement>("button[data-byte-cell]");
+  const row = button?.closest<HTMLElement>(".terminal-byte-row");
+  const frameId = row?.dataset.frameId;
+  const byteIndex = Number(row?.dataset.frameByteOffset) + Number(button?.dataset.byteCell);
   return frameId && Number.isSafeInteger(byteIndex) && byteIndex >= 0 ? { frameId, byteIndex } : null;
 }
 

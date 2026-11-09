@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { latencySummary } from "./latency-summary.mjs";
 
 /** Full live capture plus sustained RX/TX; clearing the terminal must not be needed. */
@@ -23,6 +24,12 @@ export async function checkTerminalByteLoad(page) {
     await pane.getByRole("button", { name: label, exact: true }).click();
     if (mode !== "text") await pane.locator(".terminal-byte-scroll").waitFor();
     const openMilliseconds = Date.now() - opening;
+    let profiler;
+    if (mode === "hex" && process.env.PORTMATE_TERMINAL_CPU_PROFILE) {
+      profiler = await page.context().newCDPSession(page);
+      await profiler.send("Profiler.enable");
+      await profiler.send("Profiler.start");
+    }
     if (mode === "hex") await pane.locator(".terminal-byte-scroll").focus();
     else await pane.locator(".xterm-helper-textarea").focus();
     if (mode === "text") {
@@ -36,6 +43,14 @@ export async function checkTerminalByteLoad(page) {
       window.__byteLoadInputFrames = [];
       window.__byteLoadPackets = 0;
       window.__byteStatsUpdates = 0;
+      window.__byteAddedRows = 0;
+      const rowContainer = document.querySelector('[data-pane-id="pane-a"] .terminal-byte-content');
+      const rows = new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node instanceof Element && node.classList.contains("terminal-byte-row")) window.__byteAddedRows++;
+        }
+      });
+      if (rowContainer) rows.observe(rowContainer, { childList: true });
       const stats = new MutationObserver(() => window.__byteStatsUpdates++);
       stats.observe(document.querySelector('[data-pane-id="pane-a"] .terminal-byte-summary'), { attributes: true, childList: true, subtree: true, characterData: true });
       let last = performance.now();
@@ -54,8 +69,9 @@ export async function checkTerminalByteLoad(page) {
       window.__byteLoadStop = () => {
         clearInterval(window.__byteLoadTimer); cancelAnimationFrame(window.__byteLoadRaf);
         stats.disconnect();
+        rows.disconnect();
         document.removeEventListener("keydown", key, true);
-        return { gaps: window.__byteLoadGaps, inputFrames: window.__byteLoadInputFrames, packets: window.__byteLoadPackets, statsUpdates: window.__byteStatsUpdates, elapsed: performance.now() - started };
+        return { gaps: window.__byteLoadGaps, inputFrames: window.__byteLoadInputFrames, packets: window.__byteLoadPackets, statsUpdates: window.__byteStatsUpdates, addedRows: window.__byteAddedRows, elapsed: performance.now() - started };
       };
     }, { interval: process.env.PORTMATE_UI_TEXT_RXTX_ONLY === "1" ? 8 : 33, size: process.env.PORTMATE_UI_TEXT_RXTX_ONLY === "1" ? 32_768 : 16_384 });
     let result;
@@ -64,7 +80,14 @@ export async function checkTerminalByteLoad(page) {
         await page.keyboard.press(mode === "hex" ? "ArrowDown" : "p");
         await page.waitForTimeout(100);
       }
-    } finally { result = await page.evaluate(() => window.__byteLoadStop()); }
+    } finally {
+      result = await page.evaluate(() => window.__byteLoadStop());
+      if (profiler) {
+        const { profile } = await profiler.send("Profiler.stop");
+        writeFileSync(process.env.PORTMATE_TERMINAL_CPU_PROFILE, JSON.stringify(profile));
+        await profiler.detach();
+      }
+    }
     const frameLatency = latencySummary(result.gaps);
     const inputFrameLatency = latencySummary(result.inputFrames);
     const rowCount = mode === "text" ? 0 : Number(await pane.locator(".terminal-byte-scroll").getAttribute("aria-rowcount"));
@@ -72,7 +95,7 @@ export async function checkTerminalByteLoad(page) {
     await cdp.send("HeapProfiler.collectGarbage");
     const heap = await cdp.send("Runtime.getHeapUsage");
     await cdp.detach();
-    results.push({ mode, openMilliseconds, frameP95Milliseconds: frameLatency.p95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputFrameP95Milliseconds: inputFrameLatency.p95, inputFrameP99Milliseconds: inputFrameLatency.p99, frameLatency, inputFrameLatency, keys: result.inputFrames.length, packets: result.packets, logicalRows: rowCount, renderedRows: await pane.locator(".terminal-byte-row").count(), retainedHeapMiB: Math.round(heap.usedSize / 1024 / 1024), byteArrayBuffersMiB: Math.round((heap.backingStorageSize ?? 0) / 1024 / 1024), statsUpdates: result.statsUpdates, elapsed: Math.round(result.elapsed) });
+    results.push({ mode, openMilliseconds, frameP95Milliseconds: frameLatency.p95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputFrameP95Milliseconds: inputFrameLatency.p95, inputFrameP99Milliseconds: inputFrameLatency.p99, frameLatency, inputFrameLatency, keys: result.inputFrames.length, packets: result.packets, logicalRows: rowCount, renderedRows: await pane.locator(".terminal-byte-row").count(), addedRows: result.addedRows, retainedHeapMiB: Math.round(heap.usedSize / 1024 / 1024), byteArrayBuffersMiB: Math.round((heap.backingStorageSize ?? 0) / 1024 / 1024), statsUpdates: result.statsUpdates, elapsed: Math.round(result.elapsed) });
   }
   console.log(JSON.stringify({ fullRxTxCapture: results }));
   for (const result of results) {
@@ -86,6 +109,38 @@ export async function checkTerminalByteLoad(page) {
     assert(result.packets >= 50, "RX/TX capture could not continue at the requested rate");
     assert(result.statsUpdates <= Math.ceil(result.elapsed / 100) + 1, "auxiliary RX/TX counters refreshed at transport rate");
     assert(result.renderedRows < 100, "byte inspector mounted the full retained capture");
+    assert(result.addedRows <= result.renderedRows * 2, "capture updates recreated the visible row DOM instead of reusing slots");
+  }
+  if (process.env.PORTMATE_UI_TEXT_RXTX_ONLY !== "1") {
+    await pane.getByRole("button", { name: "Hex", exact: true }).click();
+    // Use a visible slot, not the overscan rows above the scroll viewport:
+    // Playwright would scroll those into view and change the slot's contents.
+    const row = pane.locator(".terminal-byte-row").nth(8);
+    await row.waitFor();
+    const oldId = await row.getAttribute("data-frame-id");
+    await row.evaluate(element => { window.__reusedByteRow = element; });
+    await page.evaluate(() => { window.__byteLoadSend("inbound"); window.__byteLoadSend("outbound"); });
+    await page.waitForFunction(id => {
+      const rows = document.querySelectorAll('[data-pane-id="pane-a"] .terminal-byte-row');
+      return rows[8]?.getAttribute("data-frame-id") !== id;
+    }, oldId);
+    assert(await row.evaluate(element => window.__reusedByteRow === element), "capture refresh remounted a viewport slot");
+    const selectedFrame = await row.getAttribute("data-frame-id");
+    const selectedFrameOffset = await row.getAttribute("data-frame-byte-offset");
+    const offset = Number(await row.getAttribute("data-row-offset"));
+    const hexCell = row.locator('[data-byte-cell="3"][data-byte-column="hex"]');
+    assert((await hexCell.getAttribute("aria-label")).includes(String(offset + 3)), "reused row kept an old accessible byte offset");
+    await hexCell.click();
+    const selectedRow = pane.locator(`[data-frame-id="${selectedFrame}"][data-frame-byte-offset="${selectedFrameOffset}"]`);
+    const paired = selectedRow.locator('[data-byte-cell="3"]');
+    await page.waitForFunction(({ frameId, frameOffset }) => {
+      const row = [...document.querySelectorAll('[data-pane-id="pane-a"] .terminal-byte-row')].find(row => row.dataset.frameId === frameId && row.dataset.frameByteOffset === frameOffset);
+      const cells = [...(row?.querySelectorAll('[data-byte-cell="3"]') ?? [])];
+      return cells.length === 2 && cells.every(cell => cell.classList.contains("selected") && cell.getAttribute("aria-pressed") === "true");
+    }, { frameId: selectedFrame, frameOffset: selectedFrameOffset });
+    assert.equal(await paired.count(), 2, "reused row selected bytes from a previous capture frame");
+    await selectedRow.locator('[data-byte-cell="4"][data-byte-column="ascii"]').hover();
+    assert(await selectedRow.locator('[data-byte-cell="4"]').evaluateAll(cells => cells.length === 2 && cells.every(cell => cell.classList.contains("linked"))), "reused row lost Hex/ASCII hover correspondence");
   }
   // Clearing raw records remains explicit and immediate; it must not clear the
   // terminal's text or let a deferred statistics update resurrect old data.

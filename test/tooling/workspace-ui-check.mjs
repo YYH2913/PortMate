@@ -3798,15 +3798,15 @@ Host staging
     && await terminalCanvas.locator(".terminal-byte-inspector").isVisible()
     && await terminalCanvas.locator(".terminal-host .xterm-screen").count() === 1,
   "Hex mode did not retain the mounted XTerm behind the byte inspector");
-  const pairedByte = terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:1"]');
+  const pairedByte = terminalCanvas.locator('[data-frame-id="terminal-byte-rx-1"][data-frame-byte-offset="0"] [data-byte-cell="1"]');
   assert(await pairedByte.count() === 2, "Hex and ASCII did not expose the same byte index");
-  await terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:1"][data-byte-column="hex"]').click();
+  await terminalCanvas.locator('[data-frame-id="terminal-byte-rx-1"][data-frame-byte-offset="0"] [data-byte-cell="1"][data-byte-column="hex"]').click();
   assert(await pairedByte.evaluateAll((cells) => cells.every((cell) => (
     cell.classList.contains("selected") && cell.getAttribute("aria-pressed") === "true"
   ))), "selecting Hex did not highlight its corresponding ASCII byte");
-  const hoveredAscii = terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:2"][data-byte-column="ascii"]');
+  const hoveredAscii = terminalCanvas.locator('[data-frame-id="terminal-byte-rx-1"][data-frame-byte-offset="0"] [data-byte-cell="2"][data-byte-column="ascii"]');
   await hoveredAscii.hover();
-  assert(await terminalCanvas.locator('[data-byte-key="terminal-byte-rx-1:2"]').evaluateAll((cells) => (
+  assert(await terminalCanvas.locator('[data-frame-id="terminal-byte-rx-1"][data-frame-byte-offset="0"] [data-byte-cell="2"]').evaluateAll((cells) => (
     cells.length === 2 && cells.every((cell) => cell.classList.contains("linked"))
   )), "hovering ASCII did not highlight its corresponding Hex byte");
 
