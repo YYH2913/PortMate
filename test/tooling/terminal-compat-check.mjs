@@ -9,6 +9,7 @@ import { checkTerminalLongSession } from "./terminal-long-session-regressions.mj
 import { checkTerminalTimestampPerformance } from "./terminal-timestamp-performance-check.mjs";
 import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
 import { checkTerminalRendererLifecycle } from "./terminal-renderer-regressions.mjs";
+import { checkTerminalByteLoad } from "./terminal-byte-load-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -312,6 +313,7 @@ let viteOutput = "";
 const vite = spawn(process.execPath, [
   "node_modules/vite/bin/vite.js",
   ...(process.env.PORTMATE_UI_PRODUCTION === "1" ? ["preview"] : []),
+  ...(process.env.PORTMATE_UI_PREVIEW_DIST ? ["--outDir", process.env.PORTMATE_UI_PREVIEW_DIST] : []),
   "--host", "127.0.0.1",
   "--port", String(port),
   "--strictPort",
@@ -361,7 +363,7 @@ checks: try {
       };
     }, { strictProbeUnavailable: process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" });
   }
-  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1") {
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" || process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1") {
     // Screenshot checks preserve the WebGL back buffer for capture. Performance
     // checks need the non-preserved configuration used by real desktop users.
     await context.addInitScript(() => Object.defineProperty(navigator, "webdriver", { get: () => false }));
@@ -497,6 +499,12 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1") {
+    await checkTerminalByteLoad(page);
+    assert(!pageErrors.length, `byte-load browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1") {
     assert(process.env.PORTMATE_UI_FORCE_WEBGL === "1", "renderer lifecycle test requires its explicit simulated-driver fixture");
     await checkTerminalRendererLifecycle(page);

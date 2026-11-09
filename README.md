@@ -177,6 +177,17 @@ The WebGL lifecycle fixture uses a simulated driver identity with the real addon
 it is not a hardware-GPU benchmark. Native GPU/driver performance requires testing
 on that device.
 
+RX/TX capture is independent of screen contents. Clearing the screen does not
+clear raw records. The live capture keeps its existing 1 MiB / 512-frame window;
+compact byte storage is shared between terminal views, replay and capture.
+Capturing new packets does not rescan the retained window. Counters and the
+Hex/compare presentation refresh at most 10 times per second, while terminal
+output and keyboard handling remain independent. Only visible Hex rows are
+expanded. The trash button explicitly clears byte records without changing
+terminal text or scrollback. Performance gates include full-cache text mode
+after screen clear and sustained high-rate RX/TX; no fixed-latency guarantee
+can cover arbitrary traffic, device/driver speed or an overloaded system.
+
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
 session and detached windows follow the new name. Renaming through the Explorer

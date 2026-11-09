@@ -8,6 +8,14 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Keep large RX/TX captures from competing with text-mode input: compact wire
+  arrays once into shared byte buffers, update a bounded capture ring without
+  rescanning retained frames, and publish counters/Hex snapshots at most 10 Hz.
+  Live terminal packets still arrive immediately; screen clear and byte-record
+  clear remain separate, and clearing records immediately resets pending UI state.
+- Build Hex/compare rows only for the viewport, memoize unchanged rows and
+  delegate byte interactions instead of expanding the full capture or rebuilding
+  all byte-cell handlers. Add full-cache and sustained text RX/TX regression gates.
 - Improve sustained terminal output with one shared raw/text correlation timer
   per view and cancellable MessageChannel yields instead of nested timer delays.
   Preserve packet ordering, individual timestamps and configured scrollback.
@@ -46,6 +54,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 修复（中文）
 
+- 文本模式大 RX/TX 记录改用共享紧凑字节缓冲和有界环形缓存，不再反复复制原始数组、
+  扫描全部保留帧；计数与 Hex 辅助视图最多每秒刷新 10 次，实时终端包仍立即交付。
+  清屏和清字节记录保持独立，清记录立即生效且不会被延迟的旧快照恢复。
+- Hex/对照视图只生成可见行，复用未变行并通过事件委托处理字节交互，不再展开整份
+  缓存或反复建立全部单元格处理函数。新增满缓存与持续高收发量文本模式回归门禁。
 - 终端原始字节与文本关联改为每个视图共享一个定时器，批量释放兼容输出；同步积压
   使用可取消的 MessageChannel 任务让出执行权，避免嵌套定时器的逐轮延迟。
   保留包顺序、逐包时间戳和配置的历史长度，不以丢弃输出换取性能。
