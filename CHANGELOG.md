@@ -8,6 +8,12 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Gate terminal tail latency with nearest-rank P99, sample counts, maximums and
+  50/100/250 ms outlier counts. A sustained production-frontend RX/TX test checks
+  at least 1,000 real keyboard events, periodic traffic bursts, retained output,
+  queue recovery and heap samples without clearing byte records. CI budgets are
+  50 ms P99 for text frames/input and no 250 ms frame freeze; short Hex/compare
+  checks use a 100 ms frame-P99 budget. These are test gates, not a platform SLA.
 - Keep large RX/TX captures from competing with text-mode input: compact wire
   arrays once into shared byte buffers, update a bounded capture ring without
   rescanning retained frames, and publish counters/Hex snapshots at most 10 Hz.
@@ -54,6 +60,10 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 修复（中文）
 
+- 终端性能检查增加最近秩 P99、样本量、最大延迟及超过 50/100/250 ms 的次数。
+  正式前端持续收发检查至少 1,000 次真实按键、周期突发、保留输出、积压恢复和内存样本，
+  全程不清字节记录。文本帧/输入 P99 门禁为 50 ms，帧停顿不得达到 250 ms；短时
+  Hex/对照检查的帧 P99 门禁为 100 ms。这些是测试预算，不是跨平台可用性承诺。
 - 文本模式大 RX/TX 记录改用共享紧凑字节缓冲和有界环形缓存，不再反复复制原始数组、
   扫描全部保留帧；计数与 Hex 辅助视图最多每秒刷新 10 次，实时终端包仍立即交付。
   清屏和清字节记录保持独立，清记录立即生效且不会被延迟的旧快照恢复。

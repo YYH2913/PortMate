@@ -188,6 +188,18 @@ terminal text or scrollback. Performance gates include full-cache text mode
 after screen clear and sustained high-rate RX/TX; no fixed-latency guarantee
 can cover arbitrary traffic, device/driver speed or an overloaded system.
 
+Tail latency is checked separately from average/P95 performance. The CI stress
+check runs for at least 60 seconds with a full byte cache, periodic bursts and
+at least 1,000 real keyboard events. It reports nearest-rank P99, sample counts,
+the maximum and slow-sample counts. Text-mode budgets are frame/input P99 ≤50 ms,
+no frame interval ≥250 ms, no lost input and recovery of retained output within
+2 seconds after traffic stops. The first and last thirds are compared and JS
+heap samples are recorded. These checks use the production frontend with mocked
+native IPC; dispatch and next-animation-frame callbacks do not measure remote
+echo, physical display presentation or Windows WebView2 driver latency. They do
+not establish long-term service availability. `PORTMATE_UI_TAIL_SECONDS` can extend
+the stress check to 600 seconds; `PORTMATE_UI_TAIL_REPORT` saves its JSON report.
+
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
 session and detached windows follow the new name. Renaming through the Explorer
