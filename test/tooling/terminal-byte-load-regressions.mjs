@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { latencySummary } from "./latency-summary.mjs";
 
 /** Full live capture plus sustained RX/TX; clearing the terminal must not be needed. */
 export async function checkTerminalByteLoad(page) {
@@ -64,21 +65,24 @@ export async function checkTerminalByteLoad(page) {
         await page.waitForTimeout(100);
       }
     } finally { result = await page.evaluate(() => window.__byteLoadStop()); }
-    const p95 = values => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * .95)] ?? 0;
+    const frameLatency = latencySummary(result.gaps);
+    const inputFrameLatency = latencySummary(result.inputFrames);
     const rowCount = mode === "text" ? 0 : Number(await pane.locator(".terminal-byte-scroll").getAttribute("aria-rowcount"));
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("HeapProfiler.collectGarbage");
     const heap = await cdp.send("Runtime.getHeapUsage");
     await cdp.detach();
-    results.push({ mode, openMilliseconds, frameP95Milliseconds: Math.round(p95(result.gaps)), maxFrameGapMilliseconds: Math.round(Math.max(...result.gaps)), inputFrameP95Milliseconds: Math.round(p95(result.inputFrames)), keys: result.inputFrames.length, packets: result.packets, logicalRows: rowCount, renderedRows: await pane.locator(".terminal-byte-row").count(), retainedHeapMiB: Math.round(heap.usedSize / 1024 / 1024), byteArrayBuffersMiB: Math.round((heap.backingStorageSize ?? 0) / 1024 / 1024), statsUpdates: result.statsUpdates, elapsed: Math.round(result.elapsed) });
+    results.push({ mode, openMilliseconds, frameP95Milliseconds: frameLatency.p95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputFrameP95Milliseconds: inputFrameLatency.p95, inputFrameP99Milliseconds: inputFrameLatency.p99, frameLatency, inputFrameLatency, keys: result.inputFrames.length, packets: result.packets, logicalRows: rowCount, renderedRows: await pane.locator(".terminal-byte-row").count(), retainedHeapMiB: Math.round(heap.usedSize / 1024 / 1024), byteArrayBuffersMiB: Math.round((heap.backingStorageSize ?? 0) / 1024 / 1024), statsUpdates: result.statsUpdates, elapsed: Math.round(result.elapsed) });
   }
   console.log(JSON.stringify({ fullRxTxCapture: results }));
   for (const result of results) {
     assert(result.openMilliseconds < 750, `${result.mode} opened slowly with a full byte cache`);
     assert(result.frameP95Milliseconds < 75, `${result.mode} UI stalled with full RX/TX: ${JSON.stringify(result)}`);
+    assert(result.frameP99Milliseconds < (result.mode === "text" ? 50 : 100), `${result.mode} P99 frame interval exceeded its budget: ${JSON.stringify(result)}`);
     assert(result.maxFrameGapMilliseconds < 250, `${result.mode} froze while capture was full: ${JSON.stringify(result)}`);
     assert.equal(result.keys, 15, "input did not remain live during byte capture");
     assert(result.inputFrameP95Milliseconds < 75, "keyboard handling waited behind the capture UI");
+    assert(result.inputFrameP99Milliseconds < 100, "keyboard P99 frame feedback stalled");
     assert(result.packets >= 50, "RX/TX capture could not continue at the requested rate");
     assert(result.statsUpdates <= Math.ceil(result.elapsed / 100) + 1, "auxiliary RX/TX counters refreshed at transport rate");
     assert(result.renderedRows < 100, "byte inspector mounted the full retained capture");

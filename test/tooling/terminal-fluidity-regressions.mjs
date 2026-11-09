@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
+import { latencySummary } from "./latency-summary.mjs";
 
 /** Sustained output in both visible panes, with real xterm keyboard handling. */
 export async function checkTerminalFluidity(page) {
@@ -99,14 +100,15 @@ export async function checkTerminalFluidity(page) {
       await profiler.detach();
     }
   }
-  const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * fraction)];
-  const frameP95 = percentile(result.gaps, .95);
-  const inputP95 = percentile(result.inputs, .95);
-  console.log(JSON.stringify({ dualPaneTuiFrames: result.frames, frameP95Milliseconds: Math.round(frameP95), maxFrameGapMilliseconds: Math.round(Math.max(...result.gaps)), inputP95Milliseconds: Math.round(inputP95), keysDelivered: result.inputs.length, geometryReads: result.geometryReads, renderers: result.renderers }));
+  const frameLatency = latencySummary(result.gaps), inputLatency = latencySummary(result.inputs);
+  const frameP95 = frameLatency.p95, inputP95 = inputLatency.p95;
+  console.log(JSON.stringify({ dualPaneTuiFrames: result.frames, frameP95Milliseconds: frameP95, frameP99Milliseconds: frameLatency.p99, maxFrameGapMilliseconds: frameLatency.max, inputP95Milliseconds: inputP95, inputP99Milliseconds: inputLatency.p99, frameLatency, inputLatency, keysDelivered: result.inputs.length, geometryReads: result.geometryReads, renderers: result.renderers }));
   assert(result.frames >= 40, "sustained TUI output did not continue during keyboard input");
   assert.equal(result.inputs.length, 20, "keyboard input was lost during output");
   assert(frameP95 < 75, `TUI output stalled animation frames: p95=${frameP95}ms`);
   assert(inputP95 < 75, `TUI output stalled keyboard dispatch: p95=${inputP95}ms`);
+  assert(frameLatency.p99 < 75, `TUI frame P99 exceeded 75ms: ${JSON.stringify(frameLatency)}`);
+  assert(inputLatency.p99 < 50, `keyboard dispatch P99 exceeded 50ms: ${JSON.stringify(inputLatency)}`);
   assert(Math.max(...result.gaps) < 500, "dual-pane output caused a half-second UI freeze");
   assert(result.geometryReads < result.frames, "output repeatedly forced timestamp geometry measurements without a resize");
   for (const id of ["session-a", "session-b"]) {
