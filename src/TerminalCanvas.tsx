@@ -1,5 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
-import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { AlignLeft, ArrowDownToLine, Binary, CaseSensitive, ChevronDown, ChevronUp, Columns2, CornerDownLeft, KeyRound, ListOrdered, Lock, Minus, Plus, Regex, Search, SendHorizontal, Trash2, WholeWord, X } from "lucide-react";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -101,12 +101,13 @@ import type { TerminalTimestampEntry } from "./terminal-timestamp-state";
 import {
   clearTerminalByteCache,
   readTerminalDisplayMode,
-  subscribeTerminalByteCache,
+  subscribeTerminalBytePresentation,
   terminalByteBufferStats,
-  terminalByteCacheSnapshot,
+  terminalBytePresentationSnapshot,
   writeTerminalDisplayMode,
 } from "./terminal-byte-state";
 import type { TerminalByteSelection, TerminalDisplayMode } from "./terminal-byte-state";
+import TerminalByteInspector from "./TerminalByteInspector";
 import { isTerminalMouseReport, reduceTerminalMouseEncoding, terminalBinaryStringToBytes, terminalMouseEncodingSequence } from "./terminal-mouse";
 import type { TerminalMouseEncoding } from "./terminal-mouse";
 import { applyTerminalPresentation, normalizeTerminalTheme, terminalTheme } from "./terminal-theme";
@@ -162,7 +163,6 @@ const TERMINAL_OUTPUT_FOLLOW_WINDOW_MS = 1_500;
 const TERMINAL_WRITE_BATCH_MAX_BYTES = 64 * 1024;
 const TERMINAL_WRITE_BATCH_MAX_FRAMES = 64;
 const TERMINAL_SENSITIVE_INPUT_PATTERN = /\b(?:password|passphrase|secret|token|pin|otp|verification\s+code)\b[^\r\n]{0,80}[:?]\s*\S*$/i;
-const LazyTerminalByteInspector = lazy(() => import("./TerminalByteInspector"));
 const EMPTY_ONE_KEYS: readonly OneKeySummary[] = [];
 const EMPTY_COMPLETION_HISTORY: readonly string[] = [];
 const EMPTY_COMPLETION_QUICK_COMMANDS: readonly TerminalCompletionQuickCommand[] = [];
@@ -1762,9 +1762,8 @@ function TerminalCanvas({
     const writeTerminalBytes = (bytesEvent: TerminalBytesEvent, replay = false) => {
       if (bytesEvent.canonical) return false;
       if (bytesEvent.sessionId !== active.profile.id || bytesEvent.direction !== "inbound") return false;
-      if (!bytesEvent.id || !Array.isArray(bytesEvent.bytes) || !bytesEvent.bytes.length
-        || bytesEvent.bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)) return false;
-      const rawBytes = Uint8Array.from(bytesEvent.bytes);
+      if (!bytesEvent.id || !bytesEvent.bytes.length) return false;
+      const rawBytes = bytesEvent.bytes instanceof Uint8Array ? bytesEvent.bytes : Uint8Array.from(bytesEvent.bytes);
       if (bytesEvent.eventId) {
         if (bytesEvent.truncated) {
           fastPathTextDecoder = new TextDecoder();
@@ -1837,7 +1836,8 @@ function TerminalCanvas({
       }
       const pendingText = pendingTextEvents.take(packet.event.id);
       if (pendingText) {
-        pendingText.rawBytes = packet.truncated ? undefined : Uint8Array.from(packet.bytes);
+        pendingText.rawBytes = packet.truncated ? undefined
+          : packet.bytes instanceof Uint8Array ? packet.bytes : Uint8Array.from(packet.bytes);
         pendingText.event = {
           ...packet.event,
           annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" },
@@ -1859,7 +1859,7 @@ function TerminalCanvas({
         }
         : { ...packet.event, annotations: { ...packet.event.annotations, terminalBytesCanonical: "true" } };
       const rawBytes = packet.event.direction === "inbound" && !packet.truncated
-        ? Uint8Array.from(packet.bytes)
+        ? packet.bytes instanceof Uint8Array ? packet.bytes : Uint8Array.from(packet.bytes)
         : undefined;
       queueEventWrite(rawBytes ? { event, rawBytes } : { event }, replay);
       scheduleEventWriteDrain();
@@ -3283,10 +3283,10 @@ function TerminalCanvas({
 
 function useTerminalByteSnapshot(sessionId: string) {
   const subscribe = useCallback(
-    (listener: () => void) => subscribeTerminalByteCache(sessionId, listener),
+    (listener: () => void) => subscribeTerminalBytePresentation(sessionId, listener),
     [sessionId],
   );
-  const getSnapshot = useCallback(() => terminalByteCacheSnapshot(sessionId), [sessionId]);
+  const getSnapshot = useCallback(() => terminalBytePresentationSnapshot(sessionId), [sessionId]);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
@@ -3334,16 +3334,14 @@ function TerminalByteInspectorPane({
   useLocale();
   const snapshot = useTerminalByteSnapshot(sessionId);
   return (
-    <Suspense fallback={<section className="terminal-byte-inspector" aria-label={t("terminal-byte-inspector")} aria-busy="true" />}>
-      <LazyTerminalByteInspector
-        snapshot={snapshot}
-        bytesPerRow={bytesPerRow}
-        follow={follow}
-        selection={selection}
-        onFollowChange={onFollowChange}
-        onSelectionChange={onSelectionChange}
-      />
-    </Suspense>
+    <TerminalByteInspector
+      snapshot={snapshot}
+      bytesPerRow={bytesPerRow}
+      follow={follow}
+      selection={selection}
+      onFollowChange={onFollowChange}
+      onSelectionChange={onSelectionChange}
+    />
   );
 }
 
