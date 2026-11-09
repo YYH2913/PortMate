@@ -9,6 +9,7 @@ import ru from "./locales/ru.json";
 import es from "./locales/es.json";
 import nativeMessages from "./locales/native-message-templates.json";
 import { createDiagnosticLocalizer } from "./diagnostic-localization";
+import { formatTranslatedMessage } from "./message-format";
 
 export const LANGUAGE_STORAGE_KEY = "portmate.language.v1";
 export const languages = [
@@ -116,11 +117,11 @@ export async function initializeI18n(): Promise<void> {
 
 /** Only application-owned messages are translated; interpolation values stay verbatim. */
 export function translate(message: string, values: readonly unknown[] = [], locale: Locale = state.locale): string {
-  const english = Object.hasOwn(catalogs.en, message) ? catalogs.en[message] : message;
-  const translated = Object.hasOwn(catalogs[locale], message) ? catalogs[locale][message] : english;
-  return translated.replace(/\{(\d+)\}/g, (placeholder, index: string) => (
-    Number(index) < values.length ? String(values[Number(index)] ?? "") : placeholder
-  ));
+  const englishKnown = Object.hasOwn(catalogs.en, message);
+  const localeKnown = Object.hasOwn(catalogs[locale], message);
+  const english = englishKnown ? catalogs.en[message] : message;
+  const translated = localeKnown ? catalogs[locale][message] : english;
+  return formatTranslatedMessage(translated, values, englishKnown || localeKnown);
 }
 export const t = translate;
 
