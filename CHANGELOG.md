@@ -113,6 +113,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- Clarify port-forwarding entries versus original target services with mode-specific
+  field hints and a live direction preview, including which device `127.0.0.1`
+  refers to. Explain SOCKS5 allowlists, automatic entry ports and SSH server
+  restrictions in all six languages, with a scrollable form and visible actions
+  in narrow windows. Tunnel request semantics remain unchanged.
 - **Tools → EasyTier networking** integrates a built-in EasyTier 2.6.4 core, with
   network configuration and running-status pages modeled on the official GUI.
   Choose a public server, manual peers or an independent network; use DHCP,
@@ -128,6 +133,9 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### 新增（中文）
 
+- 端口转发明确区分客户端入口与被转发的原服务，按模式显示字段提示和实时方向预览，
+  说明 `127.0.0.1` 对应哪台设备。补充 SOCKS5 白名单、自动分配入口端口和 SSH 服务端
+  限制的六语言说明；窄窗口表单可滚动，操作按钮保持可见，不改变原有转发请求语义。
 - 新增 **工具 → EasyTier 组网**，参考官方 GUI 分为配置网络与运行状态两页，
   支持公共服务器、手动连接、独立组网，以及 DHCP、静态 IPv4、仅中继模式。
   可查看节点路由、延迟、收发流量与运行日志，高级设置提供监听地址、MTU 和低延迟优先。

@@ -606,6 +606,14 @@ Both workflows stage content in the desktop application's private data directory
 
 ### Route-Specific Forwarding And Proxy
 
+In **Tools → Port forwarding**, **Entry address / port** is where clients connect;
+**Target service address / port** is the original service being forwarded. Local
+mode listens on the PortMate computer and connects to the target from the SSH
+host; remote mode reverses these sides. Accordingly, target `127.0.0.1` means the
+SSH host in local mode and the PortMate computer in remote mode. Dynamic mode
+provides a local SOCKS5 entry with client-selected destinations. The dialog shows
+the current direction and explains bind addresses, automatic ports and server restrictions.
+
 `create_tunnel`, `list_tunnels`, and `stop_tunnel` expose both route boundaries. Use `egress: "ssh"` with a connected, authorized SSH or Tmux `sessionId`, or use `egress: "portmate-host"` without a session to reach TCP targets available directly from the machine running PortMate. Neither boundary modifies the operating system routing table.
 
 Local forwarding sends one local listener to a fixed target through SSH:
