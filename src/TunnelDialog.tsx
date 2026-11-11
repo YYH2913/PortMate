@@ -1,7 +1,7 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { Plus, RefreshCw, Square, Trash2, X } from "lucide-react";
+import { ArrowRight, Plus, RefreshCw, Square, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
 import { formatBytes } from "./display-formatters";
 import { KeyedRequestGate } from "./keyed-request-gate";
@@ -15,6 +15,7 @@ import {
   parseTunnelPort,
 } from "./tunnel-state";
 import type { SessionSummary, TunnelRouteRule, TunnelSpec, TunnelStatus } from "./types";
+import { formatTunnelEndpoint, tunnelModePresentation } from "./tunnel-presentation";
 
 export default function TunnelDialog({
   session,
@@ -26,6 +27,7 @@ export default function TunnelDialog({
   onDone: (message: string) => void;
 }) {
   useLocale();
+  const fieldPrefix = useId();
   const [mode, setMode] = useState<TunnelSpec["mode"]>("local");
   const [bindHost, setBindHost] = useState("127.0.0.1");
   const [bindPort, setBindPort] = useState("10022");
@@ -151,6 +153,14 @@ export default function TunnelDialog({
     && (mode === "dynamic"
       ? isValidTunnelRouteRules(normalizedRouteRules(routeRules))
       : isValidTunnelHostInput(targetHost) && parseTunnelPort(targetPort, false) !== null);
+  const guidance = tunnelModePresentation[mode];
+  const automaticPort = t("tunnel-automatic-port");
+  const bindEndpoint = formatTunnelEndpoint(bindHost, bindPort, automaticPort);
+  const targetEndpoint = formatTunnelEndpoint(targetHost, targetPort);
+  const connection = session.profile.connection;
+  const sshEndpoint = connection.kind === "ssh" || connection.kind === "tmux"
+    ? formatTunnelEndpoint(connection.endpoint.host, connection.endpoint.port)
+    : session.profile.name;
 
   function addRouteRule() {
     if (routeRules.length >= MAX_TUNNEL_ROUTE_RULES) return;
@@ -169,40 +179,53 @@ export default function TunnelDialog({
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog utility-dialog" onSubmit={submit}>
+      <form className="wind-dialog utility-dialog tunnel-dialog" aria-label={t("port-forwarding")} onSubmit={submit}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{t("port-forwarding")}</strong>
-          <button type="button" onClick={onClose}><X size={20} /></button>
+          <button type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button>
         </header>
         <section className="utility-content">
-          <DialogField label={t("session-3")}>
-            <input value={session.profile.name} readOnly />
+          <DialogField id={`${fieldPrefix}-session`} label={t("tunnel-session")}>
+            <input id={`${fieldPrefix}-session`} value={session.profile.name} readOnly />
           </DialogField>
-          <DialogField label={t("mode")}>
-            <select value={mode} onChange={(event) => setMode(event.target.value as TunnelSpec["mode"])}>
-              <option value="local">{t("local")}</option>
-              <option value="dynamic">{t("ui-dynamic-socks5")}</option>
-              <option value="remote">{t("remote")}</option>
+          <DialogField id={`${fieldPrefix}-mode`} label={t("mode")}>
+            <select id={`${fieldPrefix}-mode`} aria-describedby={`${fieldPrefix}-direction`} value={mode} onChange={(event) => setMode(event.target.value as TunnelSpec["mode"])}>
+              <option value="local">{t("tunnel-mode-local")}</option>
+              <option value="dynamic">{t("tunnel-mode-dynamic")}</option>
+              <option value="remote">{t("tunnel-mode-remote")}</option>
             </select>
           </DialogField>
-          <DialogField label={t("listen")}>
-            <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
+          <section className="tunnel-guidance" aria-label={t("tunnel-direction")}>
+            <p id={`${fieldPrefix}-direction`}>{t(guidance.description)}</p>
+            <ol className="tunnel-flow">
+              <li><span>{t(guidance.entrySide)}</span><code dir="ltr">{bindEndpoint}</code></li>
+              <li className="tunnel-flow-arrow" aria-hidden="true"><ArrowRight size={16} /></li>
+              <li><span>{t("tunnel-side-ssh")}</span><strong>{session.profile.name}</strong><code dir="ltr">{sshEndpoint}</code></li>
+              <li className="tunnel-flow-arrow" aria-hidden="true"><ArrowRight size={16} /></li>
+              <li><span>{t(guidance.targetSide)}</span>{mode === "dynamic"
+                ? <strong>{t("tunnel-app-selected-target")}</strong>
+                : <code dir="ltr">{targetEndpoint}</code>}</li>
+            </ol>
+          </section>
+          <DialogField id={`${fieldPrefix}-bind-host`} label={t(guidance.bindLabel)} hint={t(guidance.bindHint)}>
+            <input id={`${fieldPrefix}-bind-host`} aria-describedby={`${fieldPrefix}-bind-host-hint`} maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={bindHost} onChange={(event) => setBindHost(event.target.value)} />
           </DialogField>
-          <DialogField label={t("port-3")}>
-            <input type="number" min={0} max={65_535} step={1} inputMode="numeric" value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
+          <DialogField id={`${fieldPrefix}-bind-port`} label={t("tunnel-entry-port")} hint={t("tunnel-entry-port-hint")}>
+            <input id={`${fieldPrefix}-bind-port`} aria-describedby={`${fieldPrefix}-bind-port-hint`} type="number" min={0} max={65_535} step={1} inputMode="numeric" value={bindPort} onChange={(event) => setBindPort(event.target.value)} />
           </DialogField>
           {mode !== "dynamic" ? (
             <>
-              <DialogField label={t("target-2")}>
-                <input maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
+              <DialogField id={`${fieldPrefix}-target-host`} label={t("tunnel-target-service")} hint={t(guidance.targetHint)}>
+                <input id={`${fieldPrefix}-target-host`} aria-describedby={`${fieldPrefix}-target-host-hint`} maxLength={MAX_TUNNEL_HOST_CHARACTERS} value={targetHost} onChange={(event) => setTargetHost(event.target.value)} />
               </DialogField>
-              <DialogField label={t("target-port")}>
-                <input type="number" min={1} max={65_535} step={1} inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
+              <DialogField id={`${fieldPrefix}-target-port`} label={t("tunnel-target-service-port")} hint={t("tunnel-target-port-hint")}>
+                <input id={`${fieldPrefix}-target-port`} aria-describedby={`${fieldPrefix}-target-port-hint`} type="number" min={1} max={65_535} step={1} inputMode="numeric" value={targetPort} onChange={(event) => setTargetPort(event.target.value)} />
               </DialogField>
             </>
           ) : (
             <div className="tunnel-routes" aria-label={t("specified-target-routes")}>
+              <p className="tunnel-field-hint">{t("tunnel-socks-hint")}</p>
               <header>
                 <div>
                   <strong>{t("target-routes")}</strong>
@@ -257,6 +280,13 @@ export default function TunnelDialog({
               ) : null}
             </div>
           )}
+          <details className="tunnel-connection-help">
+            <summary>{t("tunnel-more-help")}</summary>
+            <p>{t("tunnel-source-note")}</p>
+            <p>{t("tunnel-bind-warning")}</p>
+            {mode === "remote" ? <p>{t("tunnel-remote-policy")}</p> : null}
+            <p>{t("tunnel-tcp-note")}</p>
+          </details>
           <div className="tunnel-panel">
             <header>
               <strong>{t("running")}</strong>
@@ -305,13 +335,13 @@ function dynamicRouteSummary(rules: TunnelRouteRule[]): string {
   return ` -> ${rules.length} target rule${rules.length === 1 ? "" : "s"}`;
 }
 
-function DialogField({ label, children }: { label: string; children: ReactNode }) {
+function DialogField({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
   useLocale();
   return (
-    <label className="dialog-field">
-      <span>{label}</span>
-      {children}
-    </label>
+    <div className="dialog-field tunnel-field">
+      <label htmlFor={id}>{label}</label>
+      <div className="tunnel-field-control">{children}{hint ? <small id={`${id}-hint`} className="tunnel-field-hint">{hint}</small> : null}</div>
+    </div>
   );
 }
 

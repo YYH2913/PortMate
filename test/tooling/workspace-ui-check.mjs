@@ -22,6 +22,7 @@ import { checkSshReconnectSettings } from "./ssh-reconnect-settings-regressions.
 import { checkSessionRename } from "./session-rename-regressions.mjs";
 import { checkTftpProgress } from "./tftp-progress-regressions.mjs";
 import { checkStartupPerformance } from "./startup-performance-regressions.mjs";
+import { checkTunnelHelp } from "./tunnel-help-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -1992,6 +1993,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_TUNNEL_HELP_ONLY === "1") {
+    await checkTunnelHelp(context, appUrl, screenshotPrefix);
+    console.log("Tunnel directions, localized hints, payloads and responsive layout regressions passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SSH_RECONNECT_ONLY === "1") {
     await checkSshReconnectSettings(context, appUrl);
     console.log("SSH reconnect fingerprint settings regressions passed");
@@ -2796,10 +2803,10 @@ Host staging
   await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
   const tunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
   await tunnelDialog.waitFor();
-  const tunnelBindHost = tunnelDialog.locator(".dialog-field", { hasText: "监听:" }).locator("input");
-  const tunnelBindPort = tunnelDialog.locator(".dialog-field", { hasText: /^端口:/ }).locator("input");
-  const tunnelTargetHost = tunnelDialog.locator(".dialog-field", { hasText: "目标:" }).locator("input");
-  const tunnelTargetPort = tunnelDialog.locator(".dialog-field", { hasText: "目标端口:" }).locator("input");
+  const tunnelBindHost = tunnelDialog.getByRole("textbox", { name: "入口地址（本机）", exact: true });
+  const tunnelBindPort = tunnelDialog.getByRole("spinbutton", { name: "入口端口", exact: true });
+  const tunnelTargetHost = tunnelDialog.getByRole("textbox", { name: "目标服务地址", exact: true });
+  const tunnelTargetPort = tunnelDialog.getByRole("spinbutton", { name: "目标服务端口", exact: true });
   const tunnelCreate = tunnelDialog.locator(".utility-actions button", { hasText: "创建" });
   assert(await tunnelBindHost.getAttribute("maxlength") === "255"
     && await tunnelTargetHost.getAttribute("maxlength") === "255",
@@ -2821,7 +2828,7 @@ Host staging
   assert(!await tunnelCreate.isDisabled(), "valid tunnel fields did not restore Create");
 
   await tunnelDialog.locator(".dialog-field", { hasText: "模式:" }).locator("select").selectOption("dynamic");
-  assert(await tunnelDialog.locator(".dialog-field", { hasText: "目标:" }).count() === 0,
+  assert(await tunnelDialog.getByRole("textbox", { name: "目标服务地址", exact: true }).count() === 0,
     "dynamic tunnel retained its fixed target fields");
   await tunnelDialog.getByRole("button", { name: "添加目标路由", exact: true }).click();
   const routeHost = tunnelDialog.getByRole("textbox", { name: "路由目标 1", exact: true });
@@ -3106,17 +3113,15 @@ Host staging
     await page.locator(".menu-trigger", { hasText: "工具" }).click();
     await page.locator(".menu-popover button", { hasText: "端口转发" }).click();
     const switchingTunnelDialog = page.locator(".utility-dialog", { hasText: "端口转发" });
-    await switchingTunnelDialog.locator(".dialog-field", { hasText: "监听:" }).locator("input").fill("0.0.0.0");
+    await switchingTunnelDialog.getByRole("textbox", { name: "入口地址（本机）", exact: true }).fill("0.0.0.0");
     await switchingTunnelDialog.evaluate((form) => form.requestSubmit());
     await page.waitForFunction(() => window.__pendingTunnelMutations.length === 1);
     await deleteEdgeRouterExternally();
-    await page.waitForFunction(() => [...document.querySelectorAll(".utility-dialog .dialog-field")]
-      .find((field) => field.textContent?.includes("会话:"))?.querySelector("input")?.value === "Backup Router");
-    const switchedTunnelState = await switchingTunnelDialog.evaluate((dialog) => ({
-      bindHost: [...dialog.querySelectorAll(".dialog-field")]
-        .find((field) => field.textContent?.includes("监听:"))?.querySelector("input")?.value,
-      action: dialog.querySelector('.utility-actions button[type="submit"]')?.textContent?.trim(),
-    }));
+    await page.waitForFunction(() => document.querySelector('.tunnel-dialog input[id$="-session"]')?.value === "Backup Router");
+    const switchedTunnelState = {
+      bindHost: await switchingTunnelDialog.getByRole("textbox", { name: "入口地址（本机）", exact: true }).inputValue(),
+      action: (await switchingTunnelDialog.locator('.utility-actions button[type="submit"]').textContent())?.trim(),
+    };
     assert(switchedTunnelState.bindHost === "127.0.0.1" && switchedTunnelState.action === "创建",
       `Tunnel state leaked across sessions: ${JSON.stringify(switchedTunnelState)}`);
     await page.evaluate(() => {
@@ -10526,6 +10531,7 @@ Host staging
   // from those pages must not invalidate the new fixture's input epochs.
   const persistedCustomScripts = await page.evaluate(() => window.__customScripts.length);
   await Promise.all(context.pages().map(openPage => openPage.close()));
+  await checkTunnelHelp(context, appUrl, screenshotPrefix);
   await checkPacedSender(context, appUrl);
 
   console.log(JSON.stringify({
