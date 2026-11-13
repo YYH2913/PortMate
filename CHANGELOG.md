@@ -24,6 +24,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Security
 
+- Refresh security dependencies and latest official MCP SDK compatibility coverage; retain the existing vault format. / 更新安全依赖与官方 MCP SDK 最新版兼容覆盖，保持密钥库格式不变。
 - Verify bundled EasyTier files, redact secrets and stop managed processes on exit/update. / 校验内置 EasyTier 文件、隐藏密钥，退出或更新时停止托管进程。
 
 ### Migration
