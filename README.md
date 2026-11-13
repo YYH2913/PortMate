@@ -241,6 +241,17 @@ echo, physical display presentation or Windows WebView2 driver latency. They do
 not establish long-term service availability. `PORTMATE_UI_TAIL_SECONDS` can extend
 the stress check to 600 seconds; `PORTMATE_UI_TAIL_REPORT` saves its JSON report.
 
+Continuous-typing checks also cover human-cadence completion updates, per-key
+simulated echoes and a 6,000-character command, with 1,024 real keys at 4× CPU
+throttling. They verify input order, echo DOM updates and frame/dispatch P99,
+without clearing records. Dialog candidates are tracked incrementally rather
+than rescanning the workspace for each key or terminal DOM update; same-task
+dialog changes still block background input immediately. Session/log queries,
+input-channel setup and Enter-history persistence run off the desktop UI thread.
+Alternate-screen TUIs bypass shell completion and keep their Tab/arrow input;
+switching buffers clears stale candidates and pending completion previews.
+These are local regression budgets, not Windows/device end-to-end guarantees.
+
 Double-click or middle-click a workspace tab, or choose **Rename session** from
 its context menu, to rename the saved session. The Explorer, all views of that
 session and detached windows follow the new name. Renaming through the Explorer

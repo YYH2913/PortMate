@@ -6,6 +6,11 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+### Fixed
+
+- Reduce continuous-typing overhead and keep session/log queries and Enter-history writes off the desktop UI thread. / 减少连续输入开销，避免会话/日志查询及回车历史写入阻塞桌面界面。
+- Stop shell completion from intercepting Tab/arrow keys in alternate-screen TUIs. / 修复备用屏幕 TUI 误弹 Shell 补全及抢占 Tab/方向键。
+
 ## [0.1.15] - 2026-11-12
 
 ### Added
