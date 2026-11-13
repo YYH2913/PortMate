@@ -6,144 +6,29 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
-### Fixed
-
-- Reuse byte-inspector viewport row/cell DOM instead of remounting it for each
-  capture update. Keep byte identities at row level and limit overscan while
-  preserving live offsets, accessible labels, selection and Hex/ASCII hover pairing.
-- Compile bounded, application-owned localization templates once instead of
-  reparsing placeholders for every byte cell. Interpolation values and arbitrary
-  server/user fallback messages are never cached.
-- Skip screen snapshots and display preparation for TX-only captures and empty
-  acknowledgements. RX/control/binary output, capture counters and event dedupe
-  remain intact; the TUI performance check now includes simultaneous bulk TX.
-- Gate terminal tail latency with nearest-rank P99, sample counts, maximums and
-  50/100/250 ms outlier counts. A sustained production-frontend RX/TX test checks
-  at least 1,000 real keyboard events, periodic traffic bursts, retained output,
-  queue recovery and heap samples without clearing byte records. CI budgets are
-  50 ms P99 for text frames/input and no 250 ms frame freeze; short Hex/compare
-  checks use a 100 ms frame-P99 budget. These are test gates, not a platform SLA.
-- Keep large RX/TX captures from competing with text-mode input: compact wire
-  arrays once into shared byte buffers, update a bounded capture ring without
-  rescanning retained frames, and publish counters/Hex snapshots at most 10 Hz.
-  Live terminal packets still arrive immediately; screen clear and byte-record
-  clear remain separate, and clearing records immediately resets pending UI state.
-- Build Hex/compare rows only for the viewport, memoize unchanged rows and
-  delegate byte interactions instead of expanding the full capture or rebuilding
-  all byte-cell handlers. Add full-cache and sustained text RX/TX regression gates.
-- Improve sustained terminal output with one shared raw/text correlation timer
-  per view and cancellable MessageChannel yields instead of nested timer delays.
-  Preserve packet ordering, individual timestamps and configured scrollback.
-- Avoid known software WebGL contexts, using the DOM renderer
-  when acceleration is unavailable; retain WebGL on hardware-accelerated GPUs.
-  TUI row comparison uses exact compact snapshots instead of per-cell JSON arrays.
-- Validate xterm's actual WebGL canvas rather than its 2D hyperlink layer or
-  a separate temporary context. Remove probe-only decisions and extra probe
-  allocations that could reject working hardware. Clean partially activated addons, ignore stale
-  imports/context-loss callbacks and safely fall back after GPU context loss.
-- Cache bounded timestamp normalization, reuse gutter geometry until layout/font
-  changes, and reconcile log-metadata bursts with one scan/copy per session.
-  Add production-bundle dual-pane TUI/keyboard performance checks alongside the
-  existing long-history and timestamp regressions.
-- Preserve each canonical terminal frame's timestamp instead of assigning the
-  first frame's time to an entire output batch. Cleared rows receive the time
-  of their next content, and delayed history polls do not retime live output.
-- Isolate timestamp-gutter rendering from terminal input/completion, reuse
-  unchanged profiles on status polls, coalesce local session-cache writes and
-  load only visible terminal histories during startup.
-- Restore startup sessions in a shared four-connection background queue without
-  selecting tabs or opening credential, host-key or error dialogs. One failed
-  connection does not block the rest; vault-dependent targets wait for unlock.
-  Store startup checkpoints and private-key loading no longer block async workers.
-- Replace inconsistent SSH authentication permutations with one ordered list:
-  enable a single method or choose and reorder multiple methods. Private-key
-  references have explicit numbered ordering; new keys append to the list.
-  A remembered successful method no longer overrides the configured order.
-- Recover from temporary desktop IPC listener/endpoint startup failures. The MCP
-  Bridge briefly reloads the endpoint and retries connections before sending any
-  request, reports specific IPC failure reasons, and never replays a write whose
-  response was lost. Bridge status includes a secret-free `desktopIpcIssue`.
-- Submit Windows local Shell commands with CR (Enter) for every line so
-  `run_command`, `run_local_command` and command scripts execute in ConPTY/cmd.exe
-  without requiring a separate Enter key.
-
-### 修复（中文）
-
-- 字节视图复用可见行和单元格 DOM，不再因每批收发记录变化而整块销毁重建；字节身份
-  提升到行级并缩减预渲染范围，偏移、无障碍标签、选择和 Hex/ASCII 悬停对应保持正确。
-- 对程序自带的本地化模板进行有界编译缓存，避免每个字节单元格反复解析占位符；
-  不缓存插值内容或任意服务端/用户回退消息。
-- TX 记录和空确认帧不再执行屏幕快照及显示准备；保留 RX/控制/二进制输出、捕获统计
-  和事件去重。TUI 性能检查新增同时进行大块 TX 的负载。
-- 终端性能检查增加最近秩 P99、样本量、最大延迟及超过 50/100/250 ms 的次数。
-  正式前端持续收发检查至少 1,000 次真实按键、周期突发、保留输出、积压恢复和内存样本，
-  全程不清字节记录。文本帧/输入 P99 门禁为 50 ms，帧停顿不得达到 250 ms；短时
-  Hex/对照检查的帧 P99 门禁为 100 ms。这些是测试预算，不是跨平台可用性承诺。
-- 文本模式大 RX/TX 记录改用共享紧凑字节缓冲和有界环形缓存，不再反复复制原始数组、
-  扫描全部保留帧；计数与 Hex 辅助视图最多每秒刷新 10 次，实时终端包仍立即交付。
-  清屏和清字节记录保持独立，清记录立即生效且不会被延迟的旧快照恢复。
-- Hex/对照视图只生成可见行，复用未变行并通过事件委托处理字节交互，不再展开整份
-  缓存或反复建立全部单元格处理函数。新增满缓存与持续高收发量文本模式回归门禁。
-- 终端原始字节与文本关联改为每个视图共享一个定时器，批量释放兼容输出；同步积压
-  使用可取消的 MessageChannel 任务让出执行权，避免嵌套定时器的逐轮延迟。
-  保留包顺序、逐包时间戳和配置的历史长度，不以丢弃输出换取性能。
-- 加速不可用或识别到已知软件 WebGL 渲染器时使用 DOM，避免软件 GPU 提交阻塞整个
-  窗口；硬件加速正常时继续使用 WebGL。TUI 屏幕差异比较改用无损紧凑快照，
-  不再为每个单元格分配多层数组和 JSON。
-- 硬件加速以 xterm 实际的 WebGL 画布为准，不误读 2D 超链接层，也不因临时严格探测
-  无结果就关闭可用的硬件上下文。初始化失败清理半创建的插件，忽略过期导入与回调，
-  GPU 上下文丢失后安全回退，避免重复创建或画布累积。
-- 有界缓存时间戳规范化结果，字体、尺寸或布局不变时复用时间戳栏几何信息；
-  日志元数据批次按会话只扫描、复制一次。新增正式构建双终端 TUI 与输入响应检查，
-  与长历史、逐行时间戳回归一起运行。
-- 终端每个原始输出帧保留自己的时间戳，不再将一批输出全部标为首帧时间；
-  清屏后的空行写入新内容时更新为新时间，延迟的历史轮询不会重新标记实时输出。
-- 时间戳栏独立刷新，不再带动终端输入、补全及整块终端重渲染；状态轮询复用未变的
-  Profile，合并本地会话缓存写入，启动时仅加载可见终端历史。
-- 启动恢复改为共享队列后台执行，最多同时连接 4 个会话，不切换标签，不弹出凭据、
-  指纹或错误窗口；单个失败不阻塞其他会话，依赖 Vault 的目标在解锁后继续。
-  启动存储检查点及私钥读取、解密移出异步工作线程。
-- SSH 认证统一为可勾选、编号和上下排序的列表，可只启用一种方式；私钥引用也支持
-  明确排序，新密钥追加到末尾。「记住成功方式」不再擅自改变用户配置的认证顺序。
-- 桌面 IPC 监听或端点发布暂时失败后自动恢复；MCP 在发送前短暂刷新端点并重连，
-  返回具体失败原因，`mcp_bridge_status` 增加不含密钥的 `desktopIpcIssue`。
-  请求已发送但结果未知时不会自动重发，避免重复执行。
-- Windows 本地 Shell 的逐行命令改用 CR（Enter），修复 `run_command`、
-  `run_local_command` 和命令脚本只有回显、需要额外按回车才执行的问题。
+## [0.1.15] - 2026-11-12
 
 ### Added
 
-- Clarify port-forwarding entries versus original target services with mode-specific
-  field hints and a live direction preview, including which device `127.0.0.1`
-  refers to. Explain SOCKS5 allowlists, automatic entry ports and SSH server
-  restrictions in all six languages, with a scrollable form and visible actions
-  in narrow windows. Tunnel request semantics remain unchanged.
-- **Tools → EasyTier networking** integrates a built-in EasyTier 2.6.4 core, with
-  network configuration and running-status pages modeled on the official GUI.
-  Choose a public server, manual peers or an independent network; use DHCP,
-  static IPv4 or relay-only mode, and inspect peer routes, latency, traffic and logs.
-- Windows/Linux x64 and macOS Apple Silicon installers, portable editions and
-  updater packages include the verified core, CLI and required runtime libraries
-  inside the application. Connecting prepares them locally without downloading
-  or selecting another program. Missing or corrupted files are restored from the
-  built-in payload. Advanced listeners, MTU and latency preference support all six languages.
-- Managed EasyTier processes stop on disconnect, PortMate exit and verified update
-  preparation. Network secrets stay out of saved preferences and status responses;
-  runtime configuration is private and removed on normal cleanup, and logs redact secrets.
+- Built-in EasyTier networking with configuration, peers and traffic status. / 内置 EasyTier 组网，支持配置、节点和流量状态。
+- Clearer port-forwarding fields and live direction previews in six languages. / 优化六语言端口转发提示，新增实时方向预览。
 
-### 新增（中文）
+### Changed
 
-- 端口转发明确区分客户端入口与被转发的原服务，按模式显示字段提示和实时方向预览，
-  说明 `127.0.0.1` 对应哪台设备。补充 SOCKS5 白名单、自动分配入口端口和 SSH 服务端
-  限制的六语言说明；窄窗口表单可滚动，操作按钮保持可见，不改变原有转发请求语义。
-- 新增 **工具 → EasyTier 组网**，参考官方 GUI 分为配置网络与运行状态两页，
-  支持公共服务器、手动连接、独立组网，以及 DHCP、静态 IPv4、仅中继模式。
-  可查看节点路由、延迟、收发流量与运行日志，高级设置提供监听地址、MTU 和低延迟优先。
-- Windows/Linux x64 与 macOS Apple Silicon 的安装包、便携版和自动更新包均内置官方
-  2.6.4 核心、CLI 与必要运行库，构建时校验固定 SHA-256。连接时从本地准备运行文件，
-  无需另行下载或选择程序目录；缺失或损坏时自动从内置内容恢复，界面覆盖六种语言。
-- 断开、退出和已验证更新的准备阶段会停止托管进程。密钥不保存到偏好配置或返回状态，
-  运行期私有配置在正常清理时删除，日志中的密钥脱敏。
+- Explicit SSH authentication/private-key ordering; quieter concurrent startup connections. / SSH 认证和私钥支持明确排序，启动连接并发执行且不抢焦点。
+
+### Fixed
+
+- Smoother high-volume RX/TX, Hex and TUI rendering; correct timestamps and safer GPU fallback. / 优化大流量收发、Hex 和 TUI 流畅度，修复时间戳及 GPU 回退。
+- Recover transient MCP desktop IPC failures and submit Windows Shell commands correctly. / 修复 MCP 桌面 IPC 偶发不可用和 Windows Shell 命令提交。
+
+### Security
+
+- Verify bundled EasyTier files, redact secrets and stop managed processes on exit/update. / 校验内置 EasyTier 文件、隐藏密钥，退出或更新时停止托管进程。
+
+### Migration
+
+- Existing data is retained; installer/AppImage/macOS app users can check for signed updates. Portable Windows/Linux packages and DEB/RPM update manually. / 保留现有数据；安装版、AppImage 和 macOS 应用可检查签名更新，Windows/Linux 便携版及 DEB/RPM 手动升级。
 
 ## [0.1.14] - 2026-10-21
 
