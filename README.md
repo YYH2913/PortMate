@@ -152,6 +152,34 @@ Open <http://127.0.0.1:1420/>. Browser mode is useful for layout and frontend in
 4. On the first SSH connection, verify the server host-key fingerprint and choose one-time or persistent Profile/project trust.
 5. Open transfers, tunnels, Tmux, Sysmon, custom scripts, the serial analyzer, key management, logs, or MCP Bridge from `工具 (Tools)`.
 
+### Elevated local terminals
+
+Choose **Session → Elevated local terminal**, or enable **Run as administrator / root**
+in a Shell profile. It opens an integrated terminal, not an elevated PortMate app.
+Normal and elevated menu terminals use separate profiles. Disconnect before changing
+an existing profile's elevation mode.
+
+Windows includes the pinned [gsudo 2.6.1](https://github.com/gerardog/gsudo/releases/tag/v2.6.1)
+helper: approve UAC when requested; no separate installation or runtime download is
+needed, including in portable editions. Existing system/gsudo cache policies may
+avoid a new UAC prompt. PortMate does not change those policies. Use a local `.exe`
+or `.com` shell, such as `cmd.exe`, `powershell.exe` or `pwsh.exe`; for scripts, pass
+them as arguments to the appropriate shell. UNC/device executable paths are rejected.
+
+Linux/macOS requires system `sudo` and permission to run as root. Enter the password
+at the terminal's **PortMate sudo password:** prompt, which enables private input.
+PortMate does not request or save an elevation password in the profile.
+
+Every new elevated connection requires desktop confirmation. Startup restore, OneKey
+and MCP cannot grant elevation; cancelled or failed elevation never falls back to a
+normal shell. Inputs sent to a manually elevated session—including triggers and
+already-authorized MCP operations—execute with its higher privileges. The shield
+marks the configured launch mode, not a verification of the current process token.
+Closing the session closes its PTY and stops its managed bridge; explicitly detached
+processes started by the shell are outside that lifecycle.
+
+### Session behavior
+
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
 Startup recovery runs in the background with at most four simultaneous connections.
@@ -880,8 +908,8 @@ Before submitting a change:
 
 ## Acknowledgements
 
-PortMate's workspace and interaction model is inspired by WindTerm. Its SSH trust and key-management model draws from Bitvise and OpenSSH. The terminal uses xterm.js, the desktop runtime uses Tauri, and the bundled default monospace font is JetBrains Mono.
+PortMate's workspace and interaction model is inspired by WindTerm. Its SSH trust and key-management model draws from Bitvise and OpenSSH. The terminal uses xterm.js, the desktop runtime uses Tauri, and the bundled default monospace font is JetBrains Mono. Windows terminal elevation uses gsudo.
 
 ## License
 
-PortMate is licensed under the [Apache License 2.0](./LICENSE). The bundled JetBrains Mono font is distributed under the SIL Open Font License 1.1; see [THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt](./THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt).
+PortMate is licensed under the [Apache License 2.0](./LICENSE). The bundled JetBrains Mono font is distributed under the SIL Open Font License 1.1; see [THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt](./THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt). The Windows gsudo helper is MIT-licensed; see [THIRD_PARTY_LICENSES/gsudo-MIT.txt](./THIRD_PARTY_LICENSES/gsudo-MIT.txt).

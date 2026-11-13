@@ -10,6 +10,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Added
 
+- Per-session local terminal elevation: Windows UAC and Linux/macOS sudo, with manual consent. / 本地终端支持单会话提权：Windows UAC、Linux/macOS sudo，需手动确认。
 - Built-in EasyTier networking with configuration, peers and traffic status. / 内置 EasyTier 组网，支持配置、节点和流量状态。
 - Clearer port-forwarding fields and live direction previews in six languages. / 优化六语言端口转发提示，新增实时方向预览。
 

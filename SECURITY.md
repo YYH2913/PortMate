@@ -121,3 +121,40 @@ native source archive remain unchanged. Provenance and removal criteria are in
 - Remaining unmaintained crates are exact transitive dependencies of Tauri build/runtime support or
   IOTA Stronghold. Their full fingerprints remain in the audit script so additions, removals, or
   version changes cannot pass without review.
+
+## Local terminal elevation / 本地终端提权
+
+Elevation is a **per-connection desktop action**, not a saved permission. A Shell
+profile's `elevated` flag defaults to false for older profiles. The dedicated desktop
+command accepts only workspace windows and binds consent to the exact saved Shell
+configuration. Generic/MCP/IPC opens and OneKey credentials cannot authorize it;
+startup recovery skips it even after vault unlock. Live elevation-mode changes
+require disconnecting first. PortMate itself remains at its launch integrity.
+
+Windows desktop builds embed gsudo 2.6.1 from a SHA-256-pinned upstream archive.
+There is no runtime download or PATH/system installation. A launch extracts the
+helper into a fresh application-data directory, verifies its executable hash and
+pins it and its directory against replacement/reparse traversal until child reap.
+Shell executable paths must resolve to local `.exe`/`.com` files. Arguments are
+passed directly to the helper, not interpolated into PowerShell or `Start-Process`.
+UAC and any existing system/gsudo cache policies remain under OS/user control;
+PortMate does not enable caching or alter global gsudo settings.
+
+Linux/macOS uses system sudo with a fresh-authentication request, root target and
+target HOME. Its fixed password prompt is recognized by existing private-input
+handling (no synchronized password broadcast, input history or outbound password
+payload logging). Passwords are entered at that prompt, not in profile fields.
+Cancellation, missing dependencies or authentication failure never starts a normal
+fallback shell. Closing the PTY and reaping the bridge follows the existing bounded
+Shell cleanup; deliberately detached child processes are not globally terminated.
+
+Once a user opens an elevated terminal, **already-authorized MCP writes and inputs
+sent by scripts/triggers in that session inherit its privileges**. Review those
+permissions before accepting the confirmation. The UI shield is a launch preference,
+not an administrator-token assertion. Host-side custom scripts do not gain elevation
+through this setting.
+
+本地提权只针对用户手动确认的单个 Shell 连接，不提升整个应用，也不允许 MCP、
+启动恢复或导入配置自行授权。Windows 内置组件有固定哈希校验与运行期间文件锁；
+Linux/macOS 在终端中通过 sudo 认证。请在确认前检查该会话已有的 MCP 写入授权、
+脚本和触发器；发送到已提权终端的输入同样具有高权限。拒绝或失败时不会自动降级。
