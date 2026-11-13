@@ -352,11 +352,16 @@ impl PortMateMcp {
             || json!({ "phase": "unavailable", "message": "desktop IPC is not available" }),
         );
         Ok(json!({
+            "bridgeVersion": env!("CARGO_PKG_VERSION"),
+            "bridgePid": std::process::id(),
+            "desktopParentPid": std::env::var("PORTMATE_MCP_PARENT_PID").ok()
+                .and_then(|value| value.parse::<u32>().ok()).filter(|pid| *pid != 0),
             "transport": if std::env::var("PORTMATE_MCP_HTTP").ok().as_deref() == Some("1") { "http" } else { "stdio" },
             "managedByDesktop": is_desktop_managed_http_sidecar(),
             "clientId": self.client_id,
             "configuredHttpClientId": self.store.mcp_http_settings.client_id,
             "storePath": self.store_path.as_ref().map(|path| path.display().to_string()),
+            "desktopIpcEndpointPath": self.store_path.as_ref().map(|path| path.with_file_name("portmate-ipc.json").display().to_string()),
             "desktopIpcAvailable": desktop_ipc_available,
             "desktopIpcIssue": issue,
             "managedHttp": runtime,

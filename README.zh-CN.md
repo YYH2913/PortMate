@@ -338,8 +338,11 @@ cargo build --locked -p portmate-mcp
 bridge 会在每个 JSON-RPC envelope 前重新读取 Store 和桌面 IPC endpoint，因此桌面重启或 IPC Token 轮换通常不要求重启长驻 stdio 客户端。
 
 如果 HTTP 能连接，但命令报告桌面 IPC 不可用，可调用 `mcp_bridge_status` 查看
-`desktopIpcAvailable` 与 `desktopIpcIssue`。桌面监听或端点发布失败会自动重试，
-桥接在发送请求前短暂重试并刷新端点；发送后结果未知的命令不会自动重发。
+`desktopIpcAvailable`、`desktopIpcIssue`、`bridgeVersion`、`bridgePid`、
+`desktopParentPid` 与 `desktopIpcEndpointPath`。HTTP 可连接不代表桌面控制可用。
+桌面监听或端点发布失败会自动重试，运行中每 250 ms 检查端点；属于当前实例的文件
+丢失后会按原端口和 Token 重建，不重启 HTTP 或会话。不会覆盖新实例的端点或不安全／
+无法识别的文件。桥接在发送请求前短暂重试并刷新端点；发送后结果未知的命令不会自动重发。
 
 ### HTTP 模式
 

@@ -341,10 +341,15 @@ response remains authoritative.
 ### Recommended Setup
 
 If HTTP requests reach the Bridge but command input reports desktop IPC unavailable,
-inspect `mcp_bridge_status` for `desktopIpcAvailable` and `desktopIpcIssue`. The desktop
-retries listener/endpoint startup failures; the Bridge briefly refreshes and reconnects
-before sending a request. Requests with an unknown outcome after sending are never
-automatically replayed. Windows local Shell command submission uses CR (Enter) per line.
+inspect `mcp_bridge_status` for `desktopIpcAvailable`, `desktopIpcIssue`, `bridgeVersion`,
+`bridgePid`, `desktopParentPid` and `desktopIpcEndpointPath`. HTTP reachability alone
+is not desktop readiness. The desktop retries listener/endpoint startup failures and
+checks its live discovery publication every 250 ms. A missing owned endpoint is
+restored on the same port/token without restarting HTTP or sessions; newer desktop
+ownership and unrecognized/unsafe files are preserved. The Bridge briefly refreshes
+and reconnects before sending a request. Requests with an unknown outcome after
+sending are never automatically replayed. Windows local Shell command submission
+uses CR (Enter) per line.
 
 1. Keep the PortMate desktop application running.
 2. Open `工具 (Tools) -> MCP Bridge -> 授权 (Grants)` and create a distinct Client ID with the required scopes and allowed sessions.

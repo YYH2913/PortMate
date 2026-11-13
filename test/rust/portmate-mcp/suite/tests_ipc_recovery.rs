@@ -228,6 +228,12 @@ fn bridge_status_and_failed_writes_expose_the_ipc_failure_reason() {
         serde_json::from_str(status["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(status["desktopIpcAvailable"], false);
     assert_eq!(status["desktopIpcIssue"]["code"], "endpoint-missing");
+    assert_eq!(status["bridgeVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(status["bridgePid"], std::process::id());
+    assert!(status["desktopIpcEndpointPath"]
+        .as_str()
+        .unwrap()
+        .ends_with("portmate-ipc.json"));
     let result = server.tool_call(&json!({"name":"run_command","arguments":{"sessionId":"refresh-session","command":"echo test"}})).unwrap();
     assert_eq!(result["isError"], true);
     let text = result["content"][0]["text"].as_str().unwrap();

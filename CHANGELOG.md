@@ -21,6 +21,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Restore missing live MCP IPC endpoints safely across desktop upgrades. / 修复更新后 MCP 在线但桌面 IPC 丢失无法恢复的问题。
 - Smoother high-volume RX/TX, Hex and TUI rendering; correct timestamps and safer GPU fallback. / 优化大流量收发、Hex 和 TUI 流畅度，修复时间戳及 GPU 回退。
 - Recover transient MCP desktop IPC failures and submit Windows Shell commands correctly. / 修复 MCP 桌面 IPC 偶发不可用和 Windows Shell 命令提交。
 
