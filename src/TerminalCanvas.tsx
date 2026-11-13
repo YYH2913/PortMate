@@ -563,6 +563,7 @@ function TerminalCanvas({
   completionEnabledRef.current = completionSupported && completionPreferences.enabled;
   const completionContextActive = focused
     && displayMode !== "hex"
+    && timestampBufferType === "normal"
     && completionSupported
     && keyMode === "remote"
     && !searchOpen
@@ -796,6 +797,9 @@ function TerminalCanvas({
   }
 
   function updateCompletionInput(text: string, sensitive = false): void {
+    // Editor/TUI text is not a shell command. Do not schedule completion UI
+    // work (or intercept its Tab/arrows) for the alternate screen.
+    if (termRef.current?.buffer.active.type !== "normal") return;
     const current = oneKeyPromptStateRef.current.prompt
       ? { line: "", synchronized: false }
       : completionInputRef.current;
@@ -820,7 +824,8 @@ function TerminalCanvas({
 
   acceptCompletionRef.current = (suggestion) => {
     if (!active) return;
-    if (manualPrivateInputRef.current || detectedPrivateInputRef.current || privateInputLineRef.current) {
+    if (termRef.current?.buffer.active.type !== "normal"
+      || manualPrivateInputRef.current || detectedPrivateInputRef.current || privateInputLineRef.current) {
       resetCompletionInput(false);
       scheduleTerminalSurfaceFocus();
       return;
@@ -1160,7 +1165,7 @@ function TerminalCanvas({
         }
         return false;
       }
-      if (mode === "remote" && completionSurfaceOpenRef.current
+      if (mode === "remote" && term.buffer.active.type === "normal" && completionSurfaceOpenRef.current
         && !manualPrivateInputRef.current && !detectedPrivateInputRef.current && !privateInputLineRef.current
         && !event.altKey && !event.ctrlKey && !event.metaKey) {
         if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1505,6 +1510,9 @@ function TerminalCanvas({
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+      // Clear live candidates and pending previews synchronously. React's
+      // buffer-type update may arrive after another key/click in this task.
+      resetCompletionInput(buffer.type === "normal");
       if (buffer.type === "alternate" && !restorePending) {
         alternateTimestamps = [];
         alternateLatestTimestamp = null;
