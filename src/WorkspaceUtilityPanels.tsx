@@ -5,6 +5,8 @@ import type { CommandHistoryEntry } from "./command-history-state";
 import { filterWorkspaceSessions } from "./session-search-state";
 import { sessionRuntimeHealthDescription } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
+import ShellElevationIndicator from "./ShellElevationIndicator";
+import { shellElevationRequested } from "./shell-elevation";
 
 type UtilityIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: string | number }>;
 type UtilityPanelIcons = {
@@ -211,6 +213,7 @@ function SessionTree({
                 onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
               >
                 <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
+                {shellElevationRequested(session.profile) ? <ShellElevationIndicator profile={session.profile} /> : null}
                 <span>{session.profile.name}</span>
               </button>
             );

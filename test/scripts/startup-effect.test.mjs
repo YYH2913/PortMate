@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { parse } from "@babel/parser";
 import vm from "node:vm";
+import { shellElevationRequested } from "../../src/shell-elevation";
 import { startupCredentialsReady } from "../../src/startup-connection-state";
 import { createSshConnection } from "../../src/session-profile-helpers";
 import { BackgroundConnectionQueue } from "../../src/background-connection-queue";
@@ -38,7 +39,7 @@ describe("current App startup effect", () => {
       sessions: [{ profile: { id: "ssh", kind: "ssh", connection }, runtime: { status: "disconnected" } }],
       terminalPrefs: { startupMode: "last", startupSessions: [] }, workspaceRoot: {}, activePaneId: "pane", activeId: "ssh", tabColors: {},
       reconcileWorkspaceSnapshot: value => value, resolveStartupSessionIds: () => ["ssh"],
-      sessionConnectionAction: () => "connect", startupCredentialsReady,
+      sessionConnectionAction: () => "connect", startupCredentialsReady, shellElevationRequested,
       connectSession: async (...args) => { attempts.push(args); },
       startupConnectionsRef: { current: new BackgroundConnectionQueue() },
     });

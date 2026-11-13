@@ -1,3 +1,5 @@
+import ShellElevationIndicator from "./ShellElevationIndicator";
+import { shellElevationRequested } from "./shell-elevation";
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { SetStateAction } from "react";
@@ -393,6 +395,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
         <strong>{viewTitle || session?.profile.name || t("session-unavailable")}</strong>
+        {session && shellElevationRequested(session.profile) ? <ShellElevationIndicator profile={session.profile} /> : null}
         <span
           className={`session-status-dot status-${session?.runtime.status ?? "disconnected"}`}
           role="status"

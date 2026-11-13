@@ -64,6 +64,8 @@ import { hostKeyProfileSnapshotMatches } from "./host-key-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import McpBridgeQuickStart from "./McpBridgeQuickStart";
+import { localTerminalTag, matchesLocalTerminal, shellElevationConsentMatches, shellElevationRequested } from "./shell-elevation";
+import ShellElevationIndicator from "./ShellElevationIndicator";
 import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import {
@@ -133,7 +135,7 @@ import { workspaceSplitDirectionForVisualOrientation, workspaceViewContextCapabi
 import { commitWorkspaceViewDetach, commitWorkspaceViewReattach } from "./workspace-detach-state";
 import { activateWorkspacePaneSession, activateWorkspacePaneView, addWorkspacePaneSession, canSplitWorkspacePane, clearWorkspaceSessionViewTitles, createWorkspaceNodeId, createWorkspacePane, duplicateWorkspacePaneView, emptyWorkspaceSnapshot, findWorkspacePane, findWorkspacePaneBySession, findWorkspacePaneInDirection, insertWorkspacePaneView, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_GROUP_TABS, MAX_WORKSPACE_PANES, MAX_WORKSPACE_SPLIT_RATIO, mergeWorkspacePaneGroups, MIN_WORKSPACE_SPLIT_RATIO, moveWorkspacePaneView, moveWorkspacePaneViewToNewGroup, reconcileWorkspaceSnapshot, removeWorkspacePane, removeWorkspacePaneView, resetWorkspaceTerminalKeyModes, resolveStartupSessionIds, sanitizeWorkspaceSnapshot, setWorkspacePaneViewColor, setWorkspacePaneViewKeyMode, splitWorkspacePane, splitWorkspacePaneViewToGroup, swapWorkspacePanes, updateWorkspaceSplitRatio, workspacePaneActiveView, workspacePaneLeaves, workspacePaneViewAtOffset } from "./workspace-state";
 import type { StartupMode, WorkspaceNode, WorkspacePaneDirection, WorkspacePaneNode, WorkspaceSnapshot, WorkspaceSplitDirection, WorkspaceSplitNode, WorkspaceSplitPlacement, WorkspaceView } from "./workspace-state";
-import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
+import type { AuditRecord, CommandHistorySnapshot, ConnectionConfig, DeleteSessionProfileResponse, ExportTerminalTextResult, HostKeyPolicy, HostKeyScanResult, HostKeyStore, McpApprovalRequest, McpGrant, OneKeySummary, SessionEvent, SessionProfile, ShellConnection, SessionStatus, SessionSummary, TransferTask, TriggerEffect, TrustedHostKey } from "./types";
 import { sshOneKeysForSession } from "./one-key-login-state";
 import type { ConnectionCredentials, CredentialPromptState } from "./CredentialDialog";
 import { stageConnectionCredentials } from "./session-credential-state";
@@ -1291,7 +1293,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const ready: string[] = [];
     for (const sessionId of pendingStartupRef.current) {
       const session = sessions.find(item => item.profile.id === sessionId);
-      if (!session || sessionConnectionAction(session.runtime.status) !== "connect") {
+      if (!session || shellElevationRequested(session.profile) || sessionConnectionAction(session.runtime.status) !== "connect") {
         pendingStartupRef.current.delete(sessionId);
       } else if (startupCredentialsReady(session.profile, portableVaultStatus?.unlocked === true)) {
         // Consume only ready targets, before the async effect can be rerun.
@@ -2124,8 +2126,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       setBlockSelection((current) => !current);
       return;
     }
-    if (item === "local-terminal") {
-      void openLocalTerminal();
+    if (item === "local-terminal" || item === "elevated-local-terminal") {
+      void openLocalTerminal(item === "elevated-local-terminal");
       return;
     }
     if (item === "new-session") {
@@ -2830,11 +2832,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     openSessionProfileDialog(createSessionDraft(), null, "session");
   }
 
-  async function openLocalTerminal() {
-    const localTerminalTag = "portmate-local-terminal";
-    const existing = sessionsRef.current.find((session) => session.profile.kind === "shell"
-      && (session.profile.tags.includes(localTerminalTag)
-        || session.profile.name === "local-terminal"));
+  async function openLocalTerminal(elevated = false) {
+    const existing = sessionsRef.current.find((session) => matchesLocalTerminal(session.profile, elevated));
     if (existing) {
       activateSession(existing.profile.id);
       if (!["connected", "connecting", "reconnecting"].includes(existing.runtime.status)) {
@@ -2844,10 +2843,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     const profile = prepareSessionProfile({
       ...createSessionDraft(),
-      name: t("local-terminal"),
+      name: t(elevated ? "elevated-local-terminal" : "local-terminal"),
       kind: "shell",
-      tags: [...createSessionDraft().tags, localTerminalTag],
-      connection: createShellConnection(),
+      tags: [...createSessionDraft().tags, localTerminalTag(elevated)],
+      connection: { ...createShellConnection(), elevated },
     });
     try {
       const saved = await saveProfile(profile, null);
@@ -3778,6 +3777,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
 
     const attemptIsCurrent = () => connectionAttemptGateRef.current.isCurrent(session.profile.id, attemptToken);
     try {
+      let consentedShell: ShellConnection | null = null;
+      if (shellElevationRequested(session.profile)) {
+        if (interaction === "silent") return;
+        if (!isBackendAvailable()) {
+          setNotice({ title: t("failed-to-open-local-terminal"), message: t("shell-elevation-desktop-only") });
+          return;
+        }
+        const shell = prepareSessionProfile(session.profile).connection;
+        if (shell.kind !== "shell" || !window.confirm(t("shell-elevation-confirm", [
+          session.profile.name,
+          JSON.stringify(shell.program || t("system-default-shell")),
+          JSON.stringify(shell.args),
+          JSON.stringify(shell.cwd || t("current-user-s-directory")),
+        ]))) return;
+        if (!attemptIsCurrent()) return;
+        consentedShell = { ...shell, args: [...shell.args] };
+      }
       if (interaction === "silent") {
         // Startup uses the saved profile as-is. Re-saving every profile and
         // hydrating every hidden terminal generated serial Store checkpoints,
@@ -3838,12 +3854,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         createdConnectionSecretRefs = [];
         if (!attemptIsCurrent()) return;
         applySavedSession({ ...connecting, profile: persisted.profile }, activateWorkspace);
+        if (!shellElevationConsentMatches(persisted.profile, consentedShell)) {
+          throw new Error(t("shell-elevation-config-changed"));
+        }
         const credentialHandle = credentials.oneKeyId || !isBackendAvailable()
           ? null
           : await stageConnectionCredentials(invokeBackend, persisted.profile.id, credentials);
         if (!attemptIsCurrent()) return;
         const saved = isBackendAvailable()
-          ? credentials.oneKeyId
+          ? consentedShell
+            ? await invokeBackend<SessionSummary>("open_elevated_shell_session", {
+              sessionId: persisted.profile.id,
+              expectedShell: consentedShell,
+            })
+            : credentials.oneKeyId
             ? await invokeBackend<SessionSummary>("open_session_with_one_key", {
               sessionId: persisted.profile.id,
               oneKeyId: credentials.oneKeyId,
@@ -6214,6 +6238,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                   }}
                 >
                   <span className="session-status-dot" aria-hidden="true" />
+                  {shellElevationRequested(item.profile) ? <ShellElevationIndicator profile={item.profile} /> : null}
                   <span>{label}</span>
                 </button>
                 <button
@@ -6774,6 +6799,9 @@ function prepareSessionProfile(profile: SessionProfile): SessionProfile {
 }
 
 function normalizeConnectionConfig(connection: ConnectionConfig, profileId: string): ConnectionConfig {
+  if (connection.kind === "shell") {
+    return { ...connection, program: connection.program.trim() ? connection.program : "", elevated: connection.elevated === true };
+  }
   if (connection.kind === "tcp" || connection.kind === "telnet") {
     return normalizeTcpConnectionSettings({
       ...connection,

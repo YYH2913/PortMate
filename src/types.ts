@@ -142,6 +142,7 @@ export interface ShellConnection {
   program: string;
   args: string[];
   cwd?: string | null;
+  elevated?: boolean;
 }
 
 export interface TcpConnection {

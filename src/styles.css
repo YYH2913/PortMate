@@ -5793,6 +5793,42 @@ fieldset label {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.shell-elevation-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-block: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.shell-elevation-field > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.shell-elevation-field input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--cyan);
+}
+
+.shell-elevation-field > p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.shell-elevation-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--yellow, #d6ae58);
+}
+
 .session-quick-field.shell-arguments-field {
   grid-template-rows: 16px auto;
 }

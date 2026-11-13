@@ -22,6 +22,7 @@ describe("top menu capabilities", () => {
     expect(menuGroups.find((group) => group.label === "session")?.items).toEqual([
       "new-session",
       "local-terminal",
+      "elevated-local-terminal",
       "import-sessions",
       "duplicate-session",
       "start-session",

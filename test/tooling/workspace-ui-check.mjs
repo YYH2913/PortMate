@@ -23,6 +23,7 @@ import { checkSessionRename } from "./session-rename-regressions.mjs";
 import { checkTftpProgress } from "./tftp-progress-regressions.mjs";
 import { checkStartupPerformance } from "./startup-performance-regressions.mjs";
 import { checkTunnelHelp } from "./tunnel-help-regressions.mjs";
+import { checkShellElevation } from "./shell-elevation-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -379,12 +380,14 @@ try {
   await context.addInitScript(({ initialSessions, initialEvents, initialWorkspace, initialMcpGrants, initialMcpAudit, initialMcpHttpConfig, initialCustomScripts, historyTimestamp }) => {
     const deferStartupSessions = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupSessions") === "true";
     const deferStartupDomains = sessionStorage.getItem("portmate.workspaceUiCheck.deferStartupDomains") === "true";
+    const recoverElevatedStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverElevatedStartup") === "true";
     const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
     const recoverSilentSshStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverSilentSshStartup") === "true";
     const startWithUnlockedVault = new URL(location.href).searchParams.get("portmateTestVault") === "unlocked";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
     sessionStorage.removeItem("portmate.workspaceUiCheck.recoverInactiveStartup");
+    sessionStorage.removeItem("portmate.workspaceUiCheck.recoverElevatedStartup");
     sessionStorage.removeItem("portmate.workspaceUiCheck.recoverSilentSshStartup");
     if (!sessionStorage.getItem("portmate.workspaceUiCheck.initialized")) {
       localStorage.clear();
@@ -424,12 +427,13 @@ try {
     window.__sshHealthRuntimeProfiles = Object.fromEntries(window.__sessions
       .filter((session) => session.profile.connection.kind === "ssh" || session.profile.connection.kind === "tmux")
       .map((session) => [session.profile.id, structuredClone(session.profile)]));
-    if (recoverInactiveStartup) {
+    if (recoverInactiveStartup || recoverElevatedStartup) {
       const session = window.__sessions.find((item) => item.profile.id === "local-shell");
       session.runtime.status = "error";
       session.runtime.connectedSince = null;
       session.runtime.lastDisconnect = new Date().toISOString();
       session.runtime.lastDisconnectReason = "previous startup failure";
+      if (recoverElevatedStartup) session.profile.connection.elevated = true;
       localStorage.setItem("portmate.terminalPrefs", JSON.stringify({
         historyEnabled: true,
         historyLimit: "100",
@@ -804,13 +808,18 @@ try {
           }
           const complete = () => {
             const index = window.__sessions.findIndex((session) => session.profile.id === args.profile.id);
+            const savedProfile = structuredClone(args.profile);
+            if (window.__changeElevatedShellOnSave && savedProfile.connection.kind === "shell" && savedProfile.connection.elevated) {
+              savedProfile.connection.program = window.__changeElevatedShellOnSave;
+              window.__changeElevatedShellOnSave = null;
+            }
             const saved = index >= 0
               ? {
                 ...window.__sessions[index],
-                profile: structuredClone(args.profile),
+                profile: savedProfile,
               }
               : {
-                profile: structuredClone(args.profile),
+                profile: savedProfile,
                 runtime: {
                   sessionId: args.profile.id,
                   paneId: `${args.profile.id}:main`,
@@ -1854,7 +1863,7 @@ try {
             resolve: () => resolve(null),
           }));
         }
-        if (command === "open_session" || command === "open_session_with_one_key") {
+        if (command === "open_session" || command === "open_session_with_one_key" || command === "open_elevated_shell_session") {
           const sessionId = command === "open_session" ? args.request.sessionId : args.sessionId;
           if (window.__sessionOpenErrors[sessionId]) {
             throw new Error(window.__sessionOpenErrors[sessionId]);
@@ -1864,6 +1873,14 @@ try {
           }
           const index = window.__sessions.findIndex((item) => item.profile.id === sessionId);
           if (index < 0) return null;
+          const connection = window.__sessions[index].profile.connection;
+          if (connection.kind === "shell" && connection.elevated) {
+            if (command !== "open_elevated_shell_session" || JSON.stringify(args.expectedShell) !== JSON.stringify(connection)) {
+              throw new Error("elevated shell requires manual consent bound to its configuration");
+            }
+          } else if (command === "open_elevated_shell_session") {
+            throw new Error("elevated command requires an elevated Shell profile");
+          }
           const result = {
             ...window.__sessions[index],
             runtime: {
@@ -1993,6 +2010,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_SHELL_ELEVATION_ONLY === "1") {
+    await checkShellElevation(context, appUrl, screenshotPrefix);
+    console.log("Shell elevation consent, offline desktop routing, settings, private sudo input and startup boundaries passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_TUNNEL_HELP_ONLY === "1") {
     await checkTunnelHelp(context, appUrl, screenshotPrefix);
     console.log("Tunnel directions, localized hints, payloads and responsive layout regressions passed");
@@ -10532,6 +10555,7 @@ Host staging
   const persistedCustomScripts = await page.evaluate(() => window.__customScripts.length);
   await Promise.all(context.pages().map(openPage => openPage.close()));
   await checkTunnelHelp(context, appUrl, screenshotPrefix);
+  await checkShellElevation(context, appUrl, screenshotPrefix);
   await checkPacedSender(context, appUrl);
 
   console.log(JSON.stringify({

@@ -40,6 +40,7 @@ export function createShellConnection(): Extract<ConnectionConfig, { kind: "shel
     program: "",
     args: [],
     cwd: null,
+    elevated: false,
   };
 }
 

@@ -307,6 +307,6 @@ describe("session profile helpers", () => {
       warnings: [],
     });
 
-    expect(connection).toEqual({ kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null });
+    expect(connection).toEqual({ kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null, elevated: false });
   });
 });

@@ -6,6 +6,7 @@ export const menuGroups = [
     items: [
       "new-session",
       "local-terminal",
+      "elevated-local-terminal",
       "import-sessions",
       "duplicate-session",
       "start-session",
@@ -76,7 +77,7 @@ export type MenuSection = {
 
 const menuSections = {
   session: [
-    { label: "create", items: ["new-session", "local-terminal", "import-sessions", "duplicate-session"] },
+    { label: "create", items: ["new-session", "local-terminal", "elevated-local-terminal", "import-sessions", "duplicate-session"] },
     { label: "connection", items: ["start-session", "reconnect-session", "close-session-2"] },
     { label: "", items: ["session-settings"] },
   ],

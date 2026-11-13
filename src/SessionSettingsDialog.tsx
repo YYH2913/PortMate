@@ -1,5 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, ReactNode } from "react";
 import {
   Activity,
@@ -967,15 +967,16 @@ function QuickShellFields({
   return (
     <div className="session-quick-grid shell-quick-grid">
       <QuickField label={t("program")}>
-        <input ref={setTargetRef} aria-label={t("shell-program")} placeholder={t("system-default-shell")} value={shell.program} onChange={(event) => update({ program: event.target.value })} />
+        <input ref={setTargetRef} dir="ltr" aria-label={t("shell-program")} placeholder={t("system-default-shell")} value={shell.program} onChange={(event) => update({ program: event.target.value })} />
       </QuickField>
       <div className="session-quick-field shell-arguments-field">
         <span className="session-quick-field-label">{t("arguments")}</span>
         <ShellArgumentsEditor args={shell.args} onChange={(args) => update({ args })} />
       </div>
       <QuickField label={t("directory")}>
-        <input aria-label={t("shell-working-directory")} placeholder={t("current-user-s-directory")} value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
+        <input dir="ltr" aria-label={t("shell-working-directory")} placeholder={t("current-user-s-directory")} value={shell.cwd ?? ""} onChange={(event) => update({ cwd: event.target.value || null })} />
       </QuickField>
+      <ShellElevationField checked={shell.elevated === true} onChange={(elevated) => update({ elevated })} />
     </div>
   );
 }
@@ -1270,7 +1271,7 @@ function ShellProcessFields({
   return (
     <>
       <DialogField label={t("program-p")}>
-        <input value={shell.program} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } })} />
+        <input dir="ltr" value={shell.program} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } })} />
       </DialogField>
       <div className="dialog-field shell-arguments-field">
         <span>{t("arguments-a")}</span>
@@ -1280,9 +1281,24 @@ function ShellProcessFields({
         />
       </div>
       <DialogField label={t("directory-w")}>
-        <input value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
+        <input dir="ltr" value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
       </DialogField>
+      <ShellElevationField checked={shell.elevated === true} onChange={(elevated) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, elevated } })} />
     </>
+  );
+}
+
+function ShellElevationField({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+  useLocale();
+  const hintId = useId();
+  return (
+    <div className="shell-elevation-field">
+      <label>
+        <input type="checkbox" checked={checked} aria-describedby={hintId} onChange={(event) => onChange(event.target.checked)} />
+        <span>{t("shell-elevation")}</span>
+      </label>
+      <p id={hintId}>{t("shell-elevation-hint")}</p>
+    </div>
   );
 }
 
