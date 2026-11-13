@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { InteractionLayerIndex } from "./interaction-layer-index";
 
 const MODAL_LAYER_SELECTOR = ".dialog-backdrop, .mcp-approval-backdrop, .screen-lock-overlay";
 const POPUP_LAYER_SELECTOR = ".portmate-context-menu, .menu-popover";
@@ -55,9 +56,19 @@ type InteractionLayer = {
   modal: boolean;
 };
 
+const layerIndexes = new WeakMap<Document, InteractionLayerIndex>();
+function layerIndex(root: Document): InteractionLayerIndex {
+  let index = layerIndexes.get(root);
+  if (!index) {
+    index = new InteractionLayerIndex(root, `${MODAL_LAYER_SELECTOR}, ${POPUP_LAYER_SELECTOR}`);
+    layerIndexes.set(root, index);
+  }
+  return index;
+}
+
 export function activeModalLayer(root: Document = document): HTMLElement | null {
-  const layers = [...root.querySelectorAll<HTMLElement>(MODAL_LAYER_SELECTOR)]
-    .filter((layer) => modalLayerVisible(layer));
+  const layers = layerIndex(root).elements()
+    .filter((layer) => layer.matches(MODAL_LAYER_SELECTOR) && modalLayerVisible(layer));
   let active: HTMLElement | null = null;
   let activeZIndex = Number.NEGATIVE_INFINITY;
   for (const layer of layers) {
@@ -137,11 +148,9 @@ export function useModalInteractionBoundary() {
       }
       document.body.toggleAttribute("data-portmate-modal-open", Boolean(next?.modal));
       document.body.toggleAttribute("data-portmate-interaction-layer-open", Boolean(next));
-      for (const layer of document.querySelectorAll<HTMLElement>(MODAL_LAYER_SELECTOR)) {
-        layer.dataset.modalLayer = layer === nextLayer ? "active" : "inactive";
-      }
-      for (const layer of document.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)) {
-        layer.dataset.interactionLayer = layer === nextLayer ? "active" : "inactive";
+      for (const layer of layerIndex(document).elements()) {
+        if (layer.matches(MODAL_LAYER_SELECTOR)) layer.dataset.modalLayer = layer === nextLayer ? "active" : "inactive";
+        else layer.dataset.interactionLayer = layer === nextLayer ? "active" : "inactive";
       }
       if (next && nextLayer) {
         if (next.modal) isolateLayer(nextLayer);
@@ -198,9 +207,11 @@ export function useModalInteractionBoundary() {
         dismissPopup(layer);
         return;
       }
+      const menuNavigation = !layer.modal && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key);
+      if (!menuNavigation && event.key !== "Tab") return;
       const panel = interactionPanel(layer);
       const controls = panel ? interactionFocusableElements(panel) : [];
-      if (!layer.modal && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      if (menuNavigation) {
         event.preventDefault();
         event.stopImmediatePropagation();
         if (!controls.length) return;
@@ -249,13 +260,7 @@ export function useModalInteractionBoundary() {
       else blockOutsideLayer(event);
     };
 
-    const observer = new MutationObserver(scheduleSync);
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "hidden", "style", "aria-hidden"],
-    });
+    const unsubscribeLayers = layerIndex(document).subscribe(scheduleSync);
     const captureOptions: AddEventListenerOptions = {
       capture: true,
       passive: false,
@@ -267,7 +272,7 @@ export function useModalInteractionBoundary() {
     document.addEventListener("selectionchange", handleSelectionChange);
     scheduleSync();
     return () => {
-      observer.disconnect();
+      unsubscribeLayers();
       if (syncFrame !== null) window.cancelAnimationFrame(syncFrame);
       for (const eventName of BLOCKED_OUTSIDE_EVENTS) {
         window.removeEventListener(eventName, handleCapturedEvent, true);
@@ -290,8 +295,8 @@ function resolveActiveInteractionLayer(root: Document): InteractionLayer | null 
 }
 
 function visiblePopupLayers(root: Document): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(POPUP_LAYER_SELECTOR)]
-    .filter((layer) => modalLayerVisible(layer));
+  return layerIndex(root).elements()
+    .filter((layer) => layer.matches(POPUP_LAYER_SELECTOR) && modalLayerVisible(layer));
 }
 
 function modalLayerVisible(layer: HTMLElement): boolean {
