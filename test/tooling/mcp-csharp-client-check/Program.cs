@@ -90,7 +90,7 @@ static async Task<int> ExerciseAsync(
 {
     Require(client.NegotiatedProtocolVersion == expectedProtocol,
         $"{transport} negotiated {client.NegotiatedProtocolVersion}; expected {expectedProtocol}");
-    Require(client.ServerInfo.Name == "portmate-mcp", $"{transport} initialized the wrong server");
+    Require(client.ServerInfo?.Name == "portmate-mcp", $"{transport} initialized the wrong server or omitted server info");
     await client.PingAsync(cancellationToken: cancellationToken);
     Require((await client.ListToolsAsync(cancellationToken: cancellationToken)).Any(tool => tool.Name == "list_sessions"),
         $"{transport} tools/list omitted list_sessions");

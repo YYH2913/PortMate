@@ -140,7 +140,7 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.5",
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@tauri-apps/cli": "^2.12.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
@@ -149,8 +149,8 @@
     "cross-spawn": "^7.0.6",
     "playwright-core": "^1.63.0",
     "typescript": "^7.0.2",
-    "undici": "8.10.2",
+    "undici": "8.12.4",
     "vite": "^8.2.2",
-    "vitest": "^5.0.0"
+    "vitest": "5.1.0"
   }
 }
