@@ -494,3 +494,221 @@ fn ipc_endpoint_shutdown_removes_only_its_publication_and_own_token() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn ipc_running_server_restores_a_deleted_endpoint_without_restarting_http_or_sessions() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let endpoint_path = root.path().join("portmate-ipc.json");
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        start_ipc_server(
+            state.clone(),
+            endpoint_path.clone(),
+            "live-recovery-token".into(),
+        );
+        let original = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(Some(endpoint)) = read_private_ipc_endpoint_file(&endpoint_path) {
+                    break endpoint;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fs::remove_file(&endpoint_path).unwrap();
+        let recovered = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(Some(endpoint)) = read_private_ipc_endpoint_file(&endpoint_path) {
+                    break endpoint;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let _ = retire_ipc_publication_with(&state, |_| Ok(()));
+        assert_eq!(
+            recovered.expect("a live desktop must republish its missing IPC endpoint"),
+            original,
+            "repair must keep the listener port/token instead of changing connection generations"
+        );
+    });
+}
+
+#[test]
+fn ipc_publication_repair_preserves_newer_instances_even_after_their_shutdown() {
+    let root = canonical_test_tempdir();
+    let endpoint_path = root.path().join("portmate-ipc.json");
+    let store_path = root.path().join("store.sqlite3");
+    let older = test_app_state(test_shell_profile(), store_path.clone());
+    let newer = test_app_state(test_shell_profile(), store_path.clone());
+    let old_endpoint = inline_ipc_endpoint("127.0.0.1:43123", "old-owner-token", &store_path);
+    let new_endpoint = inline_ipc_endpoint("127.0.0.1:43124", "new-owner-token", &store_path);
+    publish_ipc_endpoint(&older, &endpoint_path, &old_endpoint).unwrap();
+    publish_ipc_endpoint(&newer, &endpoint_path, &new_endpoint).unwrap();
+    assert_eq!(
+        maintain_ipc_publication(&older, &endpoint_path, &old_endpoint).unwrap(),
+        IpcPublicationHealth::Superseded
+    );
+    assert_eq!(
+        read_private_ipc_endpoint_file(&endpoint_path).unwrap(),
+        Some(new_endpoint.clone())
+    );
+    assert!(retire_ipc_publication_with(&newer, |_| Ok(())).is_empty());
+    assert!(!endpoint_path.exists());
+    assert_eq!(
+        maintain_ipc_publication(&older, &endpoint_path, &old_endpoint).unwrap(),
+        IpcPublicationHealth::Superseded
+    );
+    assert!(publish_ipc_endpoint(&older, &endpoint_path, &old_endpoint)
+        .unwrap_err()
+        .contains("superseded"));
+    assert!(
+        !endpoint_path.exists(),
+        "the old desktop must not resurrect discovery after the new one exits"
+    );
+    assert!(retire_ipc_publication_with(&older, |_| Ok(())).is_empty());
+}
+
+#[test]
+fn ipc_publication_repair_keeps_the_new_endpoint_when_the_old_desktop_exits() {
+    let root = canonical_test_tempdir();
+    let path = root.path().join("portmate-ipc.json");
+    let store = root.path().join("store.sqlite3");
+    let older = test_app_state(test_shell_profile(), store.clone());
+    let newer = test_app_state(test_shell_profile(), store.clone());
+    let old = inline_ipc_endpoint("127.0.0.1:43123", "old-owner-token", &store);
+    let new = inline_ipc_endpoint("127.0.0.1:43124", "new-owner-token", &store);
+    publish_ipc_endpoint(&older, &path, &old).unwrap();
+    publish_ipc_endpoint(&newer, &path, &new).unwrap();
+    assert!(retire_ipc_publication_with(&older, |_| Ok(())).is_empty());
+    fs::remove_file(&path).unwrap();
+    assert_eq!(
+        maintain_ipc_publication(&newer, &path, &new).unwrap(),
+        IpcPublicationHealth::Restored
+    );
+    assert_eq!(read_private_ipc_endpoint_file(&path).unwrap(), Some(new));
+    assert!(retire_ipc_publication_with(&newer, |_| Ok(())).is_empty());
+}
+
+#[test]
+fn ipc_publication_repair_retries_io_failures_and_never_overwrites_unknown_files() {
+    let root = canonical_test_tempdir();
+    let path = root.path().join("portmate-ipc.json");
+    let store = root.path().join("store.sqlite3");
+    let state = test_app_state(test_shell_profile(), store.clone());
+    let endpoint = inline_ipc_endpoint("127.0.0.1:43123", "private-repair-token", &store);
+    publish_ipc_endpoint(&state, &path, &endpoint).unwrap();
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            maintain_ipc_publication(&state, &path, &endpoint).unwrap(),
+            IpcPublicationHealth::Current
+        );
+    }
+    assert_eq!(
+        fs::metadata(&path).unwrap().modified().unwrap(),
+        before,
+        "healthy IPC checks must not rewrite the token file"
+    );
+    fs::write(&path, b"not a recognized endpoint").unwrap();
+    assert!(maintain_ipc_publication(&state, &path, &endpoint).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"not a recognized endpoint");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(maintain_ipc_publication(&state, &path, &endpoint).is_err());
+    fs::remove_dir(&path).unwrap();
+    assert_eq!(
+        maintain_ipc_publication(&state, &path, &endpoint).unwrap(),
+        IpcPublicationHealth::Restored
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let protected = root.path().join("protected.json");
+        fs::write(&protected, b"unrelated data").unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&protected, &path).unwrap();
+        assert!(maintain_ipc_publication(&state, &path, &endpoint).is_err());
+        assert_eq!(fs::read(&protected).unwrap(), b"unrelated data");
+        fs::remove_file(&path).unwrap();
+    }
+    assert!(retire_ipc_publication_with(&state, |_| Ok(())).is_empty());
+    assert_eq!(
+        maintain_ipc_publication(&state, &path, &endpoint).unwrap(),
+        IpcPublicationHealth::ShuttingDown
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn ipc_startup_retry_does_not_overtake_a_newer_publication() {
+    let root = canonical_test_tempdir();
+    let path = root.path().join("portmate-ipc.json");
+    let store = root.path().join("store.sqlite3");
+    let older = test_app_state(test_shell_profile(), store.clone());
+    let newer = test_app_state(test_shell_profile(), store.clone());
+    let old = inline_ipc_endpoint("127.0.0.1:43123", "old-owner-token", &store);
+    let new = inline_ipc_endpoint("127.0.0.1:43124", "new-owner-token", &store);
+    fs::create_dir(&path).unwrap();
+    assert!(publish_ipc_endpoint(&older, &path, &old).is_err());
+    fs::remove_dir(&path).unwrap();
+    publish_ipc_endpoint(&newer, &path, &new).unwrap();
+    assert!(publish_ipc_endpoint(&older, &path, &old)
+        .unwrap_err()
+        .contains("superseded"));
+    assert_eq!(read_private_ipc_endpoint_file(&path).unwrap(), Some(new));
+    assert!(retire_ipc_publication_with(&newer, |_| Ok(())).is_empty());
+    assert!(retire_ipc_publication_with(&older, |_| Ok(())).is_empty());
+}
+
+#[test]
+fn ipc_live_endpoint_repair_is_not_starved_by_continuous_connections() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let path = root.path().join("portmate-ipc.json");
+        let state = test_app_state(test_shell_profile(), root.path().join("store.sqlite3"));
+        start_ipc_server(state.clone(), path.clone(), "traffic-repair-token".into());
+        let original = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(Some(endpoint)) = read_private_ipc_endpoint_file(&path) {
+                    break endpoint;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let traffic_addr = original.addr.clone();
+        let traffic = tokio::spawn(async move {
+            loop {
+                // Transport-only probes: never submit a terminal command.
+                if let Ok(mut stream) = TcpStream::connect(&traffic_addr).await {
+                    let _ = stream.shutdown().await;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let repaired = tokio::time::timeout(Duration::from_secs(3), async {
+            for _ in 0..3 {
+                fs::remove_file(&path).unwrap();
+                loop {
+                    if let Ok(Some(endpoint)) = read_private_ipc_endpoint_file(&path) {
+                        assert_eq!(endpoint, original);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        })
+        .await;
+        traffic.abort();
+        let _ = traffic.await;
+        assert!(retire_ipc_publication_with(&state, |_| Ok(())).is_empty());
+        repaired.expect("continuous accepted connections must not postpone discovery repair");
+    });
+}

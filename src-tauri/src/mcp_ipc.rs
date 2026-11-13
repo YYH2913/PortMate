@@ -6,11 +6,33 @@ pub(super) const MAX_IPC_REQUEST_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 pub(super) const MAX_IPC_CONNECTIONS: usize = 64;
 pub(super) const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const IPC_REJECTION_TIMEOUT: Duration = Duration::from_millis(100);
+const IPC_PUBLICATION_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const IPC_PUBLICATION_SUPERSEDED: &str = "MCP IPC publication was superseded by another desktop";
 
-#[derive(Default)]
 pub(super) struct IpcPublicationState {
+    owner_id: Uuid,
+    owner_claimed: bool,
     shutting_down: bool,
     published: Option<PublishedIpcEndpoint>,
+}
+
+impl Default for IpcPublicationState {
+    fn default() -> Self {
+        Self {
+            owner_id: Uuid::new_v4(),
+            owner_claimed: false,
+            shutting_down: false,
+            published: None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum IpcPublicationHealth {
+    Current,
+    Restored,
+    Superseded,
+    ShuttingDown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,14 +145,49 @@ async fn serve_ipc(state: &AppState, endpoint_path: &Path, token: &str) -> Resul
                         );
                 }
             }
+            if error == IPC_PUBLICATION_SUPERSEDED {
+                return Ok(());
+            }
             return Err(format!("failed to write MCP IPC endpoint: {error}"));
         }
     }
     let connection_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IPC_CONNECTIONS));
+    let mut publication_check = tokio::time::interval_at(
+        tokio::time::Instant::now() + IPC_PUBLICATION_CHECK_INTERVAL,
+        IPC_PUBLICATION_CHECK_INTERVAL,
+    );
+    publication_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut previous_publication_error = None;
 
     while !ipc_is_shutting_down(state) {
-        match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
-            Ok(Ok((stream, _))) => {
+        tokio::select! {
+            // Keep discovery alive even when the listener receives continuous
+            // traffic. File I/O and cross-process locking stay off the executor.
+            biased;
+            _ = publication_check.tick() => {
+                let check_state = state.clone();
+                let path = endpoint_path.to_path_buf();
+                let expected = endpoint.clone();
+                let check = tauri::async_runtime::spawn_blocking(move || {
+                    maintain_ipc_publication(&check_state, &path, &expected)
+                }).await.map_err(|error| format!("MCP IPC publication check failed: {error}"))?;
+                match check {
+                    Ok(IpcPublicationHealth::Current | IpcPublicationHealth::Restored) => {
+                        previous_publication_error = None;
+                    }
+                    // A newer desktop owns discovery now. Never revive the
+                    // previous instance when the new one subsequently exits.
+                    Ok(IpcPublicationHealth::Superseded | IpcPublicationHealth::ShuttingDown) => return Ok(()),
+                    Err(error) => {
+                        if previous_publication_error.as_ref() != Some(&error) {
+                            eprintln!("PortMate: MCP IPC discovery repair will retry: {error}");
+                            previous_publication_error = Some(error);
+                        }
+                    }
+                }
+            }
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.map_err(|error| format!("MCP IPC accept failed: {error}"))?;
                 spawn_ipc_client(
                     state.clone(),
                     token.to_string(),
@@ -139,10 +196,6 @@ async fn serve_ipc(state: &AppState, endpoint_path: &Path, token: &str) -> Resul
                 )
                 .await;
             }
-            Ok(Err(error)) => {
-                return Err(format!("MCP IPC accept failed: {error}"));
-            }
-            Err(_) => {}
         }
     }
     Ok(())
@@ -196,7 +249,7 @@ fn ipc_endpoint_lock_path(endpoint_path: &Path) -> PathBuf {
     endpoint_path.with_file_name(format!("{file_name}.lock"))
 }
 
-fn lock_ipc_endpoint(endpoint_path: &Path) -> Result<fs::File, String> {
+fn open_ipc_endpoint_lock(endpoint_path: &Path) -> Result<fs::File, String> {
     if let Some(parent) = endpoint_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|error| {
@@ -211,13 +264,119 @@ fn lock_ipc_endpoint(endpoint_path: &Path) -> Result<fs::File, String> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let lock = options
         .open(&lock_path)
         .map_err(|error| format!("failed to open MCP IPC endpoint lock: {error}"))?;
+    let metadata = lock
+        .metadata()
+        .map_err(|error| format!("failed to inspect MCP IPC endpoint lock: {error}"))?;
+    if !metadata.is_file() {
+        return Err("MCP IPC endpoint lock must be a regular file".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err("MCP IPC endpoint lock must not be a reparse point".into());
+        }
+    }
+    Ok(lock)
+}
+
+fn lock_ipc_endpoint(endpoint_path: &Path) -> Result<fs::File, String> {
+    let lock = open_ipc_endpoint_lock(endpoint_path)?;
     lock.lock()
         .map_err(|error| format!("failed to acquire MCP IPC endpoint lock: {error}"))?;
     Ok(lock)
+}
+
+fn write_ipc_publication_owner(lock: &mut fs::File, owner_id: Uuid) -> Result<(), String> {
+    lock.rewind()
+        .and_then(|()| lock.write_all(owner_id.hyphenated().to_string().as_bytes()))
+        .and_then(|()| lock.set_len(36))
+        .and_then(|()| lock.sync_all())
+        .map_err(|error| format!("failed to record MCP IPC publication owner: {error}"))
+}
+
+fn ipc_publication_owner_matches(lock: &mut fs::File, owner_id: Uuid) -> Result<bool, String> {
+    let mut bytes = [0u8; 37];
+    lock.rewind().map_err(|error| error.to_string())?;
+    let mut count = 0;
+    while count < bytes.len() {
+        let read = lock
+            .read(&mut bytes[count..])
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        count += read;
+    }
+    Ok(&bytes[..count] == owner_id.hyphenated().to_string().as_bytes())
+}
+
+/// Restore only a missing endpoint owned by this live listener. The owner marker
+/// survives shutdown in the lock file, fencing earlier desktops during upgrades.
+pub(super) fn maintain_ipc_publication(
+    state: &AppState,
+    endpoint_path: &Path,
+    endpoint: &IpcEndpointFile,
+) -> Result<IpcPublicationHealth, String> {
+    let publication = state
+        .ipc_publication
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if publication.shutting_down {
+        return Ok(IpcPublicationHealth::ShuttingDown);
+    }
+    if !publication
+        .published
+        .as_ref()
+        .is_some_and(|published| published.path == endpoint_path && published.endpoint == *endpoint)
+    {
+        return Ok(IpcPublicationHealth::Superseded);
+    }
+    if read_private_ipc_endpoint_file(endpoint_path)?.as_ref() == Some(endpoint) {
+        return Ok(IpcPublicationHealth::Current);
+    }
+    let mut lock = open_ipc_endpoint_lock(endpoint_path)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(IpcPublicationHealth::Current),
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(format!(
+                "failed to lock MCP IPC publication repair: {error}"
+            ))
+        }
+    }
+    if !ipc_publication_owner_matches(&mut lock, publication.owner_id)? {
+        return Ok(IpcPublicationHealth::Superseded);
+    }
+    // Recheck while holding the same lock used for publish/retire, so a repair
+    // cannot replace a newly published endpoint or follow an unrecognized file.
+    match read_private_ipc_endpoint_file(endpoint_path)? {
+        Some(current) if current == *endpoint => Ok(IpcPublicationHealth::Current),
+        Some(_) => Ok(IpcPublicationHealth::Superseded),
+        None => {
+            write_ipc_endpoint_file(endpoint_path, endpoint)?;
+            Ok(IpcPublicationHealth::Restored)
+        }
+    }
 }
 
 pub(super) fn read_private_ipc_endpoint_file(
@@ -329,7 +488,17 @@ pub(super) fn publish_ipc_endpoint(
     if publication.shutting_down {
         return Err("application is shutting down".to_string());
     }
-    let endpoint_lock = lock_ipc_endpoint(endpoint_path)?;
+    let mut endpoint_lock = lock_ipc_endpoint(endpoint_path)?;
+    if publication.owner_claimed {
+        if !ipc_publication_owner_matches(&mut endpoint_lock, publication.owner_id)? {
+            return Err(IPC_PUBLICATION_SUPERSEDED.into());
+        }
+    } else {
+        // Claim once, including before an initial publication fails. An older
+        // startup retry must not overtake a desktop launched in the meantime.
+        write_ipc_publication_owner(&mut endpoint_lock, publication.owner_id)?;
+        publication.owner_claimed = true;
+    }
     let previous_token_ref = read_private_ipc_endpoint_file(endpoint_path)
         .ok()
         .flatten()
