@@ -202,22 +202,30 @@ pub(super) fn accept_text(
 }
 
 #[tauri::command]
-pub(crate) fn begin_terminal_input_stream(
+pub(crate) async fn begin_terminal_input_stream(
     state: State<'_, AppState>,
     window: WebviewWindow,
     session_id: String,
 ) -> Result<TerminalInputBinding, String> {
-    begin_stream(&state.session_io(), &session_id, window.label())
+    let io = state.session_io();
+    let owner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || begin_stream(&io, &session_id, &owner))
+        .await
+        .map_err(|error| format!("终端输入通道初始化失败: {error}"))?
 }
 
 #[tauri::command]
-pub(crate) fn close_terminal_input_stream(
+pub(crate) async fn close_terminal_input_stream(
     state: State<'_, AppState>,
     window: WebviewWindow,
     session_id: String,
     stream_id: String,
-) {
-    close_stream(&state.session_io(), &session_id, window.label(), &stream_id);
+) -> Result<(), String> {
+    let io = state.session_io();
+    let owner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || close_stream(&io, &session_id, &owner, &stream_id))
+        .await
+        .map_err(|error| format!("终端输入通道关闭失败: {error}"))
 }
 
 #[cfg(test)]

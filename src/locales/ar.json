@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "مجموعات الإعدادات",
   "explorer-grouping-type": "نوع الجلسة",
   "explorer-serial-type": "COM / تسلسلي",
-  "explorer-ungrouped": "بلا مجموعة"
+  "explorer-ungrouped": "بلا مجموعة",
+  "native-message-d3b0fce0ea89": "تعذّر حفظ سجل الأوامر في الخلفية: {0}",
+  "native-message-c77581082e8f": "تعذّر الاستعلام عن الجلسات في الخلفية: {0}",
+  "native-message-9b2f95918674": "تعذّرت تهيئة قناة إدخال الطرفية: {0}",
+  "native-message-cf268226d47d": "تعذّر إغلاق قناة إدخال الطرفية: {0}"
 }

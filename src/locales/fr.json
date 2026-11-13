@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "Groupes configurés",
   "explorer-grouping-type": "Type de session",
   "explorer-serial-type": "COM / Série",
-  "explorer-ungrouped": "Sans groupe"
+  "explorer-ungrouped": "Sans groupe",
+  "native-message-d3b0fce0ea89": "Échec de l’enregistrement de l’historique en arrière-plan : {0}",
+  "native-message-c77581082e8f": "Échec de la consultation des sessions en arrière-plan : {0}",
+  "native-message-9b2f95918674": "Échec de l’initialisation du canal de saisie du terminal : {0}",
+  "native-message-cf268226d47d": "Échec de la fermeture du canal de saisie du terminal : {0}"
 }

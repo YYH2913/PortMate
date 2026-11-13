@@ -3,6 +3,7 @@
 mod archive_support;
 mod bound_directory;
 mod bundle_export;
+mod desktop_store_query;
 mod external_drop_execution;
 mod external_drop_planning;
 mod file_batch;
@@ -45,6 +46,7 @@ mod transfer_runtime;
 use archive_support::*;
 use bound_directory::*;
 use bundle_export::*;
+use desktop_store_query::*;
 use external_drop_execution::*;
 use external_drop_planning::*;
 use file_batch::*;

@@ -34,17 +34,19 @@ fn now_millis() -> i64 {
 }
 
 #[tauri::command]
-pub(crate) fn list_command_history(
+pub(crate) async fn list_command_history(
     state: State<'_, AppState>,
 ) -> Result<CommandHistorySnapshot, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    let entries = SessionStore::normalized_command_history(
-        &store.command_history,
-        store.command_history_policy.limit,
-        store.command_history_policy.retention_days,
-        now_millis(),
-    )?;
-    Ok(snapshot(&store, entries))
+    query_desktop_store(Arc::clone(&state.store), |store| {
+        let entries = SessionStore::normalized_command_history(
+            &store.command_history,
+            store.command_history_policy.limit,
+            store.command_history_policy.retention_days,
+            now_millis(),
+        )?;
+        Ok(snapshot(store, entries))
+    })
+    .await?
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -150,13 +152,28 @@ fn should_skip_empty_migration(
 }
 
 #[tauri::command]
-pub(crate) fn record_command_history(
+pub(crate) async fn record_command_history(
     state: State<'_, AppState>,
     command: String,
     session_id: Option<String>,
     source: CommandSubmissionSource,
 ) -> Result<CommandHistorySnapshot, String> {
-    record_command_submission(&state, command, session_id, source)
+    record_desktop_command_submission(state.inner().clone(), command, session_id, source).await
+}
+
+async fn record_desktop_command_submission(
+    state: AppState,
+    command: String,
+    session_id: Option<String>,
+    source: CommandSubmissionSource,
+) -> Result<CommandHistorySnapshot, String> {
+    // Enter must not freeze WebView2 while history clones/saves the canonical
+    // Store. Keep the existing transactional policy and cross-window event.
+    tauri::async_runtime::spawn_blocking(move || {
+        record_command_submission(&state, command, session_id, source)
+    })
+    .await
+    .map_err(|error| format!("后台命令历史保存失败: {error}"))?
 }
 
 // All desktop and MCP writers use the canonical policy held by the backend.

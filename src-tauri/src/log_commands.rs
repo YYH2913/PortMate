@@ -10,28 +10,32 @@ pub(super) fn bounded_log_query_limit(limit: Option<u64>) -> usize {
 }
 
 #[tauri::command]
-pub(crate) fn tail_log(
+pub(crate) async fn tail_log(
     state: State<'_, AppState>,
     session_id: String,
     limit: Option<u64>,
 ) -> Result<Vec<SessionEvent>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.tail_log(&session_id, bounded_log_query_limit(limit)))
+    query_desktop_store(Arc::clone(&state.store), move |store| {
+        store.tail_log(&session_id, bounded_log_query_limit(limit))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn search_logs(
+pub(crate) async fn search_logs(
     state: State<'_, AppState>,
     query: String,
     session_id: Option<String>,
     limit: Option<u64>,
 ) -> Result<Vec<SessionEvent>, String> {
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    Ok(store.search_logs(
-        &query,
-        session_id.as_deref(),
-        bounded_log_query_limit(limit),
-    ))
+    query_desktop_store(Arc::clone(&state.store), move |store| {
+        store.search_logs(
+            &query,
+            session_id.as_deref(),
+            bounded_log_query_limit(limit),
+        )
+    })
+    .await
 }
 
 #[tauri::command]

@@ -6244,5 +6244,33 @@
     "id": "native-message-caec5e36a046",
     "source": "提权 Shell 已退出或认证失败（{0}，{1}）；未降级启动普通 Shell",
     "causeIndices": []
+  },
+  {
+    "id": "native-message-d3b0fce0ea89",
+    "source": "后台命令历史保存失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-c77581082e8f",
+    "source": "后台会话查询失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-9b2f95918674",
+    "source": "终端输入通道初始化失败: {0}",
+    "causeIndices": [
+      0
+    ]
+  },
+  {
+    "id": "native-message-cf268226d47d",
+    "source": "终端输入通道关闭失败: {0}",
+    "causeIndices": [
+      0
+    ]
   }
 ]

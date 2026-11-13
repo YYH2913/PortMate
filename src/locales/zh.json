@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "按配置分组",
   "explorer-grouping-type": "按会话类型",
   "explorer-serial-type": "COM / 串口",
-  "explorer-ungrouped": "未分组"
+  "explorer-ungrouped": "未分组",
+  "native-message-d3b0fce0ea89": "后台命令历史保存失败: {0}",
+  "native-message-c77581082e8f": "后台会话查询失败: {0}",
+  "native-message-9b2f95918674": "终端输入通道初始化失败: {0}",
+  "native-message-cf268226d47d": "终端输入通道关闭失败: {0}"
 }

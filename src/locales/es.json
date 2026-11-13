@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "Grupos configurados",
   "explorer-grouping-type": "Tipo de sesión",
   "explorer-serial-type": "COM / Serie",
-  "explorer-ungrouped": "Sin grupo"
+  "explorer-ungrouped": "Sin grupo",
+  "native-message-d3b0fce0ea89": "Error al guardar el historial de comandos en segundo plano: {0}",
+  "native-message-c77581082e8f": "Error al consultar las sesiones en segundo plano: {0}",
+  "native-message-9b2f95918674": "Error al inicializar el canal de entrada del terminal: {0}",
+  "native-message-cf268226d47d": "Error al cerrar el canal de entrada del terminal: {0}"
 }

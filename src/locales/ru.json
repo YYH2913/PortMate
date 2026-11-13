@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "Группы профилей",
   "explorer-grouping-type": "Тип сеанса",
   "explorer-serial-type": "COM / Последовательный",
-  "explorer-ungrouped": "Без группы"
+  "explorer-ungrouped": "Без группы",
+  "native-message-d3b0fce0ea89": "Не удалось сохранить историю команд в фоновом режиме: {0}",
+  "native-message-c77581082e8f": "Не удалось запросить сеансы в фоновом режиме: {0}",
+  "native-message-9b2f95918674": "Не удалось инициализировать канал ввода терминала: {0}",
+  "native-message-cf268226d47d": "Не удалось закрыть канал ввода терминала: {0}"
 }

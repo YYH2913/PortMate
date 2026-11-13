@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn desktop_enter_history_yields_while_the_store_is_busy_and_retains_canonical_policy() {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    tauri::async_runtime::block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let profile = crate::tests::test_shell_profile();
+        let id = profile.id.clone();
+        let state = crate::tests::test_app_state(profile, root.path().join("store.sqlite3"));
+        configure_history_policy(&mut state.store.lock().unwrap(), true, 10, 0, now_millis())
+            .unwrap();
+        let held = Arc::clone(&state.store);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        locked_rx.recv().unwrap();
+        let mut save = pin!(record_desktop_command_submission(
+            state.clone(),
+            "echo submitted".into(),
+            Some(id.clone()),
+            CommandSubmissionSource::Interactive,
+        ));
+        let poll = save.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        let _ = release_tx.send(());
+        holder.join().unwrap();
+        assert!(
+            matches!(poll, Poll::Pending),
+            "Enter history blocked the event-loop caller"
+        );
+        let saved = save.await.unwrap();
+        assert_eq!(saved.entries.len(), 1);
+        assert_eq!(saved.entries[0].command, "echo submitted");
+        assert!(state.store_path.exists());
+        configure_history_policy(&mut state.store.lock().unwrap(), false, 10, 0, now_millis())
+            .unwrap();
+        let disabled = record_desktop_command_submission(
+            state,
+            "private".into(),
+            Some(id),
+            CommandSubmissionSource::Interactive,
+        )
+        .await
+        .unwrap();
+        assert!(
+            disabled.entries.is_empty(),
+            "worker bypassed the backend's disabled-history policy"
+        );
+    });
+}
+
+#[test]
 fn mcp_text_requires_complete_submissions_and_rejects_editor_input() {
     use CommandSubmissionSource::*;
     for text in [

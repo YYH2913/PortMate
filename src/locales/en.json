@@ -4090,5 +4090,9 @@
   "explorer-grouping-profile": "Profile groups",
   "explorer-grouping-type": "Session type",
   "explorer-serial-type": "COM / Serial",
-  "explorer-ungrouped": "Ungrouped"
+  "explorer-ungrouped": "Ungrouped",
+  "native-message-d3b0fce0ea89": "Background command history save failed: {0}",
+  "native-message-c77581082e8f": "Background session query failed: {0}",
+  "native-message-9b2f95918674": "Terminal input channel initialization failed: {0}",
+  "native-message-cf268226d47d": "Terminal input channel close failed: {0}"
 }
