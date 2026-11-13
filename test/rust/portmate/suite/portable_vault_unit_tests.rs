@@ -1,4 +1,49 @@
 #[test]
+fn portable_vault_reads_and_resaves_the_pre_crypto_update_snapshot() {
+    // Generated with registry Stronghold 2.1.0 / iota-crypto 0.23.2 / k256 0.13.4,
+    // before the local dependency patch. This contains synthetic data only.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(PORTABLE_VAULT_FILE_NAME);
+    fs::write(
+        &path,
+        include_bytes!("../../../fixtures/stronghold/upstream-2.1.0.snapshot"),
+    )
+    .unwrap();
+    assert!(PortableStronghold::new(&path, vec![8_u8; 32]).is_err());
+    let mut stronghold = PortableStronghold::new(&path, vec![7_u8; 32]).unwrap();
+    stronghold.load_client(b"portmate-portable-vault").unwrap();
+    let client = stronghold.get_client(b"portmate-portable-vault").unwrap();
+    assert_eq!(
+        client.store().get(b"fixture-account").unwrap().unwrap(),
+        b"synthetic-vault-value-not-a-real-secret",
+    );
+    client
+        .store()
+        .insert(
+            b"new-account".to_vec(),
+            b"new-synthetic-value".to_vec(),
+            None,
+        )
+        .unwrap();
+    stronghold.save().unwrap();
+    drop(stronghold);
+    let reopened = PortableStronghold::new(&path, vec![7_u8; 32]).unwrap();
+    reopened.load_client(b"portmate-portable-vault").unwrap();
+    let store = reopened
+        .get_client(b"portmate-portable-vault")
+        .unwrap()
+        .store();
+    assert_eq!(
+        store.get(b"fixture-account").unwrap().unwrap(),
+        b"synthetic-vault-value-not-a-real-secret"
+    );
+    assert_eq!(
+        store.get(b"new-account").unwrap().unwrap(),
+        b"new-synthetic-value"
+    );
+}
+
+#[test]
 fn portable_vault_explicit_creation_requires_a_new_password_and_rejects_existing_snapshots() {
     let root = std::env::temp_dir().join(format!("portmate-stronghold-create-{}", Uuid::new_v4()));
     let snapshot_path = root.join(PORTABLE_VAULT_FILE_NAME);

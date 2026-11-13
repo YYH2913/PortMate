@@ -61,6 +61,8 @@
     "test:rust-dependency-audit": "node test/tooling/rust-dependency-audit.mjs",
     "pretest:native-keyring-dependencies": "node scripts/ensure-node-version.mjs",
     "test:native-keyring-dependencies": "node test/tooling/native-keyring-dependency-check.mjs",
+    "pretest:stronghold-crypto": "node scripts/ensure-node-version.mjs",
+    "test:stronghold-crypto": "node test/tooling/stronghold-crypto-check.mjs",
     "pretest:portable-vault": "node scripts/ensure-node-version.mjs",
     "test:portable-vault": "node test/tooling/native-rust-tests.mjs portable-vault",
     "pretest:portable-cross": "node scripts/ensure-node-version.mjs",

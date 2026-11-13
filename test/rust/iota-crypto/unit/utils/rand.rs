@@ -1,0 +1,34 @@
+// Copyright 2020-2023 IOTA Stiftung
+// SPDX-License-Identifier: Apache-2.0
+use super::*;
+
+#[test]
+fn test_fill() {
+    for _ in 0..ITERATIONS {
+        for size in TEST_SIZES.iter() {
+            let mut buf = vec![0; *size];
+            fill(&mut buf).unwrap();
+            check_uniform_dist(&buf)
+        }
+    }
+}
+const TEST_SIZES: &[usize] = &[1024 * 1024, 4 * 1024 * 1024, (4 * 1024 * 1024) + 15];
+const ITERATIONS: usize = 8;
+
+fn check_uniform_dist(buf: &[u8]) {
+    let mut dist = vec![0f64; 256];
+    buf.iter().for_each(|b| dist[*b as usize] += 1.0);
+
+    let estimated_avg = (buf.len() as f64) / 256.0;
+    let (estimated_min, estimated_max) = (estimated_avg * 0.9, estimated_avg * 1.1);
+    dist.iter().for_each(|d| {
+        assert!(*d > estimated_min, "{} is not > {}", *d, estimated_min);
+        assert!(*d < estimated_max, "{} is not < {}", *d, estimated_max);
+    });
+}
+
+#[test]
+#[should_panic]
+fn verify_check_uniform_dist() {
+    check_uniform_dist(&[0; (4 * 1024 * 1024) + 15])
+}

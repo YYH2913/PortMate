@@ -1,5 +1,15 @@
 use super::*;
 
+#[test]
+fn bundled_sqlite_includes_the_wal_page_size_security_fix() {
+    // RUSTSEC-2026-0459 / CVE-2026-119375 is fixed in SQLite 3.54.0.
+    assert!(
+        rusqlite::version_number() >= 3_054_000,
+        "unexpected SQLite runtime: {}",
+        rusqlite::version(),
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn sqlite_rejects_a_symlink_substituted_after_the_guard_open() {

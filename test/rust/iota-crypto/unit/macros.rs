@@ -1,0 +1,29 @@
+// Copyright 2020-2023 IOTA Stiftung
+// SPDX-License-Identifier: Apache-2.0
+fn test_assert_lte(length: usize, minimum: usize) -> crate::Result<()> {
+    assert_buffer_lte!(length, minimum, "buffer");
+    Ok(())
+}
+
+fn test_assert_gte(length: usize, maximum: usize) -> crate::Result<()> {
+    assert_buffer_gte!(length, maximum, "buffer");
+    Ok(())
+}
+
+#[test]
+fn test_assert_buffer_lte() {
+    assert!(test_assert_lte(0, 16).is_ok());
+    assert!(test_assert_lte(15, 16).is_ok());
+    assert!(test_assert_lte(16, 16).is_ok());
+    assert!(test_assert_lte(17, 16).is_err());
+    assert!(test_assert_lte(255, 16).is_err());
+}
+
+#[test]
+fn test_assert_buffer_gte() {
+    assert!(test_assert_gte(0, 16).is_err());
+    assert!(test_assert_gte(15, 16).is_err());
+    assert!(test_assert_gte(16, 16).is_ok());
+    assert!(test_assert_gte(17, 16).is_ok());
+    assert!(test_assert_gte(255, 16).is_ok());
+}

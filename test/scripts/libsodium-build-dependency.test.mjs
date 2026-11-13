@@ -11,7 +11,7 @@ const source = path => readFileSync(resolve(projectRoot, path), "utf8");
 describe("libsodium build dependency patch", () => {
   it("uses the provenance-pinned local bindings with patched ZIP and no new exceptions", () => {
     const workspace = source("Cargo.toml");
-    expect(workspace).toContain('exclude = ["crates/libsodium-sys-stable"]');
+    expect(workspace.match(/^exclude = \[(.*)\]$/m)?.[1]).toContain('"crates/libsodium-sys-stable"');
     expect(workspace).toMatch(/\[patch\.crates-io\][\s\S]*libsodium-sys-stable = \{ path = "crates\/libsodium-sys-stable" \}/);
     const manifest = source("crates/libsodium-sys-stable/Cargo.toml");
     expect(manifest).toContain('version = "1.24.0"');

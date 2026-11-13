@@ -232,6 +232,8 @@ jobs:
         run: node scripts/ci-command-log.mjs target/native-ci/frontend-build.log npm run build
       - name: Verify previous release app-data upgrade
         run: node scripts/ci-command-log.mjs target/native-ci/release-upgrade.log npm run test:release-upgrade
+      - name: Verify Stronghold crypto patch vectors and entropy
+        run: node scripts/ci-command-log.mjs target/native-ci/stronghold-crypto.log npm run test:stronghold-crypto
       - name: Verify portable vault fault matrix
         run: node scripts/ci-command-log.mjs target/native-ci/portable-vault.log npm run test:portable-vault
       - name: Verify workspace Rust tests

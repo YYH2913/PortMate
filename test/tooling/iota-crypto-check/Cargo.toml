@@ -1,0 +1,35 @@
+[package]
+name = "portmate-stronghold-crypto-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+autotests = false
+
+[workspace]
+
+[dependencies]
+crypto = { package = "iota-crypto", path = "../../../crates/iota-crypto", features = ["std", "secp256k1", "slip10", "ed25519", "rand", "random", "keccak"] }
+hex = "0.4"
+rand = "0.8"
+
+[[test]]
+name = "secp256k1_ecdsa"
+path = "../../rust/iota-crypto/secp256k1_ecdsa.rs"
+
+[[test]]
+name = "slip10"
+path = "../../rust/iota-crypto/slip10.rs"
+
+[[test]]
+name = "entropy_bridge"
+path = "../../rust/iota-crypto/entropy_bridge.rs"
+
+[features]
+default = ["secp256k1", "slip10", "ed25519", "rand", "random", "keccak"]
+secp256k1 = []
+slip10 = []
+ed25519 = []
+rand = []
+random = []
+keccak = []
+serde = []
