@@ -10540,7 +10540,7 @@ Host staging
     && JSON.stringify(shellImportLifecycleState.profile) === JSON.stringify({
       name: "zsh",
       kind: "shell",
-      connection: { kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null },
+      connection: { kind: "shell", program: "/usr/bin/zsh", args: [], cwd: null, elevated: false },
     }),
   `local Shell import did not save the expected Profile: ${JSON.stringify(shellImportLifecycleState)}`);
   await savingShellImport.getByRole("button", { name: "取消", exact: true }).click();

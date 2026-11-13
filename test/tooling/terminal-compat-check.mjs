@@ -11,6 +11,9 @@ import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
 import { checkTerminalRendererLifecycle } from "./terminal-renderer-regressions.mjs";
 import { checkTerminalByteLoad } from "./terminal-byte-load-regressions.mjs";
 import { checkTerminalTailLatency } from "./terminal-tail-latency-regressions.mjs";
+import { checkTerminalTyping } from "./terminal-typing-regressions.mjs";
+import { checkTerminalAlternateInput } from "./terminal-alternate-input-regressions.mjs";
+import { checkInteractionLayerRegressions } from "./interaction-layer-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_TERMINAL_SCREENSHOT_PREFIX
@@ -364,7 +367,7 @@ checks: try {
       };
     }, { strictProbeUnavailable: process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" });
   }
-  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" || process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1" || process.env.PORTMATE_UI_TAIL_LATENCY_ONLY === "1") {
+  if (process.env.PORTMATE_UI_INTERACTIVE_FLUIDITY_ONLY === "1" || process.env.PORTMATE_UI_RENDERER_LIFECYCLE_ONLY === "1" || process.env.PORTMATE_UI_BYTE_LOAD_ONLY === "1" || process.env.PORTMATE_UI_TAIL_LATENCY_ONLY === "1" || process.env.PORTMATE_UI_TYPING_ONLY === "1") {
     // Screenshot checks preserve the WebGL back buffer for capture. Performance
     // checks need the non-preserved configuration used by real desktop users.
     await context.addInitScript(() => Object.defineProperty(navigator, "webdriver", { get: () => false }));
@@ -500,6 +503,26 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_LAYER_INDEX_ONLY === "1") {
+    await checkInteractionLayerRegressions(page);
+    assert(!pageErrors.length, `interaction-layer browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_TUI_INPUT_ONLY === "1") {
+    await checkTerminalAlternateInput(page);
+    assert(!pageErrors.length, `TUI input browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
+  if (process.env.PORTMATE_UI_TYPING_ONLY === "1") {
+    await checkTerminalAlternateInput(page);
+    await checkTerminalTyping(page);
+    await checkInteractionLayerRegressions(page);
+    assert(!pageErrors.length, `typing browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_TAIL_LATENCY_ONLY === "1") {
     await checkTerminalTailLatency(page);
     assert(!pageErrors.length, `tail-latency browser errors: ${JSON.stringify(pageErrors)}`);
@@ -1572,6 +1595,7 @@ checks: try {
 
   const activeTextarea = page.locator('[data-pane-id="pane-a"] .xterm-helper-textarea');
   const activeCompletion = page.locator('[data-pane-id="pane-a"] .terminal-completion');
+  let preferenceReload = 0;
   async function reloadWithTerminalPrefs(patch) {
     await page.evaluate((nextPrefs) => {
       const prefs = JSON.parse(localStorage.getItem("portmate.terminalPrefs"));
@@ -1580,8 +1604,14 @@ checks: try {
     await page.reload();
     await page.waitForFunction(() => (
       document.querySelectorAll(".terminal-host").length === 2
+      && [...document.querySelectorAll(".terminal-host")].every(host => host.dataset.terminalReady === "true")
       && document.querySelectorAll('[data-terminal-resize-owner="active"]').length === 1
+      && (window.__tauriEventListeners.get("portmate-session-event") || []).length >= 2
     ));
+    // Reload seeds the original TUI transcript again. These are shell
+    // completion preference checks, not requests to overlay a TUI editor.
+    await emitSessionEvent(createEvent(`a-completion-pref-normal-${++preferenceReload}`, "session-a", "\x1b[?1049l"));
+    await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalBuffer === "normal");
     await activeTextarea.focus();
   }
   await emitSessionEvent(createEvent("a-completion-bottom-anchor", "session-a", "\x1b[999;1H"));
