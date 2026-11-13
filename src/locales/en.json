@@ -4068,5 +4068,21 @@
   "tunnel-source-note": "The entry is where clients connect. The target is the original service being forwarded, not necessarily the SSH host.",
   "tunnel-bind-warning": "0.0.0.0 / :: binds all interfaces; it is not a client connection address. To expose an entry to other devices, use a real interface IP and check firewall/access permissions.",
   "tunnel-remote-policy": "Remote bind addresses also depend on SSH server forwarding permissions and GatewayPorts.",
-  "tunnel-tcp-note": "TCP only; UDP is not supported. Connect the SSH/Tmux session before creating a tunnel."
+  "tunnel-tcp-note": "TCP only; UDP is not supported. Connect the SSH/Tmux session before creating a tunnel.",
+  "elevated-local-terminal": "Elevated local terminal",
+  "shell-elevation": "Run as administrator / root",
+  "shell-elevation-hint": "Elevates this terminal, not PortMate. Windows uses a bundled helper for UAC; Linux/macOS uses sudo with the password entered in the terminal. Confirm each connection; no startup auto-connect.",
+  "shell-elevation-confirm": "Open “{0}” with elevated privileges?\n\nProgram: {1}\nArguments: {2}\nDirectory: {3}\n\nInput, scripts, triggers and already-authorized MCP operations in this session will also have elevated privileges. Continue only if you trust these settings. Windows may show UAC; enter sudo passwords in the terminal. PortMate itself is not elevated.",
+  "shell-elevation-desktop-only": "Elevation requires the PortMate desktop app; browser preview cannot create elevated terminals.",
+  "shell-elevation-mode": "Configured for elevated launch (not a process privilege verification)",
+  "native-message-0a1b89e2cda7": "Elevated local terminals must be opened manually from a desktop workspace",
+  "native-message-593f4fefebcf": "Elevated shell configuration changed; review it and connect again",
+  "native-message-d8118c55eacb": "sudo is unavailable; install sudo to open an elevated local terminal",
+  "native-message-bac2b1af57c7": "This build does not include the Windows elevation helper",
+  "native-message-eb34ed96a7fe": "Windows elevated shell requires a local .exe or .com program, not a script",
+  "native-message-185c04caae39": "Windows elevation helper integrity check failed",
+  "native-message-51a0946f142f": "The session is still running; disconnect before changing Shell elevation mode",
+  "shell-elevation-config-changed": "Elevated shell configuration changed; review it and connect again",
+  "native-message-b85c518ead5d": "PortMate: shell elevation requested ({0}); complete UAC/sudo authentication",
+  "native-message-caec5e36a046": "Elevated shell exited or authorization failed ({0}, {1}); no normal fallback shell was started"
 }

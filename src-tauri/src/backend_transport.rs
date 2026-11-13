@@ -27,6 +27,7 @@ mod serial_transport;
 mod sftp_backend;
 mod sftp_paths;
 mod sftp_transfer;
+mod shell_elevation;
 mod shell_transport;
 mod ssh_auxiliary;
 mod ssh_backend;

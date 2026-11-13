@@ -29,6 +29,7 @@ const sourceMain = join(targetRoot, "release", "portmate.exe");
 const sourceSidecar = join(targetRoot, "release", "portmate-mcp.exe");
 const sourceLicense = join(projectRoot, "LICENSE");
 const sourceThirdPartyLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt");
+const sourceElevationLicense = join(projectRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt");
 const releaseBinary = verifyWindowsReleaseBinary({
   executable: sourceMain,
   frontendDist: join(projectRoot, "dist"),
@@ -70,6 +71,7 @@ try {
     sourceSidecar,
     sourceLicense,
     sourceThirdPartyLicense,
+    sourceElevationLicense,
   });
   console.log("Windows package check: MSI sidecar watchdog");
   sidecarWatchdogSmokes.push({
@@ -107,6 +109,7 @@ try {
     sourceSidecar,
     sourceLicense,
     sourceThirdPartyLicense,
+    sourceElevationLicense,
   });
   console.log("Windows package check: NSIS sidecar watchdog");
   sidecarWatchdogSmokes.push({

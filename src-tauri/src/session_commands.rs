@@ -119,6 +119,28 @@ pub(crate) async fn open_session(
     open_session_inner(state, request.session_id, credentials).await
 }
 
+/// Deliberately not exposed by MCP/IPC. Saved profile settings are not consent.
+#[tauri::command]
+pub(crate) async fn open_elevated_shell_session(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    session_id: String,
+    expected_shell: portmate_core::ShellConnection,
+) -> Result<SessionSummary, String> {
+    if window.label() != "main" && !window.label().starts_with("workspace-") {
+        return Err("Shell elevation requires a desktop workspace window".into());
+    }
+    open_session_inner(
+        state.inner().clone(),
+        session_id,
+        SessionOpenCredentials {
+            authorized_shell: Some(expected_shell),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 #[tauri::command]
 pub(crate) async fn open_session_with_one_key(
     state: State<'_, AppState>,
@@ -147,6 +169,7 @@ pub(crate) async fn open_session_with_one_key(
             identity: credentials.identity,
             isolate_saved_ssh_credentials: true,
             credential_binding: None,
+            authorized_shell: None,
         },
         cancellation,
     )

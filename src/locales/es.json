@@ -4068,5 +4068,21 @@
   "tunnel-source-note": "La entrada recibe las conexiones. El destino es el servicio original reenviado, no necesariamente el host SSH.",
   "tunnel-bind-warning": "0.0.0.0 / :: escucha en todas las interfaces; no es una dirección para clientes. Para exponer la entrada, use una IP real y compruebe el cortafuegos y los permisos.",
   "tunnel-remote-policy": "La escucha remota también depende de los permisos del servidor SSH y de GatewayPorts.",
-  "tunnel-tcp-note": "Solo TCP, no UDP. Conecte la sesión SSH/Tmux antes de crear un túnel."
+  "tunnel-tcp-note": "Solo TCP, no UDP. Conecte la sesión SSH/Tmux antes de crear un túnel.",
+  "elevated-local-terminal": "Terminal local con privilegios",
+  "shell-elevation": "Ejecutar como administrador / root",
+  "shell-elevation-hint": "Eleva este terminal, no PortMate. Windows usa un componente integrado para UAC; Linux/macOS usa sudo y la contraseña se introduce en el terminal. Confirme cada conexión; sin conexión automática al iniciar.",
+  "shell-elevation-confirm": "¿Abrir «{0}» con privilegios elevados?\n\nPrograma: {1}\nArgumentos: {2}\nDirectorio: {3}\n\nLa entrada, los scripts, los disparadores y las operaciones MCP ya autorizadas en esta sesión también tendrán privilegios elevados. Continúe solo si confía en esta configuración. Windows puede mostrar UAC; introduzca la contraseña de sudo en el terminal. PortMate no se eleva.",
+  "shell-elevation-desktop-only": "La elevación requiere la aplicación de escritorio PortMate; la vista previa del navegador no puede crear terminales elevados.",
+  "shell-elevation-mode": "Inicio elevado configurado (sin verificar privilegios del proceso)",
+  "native-message-0a1b89e2cda7": "Los terminales elevados deben abrirse manualmente desde un espacio de escritorio.",
+  "native-message-593f4fefebcf": "La configuración del terminal elevado cambió; revísela y vuelva a conectar.",
+  "native-message-d8118c55eacb": "sudo no está disponible; instálelo para abrir un terminal elevado.",
+  "native-message-bac2b1af57c7": "Esta compilación no incluye el componente de elevación de Windows.",
+  "native-message-eb34ed96a7fe": "El terminal elevado de Windows requiere un programa local .exe o .com, no un script.",
+  "native-message-185c04caae39": "Falló la verificación de integridad del componente de elevación de Windows.",
+  "native-message-51a0946f142f": "La sesión sigue activa; desconéctela antes de cambiar el modo de elevación del terminal",
+  "shell-elevation-config-changed": "La configuración del terminal elevado cambió; revísela y vuelva a conectar.",
+  "native-message-b85c518ead5d": "PortMate: elevación del terminal solicitada ({0}); complete la autenticación UAC/sudo",
+  "native-message-caec5e36a046": "El terminal elevado salió o falló la autorización ({0}, {1}); no se inició un terminal normal alternativo"
 }

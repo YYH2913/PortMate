@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(all(target_os = "linux", feature = "bundled-easytier"))]
 use config::AddressMode;
 
 #[test]

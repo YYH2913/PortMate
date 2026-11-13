@@ -30,10 +30,11 @@ if (process.platform === "win32" && process.arch === "x64") {
   copyFileSync(join(release, "portmate-mcp.exe"), join(stage, "portmate-mcp.exe"));
   copyFileSync(join(root, "LICENSE"), join(stage, "LICENSE"));
   copyFileSync(join(root, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"), join(stage, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"));
+  copyFileSync(join(root, "THIRD_PARTY_LICENSES/gsudo-MIT.txt"), join(stage, "THIRD_PARTY_LICENSES/gsudo-MIT.txt"));
   if (existsSync(join(release, "WebView2Loader.dll"))) copyFileSync(join(release, "WebView2Loader.dll"), join(stage, "WebView2Loader.dll"));
   verifyWindowsReleaseBinary({ executable: join(stage, "portmate.exe"), frontendDist: join(root, "dist") });
   verifyWindowsSidecarBinary(join(stage, "portmate-mcp.exe"));
-  windows = verifyWindowsPackageLayout({ root: stage, sourceMain: join(stage, "portmate.exe"), sourceSidecar: join(release, "portmate-mcp.exe"), sourceLicense: join(root, "LICENSE"), sourceThirdPartyLicense: join(root, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt") });
+  windows = verifyWindowsPackageLayout({ root: stage, sourceMain: join(stage, "portmate.exe"), sourceSidecar: join(release, "portmate-mcp.exe"), sourceLicense: join(root, "LICENSE"), sourceThirdPartyLicense: join(root, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"), sourceElevationLicense: join(root, "THIRD_PARTY_LICENSES/gsudo-MIT.txt") });
   const folder = join(bundle, "portable");
   mkdirSync(folder, { recursive: true });
   const archive = join(folder, `${name}-portable.zip`);
@@ -44,7 +45,7 @@ if (process.platform === "win32" && process.arch === "x64") {
   const extracted = join(work, "extracted");
   mkdirSync(extracted);
   run(windowsTar, ["-x", "-f", basename(archive), "-C", extracted], folder);
-  verifyWindowsPackageLayout({ root: extracted, sourceMain: windows.main, sourceSidecar: windows.sidecar, sourceLicense: windows.license, sourceThirdPartyLicense: windows.thirdPartyLicense });
+  verifyWindowsPackageLayout({ root: extracted, sourceMain: windows.main, sourceSidecar: windows.sidecar, sourceLicense: windows.license, sourceThirdPartyLicense: windows.thirdPartyLicense, sourceElevationLicense: windows.elevationLicense });
   artifacts.push(archive);
 } else if (process.platform === "darwin" && process.arch === "arm64") {
   const folder = join(bundle, "macos");

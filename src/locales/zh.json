@@ -4068,5 +4068,21 @@
   "tunnel-source-note": "入口是客户端连接的位置；目标是被转发的原服务，不一定是 SSH 主机。",
   "tunnel-bind-warning": "0.0.0.0 / :: 表示监听所有网卡，不是客户端要连接的地址。向其他设备开放时请使用实际网卡 IP，并检查防火墙与访问权限。",
   "tunnel-remote-policy": "远端监听地址还受 SSH 服务端转发权限与 GatewayPorts 限制。",
-  "tunnel-tcp-note": "仅转发 TCP，不支持 UDP。先连接 SSH/Tmux 会话，再创建隧道。"
+  "tunnel-tcp-note": "仅转发 TCP，不支持 UDP。先连接 SSH/Tmux 会话，再创建隧道。",
+  "elevated-local-terminal": "管理员本地终端",
+  "shell-elevation": "以管理员 / root 权限启动",
+  "shell-elevation-hint": "仅提权此终端，不提升整个 PortMate。Windows 使用内置组件触发 UAC；Linux/macOS 使用 sudo，密码在终端输入。每次连接需确认，不随启动自动连接。",
+  "shell-elevation-confirm": "以高权限打开“{0}”？\n\n程序：{1}\n参数：{2}\n目录：{3}\n\n此会话的输入、脚本、触发器及已授权 MCP 操作也将具有高权限。仅在信任这些配置时继续。Windows 可能弹出 UAC；sudo 密码在终端输入。不会提升整个 PortMate。",
+  "shell-elevation-desktop-only": "提权需要桌面版 PortMate，浏览器预览不能创建提权终端。",
+  "shell-elevation-mode": "已配置提权启动（不代表已验证进程权限）",
+  "native-message-0a1b89e2cda7": "提权本地终端必须在桌面工作区中手动打开。",
+  "native-message-593f4fefebcf": "提权终端配置已更改，请检查后重新连接。",
+  "native-message-d8118c55eacb": "未找到 sudo；请先安装 sudo 再打开提权本地终端。",
+  "native-message-bac2b1af57c7": "此构建未包含 Windows 提权组件。",
+  "native-message-eb34ed96a7fe": "Windows 提权终端必须使用本地 .exe 或 .com 程序，不能直接使用脚本。",
+  "native-message-185c04caae39": "Windows 提权组件完整性校验失败，已拒绝启动。",
+  "native-message-51a0946f142f": "会话仍在运行；更改 Shell 提权模式前请先断开连接",
+  "shell-elevation-config-changed": "提权终端配置已更改，请检查后重新连接。",
+  "native-message-b85c518ead5d": "PortMate: 已请求 Shell 提权（{0}）；请完成 UAC/sudo 认证",
+  "native-message-caec5e36a046": "提权 Shell 已退出或认证失败（{0}，{1}）；未降级启动普通 Shell"
 }

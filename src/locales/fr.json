@@ -4068,5 +4068,21 @@
   "tunnel-source-note": "L’entrée reçoit les clients. La cible est le service d’origine transféré, pas nécessairement l’hôte SSH.",
   "tunnel-bind-warning": "0.0.0.0 / :: écoute sur toutes les interfaces ; ce n’est pas l’adresse utilisée par les clients. Pour exposer l’entrée, utiliser une IP réelle et vérifier pare-feu et autorisations.",
   "tunnel-remote-policy": "L’écoute distante dépend aussi des autorisations du serveur SSH et de GatewayPorts.",
-  "tunnel-tcp-note": "TCP uniquement, sans UDP. Connecter la session SSH/Tmux avant de créer un tunnel."
+  "tunnel-tcp-note": "TCP uniquement, sans UDP. Connecter la session SSH/Tmux avant de créer un tunnel.",
+  "elevated-local-terminal": "Terminal local avec élévation",
+  "shell-elevation": "Exécuter en administrateur / root",
+  "shell-elevation-hint": "Élève ce terminal, pas PortMate. Windows utilise un composant intégré pour UAC ; Linux/macOS utilise sudo, mot de passe saisi dans le terminal. Confirmation à chaque connexion ; aucune connexion au démarrage.",
+  "shell-elevation-confirm": "Ouvrir « {0} » avec des privilèges élevés ?\n\nProgramme : {1}\nArguments : {2}\nDossier : {3}\n\nLes saisies, scripts, déclencheurs et opérations MCP déjà autorisées dans cette session auront aussi ces privilèges. Continuez uniquement si vous faites confiance à ces réglages. Windows peut afficher UAC ; saisissez le mot de passe sudo dans le terminal. PortMate lui-même reste sans élévation.",
+  "shell-elevation-desktop-only": "L’élévation nécessite l’application de bureau PortMate ; l’aperçu navigateur ne peut pas créer de terminal avec élévation.",
+  "shell-elevation-mode": "Élévation configurée au lancement (privilèges du processus non vérifiés)",
+  "native-message-0a1b89e2cda7": "Les terminaux avec élévation doivent être ouverts manuellement depuis un espace de bureau.",
+  "native-message-593f4fefebcf": "La configuration du terminal avec élévation a changé ; vérifiez-la puis reconnectez-vous.",
+  "native-message-d8118c55eacb": "sudo est introuvable ; installez-le pour ouvrir un terminal avec élévation.",
+  "native-message-bac2b1af57c7": "Cette version ne contient pas le composant d’élévation Windows.",
+  "native-message-eb34ed96a7fe": "Le terminal Windows avec élévation nécessite un programme local .exe ou .com, pas un script.",
+  "native-message-185c04caae39": "La vérification d’intégrité du composant d’élévation Windows a échoué.",
+  "native-message-51a0946f142f": "La session est toujours active ; déconnectez-la avant de changer le mode d’élévation du terminal",
+  "shell-elevation-config-changed": "La configuration du terminal avec élévation a changé ; vérifiez-la puis reconnectez-vous.",
+  "native-message-b85c518ead5d": "PortMate : élévation du terminal demandée ({0}) ; terminez l’authentification UAC/sudo",
+  "native-message-caec5e36a046": "Le terminal avec élévation s’est fermé ou l’autorisation a échoué ({0}, {1}) ; aucun terminal ordinaire de secours n’a été lancé"
 }

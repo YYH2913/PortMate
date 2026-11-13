@@ -6199,5 +6199,50 @@
     "causeIndices": [
       0
     ]
+  },
+  {
+    "id": "native-message-0a1b89e2cda7",
+    "source": "提权本地终端必须在桌面工作区中手动打开。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-593f4fefebcf",
+    "source": "提权终端配置已更改，请检查后重新连接。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-d8118c55eacb",
+    "source": "未找到 sudo；请先安装 sudo 再打开提权本地终端。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-bac2b1af57c7",
+    "source": "此构建未包含 Windows 提权组件。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-eb34ed96a7fe",
+    "source": "Windows 提权终端必须使用本地 .exe 或 .com 程序，不能直接使用脚本。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-185c04caae39",
+    "source": "Windows 提权组件完整性校验失败，已拒绝启动。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-51a0946f142f",
+    "source": "会话仍在运行；更改 Shell 提权模式前请先断开连接",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-b85c518ead5d",
+    "source": "PortMate: 已请求 Shell 提权（{0}）；请完成 UAC/sudo 认证",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-caec5e36a046",
+    "source": "提权 Shell 已退出或认证失败（{0}，{1}）；未降级启动普通 Shell",
+    "causeIndices": []
   }
 ]

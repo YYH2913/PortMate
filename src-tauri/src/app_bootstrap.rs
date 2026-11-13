@@ -69,6 +69,7 @@ pub fn run() {
             profile_commands::save_session_profile,
             session_profile_delete::delete_session_profile,
             session_commands::open_session,
+            session_commands::open_elevated_shell_session,
             session_commands::open_session_with_one_key,
             session_commands::close_session,
             ssh_health::check_ssh_health,

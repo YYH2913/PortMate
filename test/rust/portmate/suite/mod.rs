@@ -478,6 +478,7 @@ pub(crate) fn test_shell_profile() -> SessionProfile {
             program: "sh".to_string(),
             args: Vec::new(),
             cwd: None,
+            elevated: false,
         }),
         terminal: portmate_core::TerminalSettings::default(),
         logging: portmate_core::LoggingSettings::default(),

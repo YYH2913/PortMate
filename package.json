@@ -114,6 +114,8 @@
     "test:updater-ui": "node test/tooling/update-ui-check.mjs",
     "pretest:easytier-ui": "node scripts/ensure-node-version.mjs",
     "test:easytier-ui": "node test/tooling/easytier-ui-check.mjs",
+    "preshell-elevation:prepare": "node scripts/ensure-node-version.mjs",
+    "shell-elevation:prepare": "node scripts/prepare-shell-elevation.mjs",
     "preeasytier:prepare": "node scripts/ensure-node-version.mjs",
     "easytier:prepare": "node scripts/prepare-easytier.mjs"
   },

@@ -11,13 +11,26 @@ const SHELL_CHILD_REAP_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) struct ManagedShellChild {
     process: Option<ShellProcess>,
     cleanup: Option<ShellChildCleanup>,
+    elevation_resources: Option<shell_elevation::ElevationResources>,
+    elevation_requested: bool,
 }
 
 impl ManagedShellChild {
+    #[cfg(test)]
     fn new(process: ShellProcess) -> Self {
+        Self::with_elevation(process, None, false)
+    }
+
+    fn with_elevation(
+        process: ShellProcess,
+        resources: Option<shell_elevation::ElevationResources>,
+        requested: bool,
+    ) -> Self {
         Self {
             process: Some(process),
             cleanup: None,
+            elevation_resources: resources,
+            elevation_requested: requested,
         }
     }
 
@@ -26,7 +39,8 @@ impl ManagedShellChild {
             return cleanup.clone();
         }
         let process = self.process.take().expect("Shell child is still owned");
-        let cleanup = start_shell_child_cleanup(process);
+        let cleanup =
+            start_shell_child_cleanup_with_resources(process, self.elevation_resources.take());
         self.cleanup = Some(cleanup.clone());
         cleanup
     }
@@ -44,7 +58,7 @@ impl ManagedShellChild {
 impl Drop for ManagedShellChild {
     fn drop(&mut self) {
         if let Some(process) = self.process.take() {
-            start_shell_child_cleanup(process);
+            start_shell_child_cleanup_with_resources(process, self.elevation_resources.take());
         }
     }
 }
@@ -98,12 +112,21 @@ fn poll_shell_child_cleanup(
     }
 }
 
-fn start_shell_child_cleanup(mut process: ShellProcess) -> ShellChildCleanup {
+#[cfg(test)]
+fn start_shell_child_cleanup(process: ShellProcess) -> ShellChildCleanup {
+    start_shell_child_cleanup_with_resources(process, None)
+}
+
+fn start_shell_child_cleanup_with_resources(
+    mut process: ShellProcess,
+    resources: Option<shell_elevation::ElevationResources>,
+) -> ShellChildCleanup {
     let (finished, cleanup) = tokio::sync::watch::channel(None);
     // This task owns the actual child, independent of a caller being cancelled
     // or dropping its last runtime reference. portable-pty kill can sleep and
     // can return immediately after SIGKILL, so keep polling until it is reaped.
     tauri::async_runtime::spawn(async move {
+        let _resources = resources;
         let mut kill_requested = false;
         let mut previous_warning = None;
         loop {
@@ -320,12 +343,13 @@ pub(super) struct PreparedShellSession {
     writer: Option<Box<dyn Write + Send>>,
     reader: Option<Box<dyn Read + Send>>,
     child: Option<ShellProcess>,
+    elevation_resources: Option<shell_elevation::ElevationResources>,
 }
 
 impl Drop for PreparedShellSession {
     fn drop(&mut self) {
         if let Some(child) = self.child.take() {
-            start_shell_child_cleanup(child);
+            start_shell_child_cleanup_with_resources(child, self.elevation_resources.take());
         }
         let resources = (self.master.take(), self.writer.take(), self.reader.take());
         if resources.0.is_some() || resources.1.is_some() || resources.2.is_some() {
@@ -412,14 +436,28 @@ fn validate_shell_arguments(shell: &portmate_core::ShellConnection) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn prepare_shell_session(
     profile: SessionProfile,
 ) -> Result<PreparedShellSession, String> {
+    prepare_shell_session_authorized(profile, None, None)
+}
+
+pub(super) fn prepare_shell_session_authorized(
+    profile: SessionProfile,
+    data_directory: Option<&Path>,
+    authorized_shell: Option<&portmate_core::ShellConnection>,
+) -> Result<PreparedShellSession, String> {
+    shell_elevation::authorize_launch(&profile, authorized_shell)?;
     let shell = match &profile.connection {
         ConnectionConfig::Shell(shell) => shell.clone(),
         _ => return Err("profile is not shell-backed".to_string()),
     };
     let launch = resolve_shell_launch_paths(&shell)?;
+    let elevation = shell
+        .elevated
+        .then(|| shell_elevation::prepare_launch(&launch, &shell.args, data_directory))
+        .transpose()?;
     if let Some(cwd) = &launch.cwd {
         let metadata = fs::metadata(cwd)
             .map_err(|error| format!("Shell 工作目录不可用 {}: {error}", cwd.display()))?;
@@ -439,12 +477,27 @@ pub(super) fn prepare_shell_session(
         })
         .map_err(|error| format!("Shell PTY 打开失败: {error}"))?;
 
-    let mut command = CommandBuilder::new(&launch.program);
-    command.args(shell.args.iter());
+    let mut command = CommandBuilder::new(
+        elevation
+            .as_ref()
+            .map_or(launch.program.as_os_str(), |launch| {
+                launch.program.as_os_str()
+            }),
+    );
+    if let Some(elevated) = &elevation {
+        command.args(elevated.args.iter());
+    } else {
+        command.args(shell.args.iter());
+    }
     apply_shell_terminal_color_env(&mut command, profile.terminal.term.as_str());
-    if let Some(cwd) = &launch.cwd {
+    if let Some(cwd) = elevation
+        .as_ref()
+        .and_then(|launch| launch.cwd.as_ref())
+        .or(launch.cwd.as_ref())
+    {
         command.cwd(cwd);
     }
+    let elevation_resources = elevation.and_then(|launch| launch.resources);
 
     let child = pair
         .slave
@@ -458,7 +511,7 @@ pub(super) fn prepare_shell_session(
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             let error = std::io::Error::last_os_error();
-            start_shell_child_cleanup(child);
+            start_shell_child_cleanup_with_resources(child, elevation_resources);
             return Err(format!("Shell nonblocking PTY setup failed: {error}"));
         }
     }
@@ -470,6 +523,7 @@ pub(super) fn prepare_shell_session(
         writer: None,
         reader: None,
         child: Some(child),
+        elevation_resources,
     };
     prepared.reader = Some(
         prepared
@@ -531,7 +585,13 @@ fn install_shell_session_with_reader(
     let closed = Arc::new(AtomicBool::new(false));
     let reader_start_gate = Arc::new(ReaderStartGate::default());
     let (tap, _) = broadcast::channel(1024);
-    let child = Arc::new(Mutex::new(ManagedShellChild::new(child)));
+    let elevation_requested =
+        matches!(&profile.connection, ConnectionConfig::Shell(shell) if shell.elevated);
+    let child = Arc::new(Mutex::new(ManagedShellChild::with_elevation(
+        child,
+        prepared.elevation_resources.take(),
+        elevation_requested,
+    )));
     let master = Arc::new(Mutex::new(master));
     let writer = Arc::new(Mutex::new(writer));
     let existing = connections.insert(
@@ -577,7 +637,11 @@ fn install_shell_session_with_reader(
                 mark_session_connected_with_events(
                     next_store,
                     &profile,
-                    [format!("PortMate: shell started ({program})")],
+                    [if elevation_requested {
+                        format!("PortMate: 已请求 Shell 提权（{program}）；请完成 UAC/sudo 认证")
+                    } else {
+                        format!("PortMate: shell started ({program})")
+                    }],
                 )
             })
         }
@@ -739,6 +803,9 @@ fn shell_child_disconnect_reason(
         }
     };
     match child.try_wait() {
+        Ok(Some(status)) if child.elevation_requested && !status.success() => Some(format!(
+            "提权 Shell 已退出或认证失败（{program}，{status}）；未降级启动普通 Shell"
+        )),
         Ok(Some(status)) => Some(shell_exit_status_disconnect_reason(program, &status)),
         Ok(None) => None,
         Err(error) => Some(format!(

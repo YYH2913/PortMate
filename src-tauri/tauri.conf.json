@@ -4,8 +4,8 @@
   "version": "0.1.15",
   "identifier": "dev.portmate.desktop",
   "build": {
-    "beforeDevCommand": "npm run easytier:prepare && npm run dev",
-    "beforeBuildCommand": "npm run easytier:prepare && npm run build && npm run sidecar:build",
+    "beforeDevCommand": "npm run easytier:prepare && npm run shell-elevation:prepare && npm run dev",
+    "beforeBuildCommand": "npm run easytier:prepare && npm run shell-elevation:prepare && npm run build && npm run sidecar:build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -46,7 +46,8 @@
     "licenseFile": "../LICENSE",
     "resources": {
       "../LICENSE": "LICENSE",
-      "../THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt": "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"
+      "../THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt": "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt",
+      "../THIRD_PARTY_LICENSES/gsudo-MIT.txt": "THIRD_PARTY_LICENSES/gsudo-MIT.txt"
     },
     "icon": [
       "icons/32x32.png",

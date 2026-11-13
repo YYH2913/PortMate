@@ -57,6 +57,18 @@ pub(super) fn validate_profile_transport_change(
     };
     let current_kind = current_profile.connection.kind();
     let next_kind = next_profile.connection.kind();
+    let elevation_changed = matches!((&current_profile.connection, &next_profile.connection),
+        (ConnectionConfig::Shell(current), ConnectionConfig::Shell(next)) if current.elevated != next.elevated);
+    if elevation_changed
+        && matches!(
+            runtime_status,
+            Some(
+                SessionStatus::Connecting | SessionStatus::Connected | SessionStatus::Reconnecting
+            )
+        )
+    {
+        return Err("会话仍在运行；更改 Shell 提权模式前请先断开连接".into());
+    }
     if current_kind == next_kind {
         return Ok(());
     }

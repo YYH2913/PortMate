@@ -23,6 +23,7 @@ export function verifyWindowsPackageLayout({
   sourceSidecar,
   sourceLicense,
   sourceThirdPartyLicense,
+  sourceElevationLicense,
   bundleType,
 }) {
   const files = inspectPortableTree(root);
@@ -51,6 +52,13 @@ export function verifyWindowsPackageLayout({
   assertSameFile(sourceLicense, license, "Windows license");
   assertSameFile(sourceThirdPartyLicense, thirdPartyLicense, "Windows JetBrains Mono license");
 
+  let elevationLicense;
+  if (sourceElevationLicense) {
+    elevationLicense = findUniqueRegularFile(files, "gsudo-MIT.txt", { caseInsensitive: true });
+    assertExactPath("Windows elevation license", elevationLicense, join(dirname(main), "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"), true);
+    assertSameFile(sourceElevationLicense, elevationLicense, "Windows elevation license");
+  }
+
   return {
     root: resolve(root),
     applicationDirectory: dirname(main),
@@ -58,12 +66,14 @@ export function verifyWindowsPackageLayout({
     sidecar,
     license,
     thirdPartyLicense,
+    ...(elevationLicense ? { elevationLicense } : {}),
     ...(mainBundleReference ? { mainBundleReference } : {}),
     sha256: {
       main: sha256File(main),
       sidecar: sha256File(sidecar),
       license: sha256File(license),
       thirdPartyLicense: sha256File(thirdPartyLicense),
+      ...(elevationLicense ? { elevationLicense: sha256File(elevationLicense) } : {}),
     },
   };
 }

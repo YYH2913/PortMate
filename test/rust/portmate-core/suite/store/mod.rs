@@ -19,6 +19,7 @@ fn test_store() -> SessionStore {
                 program: "/bin/sh".to_string(),
                 args: Vec::new(),
                 cwd: None,
+                elevated: false,
             }),
             terminal: TerminalSettings::default(),
             logging: LoggingSettings::default(),

@@ -549,3 +549,34 @@ fn proxy_password_updates_store_only_a_secret_reference() {
             .contains("1-255")
     );
 }
+
+#[test]
+fn live_shell_cannot_change_its_elevation_mode_before_disconnect() {
+    for elevated in [true, false] {
+        let mut current = test_shell_profile();
+        let ConnectionConfig::Shell(shell) = &mut current.connection else {
+            unreachable!()
+        };
+        shell.elevated = elevated;
+        let mut next = current.clone();
+        let ConnectionConfig::Shell(shell) = &mut next.connection else {
+            unreachable!()
+        };
+        shell.elevated = !elevated;
+        for status in [
+            SessionStatus::Connecting,
+            SessionStatus::Connected,
+            SessionStatus::Reconnecting,
+        ] {
+            assert!(
+                validate_profile_transport_change(Some(&current), &next, Some(status))
+                    .unwrap_err()
+                    .contains("提权模式")
+            );
+        }
+        validate_profile_transport_change(Some(&current), &next, Some(SessionStatus::Disconnected))
+            .unwrap();
+        validate_profile_transport_change(Some(&current), &current, Some(SessionStatus::Connected))
+            .unwrap();
+    }
+}

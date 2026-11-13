@@ -9,8 +9,9 @@ default-run = "portmate"
 
 [features]
 default = ["desktop"]
-desktop = ["tauri/wry", "bundled-easytier"]
+desktop = ["tauri/wry", "bundled-easytier", "bundled-shell-elevation"]
 bundled-easytier = []
+bundled-shell-elevation = []
 test-probes = []
 
 [lib]

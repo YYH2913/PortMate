@@ -238,6 +238,11 @@ jobs:
         run: node scripts/ci-command-log.mjs target/native-ci/portable-vault.log npm run test:portable-vault
       - name: Verify workspace Rust tests
         run: node scripts/ci-command-log.mjs target/native-ci/workspace-tests.log node test/tooling/native-rust-tests.mjs workspace
+      - name: Prepare bundled Windows elevation helper
+        run: node scripts/ci-command-log.mjs target/native-ci/shell-elevation-prepare.log npm run shell-elevation:prepare
+      - name: Verify local terminal elevation boundaries and offline helper
+        # Non-interactive tests do not prompt for UAC or sudo credentials.
+        run: node scripts/ci-command-log.mjs target/native-ci/shell-elevation.log node test/tooling/native-rust-tests.mjs shell-elevation
       - name: Prepare built-in EasyTier core
         # Desktop builds always embed the verified platform-specific EasyTier core.
         # Prepare it before the direct Cargo invocation as well as the Tauri build.

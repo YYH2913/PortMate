@@ -4,7 +4,7 @@ import { nativeRustTestArguments } from "../tooling/native-rust-tests.mjs";
 describe("native Rust CI test profiles", () => {
   it("explicitly includes test-only probes in every suite without enabling them for package builds", () => {
     for (const platform of ["linux", "darwin", "win32"]) {
-      for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier"]) {
+      for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier", "shell-elevation"]) {
         const args = nativeRustTestArguments(suite, platform);
         const index = args.indexOf("--features");
         expect(index).toBeGreaterThan(0);
@@ -15,7 +15,7 @@ describe("native Rust CI test profiles", () => {
   });
 
   it.each(["linux", "darwin"])("keeps the default test profile on %s", (platform) => {
-    for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier"]) {
+    for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier", "shell-elevation"]) {
       const args = nativeRustTestArguments(suite, platform);
       expect(args.slice(0, 2), suite).toEqual(["test", "--locked"]);
       expect(args, suite).toContain("--no-default-features");
@@ -24,7 +24,7 @@ describe("native Rust CI test profiles", () => {
   });
 
   it("uses release-linked test binaries for every Windows native suite", () => {
-    for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier"]) {
+    for (const suite of ["portable-vault", "release-upgrade", "workspace", "easytier", "shell-elevation"]) {
       const args = nativeRustTestArguments(suite, "win32");
       expect(args.slice(0, 2), suite).toEqual(["test", "--locked"]);
       expect(args.indexOf("--release"), suite)
@@ -34,6 +34,7 @@ describe("native Rust CI test profiles", () => {
   });
 
   it("preserves suite filters and rejects unknown suites", () => {
+    expect(nativeRustTestArguments("shell-elevation", "win32")).toContain("portmate/bundled-shell-elevation");
     expect(nativeRustTestArguments("easytier", "linux")).toContain("portmate/bundled-easytier");
     expect(nativeRustTestArguments("release-upgrade", "win32"))
       .toContain("tests::release_upgrade_tests::");

@@ -426,3 +426,42 @@ fn shell_write_failure_cancel_and_dropped_future_reap_their_child() {
         }
     });
 }
+
+#[test]
+fn elevated_helper_lease_outlives_the_close_deadline_until_child_reap() {
+    tauri::async_runtime::block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        let resources = shell_elevation::test_resource_lease(directory);
+        let state = Arc::new(ChildState::default());
+        let mut child = ManagedShellChild::with_elevation(
+            Box::new(FakeChild {
+                state: Arc::clone(&state),
+                kill_release: None,
+            }),
+            Some(resources),
+            true,
+        );
+        let cleanup = child.begin_cleanup();
+        let again = child.begin_cleanup();
+        drop(child);
+        assert!(
+            wait_for_shell_child_cleanup(cleanup, Duration::from_millis(100))
+                .await
+                .is_err()
+        );
+        assert!(
+            path.is_dir(),
+            "helper must remain pinned while the child is alive"
+        );
+        state.exited.store(true, Ordering::SeqCst);
+        wait_for_shell_child_cleanup(again, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while path.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(!path.exists(), "helper lease must release after reap");
+    });
+}

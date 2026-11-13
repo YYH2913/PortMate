@@ -253,6 +253,9 @@ pub struct ShellConnection {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
+    /// A launch preference, never an authorization for background/MCP opens.
+    #[serde(default)]
+    pub elevated: bool,
 }
 
 pub const MAX_SHELL_ARGUMENTS: usize = 128;

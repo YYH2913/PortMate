@@ -1,0 +1,10 @@
+{
+  "version": "2.6.1",
+  "url": "https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip",
+  "sha256": "21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44",
+  "targets": {
+    "x86_64-pc-windows-msvc": "x64/gsudo.exe",
+    "x86_64-pc-windows-gnu": "x64/gsudo.exe",
+    "aarch64-pc-windows-msvc": "arm64/gsudo.exe"
+  }
+}

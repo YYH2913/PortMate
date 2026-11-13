@@ -64,6 +64,7 @@ copy(sidecar, join(stagingRoot, "portmate-mcp.exe"), 0o755);
 copy(loader, join(stagingRoot, "WebView2Loader.dll"), 0o644);
 copy(license, join(stagingRoot, "LICENSE"), 0o644);
 copy(thirdPartyLicense, join(stagingRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"), 0o644);
+copy(join(projectRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"), join(stagingRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"), 0o644);
 
 const payload = verifyWindowsPackageLayout({
   root: stagingRoot,
@@ -71,6 +72,7 @@ const payload = verifyWindowsPackageLayout({
   sourceSidecar: sidecar,
   sourceLicense: license,
   sourceThirdPartyLicense: thirdPartyLicense,
+  sourceElevationLicense: join(projectRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"),
 });
 run("zip", ["-q", "-9", "-r", archive, artifactName], { cwd: artifactRoot, env });
 run("zip", ["-T", archive], { cwd: artifactRoot, env });

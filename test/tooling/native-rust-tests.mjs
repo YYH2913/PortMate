@@ -6,6 +6,10 @@ import { collectWindowsLoaderDiagnostics, prepareWindowsNativeTestManifests } fr
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const suiteArguments = new Map([
+  ["shell-elevation", [
+    "test", "--locked", "-p", "portmate", "--no-default-features",
+    "--lib", "shell_elevation::", "--", "--test-threads=1",
+  ]],
   ["easytier", [
     "test", "--locked", "-p", "portmate", "--no-default-features",
     "--lib", "easytier::", "--", "--test-threads=1",
@@ -54,6 +58,7 @@ export function nativeRustTestArguments(suite, platform = process.platform) {
   }
   const args = [...configured];
   args.splice(args.indexOf("--"), 0, "--features", "portmate/test-probes");
+  if (suite === "shell-elevation") args.splice(args.indexOf("--"), 0, "--features", "portmate/bundled-shell-elevation");
   if (suite === "easytier") args.splice(args.indexOf("--"), 0, "--features", "portmate/bundled-easytier");
   if (platform === "win32") {
     // Vendored OpenSSL and libsodium must use the same release CRT as Rust on MSVC.

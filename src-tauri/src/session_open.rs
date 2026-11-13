@@ -128,6 +128,8 @@ pub(super) struct SessionOpenCredentials {
     pub(super) identity: Option<IdentityRef>,
     pub(super) isolate_saved_ssh_credentials: bool,
     pub(super) credential_binding: Option<SessionCredentialBinding>,
+    // Desktop-only consent bound to the exact configuration shown to the user.
+    pub(super) authorized_shell: Option<portmate_core::ShellConnection>,
 }
 
 pub(super) fn apply_session_open_profile_credentials(
@@ -229,9 +231,11 @@ pub(super) async fn open_session_under_lifecycle_lock(
         identity,
         isolate_saved_ssh_credentials,
         credential_binding,
+        authorized_shell,
     } = credentials;
     let prepare_state = state.clone();
     let prepare_session_id = session_id.clone();
+    let expected_shell = authorized_shell.clone();
     let profile = tauri::async_runtime::spawn_blocking(move || {
         let state = prepare_state;
         let session_id = prepare_session_id;
@@ -243,6 +247,7 @@ pub(super) async fn open_session_under_lifecycle_lock(
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         let endpoint = describe_endpoint(&saved_profile);
         let mut profile = normalize_session_profile(saved_profile);
+        shell_elevation::authorize_launch(&profile, expected_shell.as_ref())?;
         if let Some(binding) = credential_binding.as_ref() {
             validate_session_credential_binding(&profile, binding)?;
         }
@@ -254,6 +259,17 @@ pub(super) async fn open_session_under_lifecycle_lock(
         )?;
         commit_tracked_store_mutation(&mut store, &state.store_path, |next_store| {
             next_store.set_runtime_status(&session_id, SessionStatus::Connecting)?;
+            if expected_shell.is_some() {
+                next_store.record_audit(AuditRecord {
+                    id: Uuid::new_v4().to_string(),
+                    ts: Utc::now(),
+                    actor: "desktop-user".into(),
+                    action: "open_elevated_shell".into(),
+                    session_id: Some(session_id.clone()),
+                    decision: "authorized".into(),
+                    details: BTreeMap::from([("program".into(), endpoint.clone())]),
+                });
+            }
             let event_ids = next_store
                 .record_system_event_tracked(
                     &session_id,
@@ -357,7 +373,14 @@ pub(super) async fn open_session_under_lifecycle_lock(
     }
 
     if matches!(profile.connection, ConnectionConfig::Shell(_)) {
-        let prepare = spawn_session_prepare(&cancellation, move || prepare_shell_session(profile));
+        let data_directory = state.store_path.parent().map(Path::to_path_buf);
+        let prepare = spawn_session_prepare(&cancellation, move || {
+            prepare_shell_session_authorized(
+                profile,
+                data_directory.as_deref(),
+                authorized_shell.as_ref(),
+            )
+        });
         let prepared = match wait_for_session_prepare(
             &state,
             &session_id,

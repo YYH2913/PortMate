@@ -137,6 +137,21 @@ describe("native package layouts", () => {
     );
   });
 
+  it("verifies the Windows elevation helper MIT notice in installers and portable payloads", () => {
+    const fixture = windowsFixture();
+    const sourceElevationLicense = write(join(dirname(fixture.sourceLicense), "gsudo-MIT.txt"), "upstream MIT license");
+    const path = join(fixture.applicationDirectory, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt");
+    const options = { ...fixture, sourceElevationLicense };
+    expect(() => verifyWindowsPackageLayout(options)).toThrow(/gsudo-MIT.txt.*found 0/);
+    write(path, "upstream MIT license");
+    expect(verifyWindowsPackageLayout(options).sha256.elevationLicense).toMatch(/^[a-f0-9]{64}$/);
+    write(path, "modified");
+    expect(() => verifyWindowsPackageLayout(options)).toThrow("Windows elevation license SHA-256");
+    rmSync(path);
+    write(join(fixture.applicationDirectory, "gsudo-MIT.txt"), "upstream MIT license");
+    expect(() => verifyWindowsPackageLayout(options)).toThrow("Expected Windows elevation license at");
+  });
+
   it("accepts the expected macOS application bundle layout and metadata", () => {
     const fixture = macFixture();
 
