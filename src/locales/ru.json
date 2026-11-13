@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "Сеанс ещё запущен; отключите его перед изменением режима повышения прав Shell",
   "shell-elevation-config-changed": "Настройки терминала администратора изменились; проверьте их и подключитесь снова.",
   "native-message-b85c518ead5d": "PortMate: запрошено повышение прав Shell ({0}); завершите аутентификацию UAC/sudo",
-  "native-message-caec5e36a046": "Shell с повышенными правами завершился или авторизация не удалась ({0}, {1}); обычный Shell вместо него не запускался"
+  "native-message-caec5e36a046": "Shell с повышенными правами завершился или авторизация не удалась ({0}, {1}); обычный Shell вместо него не запускался",
+  "explorer-grouping-label": "Группировка",
+  "explorer-grouping": "Группировка сеансов",
+  "explorer-grouping-profile": "Группы профилей",
+  "explorer-grouping-type": "Тип сеанса",
+  "explorer-serial-type": "COM / Последовательный",
+  "explorer-ungrouped": "Без группы"
 }

@@ -1,5 +1,5 @@
 import { t, useLocale } from "./i18n";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import type { ComponentType, MouseEvent as ReactMouseEvent, SVGProps } from "react";
 import type { CommandHistoryEntry } from "./command-history-state";
 import { filterWorkspaceSessions } from "./session-search-state";
@@ -7,6 +7,8 @@ import { sessionRuntimeHealthDescription } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
 import ShellElevationIndicator from "./ShellElevationIndicator";
 import { shellElevationRequested } from "./shell-elevation";
+import { groupExplorerSessions, normalizeSessionExplorerGrouping, readSessionExplorerGrouping, sessionExplorerTypeLabel, subscribeSessionExplorerGrouping, writeSessionExplorerGrouping } from "./session-explorer-grouping";
+import type { SessionExplorerGroup } from "./session-explorer-grouping";
 
 type UtilityIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: string | number }>;
 type UtilityPanelIcons = {
@@ -48,11 +50,25 @@ export function SessionExplorerPanel({
 }) {
   useLocale();
   const [query, setQuery] = useUtilityPanelFilter("explorer");
+  const grouping = useSyncExternalStore(subscribeSessionExplorerGrouping, readSessionExplorerGrouping, () => "profile" as const);
   const visible = useMemo(() => filterWorkspaceSessions(sessions, query), [query, sessions]);
-  const groups = useMemo(() => groupSessions(visible, (session) => session.profile.group || "Sessions"), [visible]);
+  const groups = useMemo(() => groupExplorerSessions(visible, grouping), [grouping, visible]);
   return (
     <>
-      <PanelFilter label={t("filter-explorer-sessions")} value={query} icons={icons} onChange={setQuery} />
+      <div className="explorer-controls">
+        <PanelFilter label={t("filter-explorer-sessions")} value={query} icons={icons} onChange={setQuery} />
+        <label className="explorer-grouping">
+          <span>{t("explorer-grouping-label")}</span>
+          <select
+            aria-label={t("explorer-grouping")}
+            value={grouping}
+            onChange={(event) => writeSessionExplorerGrouping(normalizeSessionExplorerGrouping(event.target.value))}
+          >
+            <option value="profile">{t("explorer-grouping-profile")}</option>
+            <option value="type">{t("explorer-grouping-type")}</option>
+          </select>
+        </label>
+      </div>
       <SessionTree
         groups={groups}
         activeId={activeId}
@@ -180,7 +196,7 @@ function SessionTree({
   onSelect,
   onOpenContextMenu,
 }: {
-  groups: Readonly<Record<string, SessionSummary[]>>;
+  groups: readonly SessionExplorerGroup[];
   activeId: string;
   colors: Readonly<Record<string, string>>;
   icons: UtilityPanelIcons;
@@ -190,50 +206,43 @@ function SessionTree({
 }) {
   useLocale();
   const { Folder } = icons;
-  if (!Object.keys(groups).length) return <div className="empty-pane top">{emptyLabel}</div>;
+  if (!groups.length) return <div className="empty-pane top">{emptyLabel}</div>;
   return (
     <div className="tree-list">
-      {Object.entries(groups).map(([group, items]) => (
-        <div key={group}>
-          <div className="tree-folder">
-            <Folder size={14} />
-            <span>{group}</span>
+      {groups.map((group) => {
+        const label = group.type
+          ? sessionExplorerTypeLabel(group.type, t("explorer-serial-type"))
+          : group.name || t("explorer-ungrouped");
+        return (
+          <div key={group.key} data-session-group={group.key}>
+            <div className="tree-folder" title={label}>
+              <Folder size={14} aria-hidden="true" />
+              <span>{label}</span>
+            </div>
+            {group.sessions.map((session) => {
+              const health = sessionRuntimeHealthDescription(session.runtime);
+              return (
+                <button
+                  key={session.profile.id}
+                  type="button"
+                  className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
+                  title={`${session.profile.name}\n${health}`}
+                  aria-label={session.profile.name}
+                  aria-description={health}
+                  onClick={() => onSelect(session.profile.id)}
+                  onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
+                >
+                  <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
+                  {shellElevationRequested(session.profile) ? <ShellElevationIndicator profile={session.profile} /> : null}
+                  <span>{session.profile.name}</span>
+                </button>
+              );
+            })}
           </div>
-          {items.map((session) => {
-            const health = sessionRuntimeHealthDescription(session.runtime);
-            return (
-              <button
-                key={session.profile.id}
-                type="button"
-                className={session.profile.id === activeId ? "tree-session active" : "tree-session"}
-                title={`${session.profile.name}\n${health}`}
-                aria-label={session.profile.name}
-                aria-description={health}
-                onClick={() => onSelect(session.profile.id)}
-                onContextMenu={(event) => onOpenContextMenu(event, session.profile.id)}
-              >
-                <span className="cyan-dot" style={colors[session.profile.id] ? { background: colors[session.profile.id] } : undefined} />
-                {shellElevationRequested(session.profile) ? <ShellElevationIndicator profile={session.profile} /> : null}
-                <span>{session.profile.name}</span>
-              </button>
-            );
-          })}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
-}
-
-function groupSessions(
-  sessions: readonly SessionSummary[],
-  keyFor: (session: SessionSummary) => string,
-): Record<string, SessionSummary[]> {
-  return sessions.reduce<Record<string, SessionSummary[]>>((groups, session) => {
-    const key = keyFor(session);
-    groups[key] ??= [];
-    groups[key].push(session);
-    return groups;
-  }, {});
 }
 
 function displayCommand(command: string): string {

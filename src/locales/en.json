@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "The session is still running; disconnect before changing Shell elevation mode",
   "shell-elevation-config-changed": "Elevated shell configuration changed; review it and connect again",
   "native-message-b85c518ead5d": "PortMate: shell elevation requested ({0}); complete UAC/sudo authentication",
-  "native-message-caec5e36a046": "Elevated shell exited or authorization failed ({0}, {1}); no normal fallback shell was started"
+  "native-message-caec5e36a046": "Elevated shell exited or authorization failed ({0}, {1}); no normal fallback shell was started",
+  "explorer-grouping-label": "Group by",
+  "explorer-grouping": "Session grouping",
+  "explorer-grouping-profile": "Profile groups",
+  "explorer-grouping-type": "Session type",
+  "explorer-serial-type": "COM / Serial",
+  "explorer-ungrouped": "Ungrouped"
 }

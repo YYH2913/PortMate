@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "La session est toujours active ; déconnectez-la avant de changer le mode d’élévation du terminal",
   "shell-elevation-config-changed": "La configuration du terminal avec élévation a changé ; vérifiez-la puis reconnectez-vous.",
   "native-message-b85c518ead5d": "PortMate : élévation du terminal demandée ({0}) ; terminez l’authentification UAC/sudo",
-  "native-message-caec5e36a046": "Le terminal avec élévation s’est fermé ou l’autorisation a échoué ({0}, {1}) ; aucun terminal ordinaire de secours n’a été lancé"
+  "native-message-caec5e36a046": "Le terminal avec élévation s’est fermé ou l’autorisation a échoué ({0}, {1}) ; aucun terminal ordinaire de secours n’a été lancé",
+  "explorer-grouping-label": "Grouper par",
+  "explorer-grouping": "Regroupement des sessions",
+  "explorer-grouping-profile": "Groupes configurés",
+  "explorer-grouping-type": "Type de session",
+  "explorer-serial-type": "COM / Série",
+  "explorer-ungrouped": "Sans groupe"
 }

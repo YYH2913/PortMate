@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "لا تزال الجلسة قيد التشغيل؛ افصلها قبل تغيير وضع رفع صلاحيات الطرفية",
   "shell-elevation-config-changed": "تغيّر إعداد الطرفية ذات الصلاحيات المرتفعة؛ راجعه ثم اتصل مجددًا.",
   "native-message-b85c518ead5d": "PortMate: طُلب رفع صلاحيات الطرفية ({0})؛ أكمل مصادقة UAC/sudo",
-  "native-message-caec5e36a046": "خرجت الطرفية بصلاحيات مرتفعة أو فشل التفويض ({0}، {1})؛ لم تُشغّل طرفية عادية بديلة"
+  "native-message-caec5e36a046": "خرجت الطرفية بصلاحيات مرتفعة أو فشل التفويض ({0}، {1})؛ لم تُشغّل طرفية عادية بديلة",
+  "explorer-grouping-label": "تجميع حسب",
+  "explorer-grouping": "تجميع الجلسات",
+  "explorer-grouping-profile": "مجموعات الإعدادات",
+  "explorer-grouping-type": "نوع الجلسة",
+  "explorer-serial-type": "COM / تسلسلي",
+  "explorer-ungrouped": "بلا مجموعة"
 }

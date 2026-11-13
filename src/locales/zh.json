@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "会话仍在运行；更改 Shell 提权模式前请先断开连接",
   "shell-elevation-config-changed": "提权终端配置已更改，请检查后重新连接。",
   "native-message-b85c518ead5d": "PortMate: 已请求 Shell 提权（{0}）；请完成 UAC/sudo 认证",
-  "native-message-caec5e36a046": "提权 Shell 已退出或认证失败（{0}，{1}）；未降级启动普通 Shell"
+  "native-message-caec5e36a046": "提权 Shell 已退出或认证失败（{0}，{1}）；未降级启动普通 Shell",
+  "explorer-grouping-label": "分组",
+  "explorer-grouping": "会话分组方式",
+  "explorer-grouping-profile": "按配置分组",
+  "explorer-grouping-type": "按会话类型",
+  "explorer-serial-type": "COM / 串口",
+  "explorer-ungrouped": "未分组"
 }

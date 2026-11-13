@@ -4084,5 +4084,11 @@
   "native-message-51a0946f142f": "La sesión sigue activa; desconéctela antes de cambiar el modo de elevación del terminal",
   "shell-elevation-config-changed": "La configuración del terminal elevado cambió; revísela y vuelva a conectar.",
   "native-message-b85c518ead5d": "PortMate: elevación del terminal solicitada ({0}); complete la autenticación UAC/sudo",
-  "native-message-caec5e36a046": "El terminal elevado salió o falló la autorización ({0}, {1}); no se inició un terminal normal alternativo"
+  "native-message-caec5e36a046": "El terminal elevado salió o falló la autorización ({0}, {1}); no se inició un terminal normal alternativo",
+  "explorer-grouping-label": "Agrupar por",
+  "explorer-grouping": "Agrupación de sesiones",
+  "explorer-grouping-profile": "Grupos configurados",
+  "explorer-grouping-type": "Tipo de sesión",
+  "explorer-serial-type": "COM / Serie",
+  "explorer-ungrouped": "Sin grupo"
 }

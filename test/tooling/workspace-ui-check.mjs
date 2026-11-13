@@ -24,6 +24,7 @@ import { checkTftpProgress } from "./tftp-progress-regressions.mjs";
 import { checkStartupPerformance } from "./startup-performance-regressions.mjs";
 import { checkTunnelHelp } from "./tunnel-help-regressions.mjs";
 import { checkShellElevation } from "./shell-elevation-regressions.mjs";
+import { checkSessionExplorerGrouping } from "./session-explorer-grouping-regressions.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -2010,6 +2011,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_SESSION_GROUPING_ONLY === "1") {
+    await checkSessionExplorerGrouping(context, appUrl, screenshotPrefix);
+    console.log("Explorer protocol grouping, persistent/cross-window preference, filtering and responsive six-language layout passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SHELL_ELEVATION_ONLY === "1") {
     await checkShellElevation(context, appUrl, screenshotPrefix);
     console.log("Shell elevation consent, offline desktop routing, settings, private sudo input and startup boundaries passed");
@@ -10556,6 +10563,7 @@ Host staging
   await Promise.all(context.pages().map(openPage => openPage.close()));
   await checkTunnelHelp(context, appUrl, screenshotPrefix);
   await checkShellElevation(context, appUrl, screenshotPrefix);
+  await checkSessionExplorerGrouping(context, appUrl, screenshotPrefix);
   await checkPacedSender(context, appUrl);
 
   console.log(JSON.stringify({

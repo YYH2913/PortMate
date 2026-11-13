@@ -1627,6 +1627,40 @@ body[data-portmate-modal-open] .portmate-context-menu {
   color: var(--text);
 }
 
+.explorer-controls {
+  min-width: 0;
+}
+
+.explorer-grouping {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.explorer-grouping select {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  background: var(--control);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+
+.explorer-grouping select:hover,
+.explorer-grouping select:focus-visible {
+  border-color: var(--cyan);
+}
+
 .empty-pane {
   display: grid;
   place-items: center;
@@ -1658,10 +1692,10 @@ body[data-portmate-modal-open] .portmate-context-menu {
 
 .tree-session {
   width: 100%;
-  padding-left: 24px;
+  padding-inline-start: 24px;
   border: 0;
   background: transparent;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -1673,6 +1707,19 @@ body[data-portmate-modal-open] .portmate-context-menu {
 
 .tree-session:hover {
   background: rgba(141, 160, 179, 0.1);
+}
+
+.tree-folder > span,
+.tree-session > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-folder svg,
+.tree-session > .cyan-dot {
+  flex-shrink: 0;
 }
 
 .tree-folder svg {
