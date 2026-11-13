@@ -180,6 +180,11 @@ processes started by the shell are outside that lifecycle.
 
 ### Session behavior
 
+In the session Explorer, **Group by → Session type** automatically groups SSH,
+COM / Serial, Shell, Telnet, TCP and Tmux sessions. Switch back to **Profile groups**
+to use saved custom groups. The view preference is remembered and synchronized
+between workspace windows; it does not modify session profiles.
+
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
 Startup recovery runs in the background with at most four simultaneous connections.
