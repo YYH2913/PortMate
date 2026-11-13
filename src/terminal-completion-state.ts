@@ -136,7 +136,10 @@ export function reduceTerminalCompletionInput(
     }
     if (!synchronized) continue;
     if (character === "\b" || character === "\u007f") {
-      line = Array.from(line).slice(0, -1).join("");
+      const last = line.charCodeAt(line.length - 1);
+      const previous = line.charCodeAt(line.length - 2);
+      const width = last >= 0xdc00 && last <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff ? 2 : 1;
+      line = line.slice(0, Math.max(0, line.length - width));
       continue;
     }
     if (character === "\u0015") {
@@ -148,11 +151,13 @@ export function reduceTerminalCompletionInput(
       continue;
     }
     if (character >= " " && character !== "\u007f") {
-      if (Array.from(line).length >= MAX_COMPLETION_LINE_CHARACTERS) {
+      line += character;
+      // UTF-16 length is an inexpensive upper bound. Only scan code points
+      // near the cap, rather than allocating a copy on every keystroke.
+      if (line.length > MAX_COMPLETION_LINE_CHARACTERS
+        && Array.from(line).length > MAX_COMPLETION_LINE_CHARACTERS) {
         line = "";
         synchronized = false;
-      } else {
-        line += character;
       }
       continue;
     }

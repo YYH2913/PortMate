@@ -22,6 +22,22 @@ export function trackTerminalCommandInput(
     state: { ...emptyTerminalCommandLineTracker(), synchronized: /[\r\n\u0003\u0015]$/.test(input) },
     submitted: [],
   };
+  // Ordinary typing at the end of a BMP-only line needs no copy of the
+  // accumulated command. Keep code-point-aware editing/escape parsing below
+  // for every other case. Counting only this packet also handles IME chunks.
+  if (current.synchronized && !current.pendingEscape
+    && current.cursor === current.line.length && !/[\u0000-\u001f\u007f-\u009f]/.test(input)) {
+    let added = 0;
+    for (const _character of input) added++;
+    if (current.cursor + added > MAX_COMMAND_HISTORY_COMMAND_CHARACTERS) {
+      return { state: { ...current, line: "", cursor: 0, synchronized: false }, submitted: [] };
+    }
+    return { state: { ...current, line: current.line + input, cursor: current.cursor + added }, submitted: [] };
+  }
+  if (current.synchronized && !current.pendingEscape && !current.bracketedPaste
+    && current.cursor === current.line.length && (input === "\b" || input === "\u007f")) {
+    return { state: { ...current, line: current.line.slice(0, -1), cursor: Math.max(0, current.cursor - 1) }, submitted: [] };
+  }
   let state = { ...current, pendingEscape: "" };
   const submitted: string[] = [];
   const inputChars = Array.from(current.pendingEscape + input);

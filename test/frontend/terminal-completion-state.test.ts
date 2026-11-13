@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
@@ -114,6 +114,31 @@ describe("terminal completion state", () => {
     expect(state).toEqual({ line: "", synchronized: false });
     expect(reduceTerminalCompletionInput(state, "ignored").synchronized).toBe(false);
     expect(reduceTerminalCompletionInput(state, "\rnext")).toEqual({ line: "next", synchronized: true });
+  });
+
+  it("does not copy the accumulated line while typing and deleting below its cap", () => {
+    const from = vi.spyOn(Array, "from");
+    let state = emptyTerminalCompletionInputState;
+    try {
+      for (let index = 0; index < 160; index++) state = reduceTerminalCompletionInput(state, "😀x");
+      for (let index = 0; index < 320; index++) state = reduceTerminalCompletionInput(state, "\x7f");
+      expect(from).not.toHaveBeenCalled();
+      expect(state).toEqual(emptyTerminalCompletionInputState);
+    } finally { from.mockRestore(); }
+  });
+
+  it("keeps the 512-code-point boundary and removes non-BMP and unpaired surrogates losslessly", () => {
+    for (const input of ["a".repeat(512), "😀".repeat(512), "a😀".repeat(256)]) {
+      const state = reduceTerminalCompletionInput(emptyTerminalCompletionInputState, input);
+      expect(state).toEqual({ line: input, synchronized: true });
+      expect(reduceTerminalCompletionInput(state, "x")).toEqual({ line: "", synchronized: false });
+      expect(reduceTerminalCompletionInput(state, "x\x7fsuffix\rpublic")).toEqual({ line: "public", synchronized: true });
+    }
+    for (const input of ["😀", "\ud800", "\udc00", "a😀", "😀a"]) {
+      const state = reduceTerminalCompletionInput(emptyTerminalCompletionInputState, input);
+      expect(reduceTerminalCompletionInput(state, "\b").line).toBe(Array.from(input).slice(0, -1).join(""));
+    }
+    expect(reduceTerminalCompletionInput(emptyTerminalCompletionInputState, "\x7f\b").line).toBe("");
   });
 
   it("only returns suggestion state, with no command submission channel", () => {

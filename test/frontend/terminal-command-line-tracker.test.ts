@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { emptyTerminalCommandLineTracker, trackTerminalCommandInput } from "../../src/terminal-command-line-tracker";
+import { MAX_COMMAND_HISTORY_COMMAND_CHARACTERS } from "../../src/command-history-state";
 
 describe("terminal command line tracker", () => {
   it("only extracts terminated lines from a text payload", () => {
@@ -54,5 +55,50 @@ describe("terminal command line tracker", () => {
       .submitted).toEqual(["git status", "printf one", "printf two"]);
     expect(trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "cancelled\x03\r").submitted).toEqual([]);
     expect(trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "secret\x1b[A\r").submitted).toEqual([]);
+  });
+
+  it("appends a long typed line without rebuilding its accumulated code-point array per key", () => {
+    let state = emptyTerminalCommandLineTracker();
+    const from = vi.spyOn(Array, "from");
+    try {
+      for (let index = 0; index < MAX_COMMAND_HISTORY_COMMAND_CHARACTERS; index++) {
+        const previous = state;
+        state = trackTerminalCommandInput(previous, "x").state;
+        expect(previous.line.length).toBe(index); // immutable snapshots
+      }
+      expect(from).not.toHaveBeenCalled();
+    } finally { from.mockRestore(); }
+    expect(trackTerminalCommandInput(state, "\r").submitted).toEqual(["x".repeat(MAX_COMMAND_HISTORY_COMMAND_CHARACTERS)]);
+    const overflow = trackTerminalCommandInput(state, "x").state;
+    expect(overflow.synchronized).toBe(false);
+    expect(overflow.line).toBe("");
+    expect(trackTerminalCommandInput(overflow, "suffix\rpublic\r").submitted).toEqual(["public"]);
+  });
+
+  it("preserves code-point edits and bracketed paste across the append fast path", () => {
+    let state = trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "ab").state;
+    state = trackTerminalCommandInput(state, "中😀").state;
+    expect(state.cursor).toBe(4);
+    state = trackTerminalCommandInput(state, "c\x1b[D\x7f").state;
+    expect(trackTerminalCommandInput(state, "\r").submitted).toEqual(["ab中c"]);
+    state = trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "\x1b[200~").state;
+    state = trackTerminalCommandInput(state, "echo one").state;
+    state = trackTerminalCommandInput(state, "\recho two\x1b[201~").state;
+    expect(trackTerminalCommandInput(state, "\r").submitted).toEqual(["echo one\necho two"]);
+  });
+
+  it("deletes at a BMP line end without copying, but keeps literal paste controls conservative", () => {
+    let state = trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "中ab").state;
+    const from = vi.spyOn(Array, "from");
+    try {
+      for (const text of ["\b", "\x7f", "\b", "\x7f"]) state = trackTerminalCommandInput(state, text).state;
+      expect(from).not.toHaveBeenCalled();
+      expect(state).toEqual(emptyTerminalCommandLineTracker());
+    } finally { from.mockRestore(); }
+    state = trackTerminalCommandInput(emptyTerminalCommandLineTracker(), "\x1b[200~abc").state;
+    state = trackTerminalCommandInput(state, "\x7f").state;
+    expect(state.synchronized).toBe(false);
+    expect(state.line).toBe("");
+    expect(trackTerminalCommandInput(state, "\x1b[201~\r").submitted).toEqual([]);
   });
 });
