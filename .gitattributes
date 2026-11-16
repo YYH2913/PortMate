@@ -6,3 +6,7 @@ licenses/Wintun-LICENSE.txt -text whitespace=cr-at-eol,-blank-at-eof
 licenses/WinDivert-LICENSE.txt -text whitespace=-blank-at-eof
 # Provenance hashes describe upstream LF bytes; Windows checkout must not rewrite them.
 crates/iota-crypto/** text eol=lf
+
+# Preserve the audited portable-pty source bytes across Windows checkouts.
+crates/portable-pty/** text eol=lf
+licenses/portable-pty-MIT.txt text eol=lf

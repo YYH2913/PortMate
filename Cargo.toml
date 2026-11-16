@@ -8,12 +8,15 @@ members = [
   "crates/portmate-mcp",
   "crates/portmate-process-watchdog",
   "crates/russh-sftp",
+  "crates/portable-pty",
   "src-tauri",
 ]
 resolver = "2"
 exclude = ["crates/libsodium-sys-stable", "crates/iota-crypto"]
 
 [patch.crates-io]
+# New terminals must not wait for a renderer-only ConPTY cursor handshake.
+portable-pty = { path = "crates/portable-pty" }
 # Keep Stronghold snapshot compatibility while updating its secp256k1 dependency.
 iota-crypto = { path = "crates/iota-crypto" }
 # Upstream 1.24.x still requires the vulnerable zip 8.x build dependency.

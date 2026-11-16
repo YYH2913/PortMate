@@ -52,7 +52,8 @@
       "../licenses/EasyTier-LGPL-3.0.txt": "THIRD_PARTY_LICENSES/EasyTier-LGPL-3.0.txt",
       "../licenses/GPL-3.0.txt": "THIRD_PARTY_LICENSES/GPL-3.0.txt",
       "../licenses/Wintun-LICENSE.txt": "THIRD_PARTY_LICENSES/Wintun-LICENSE.txt",
-      "../licenses/WinDivert-LICENSE.txt": "THIRD_PARTY_LICENSES/WinDivert-LICENSE.txt"
+      "../licenses/WinDivert-LICENSE.txt": "THIRD_PARTY_LICENSES/WinDivert-LICENSE.txt",
+      "../licenses/portable-pty-MIT.txt": "THIRD_PARTY_LICENSES/portable-pty-MIT.txt"
     },
     "icon": [
       "icons/32x32.png",

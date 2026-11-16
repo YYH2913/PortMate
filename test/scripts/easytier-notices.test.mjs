@@ -28,7 +28,7 @@ describe("EasyTier redistribution notices", () => {
     const root = mkdtempSync(join(tmpdir(), "portmate-notices-")); roots.push(root);
     const directory = join(root, "THIRD_PARTY_LICENSES");
     expect(copyEasyTierNotices(directory).files).toEqual(easyTierNotices);
-    expect(verifyEasyTierNotices(directory).files.length).toBe(5);
+    expect(verifyEasyTierNotices(directory).files.length).toBe(6);
     const path = join(directory, easyTierNotices[0]);
     writeFileSync(path, "modified"); expect(() => verifyEasyTierNotices(directory)).toThrow("modified");
     copyEasyTierNotices(directory); rmSync(path); expect(() => verifyEasyTierNotices(directory)).toThrow();

@@ -21,6 +21,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ### Fixed
 
+- Windows background Shell/MCP sessions no longer wait for a frontend cursor-position reply. / Windows 后台 Shell/MCP 会话不再等待前端光标位置应答而卡住。
 - Recover missing MCP desktop IPC after updates. / 修复更新后 MCP 桌面 IPC 丢失。
 - Smoother continuous typing, high-volume RX/TX and TUI rendering; safer GPU fallback and correct timestamps. / 优化连续输入、大流量收发与 TUI 流畅度，修复 GPU 回退及时间戳。
 - Keep history/log queries off the UI thread and shell completion out of alternate-screen TUIs. / 历史与日志查询移出 UI 线程，备用屏幕 TUI 不再误弹 Shell 补全。
