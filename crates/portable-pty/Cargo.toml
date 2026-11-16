@@ -80,6 +80,17 @@ serde_support = [
     "serde_derive",
 ]
 
+# The vendored upstream crate is compiled under PortMate's workspace-wide
+# `-D warnings`; retain its upstream source bytes and document the baseline
+# lints rather than modifying audited code solely for local lint policy.
+[lints.clippy]
+single_component_path_imports = "allow"
+redundant_field_names = "allow"
+needless_borrows_for_generic_args = "allow"
+option_as_ref_deref = "allow"
+useless_conversion = "allow"
+manual_map = "allow"
+
 [target."cfg(windows)".dependencies.bitflags]
 version = "1.3"
 
