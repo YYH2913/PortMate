@@ -34,6 +34,7 @@ describe("patched security dependency graph", () => {
   });
 
   it("keeps the patched fork honest about its origin and unchanged snapshot cryptography", () => {
+    expect(source(".gitattributes")).toMatch(/^crates\/iota-crypto\/\*\* text eol=lf$/m);
     const workspace = source("Cargo.toml");
     expect(workspace).toContain('iota-crypto = { path = "crates/iota-crypto" }');
     const manifest = source("crates/iota-crypto/Cargo.toml");

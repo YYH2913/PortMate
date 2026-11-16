@@ -4,3 +4,5 @@ test/fixtures/stronghold/*.snapshot binary
 # Preserve verbatim upstream license bytes, including CRLF/trailing blank lines.
 licenses/Wintun-LICENSE.txt -text whitespace=cr-at-eol,-blank-at-eof
 licenses/WinDivert-LICENSE.txt -text whitespace=-blank-at-eof
+# Provenance hashes describe upstream LF bytes; Windows checkout must not rewrite them.
+crates/iota-crypto/** text eol=lf
