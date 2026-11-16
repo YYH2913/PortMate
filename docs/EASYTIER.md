@@ -5,7 +5,8 @@
 PortMate includes the unmodified [EasyTier 2.6.4](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)
 core and CLI inside the desktop executable. Windows/Linux x64 and macOS ARM64
 installers, portable archives and signed updater packages all carry this payload.
-There is no separate component download, external program directory or system service.
+The EasyTier core needs no separate download or system service. Windows additionally
+requires the user’s separately licensed Npcap installation (see below).
 Networking starts only when requested by the user.
 
 ### Configuration and operation
@@ -44,11 +45,11 @@ service or automatic restart outside PortMate is installed.
 ### Built-in runtime and source builds
 
 The first connection writes the embedded, target-specific core, CLI and required
-Windows DLLs/driver into a private `easytier/builtin-2.6.4-<payload-id>/` directory
+Windows Wintun/WinDivert files into a private `easytier/builtin-2.6.4-<payload-id>/` directory
 under PortMate's application data. Every subsequent start verifies file sizes,
 SHA-256 hashes and executable permissions; missing or altered files are restored
-from the built-in payload. An intact runtime is reused. This preparation needs no
-network connection. Early development settings containing an external binary
+from the built-in payload. An intact runtime is reused. Preparing the bundled
+payload needs no network connection; first-time Npcap setup on Windows is separate. Early development settings containing an external binary
 directory migrate to the built-in core.
 
 The Tauri development and production build hooks run `npm run easytier:prepare`.
@@ -80,13 +81,53 @@ independent of PortMate's Rust libraries. EasyTier uses
 [LGPL-3.0](../licenses/EasyTier-LGPL-3.0.txt), incorporating
 [GPL-3.0](../licenses/GPL-3.0.txt). Both texts and the matching
 [upstream source reference](https://github.com/EasyTier/EasyTier/tree/v2.6.4)
-are embedded and written alongside the runtime. PortMate retains its Apache-2.0 license.
+are embedded and written alongside the runtime. Installer and portable resources
+also expose these texts, the integration notice and the separate Wintun/WinDivert
+licenses without starting networking. PortMate retains its Apache-2.0 license.
+PortMate is an independent integration, not an official EasyTier or Nmap product
+and not endorsed by them. See [the full attribution notice](../licenses/EasyTier-NOTICE.txt).
+
+### Windows: Npcap is not bundled
+
+Npcap (by the Nmap Project) is **not** LGPL software and is not included in PortMate
+installers, portable packages or embedded payloads. Its Packet.dll is excluded even
+though it occurs in the upstream EasyTier ZIP. Windows EasyTier needs a separate
+local Npcap installation, including its driver; Linux and macOS do not.
+
+In **Component settings**, review the official [Npcap EULA](https://github.com/nmap/npcap/blob/v1.90/LICENSE)
+and [download source](https://npcap.com/#download). Click **Download official Npcap**
+and confirm the native prompt. PortMate downloads the pinned 1.90 installer directly
+from `https://npcap.com/dist/npcap-1.90.exe`, with a size/deadline limit and no redirects,
+and verifies SHA-256, Windows Authenticode and the Nmap/Insecure.Com publisher.
+The installer is not launched by downloading. The separate **Open interactive installer**
+action requires another confirmation and opens the official GUI and Windows UAC,
+without silent switches, automatic EULA acceptance or preset driver choices.
+After completion, click **Recheck installation**; restart Windows if requested.
+Cancelling or failing setup never starts networking. An already installed copy is reused.
+
+Detection uses the native Windows system directory, not PATH, the current directory
+or a downloaded DLL. The installed Packet.dll is signature-checked and held against
+replacement before a private per-run copy is staged beside the unmodified core/CLI.
+That user-local copy is removed after the managed networking process exits; it is
+not part of PortMate distribution. An active official installer remains independent:
+PortMate does not terminate it halfway through driver changes, and app updates wait
+for the user to finish or cancel it. A cancelled download cleans its temporary files.
+
+Downloading does not accept Npcap’s EULA. Its free license normally permits five
+installations, with specified exceptions; users must meet its applicable deployment
+limits and any separately required [OEM authorization](https://npcap.com/oem/).
+PortMate does not grant redistribution or silent-install rights and does not install
+Npcap automatically at startup, from an MCP request, or during CI tests.
+
+Use EasyTier only for lawful purposes and only on networks/devices you are authorized
+to connect to and administer, as stated in the upstream [responsible-use notice](https://github.com/EasyTier/EasyTier/blob/main/README_CN.md).
 
 ## 中文
 
 PortMate 将未修改的 [EasyTier 2.6.4](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)
 核心、CLI 和必要运行库内置到桌面可执行程序。Windows/Linux x64 与 macOS ARM64 的安装包、
-便携版和自动更新包均包含，不需要另行下载组件、选择程序目录或安装系统服务。组网由用户主动启动。
+便携版和自动更新包均包含 EasyTier 核心，无需选择程序目录或安装系统服务；Windows
+另需由用户单独安装 Npcap。组网由用户主动启动。
 
 ### 配置与使用
 
@@ -105,9 +146,9 @@ UPnP 端口映射和其他网络的中继转发默认关闭。
 
 ### 内置组件与源码构建
 
-首次连接将内置核心、CLI、Windows 必要 DLL/驱动写入应用数据目录下的
+首次连接将内置核心、CLI、Windows 的 Wintun/WinDivert 文件写入应用数据目录下的
 `easytier/builtin-2.6.4-<payload-id>/`。每次启动校验大小、SHA-256 与可执行权限，
-缺失或修改时从内置内容恢复，完整文件直接复用。此过程无需网络；早期开发版本的外部目录配置自动迁移到内置核心。
+缺失或修改时从内置内容恢复，完整文件直接复用。准备内置内容无需网络；Windows 首次安装 Npcap 是独立流程。早期开发版本的外部目录配置自动迁移到内置核心。
 
 Tauri 开发和生产构建自动运行 `npm run easytier:prepare`，构建阶段缓存官方归档，
 校验 `src-tauri/easytier-manifest.json` 中的固定 SHA-256，Rust 再次校验后仅嵌入所需文件。
@@ -125,4 +166,31 @@ Tauri 开发和生产构建自动运行 `npm run easytier:prepare`，构建阶�
 
 内置上游程序作为独立进程执行，未链接到 PortMate 的 Rust 库中。EasyTier 遵循 LGPL-3.0
 （包含 GPL-3.0 条款），两份许可文本与对应源码链接一并内置，并写入运行目录。
-PortMate 自身仍使用 Apache-2.0 许可证。
+安装包和便携包的第三方资源目录也直接提供许可文本及[完整引用声明](../licenses/EasyTier-NOTICE.txt)，
+不必先启动组网。PortMate 自身仍使用 Apache-2.0，不代表 EasyTier、Nmap/Npcap 或 WireGuard 官方产品或其背书。
+
+### Windows：Npcap 独立安装
+
+Npcap 由 Nmap Project 提供，**并非 LGPL 软件**。PortMate 安装包、便携包和内置载荷均
+不包含 Npcap 或 Packet.dll；即使上游 EasyTier ZIP 内带有该 DLL，也会在构建时排除。
+Windows EasyTier 需要本机另行安装 Npcap 及其驱动，Linux/macOS 不需要。
+
+进入组件设置，阅读 [Npcap 自身许可](https://github.com/nmap/npcap/blob/v1.90/LICENSE) 与
+[官方下载来源](https://npcap.com/#download)。点击下载并确认原生提示后，仅从
+`https://npcap.com/dist/npcap-1.90.exe` 获取固定版本安装器，限制大小与超时、禁止跳转，
+核对 SHA-256、Windows Authenticode 和 Nmap/Insecure.Com 发布者。下载完成不会启动安装器。
+另行点击「打开交互式安装器」并确认后，才打开官方安装界面及 Windows UAC；
+不传静默参数、不代替接受 EULA、不预选驱动选项。完成安装后重新检测，按要求重启 Windows。
+取消或失败不会自动开始组网；已安装时复用本机组件。
+
+检测仅使用 Windows 原生系统目录，不搜索 PATH、当前目录或网上拆出的 DLL。
+本机 Packet.dll 通过签名校验并锁定后，才复制到私有的单次运行目录供核心/CLI 加载，
+组网进程结束后清理；该用户本机副本不进入 PortMate 分发包。官方安装器是独立进程，
+PortMate 不会在其修改驱动时强杀它；应用更新需先完成或取消该安装器。取消下载会清理临时文件。
+
+下载不代表接受 Npcap EULA。免费许可通常最多允许五台安装（另有明确例外），
+使用者须遵守适用范围及部署限制，需要时另行获得 [OEM 授权](https://npcap.com/oem/)。
+PortMate 不授予再分发或静默安装权利，不在启动、MCP 调用或 CI 测试中自动安装 Npcap。
+
+仅将组网用于合法用途，遵守适用法律法规，并确保已获授权连接和管理相关网络及设备；
+参见上游[使用规范](https://github.com/EasyTier/EasyTier/blob/main/README_CN.md)。

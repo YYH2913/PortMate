@@ -6,38 +6,33 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
-### Fixed
-
-- Reduce continuous-typing overhead and keep session/log queries and Enter-history writes off the desktop UI thread. / 减少连续输入开销，避免会话/日志查询及回车历史写入阻塞桌面界面。
-- Stop shell completion from intercepting Tab/arrow keys in alternate-screen TUIs. / 修复备用屏幕 TUI 误弹 Shell 补全及抢占 Tab/方向键。
-
-## [0.1.15] - 2026-11-12
+## [0.1.15] - 2026-11-15
 
 ### Added
 
-- Optional session-type grouping in Explorer, with remembered selection. / 会话资源管理器支持按类型自动分组，并记住选择。
-- Per-session local terminal elevation: Windows UAC and Linux/macOS sudo, with manual consent. / 本地终端支持单会话提权：Windows UAC、Linux/macOS sudo，需手动确认。
-- Built-in EasyTier networking with configuration, peers and traffic status. / 内置 EasyTier 组网，支持配置、节点和流量状态。
-- Clearer port-forwarding fields and live direction previews in six languages. / 优化六语言端口转发提示，新增实时方向预览。
+- Built-in EasyTier networking, with configuration, peers and traffic status. / 内置 EasyTier 组网，支持配置、节点和流量状态。
+- Per-session local Shell elevation and remembered Explorer grouping by session type. / 本地 Shell 支持单会话提权，资源管理器支持记忆会话类型分组。
 
 ### Changed
 
-- Explicit SSH authentication/private-key ordering; quieter concurrent startup connections. / SSH 认证和私钥支持明确排序，启动连接并发执行且不抢焦点。
+- Clearer forwarding directions and explicit SSH authentication/private-key ordering. / 明确端口转发方向及 SSH 认证、私钥顺序。
+- Windows Npcap is no longer bundled: confirm an official download, then open its interactive EULA/UAC installer. / Windows 不再捆绑 Npcap：确认后官方下载，再由用户交互确认 EULA/UAC 安装。
+- Include EasyTier, Wintun and WinDivert license/source notices and upstream attribution. / 补齐 EasyTier、Wintun、WinDivert 许可、源码及上游引用声明。
 
 ### Fixed
 
-- Restore missing live MCP IPC endpoints safely across desktop upgrades. / 修复更新后 MCP 在线但桌面 IPC 丢失无法恢复的问题。
-- Smoother high-volume RX/TX, Hex and TUI rendering; correct timestamps and safer GPU fallback. / 优化大流量收发、Hex 和 TUI 流畅度，修复时间戳及 GPU 回退。
-- Recover transient MCP desktop IPC failures and submit Windows Shell commands correctly. / 修复 MCP 桌面 IPC 偶发不可用和 Windows Shell 命令提交。
+- Recover missing MCP desktop IPC after updates. / 修复更新后 MCP 桌面 IPC 丢失。
+- Smoother continuous typing, high-volume RX/TX and TUI rendering; safer GPU fallback and correct timestamps. / 优化连续输入、大流量收发与 TUI 流畅度，修复 GPU 回退及时间戳。
+- Keep history/log queries off the UI thread and shell completion out of alternate-screen TUIs. / 历史与日志查询移出 UI 线程，备用屏幕 TUI 不再误弹 Shell 补全。
 
 ### Security
 
-- Refresh security dependencies and latest official MCP SDK compatibility coverage; retain the existing vault format. / 更新安全依赖与官方 MCP SDK 最新版兼容覆盖，保持密钥库格式不变。
-- Verify bundled EasyTier files, redact secrets and stop managed processes on exit/update. / 校验内置 EasyTier 文件、隐藏密钥，退出或更新时停止托管进程。
+- Refresh security dependencies and official MCP SDK coverage, including Java 2.2.0; retain the vault format. / 更新安全依赖和官方 MCP SDK 覆盖（含 Java 2.2.0），保持密钥库格式。
+- Verify optional Npcap downloads, signatures and publishers before an explicitly confirmed installer launch. / 独立 Npcap 下载须核验完整性、签名和发布者，安装需再次明确确认。
 
 ### Migration
 
-- Existing data is retained; installer/AppImage/macOS app users can check for signed updates. Portable Windows/Linux packages and DEB/RPM update manually. / 保留现有数据；安装版、AppImage 和 macOS 应用可检查签名更新，Windows/Linux 便携版及 DEB/RPM 手动升级。
+- Existing data and updater keys are retained. Windows EasyTier now needs a separate licensed Npcap installation. / 保留现有数据及更新密钥；Windows EasyTier 需单独安装并遵守 Npcap 许可。
 
 ## [0.1.14] - 2026-10-21
 

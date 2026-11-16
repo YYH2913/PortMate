@@ -248,7 +248,9 @@ DEB/RPM、Windows ZIP 和 Linux tar 便携版会提供版本页入口，请使�
 高级参数可折叠，组件管理位于独立的设置页。
 
 Windows/Linux x64、macOS Apple Silicon 的安装包、便携版和自动更新包均已内置
-EasyTier 2.6.4 核心与 CLI，点击连接即可从本地准备并校验运行文件，无需额外下载或选择程序目录。
+EasyTier 2.6.4 核心与 CLI，点击连接即可从本地准备并校验核心，无需选择程序目录。
+Windows 另需单独许可的 Npcap：仅在用户确认后从官方下载并打开交互式安装器，
+由用户自行确认 EULA 与 UAC；PortMate 不捆绑 Npcap，不静默安装。
 创建虚拟网卡需要对应平台的
 网络管理权限，仅中继模式无需网卡。关闭窗口后组网继续运行，断开、退出 PortMate 或
 准备安装已验证的更新时停止。配置、密钥处理与上游许可见 [EasyTier 集成说明](./docs/EASYTIER.md#中文)。
