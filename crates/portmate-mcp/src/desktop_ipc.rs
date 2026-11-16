@@ -15,7 +15,10 @@ const MAX_IPC_REQUEST_BYTES: usize = MAX_MCP_BRIDGE_REQUEST_BYTES;
 const MAX_IPC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_IPC_ENDPOINT_BYTES: usize = 64 * 1024;
 const MAX_IPC_TOKEN_BYTES: usize = 4096;
-const IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+// A refused/stale Windows loopback connection can consume the whole timeout
+// instead of immediately returning ConnectionRefused. Leave discovery budget
+// for re-reading the replacement port/token before any request is sent.
+const IPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const IPC_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const IPC_DISCOVERY_ATTEMPTS: usize = 5;
 const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -381,3 +384,7 @@ pub(crate) fn read_ipc_response_with_limits(
     }
     Ok(raw)
 }
+
+#[cfg(test)]
+#[path = "../../../test/rust/portmate-mcp/unit/desktop_ipc.rs"]
+mod tests;
