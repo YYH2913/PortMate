@@ -11,10 +11,22 @@ export type EasyTierConfig = {
 
 export type EasyTierError = { code: string; detail: string };
 export type EasyTierPeer = { id: string; hostname: string; ipv4: string; route: string; latency: string; received: string; sent: string; protocol: string };
+export type NpcapStatus = {
+  required: boolean;
+  installed: boolean;
+  phase: "not-required" | "detected" | "missing" | "downloading" | "downloaded" | "installing" | "completed" | "reboot-required" | "failed";
+  downloaded: number;
+  total: number | null;
+  installerVersion: string;
+  downloadUrl: string;
+  licenseUrl: string;
+  error: EasyTierError | null;
+};
 export type EasyTierView = {
   config: EasyTierConfig;
   componentReady: boolean;
   componentVersion: string;
+  npcap?: NpcapStatus;
   status: {
     phase: "idle" | "starting" | "running" | "stopping" | "failed";
     pid: number | null;

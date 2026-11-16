@@ -6272,5 +6272,15 @@
     "causeIndices": [
       0
     ]
+  },
+  {
+    "id": "native-message-547ade6a1f9b",
+    "source": "Open the official Npcap installer?\n\nInstallation is interactive: review and accept Npcap's own license and Windows UAC yourself. PortMate will not silently accept the EULA or select driver options.\n\n是否打开 Npcap 官方交互式安装器？请自行阅读并确认其许可与 Windows UAC；PortMate 不代替接受许可或选择驱动选项。",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-abb2f8fb65a3",
+    "source": "Download Npcap 1.90 directly from https://npcap.com/dist/npcap-1.90.exe ?\n\nNpcap is separate software by the Nmap Project, not bundled with PortMate. Its free license normally permits up to five installations, with exceptions. Downloading does not accept its EULA. Review https://github.com/nmap/npcap/blob/v1.90/LICENSE .\n\n是否从 Npcap 官方下载？Npcap 是独立许可组件，免费许可通常最多允许五台安装（另有例外），下载不代表接受安装许可。",
+    "causeIndices": []
   }
 ]

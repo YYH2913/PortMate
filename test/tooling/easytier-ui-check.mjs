@@ -17,11 +17,39 @@ try {
       const config = { networkName: "PortMate", hostname: "", addressMode: "dhcp", virtualIpv4: "", peers: [], listeners: ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"], latencyFirst: false, mtu: 1360 };
       window.calls = [];
       window.network = { config, componentReady: true, componentVersion: "2.6.4", status: { phase: "idle", pid: null, virtualIpv4: "", hostname: "", peers: [], logs: [], error: null } };
+      if (mode === "windows") window.network.npcap = { required: true, installed: false, phase: "missing", downloaded: 0, total: null, installerVersion: "1.90", downloadUrl: "https://npcap.com/dist/npcap-1.90.exe", licenseUrl: "https://github.com/nmap/npcap/blob/v1.90/LICENSE", error: null };
       window.__TAURI_INTERNALS__ = {
         transformCallback: () => 1, unregisterCallback() {},
         async invoke(command, args) {
           window.calls.push(command);
           if (command === "easy_tier_status") return structuredClone(window.network);
+          if (command === "download_npcap_installer") {
+            // Simulates native consent and a local fixture transfer; never
+            // downloads, installs Npcap, accepts its EULA or triggers UAC in CI.
+            if (window.declineNpcapDownload) throw { code: "cancelled", detail: "native consent declined" };
+            assertEmptyArgs(args);
+            window.network.npcap.phase = "downloading";
+            window.network.npcap.total = 100;
+            await new Promise(resolve => { window.finishNpcapDownload = resolve; });
+            window.network.npcap.phase = "downloaded";
+            window.network.npcap.downloaded = 100;
+            return structuredClone(window.network.npcap);
+          }
+          if (command === "cancel_npcap_download") {
+            window.network.npcap.phase = "failed";
+            window.finishNpcapDownload?.();
+            return null;
+          }
+          if (command === "launch_npcap_installer") {
+            assertEmptyArgs(args);
+            if (window.declineNpcapLaunch) throw { code: "cancelled", detail: "native install confirmation declined" };
+            window.network.npcap.phase = "installing";
+            return structuredClone(window.network.npcap);
+          }
+          if (command === "recheck_npcap") {
+            window.network.npcap.phase = window.network.npcap.installed ? "detected" : "missing";
+            return structuredClone(window.network.npcap);
+          }
           if (command === "save_easy_tier_config") {
             if ("networkSecret" in args.config) throw Error("secret persisted in configuration");
             window.network.config = args.config;
@@ -42,6 +70,7 @@ try {
           throw Error(`Unexpected command ${command}`);
         },
       };
+      function assertEmptyArgs(args) { if (Object.keys(args ?? {}).length) throw Error("frontend must not supply download URLs, paths or installer switches"); }
     }, mode);
     await page.goto(`${url}?lang=${locale}`);
     return page;
@@ -148,7 +177,57 @@ try {
   await preview.getByText("EasyTier networking is available in the desktop application.", { exact: true }).waitFor();
   assert(await preview.getByRole("button", { name: "Connect network", exact: true }).isDisabled());
   await preview.close();
-  console.log("EasyTier UI passed: built-in core with no download/directory setup, save without secrets, duplicate start guard, secret clearing, peer presentation, disconnect, persistent errors, address validation, compact layouts and browser fallback.");
+  const windows = await pageFor("windows");
+  const win = windows.getByRole("dialog");
+  await win.getByRole("button", { name: "Set up Npcap", exact: true }).first().waitFor();
+  assert.equal(await windows.evaluate(() => window.calls.filter(command => command.includes("npcap")).length), 0, "mounting must not download or launch anything");
+  await win.getByRole("button", { name: "Set up Npcap", exact: true }).first().click();
+  const setup = win.getByRole("region", { name: "Set up Npcap", exact: true });
+  const download = setup.getByRole("button", { name: "Download official Npcap 1.90…", exact: true });
+  const launch = setup.getByRole("button", { name: "Open interactive installer…", exact: true });
+  assert(await launch.isDisabled(), "installer must not launch before download verification");
+  assert((await setup.innerText()).includes("does not accept the license"));
+  assert.equal(await setup.getByRole("link", { name: "Npcap EULA", exact: true }).getAttribute("href"), "https://github.com/nmap/npcap/blob/v1.90/LICENSE");
+  assert.equal(await setup.getByRole("link", { name: "Official downloads", exact: true }).getAttribute("rel"), "noopener noreferrer");
+  await windows.evaluate(() => { window.declineNpcapDownload = true; });
+  await download.click();
+  await windows.waitForFunction(() => window.calls.includes("download_npcap_installer"));
+  await download.waitFor({ state: "visible" });
+  await windows.waitForFunction(() => !document.querySelector('.npcap-controls button')?.disabled);
+  assert.equal(await windows.evaluate(() => window.calls.includes("launch_npcap_installer")), false, "declining download must not launch setup");
+  await windows.evaluate(() => { window.declineNpcapDownload = false; });
+  await download.dblclick();
+  await windows.waitForFunction(() => window.finishNpcapDownload);
+  await setup.getByRole("progressbar", { name: "Npcap download progress" }).waitFor();
+  assert(await launch.isDisabled());
+  await windows.evaluate(() => window.finishNpcapDownload());
+  await windows.waitForFunction(() => ![...document.querySelectorAll('.npcap-controls button')].find(button => button.textContent.includes('Open interactive'))?.disabled);
+  assert.equal(await windows.evaluate(() => window.calls.filter(command => command === "launch_npcap_installer").length), 0, "download completion must not launch setup automatically");
+  await windows.evaluate(() => { window.declineNpcapLaunch = true; });
+  await launch.click();
+  await windows.waitForFunction(() => window.calls.filter(command => command === "launch_npcap_installer").length === 1);
+  await windows.waitForFunction(() => ![...document.querySelectorAll('.npcap-controls button')].find(button => button.textContent.includes('Open interactive'))?.disabled);
+  await windows.evaluate(() => { window.declineNpcapLaunch = false; });
+  await launch.click();
+  await setup.getByText(/Complete or cancel the official installer/).waitFor();
+  assert(await download.isDisabled());
+  assert(await setup.getByRole("button", { name: "Recheck installation", exact: true }).isDisabled());
+  assert.equal(await windows.evaluate(() => window.calls.includes("start_easy_tier")), false);
+  await windows.evaluate(() => { window.network.npcap.phase = "completed"; window.network.npcap.installed = true; });
+  await setup.getByText(/Installer closed successfully/).waitFor();
+  await setup.getByRole("button", { name: "Recheck installation", exact: true }).click();
+  await setup.getByText(/Detected locally; signature/).waitFor();
+  assert.equal(await windows.evaluate(() => window.calls.includes("start_easy_tier")), false, "installation or recheck must not connect automatically");
+  await windows.setViewportSize({ width: 560, height: 620 });
+  assert(await win.evaluate(element => { const rect = element.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight && element.scrollWidth <= element.clientWidth; }));
+  await windows.screenshot({ path: resolve("tmp/easytier-review/npcap-setup-windows.png") });
+  await windows.close();
+  const winZh = await pageFor("windows", { width: 1100, height: 720 }, "zh");
+  await winZh.getByRole("button", { name: "设置", exact: true }).click();
+  await winZh.getByRole("region", { name: "配置 Npcap", exact: true }).waitFor();
+  await winZh.screenshot({ path: resolve("tmp/easytier-review/npcap-setup-windows-zh.png") });
+  await winZh.close();
+  console.log("EasyTier UI passed: networking, privacy, compact layouts, upstream attribution and independently confirmed Npcap download/interactive setup. Npcap/UAC are mocked, never installed in CI.");
 } finally {
   await browser?.close();
   await server.close();

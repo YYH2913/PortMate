@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff, Network, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Square, Trash2, X } from "lucide-react";
+import { Download, ExternalLink, Eye, EyeOff, Network, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Square, Trash2, X } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { t, useLocale } from "./i18n";
 import { defaultEasyTierConfig, easyTierConfigValid, easyTierEndpoints, easyTierSecretValid } from "./easytier-state";
-import type { EasyTierConfig, EasyTierView } from "./easytier-state";
+import type { EasyTierConfig, EasyTierView, NpcapStatus } from "./easytier-state";
+import { openTerminalWebLink } from "./terminal-web-link";
 import "./easytier.css";
 
 export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
@@ -21,6 +22,9 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [refreshError, setRefreshError] = useState("");
+  const [npcapBusy, setNpcapBusy] = useState("");
+  const npcapPending = useRef(false);
+  const mounted = useRef(true);
   const revision = useRef(0);
   const pending = useRef(false);
   const loaded = useRef(false);
@@ -50,23 +54,28 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
   }
 
   useEffect(() => {
+    mounted.current = true;
     revision.current += 1;
     closeRef.current?.focus();
     void refresh();
     const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 2000);
-    return () => { revision.current += 1; window.clearInterval(timer); };
+    return () => { mounted.current = false; revision.current += 1; window.clearInterval(timer); };
   }, []);
 
   const phase = view?.status.phase ?? "idle";
   const active = phase === "starting" || phase === "running" || phase === "stopping";
-  const locked = Boolean(busy) || active || !desktop || !loaded.current;
+  const npc = view?.npcap;
+  const dependencyBusy = Boolean(npcapBusy) || npc?.phase === "downloading" || npc?.phase === "installing";
+  const needsNpcap = npc?.required && !npc.installed;
+  const locked = Boolean(busy) || dependencyBusy || active || !desktop || !loaded.current;
   const draft: EasyTierConfig = { ...config, peers: easyTierEndpoints(peers), listeners: easyTierEndpoints(listeners) };
   const valid = easyTierConfigValid(draft);
 
   function patch(value: Partial<EasyTierConfig>) { setConfig(current => ({ ...current, ...value })); }
 
   async function perform(action: "save" | "connect" | "disconnect") {
-    if (pending.current || !desktop) return;
+    if (pending.current || npcapPending.current || !desktop || dependencyBusy) return;
+    if (action === "connect" && needsNpcap) { setPage("component"); return; }
     if ((action === "save" || action === "connect") && !valid) return;
     if (action === "connect" && (!loaded.current || !easyTierSecretValid(secret))) return;
     pending.current = true;
@@ -86,10 +95,28 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
         if (action === "connect") { setSecret(""); setShowSecret(false); setPage("running"); }
       }
     } catch (failure) {
+      if (failure && typeof failure === "object" && "code" in failure && failure.code === "npcap-required") setPage("component");
       if (token === revision.current) setError(errorMessage(failure));
     } finally {
       pending.current = false;
       if (token === revision.current) setBusy("");
+    }
+  }
+
+  async function npcAction(action: "download" | "launch" | "recheck") {
+    if (npcapPending.current || pending.current || !desktop || active || npc?.phase === "installing") return;
+    npcapPending.current = true;
+    revision.current += 1;
+    setNpcapBusy(action); setError("");
+    try {
+      const next = await invokeBackend<NpcapStatus>(action === "download" ? "download_npcap_installer" : action === "launch" ? "launch_npcap_installer" : "recheck_npcap", {});
+      revision.current += 1;
+      if (mounted.current) setView(current => current ? { ...current, npcap: next } : current);
+    } catch (failure) {
+      if (mounted.current && !(failure && typeof failure === "object" && "code" in failure && failure.code === "cancelled")) setError(errorMessage(failure));
+    } finally {
+      npcapPending.current = false;
+      if (mounted.current) { setNpcapBusy(""); void refresh(); }
     }
   }
 
@@ -111,13 +138,13 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
     setMethod("standalone"); setSecret(""); setShowSecret(false); setError(""); setPage("config");
   }
 
-  return <div className="dialog-backdrop utility-backdrop" onMouseDown={event => { if (!busy && event.target === event.currentTarget) onClose(); }}>
+  return <div className="dialog-backdrop utility-backdrop" onMouseDown={event => { if (!busy && !npcapBusy && event.target === event.currentTarget) onClose(); }}>
     <section className="wind-dialog easytier-dialog" role="dialog" aria-modal="true" aria-labelledby="easytier-title" onKeyDown={event => {
-      if (event.key === "Escape" && !busy) { event.preventDefault(); event.stopPropagation(); onClose(); }
+      if (event.key === "Escape" && !busy && !npcapBusy) { event.preventDefault(); event.stopPropagation(); onClose(); }
     }}>
       <header className="dialog-title">
         <Network size={17} aria-hidden="true" /><strong id="easytier-title">{t("easytier-network")}</strong><span className="easytier-version">v{view?.componentVersion ?? "2.6.4"}</span>
-        <button type="button" ref={closeRef} aria-label={t("close")} disabled={Boolean(busy)} onClick={onClose}><X size={20} /></button>
+        <button type="button" ref={closeRef} aria-label={t("close")} disabled={Boolean(busy || npcapBusy)} onClick={onClose}><X size={20} /></button>
       </header>
       <div className="easytier-toolbar">
         <button type="button" className="easytier-new" disabled={locked} onClick={newConfiguration}><Plus size={16} />{t("easytier-new-network")}</button>
@@ -166,6 +193,7 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
             </fieldset>
           </details>
           <p className="easytier-permissions"><ShieldCheck size={15} />{config.addressMode === "relay" ? t("easytier-relay-note") : t("easytier-permission-note")}</p>
+          {needsNpcap && <p className="easytier-method-note">{t("npcap-required-note")} <button type="button" onClick={() => setPage("component")}>{t("npcap-setup")}</button></p>}
         </form>
         <section hidden={page !== "running"} id="easytier-running-panel" role="tabpanel" aria-labelledby="easytier-running-tab" className="easytier-running">
           <div className="easytier-section-heading"><h2>{t("easytier-my-node")}</h2><button type="button" disabled={!desktop || Boolean(busy)} aria-label={t("refresh")} onClick={() => void refresh()}><RefreshCw size={15} />{t("refresh")}</button></div>
@@ -178,6 +206,24 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
           <div className="easytier-section-heading"><h2>{t("easytier-component")}</h2><span>v{view?.componentVersion ?? "2.6.4"}</span></div>
           <div className="easytier-component-status"><span className="ready"><ShieldCheck size={20} /></span><div><strong>{t("easytier-component-ready", [view?.componentVersion ?? "2.6.4"])}</strong><small>{t("easytier-bundled-note")}</small></div></div>
           <p className="easytier-permissions">{t("easytier-license-note")}</p>
+          <p className="easytier-attribution">{t("easytier-attribution")} <OfficialLink href="https://github.com/EasyTier/EasyTier">EasyTier</OfficialLink> · <OfficialLink href="https://github.com/EasyTier/EasyTier/blob/v2.6.4/LICENSE">LGPL-3.0</OfficialLink> · <OfficialLink href="https://github.com/EasyTier/EasyTier/tree/v2.6.4">{t("npcap-source")}</OfficialLink></p>
+          <p className="easytier-permissions">{t("easytier-responsible-use")}</p>
+          {npc?.required && <section className="npcap-setup" aria-label={t("npcap-setup")}>
+            <div className="easytier-section-heading"><h2>Npcap</h2><span>{t(npc.installed ? "npcap-detected" : "npcap-not-installed")}</span></div>
+            <p>{t("npcap-independent-note")}</p>
+            <p>{t("npcap-license-limits")}</p>
+            <div className="npcap-links"><OfficialLink href="https://npcap.com/#download">{t("npcap-official-site")}</OfficialLink><OfficialLink href="https://github.com/nmap/npcap/blob/v1.90/LICENSE">{t("npcap-license")}</OfficialLink><OfficialLink href="https://npcap.com/oem/">{t("npcap-oem")}</OfficialLink></div>
+            <p className="npcap-state" role="status">{t(`npcap-phase-${npc.phase}`)}</p>
+            {npc.phase === "downloading" && <progress aria-label={t("npcap-download-progress")} value={npc.total ? npc.downloaded : undefined} max={npc.total || undefined} />}
+            <p>{t("npcap-interactive-note")}</p>
+            <div className="npcap-controls">
+              <button type="button" disabled={locked || npcapPending.current} onClick={() => void npcAction("download")}><Download size={14} />{t("npcap-download", [npc.installerVersion])}</button>
+              <button type="button" disabled={!desktop || Boolean(busy) || Boolean(npcapBusy) || npc.phase !== "downloaded" || active} onClick={() => void npcAction("launch")}><ExternalLink size={14} />{t("npcap-open-installer")}</button>
+              <button type="button" disabled={!desktop || Boolean(busy) || dependencyBusy || active} onClick={() => void npcAction("recheck")}><RefreshCw size={14} />{t("npcap-recheck")}</button>
+              {npc.phase === "downloading" && <button type="button" onClick={() => void invokeBackend("cancel_npcap_download", {}).catch(failure => setError(errorMessage(failure)))}>{t("cancel")}</button>}
+            </div>
+            {(npc.error && !error) && <p role="alert">{errorMessage(npc.error)}</p>}
+          </section>}
         </section>}
       </div>
       <div className="easytier-feedback" aria-live="polite">
@@ -188,11 +234,19 @@ export default function EasyTierDialog({ onClose }: { onClose: () => void }) {
         <small title={t("easytier-lifetime")}>{t("easytier-managed-note")}</small><span />
         {!active && <button type="button" disabled={locked || !valid} onClick={() => void perform("save")}><Save size={14} />{t("save")}</button>}
         {active ? <button type="button" disabled={Boolean(busy) || phase === "stopping"} onClick={() => void perform("disconnect")}><Square size={14} />{t("easytier-disconnect")}</button>
-          : <button type="button" className="primary" disabled={!desktop || !loaded.current || Boolean(busy) || !valid || !easyTierSecretValid(secret)} onClick={() => void perform("connect")}><Play size={14} />{busy === "connect" ? t("easytier-starting") : t("easytier-connect")}</button>}
-        <button type="button" disabled={Boolean(busy)} onClick={onClose}>{t("close")}</button>
+          : <button type="button" className="primary" disabled={!desktop || !loaded.current || Boolean(busy) || dependencyBusy || !valid || (!needsNpcap && !easyTierSecretValid(secret))} onClick={() => {
+            if (!needsNpcap) void perform("connect");
+            else if (page !== "component") setPage("component");
+            else void npcAction(npc.phase === "downloaded" ? "launch" : "download");
+          }}><Play size={14} />{needsNpcap ? page !== "component" ? t("npcap-setup") : npc.phase === "downloaded" ? t("npcap-open-installer") : t("npcap-download", [npc.installerVersion]) : busy === "connect" ? t("easytier-starting") : t("easytier-connect")}</button>}
+        <button type="button" disabled={Boolean(busy || npcapBusy)} onClick={onClose}>{t("close")}</button>
       </footer>
     </section>
   </div>;
+}
+
+function OfficialLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return <a href={href} target="_blank" rel="noopener noreferrer" onClick={event => openTerminalWebLink(event, href)}>{children}</a>;
 }
 
 function EndpointList({ label, text, onChange, placeholder }: { label: string; text: string; onChange: (value: string) => void; placeholder: string }) {
@@ -207,6 +261,8 @@ function errorMessage(error: unknown): string {
     "invalid-address": "easytier-error-address", "invalid-config": "easytier-error-config", "component-missing": "easytier-component-missing",
     "version-mismatch": "easytier-error-version",
     "already-running": "easytier-error-running", busy: "easytier-error-busy",
+    "npcap-required": "npcap-required-note", "npcap-verification": "npcap-verification-error",
+    "npcap-download": "npcap-download-error", "npcap-setup": "npcap-setup-error", "npcap-installing": "npcap-phase-installing",
   };
   if (known[code]) return t(known[code]);
   const detail = error && typeof error === "object" && "detail" in error ? String(error.detail) : String(error);

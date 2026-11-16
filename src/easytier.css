@@ -91,6 +91,13 @@
 .easytier-component-status > span.ready { color: var(--et-accent); background: var(--et-tint); }
 .easytier-component-status > div { display: flex; flex-direction: column; gap: 7px; }
 .easytier-component-status strong { font-size: 13px; font-weight: 500; line-height: 1.6; }
+.easytier-attribution, .npcap-setup p { margin: 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.easytier-dialog a { color: var(--et-accent); text-underline-offset: 3px; }
+.npcap-setup { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); padding-top: 18px; }
+.npcap-links, .npcap-controls { display: flex; gap: 12px; flex-wrap: wrap; }
+.npcap-links { font-size: 12px; }
+.npcap-setup progress { width: 100%; accent-color: var(--et-accent); }
+.npcap-state { color: var(--muted); }
 .easytier-feedback { flex: none; padding: 0 24px; font-size: 12px; }
 .easytier-feedback p { margin: 8px 0; }
 .easytier-feedback [role=alert] { color: #f79d95; overflow-wrap: anywhere; }
