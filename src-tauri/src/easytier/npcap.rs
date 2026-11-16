@@ -179,12 +179,26 @@ pub(crate) fn cancel_npcap_download(
     Ok(())
 }
 
-/// Windows leases hold a per-run directory and a read-only pin on the locally
-/// installed DLL. They are not copied into any public installer or archive.
+/// Windows leases pin the installed DLL and load it in place, without making
+/// another disk copy. Clones keep the lease alive during in-flight CLI queries.
+#[derive(Clone)]
 pub(super) struct RunFiles {
     pub(super) directory: PathBuf,
     #[cfg(windows)]
-    _lease: windows::RunLease,
+    lease: Arc<windows::RunLease>,
+}
+
+impl RunFiles {
+    pub(super) fn configure_command(
+        &self,
+        command: &mut tokio::process::Command,
+    ) -> Result<(), EasyTierError> {
+        #[cfg(windows)]
+        self.lease.configure_command(command, &self.directory)?;
+        #[cfg(not(windows))]
+        let _ = command;
+        Ok(())
+    }
 }
 
 pub(super) async fn prepare_run(
@@ -196,7 +210,7 @@ pub(super) async fn prepare_run(
         let (directory, lease) = windows::prepare_run(root, &directory).await?;
         Ok(RunFiles {
             directory,
-            _lease: lease,
+            lease: Arc::new(lease),
         })
     }
     #[cfg(not(windows))]

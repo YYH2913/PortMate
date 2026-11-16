@@ -13,6 +13,16 @@ describe("EasyTier redistribution notices", () => {
     for (const name of easyTierNotices) expect(config.bundle.resources[`../licenses/${name}`]).toBe(`THIRD_PARTY_LICENSES/${name}`);
     const notice = readFileSync(new URL("../../licenses/EasyTier-NOTICE.txt", import.meta.url), "utf8");
     for (const text of ["2.6.4", "8428a89d2dabc94c97d370ec607c6ca142473626", "NOT included", "https://npcap.com/", "lawful", "independent", "LGPL"]) expect(notice).toContain(text);
+    expect(notice).toContain("without making another disk copy");
+    expect(notice).toContain("downloading, installing or");
+    const windows = readFileSync(new URL("../../src-tauri/src/easytier/npcap/windows.rs", import.meta.url), "utf8");
+    expect(windows).toContain("constitutes agreement to its EULA");
+    expect(windows).not.toContain("std::io::copy");
+    for (const language of ["en", "zh", "fr", "es", "ru", "ar"]) {
+      const messages = JSON.parse(readFileSync(new URL(`../../src/locales/${language}.json`, import.meta.url), "utf8"));
+      expect(messages["npcap-license-limits"]).toBeTruthy();
+      expect(messages["npcap-license-limits"]).not.toMatch(/does not accept|下载不代表|не означает|ne vaut pas|no acepta|لا يعني/);
+    }
   });
   it("copies exact notices and rejects deletion, tampering and symlink substitutions", () => {
     const root = mkdtempSync(join(tmpdir(), "portmate-notices-")); roots.push(root);

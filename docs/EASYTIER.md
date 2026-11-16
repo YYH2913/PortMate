@@ -106,14 +106,17 @@ After completion, click **Recheck installation**; restart Windows if requested.
 Cancelling or failing setup never starts networking. An already installed copy is reused.
 
 Detection uses the native Windows system directory, not PATH, the current directory
-or a downloaded DLL. The installed Packet.dll is signature-checked and held against
-replacement before a private per-run copy is staged beside the unmodified core/CLI.
-That user-local copy is removed after the managed networking process exits; it is
-not part of PortMate distribution. An active official installer remains independent:
+or a downloaded DLL. The installed Packet.dll is signature-checked, pinned against
+replacement and loaded directly from its official installation, without another disk
+copy. Core/CLI children use an explicit system-only DLL search path; a conflicting
+WinPcap/Packet.dll in a higher-priority Windows search directory is rejected.
+An active official installer remains independent:
 PortMate does not terminate it halfway through driver changes, and app updates wait
 for the user to finish or cancel it. A cancelled download cleans its temporary files.
 
-Downloading does not accept Npcap’s EULA. Its free license normally permits five
+Read the EULA before downloading: Npcap's terms state that downloading, installing
+or using it constitutes agreement. Continue only if you agree and qualify.
+Its free license normally permits five
 installations, with specified exceptions; users must meet its applicable deployment
 limits and any separately required [OEM authorization](https://npcap.com/oem/).
 PortMate does not grant redistribution or silent-install rights and does not install
@@ -184,11 +187,13 @@ Windows EasyTier 需要本机另行安装 Npcap 及其驱动，Linux/macOS 不�
 取消或失败不会自动开始组网；已安装时复用本机组件。
 
 检测仅使用 Windows 原生系统目录，不搜索 PATH、当前目录或网上拆出的 DLL。
-本机 Packet.dll 通过签名校验并锁定后，才复制到私有的单次运行目录供核心/CLI 加载，
-组网进程结束后清理；该用户本机副本不进入 PortMate 分发包。官方安装器是独立进程，
+本机 Packet.dll 通过签名校验并锁定后，直接从官方安装目录加载，不再创建磁盘副本。
+核心/CLI 使用显式的系统 DLL 搜索路径；Windows 优先搜索目录中如有冲突的 WinPcap/Packet.dll，
+将拒绝启动并提示修复安装。官方安装器是独立进程，
 PortMate 不会在其修改驱动时强杀它；应用更新需先完成或取消该安装器。取消下载会清理临时文件。
 
-下载不代表接受 Npcap EULA。免费许可通常最多允许五台安装（另有明确例外），
+下载前请阅读 Npcap EULA：其条款规定下载、安装或使用即表示同意；仅在同意并符合许可时继续。
+免费许可通常最多允许五台安装（另有明确例外），
 使用者须遵守适用范围及部署限制，需要时另行获得 [OEM 授权](https://npcap.com/oem/)。
 PortMate 不授予再分发或静默安装权利，不在启动、MCP 调用或 CI 测试中自动安装 Npcap。
 

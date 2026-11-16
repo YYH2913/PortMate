@@ -121,7 +121,9 @@ async fn bundled_core_and_cli_run_without_an_external_installation() {
     let directory = component.directory.clone();
     for name in ["easytier-core", "easytier-cli"] {
         let binary = bundled::executable(&directory, name).unwrap();
-        let version = command_output(&binary, &["--version"]).await.unwrap();
+        let version = command_output(&binary, &["--version"], &component)
+            .await
+            .unwrap();
         assert!(String::from_utf8_lossy(&version).contains(VERSION));
     }
 }
@@ -137,7 +139,10 @@ async fn kills_command_descendants_when_the_output_deadline_expires() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(command_output(&script, &[]).await.is_err());
+    let component = npcap::prepare_run(root.path(), root.path().to_path_buf())
+        .await
+        .unwrap();
+    assert!(command_output(&script, &[], &component).await.is_err());
     let pid: i32 = fs::read_to_string(root.path().join("child.pid"))
         .unwrap()
         .trim()
@@ -178,9 +183,13 @@ async fn real_easytier_configuration_rpc_and_cleanup() {
         config::render_config(&config, "quote\"-unicode中文-backslash\\", &id),
     )
     .unwrap();
+    let component = npcap::prepare_run(bundled_root.path(), binaries.clone())
+        .await
+        .unwrap();
     command_output(
         &core,
         &["--config-file", path.to_str().unwrap(), "--check-config"],
+        &component,
     )
     .await
     .unwrap();
@@ -207,13 +216,11 @@ async fn real_easytier_configuration_rpc_and_cleanup() {
         cli: cli.clone(),
         rpc: rpc.clone(),
         started: Instant::now(),
-        _component: npcap::prepare_run(bundled_root.path(), binaries.clone())
-            .await
-            .unwrap(),
+        component: component.clone(),
     });
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if let Ok((_, _, peers)) = query_network(&cli, &rpc, &id).await {
+        if let Ok((_, _, peers)) = query_network(&cli, &rpc, &id, &component).await {
             assert!(
                 peers.is_empty(),
                 "the local node must not be shown as a connected peer"
@@ -226,9 +233,11 @@ async fn real_easytier_configuration_rpc_and_cleanup() {
         );
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    assert!(query_network(&cli, &rpc, &Uuid::new_v4().to_string())
-        .await
-        .is_err());
+    assert!(
+        query_network(&cli, &rpc, &Uuid::new_v4().to_string(), &component)
+            .await
+            .is_err()
+    );
     let directory = path.parent().unwrap().to_path_buf();
     stop(&runtime).await.unwrap();
     assert!(

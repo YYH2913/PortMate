@@ -57,7 +57,7 @@ struct Running {
     cli: PathBuf,
     rpc: String,
     started: Instant,
-    _component: npcap::RunFiles,
+    component: npcap::RunFiles,
 }
 
 impl Drop for Running {
@@ -241,13 +241,18 @@ async fn bounded_output<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-async fn command_output(path: &Path, args: &[&str]) -> Result<Vec<u8>, EasyTierError> {
+async fn command_output(
+    path: &Path,
+    args: &[&str],
+    component: &npcap::RunFiles,
+) -> Result<Vec<u8>, EasyTierError> {
     let mut command = tokio::process::Command::new(path);
     clean_environment(&mut command);
     command.args(args).current_dir(
         path.parent()
             .ok_or_else(|| failure("component-missing", "Invalid component path"))?,
     );
+    component.configure_command(&mut command)?;
     let (mut child, _tree) =
         host_script_process::spawn(&mut command).map_err(|e| failure("component-failed", e))?;
     let stdout = child
@@ -309,7 +314,7 @@ pub(crate) async fn start_easy_tier(
     let core = bundled::executable(directory, "easytier-core")?;
     let cli = bundled::executable(directory, "easytier-cli")?;
     for binary in [&core, &cli] {
-        let output = command_output(binary, &["--version"]).await?;
+        let output = command_output(binary, &["--version"], &component).await?;
         if !String::from_utf8_lossy(&output)
             .split_whitespace()
             .any(|word| word == VERSION || word.starts_with(&format!("{VERSION}-")))
@@ -360,6 +365,7 @@ pub(crate) async fn start_easy_tier(
             "--multi-thread",
             "true",
         ]);
+    component.configure_command(&mut command)?;
     drop(reservation);
     let (mut child, tree) =
         host_script_process::spawn(&mut command).map_err(|e| failure("start-failed", e))?;
@@ -386,7 +392,7 @@ pub(crate) async fn start_easy_tier(
             cli,
             rpc,
             started: Instant::now(),
-            _component: component,
+            component,
         });
     }
     let secret = Arc::new(secret);
@@ -519,9 +525,10 @@ async fn supervise(inner: std::sync::Weak<Mutex<Inner>>, id: String) {
                 running.cli.clone(),
                 running.rpc.clone(),
                 running.started.elapsed(),
+                running.component.clone(),
             )
         };
-        let result = query_network(&request.0, &request.1, &id).await;
+        let result = query_network(&request.0, &request.1, &id, &request.3).await;
         let mut guard = shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -563,8 +570,9 @@ async fn query_network(
     cli: &Path,
     rpc: &str,
     id: &str,
+    component: &npcap::RunFiles,
 ) -> Result<(String, String, Vec<Peer>), EasyTierError> {
-    let node = command_output(cli, &["-p", rpc, "-o", "json", "-i", id, "node"]).await?;
+    let node = command_output(cli, &["-p", rpc, "-o", "json", "-i", id, "node"], component).await?;
     let node: serde_json::Value = serde_json::from_slice(&node)
         .map_err(|_| failure("status-failed", "Invalid EasyTier node status"))?;
     if node.get("inst_id").and_then(|v| v.as_str()) != Some(id) {
@@ -578,7 +586,8 @@ async fn query_network(
         .and_then(|v| v.as_u64())
         .map(|v| v.to_string())
         .unwrap_or_default();
-    let output = command_output(cli, &["-p", rpc, "-o", "json", "-i", id, "peer"]).await?;
+    let output =
+        command_output(cli, &["-p", rpc, "-o", "json", "-i", id, "peer"], component).await?;
     let list: Vec<serde_json::Value> = serde_json::from_slice(&output)
         .map_err(|_| failure("status-failed", "Invalid EasyTier peer status"))?;
     let text = |value: &serde_json::Value, key: &str| {

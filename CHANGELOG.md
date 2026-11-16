@@ -16,7 +16,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 ### Changed
 
 - Clearer forwarding directions and explicit SSH authentication/private-key ordering. / 明确端口转发方向及 SSH 认证、私钥顺序。
-- Windows Npcap is no longer bundled: confirm an official download, then open its interactive EULA/UAC installer. / Windows 不再捆绑 Npcap：确认后官方下载，再由用户交互确认 EULA/UAC 安装。
+- Windows no longer bundles Npcap: review its EULA before an official download and interactive installation; load installed DLLs without copying. / Windows 不再捆绑 Npcap：下载前确认其 EULA，交互安装后直接加载本机 DLL，不创建副本。
 - Include EasyTier, Wintun and WinDivert license/source notices and upstream attribution. / 补齐 EasyTier、Wintun、WinDivert 许可、源码及上游引用声明。
 
 ### Fixed

@@ -261,7 +261,7 @@ function errorMessage(error: unknown): string {
     "invalid-address": "easytier-error-address", "invalid-config": "easytier-error-config", "component-missing": "easytier-component-missing",
     "version-mismatch": "easytier-error-version",
     "already-running": "easytier-error-running", busy: "easytier-error-busy",
-    "npcap-required": "npcap-required-note", "npcap-verification": "npcap-verification-error",
+    "npcap-conflict": "npcap-conflict-error", "npcap-required": "npcap-required-note", "npcap-verification": "npcap-verification-error",
     "npcap-download": "npcap-download-error", "npcap-setup": "npcap-setup-error", "npcap-installing": "npcap-phase-installing",
   };
   if (known[code]) return t(known[code]);

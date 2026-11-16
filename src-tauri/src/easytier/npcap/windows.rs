@@ -171,7 +171,7 @@ pub(super) async fn confirm(
     let message = if installation {
         "Open the official Npcap installer?\n\nInstallation is interactive: review and accept Npcap's own license and Windows UAC yourself. PortMate will not silently accept the EULA or select driver options.\n\n是否打开 Npcap 官方交互式安装器？请自行阅读并确认其许可与 Windows UAC；PortMate 不代替接受许可或选择驱动选项。"
     } else {
-        "Download Npcap 1.90 directly from https://npcap.com/dist/npcap-1.90.exe ?\n\nNpcap is separate software by the Nmap Project, not bundled with PortMate. Its free license normally permits up to five installations, with exceptions. Downloading does not accept its EULA. Review https://github.com/nmap/npcap/blob/v1.90/LICENSE .\n\n是否从 Npcap 官方下载？Npcap 是独立许可组件，免费许可通常最多允许五台安装（另有例外），下载不代表接受安装许可。"
+        "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？"
     };
     let allowed = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
@@ -279,9 +279,8 @@ pub(super) async fn launch_installer(
 
 pub(super) async fn recheck(shared: &Arc<Mutex<SetupState>>) -> Result<(), EasyTierError> {
     let result = async {
-        let packet = installed_packet()?;
-        let _pin = pin_file(&packet)?;
-        verify_signature(&packet).await
+        let installation = pin_installation(system_directory()?)?;
+        verify_signature(&installation.packet).await
     }
     .await;
     let mut state = shared
@@ -297,20 +296,160 @@ pub(super) async fn recheck(shared: &Arc<Mutex<SetupState>>) -> Result<(), EasyT
 }
 
 pub(super) struct RunLease {
-    _source: fs::File,
-    _packet: fs::File,
+    installation: InstalledPacket,
     _binaries: Vec<fs::File>,
     _pin: BoundDirectory,
     _directory: tempfile::TempDir,
+}
+
+struct InstalledPacket {
+    packet: PathBuf,
+    system: PathBuf,
+    search_path: std::ffi::OsString,
+    // https://learn.microsoft.com/windows/win32/dlls/dynamic-link-library-search-order
+    // Windows searches these protected directories before PATH. Pin matching
+    // compatibility-mode copies, and fail closed on an old/conflicting WinPcap.
+    shadows: Vec<(PathBuf, Option<fs::File>)>,
+    _packet: fs::File,
+    _directories: Vec<BoundDirectory>,
+}
+
+fn packet_hash(file: &fs::File) -> Result<Vec<u8>, EasyTierError> {
+    let mut input = file
+        .try_clone()
+        .map_err(|e| failure("npcap-verification", e))?;
+    input
+        .rewind()
+        .map_err(|e| failure("npcap-verification", e))?;
+    let mut bytes = Vec::new();
+    std::io::Read::take(&mut input, 32 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| failure("npcap-verification", e))?;
+    if bytes.is_empty() || bytes.len() > 32 * 1024 * 1024 {
+        return Err(failure(
+            "npcap-verification",
+            "Invalid installed Npcap DLL size",
+        ));
+    }
+    Ok(Sha256::digest(&bytes).to_vec())
+}
+
+fn pin_installation(system: PathBuf) -> Result<InstalledPacket, EasyTierError> {
+    let windows = system
+        .parent()
+        .ok_or_else(|| failure("npcap-verification", "Invalid Windows directory"))?;
+    let npc = system.join("Npcap");
+    let packet = npc.join("Packet.dll");
+    if !regular_file(&packet) || !regular_file(&system.join("drivers/npcap.sys")) {
+        return Err(failure(
+            "npcap-required",
+            "Install Npcap using its official interactive installer, then recheck",
+        ));
+    }
+    let mut directories =
+        vec![BoundDirectory::open(&npc).map_err(|e| failure("npcap-verification", e))?];
+    let source = pin_file(&packet)?;
+    let expected = packet_hash(&source)?;
+    let mut shadows = Vec::new();
+    for directory in [&system, &windows.join("System"), &windows.to_path_buf()] {
+        // The historical 16-bit system directory need not exist on x64 Windows.
+        if directory
+            .try_exists()
+            .map_err(|e| failure("npcap-verification", e))?
+        {
+            directories.push(
+                BoundDirectory::open(directory).map_err(|e| failure("npcap-verification", e))?,
+            );
+        }
+        let path = directory.join("Packet.dll");
+        let pinned = match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let file = pin_file(&path)?;
+                if packet_hash(&file)? != expected {
+                    return Err(failure("npcap-conflict", "Conflicting Packet.dll in the Windows DLL search path; repair the Npcap/WinPcap installation using its official installer"));
+                }
+                Some(file)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(failure("npcap-verification", error)),
+        };
+        shadows.push((path, pinned));
+    }
+    let search_path =
+        std::env::join_paths([&npc, &system]).map_err(|e| failure("npcap-verification", e))?;
+    Ok(InstalledPacket {
+        packet,
+        system,
+        search_path,
+        shadows,
+        _packet: source,
+        _directories: directories,
+    })
+}
+
+impl RunLease {
+    pub(super) fn configure_command(
+        &self,
+        command: &mut tokio::process::Command,
+        directory: &Path,
+    ) -> Result<(), EasyTierError> {
+        // No app-local DLL/redirection file may override the verified installation.
+        let allowed: HashSet<_> = bundled::FILES
+            .iter()
+            .map(|file| file.name)
+            .chain(bundled::notice_files().map(|(name, _)| name))
+            .collect();
+        for entry in fs::read_dir(directory).map_err(|e| failure("component-failed", e))? {
+            let entry = entry.map_err(|e| failure("component-failed", e))?;
+            if !entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| allowed.contains(name))
+            {
+                return Err(failure(
+                    "npcap-conflict",
+                    "Unexpected file in the EasyTier runtime directory",
+                ));
+            }
+        }
+        for (path, expected) in &self.installation.shadows {
+            match (fs::symlink_metadata(path), expected) {
+                (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => {}
+                (Ok(_), Some(expected)) => {
+                    let current = pin_file(path)?;
+                    if !BoundDirectory::entry_matches(expected, &current)
+                        .map_err(|e| failure("npcap-verification", e))?
+                    {
+                        return Err(failure(
+                            "npcap-verification",
+                            "Installed Packet.dll changed; recheck Npcap",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(failure(
+                        "npcap-conflict",
+                        "Windows DLL search path changed; recheck Npcap",
+                    ))
+                }
+            }
+        }
+        command
+            .env("PATH", &self.installation.search_path)
+            .env("SystemRoot", self.installation.system.parent().unwrap())
+            .env("WINDIR", self.installation.system.parent().unwrap())
+            .env_remove("__COMPAT_LAYER")
+            .current_dir(&self.installation.system);
+        Ok(())
+    }
 }
 
 pub(super) async fn prepare_run(
     root: &Path,
     bundled: &Path,
 ) -> Result<(PathBuf, RunLease), EasyTierError> {
-    let source = installed_packet()?;
-    let source_pin = pin_file(&source)?;
-    verify_signature(&source).await?;
+    let installation = pin_installation(system_directory()?)?;
+    verify_signature(&installation.packet).await?;
     let root = root.to_path_buf();
     let bundled = bundled.to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
@@ -340,25 +479,11 @@ pub(super) async fn prepare_run(
             fs::write(directory.path().join(name), bytes)
                 .map_err(|e| failure("component-failed", e))?;
         }
-        let packet = directory.path().join("Packet.dll");
-        let mut input = source_pin
-            .try_clone()
-            .map_err(|e| failure("npcap-setup", e))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&packet)
-            .map_err(|e| failure("npcap-setup", e))?;
-        std::io::copy(&mut input, &mut output).map_err(|e| failure("npcap-setup", e))?;
-        output.sync_all().map_err(|e| failure("npcap-setup", e))?;
-        drop(output);
-        let packet_pin = pin_file(&packet)?;
         let path = directory.path().to_path_buf();
         Ok((
             path,
             RunLease {
-                _source: source_pin,
-                _packet: packet_pin,
+                installation,
                 _binaries: binaries,
                 _pin: pin,
                 _directory: directory,

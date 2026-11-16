@@ -4103,7 +4103,7 @@
   "npcap-detected": "检测到本机安装，启动前会再次校验",
   "npcap-not-installed": "需要单独安装",
   "npcap-independent-note": "Npcap 由 Nmap Project 提供，采用独立许可。PortMate 不捆绑 Npcap 或其 Packet.dll，安装器直接从 npcap.com 下载，不经 PortMate 镜像。",
-  "npcap-license-limits": "请阅读 Npcap 自身的 EULA。免费许可通常最多允许五台安装（另有例外）；OEM 再分发、静默安装或超出许可范围的部署需另行授权。下载不代表接受许可。",
+  "npcap-license-limits": "下载前请阅读 Npcap EULA：其条款规定下载、安装或使用即表示同意。仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。OEM 再分发、静默安装或超出许可范围的部署需另行授权。",
   "npcap-interactive-note": "每次下载和启动安装器都需确认。请在官方安装器中自行确认 EULA、驱动选项及 UAC，PortMate 不代为选择或接受。安装结束后重新检测；如安装器要求，请先重启 Windows。",
   "npcap-official-site": "官方下载",
   "npcap-license": "Npcap 许可协议",
@@ -4125,5 +4125,6 @@
   "npcap-download-error": "Npcap 官方下载失败或已取消，未启动安装器；可重试或访问官方网站。",
   "npcap-setup-error": "Npcap 配置未完成或权限被拒绝。请重新检测、重试，或手动运行官方安装器。",
   "native-message-547ade6a1f9b": "Open the official Npcap installer?\n\nInstallation is interactive: review and accept Npcap's own license and Windows UAC yourself. PortMate will not silently accept the EULA or select driver options.\n\n是否打开 Npcap 官方交互式安装器？请自行阅读并确认其许可与 Windows UAC；PortMate 不代替接受许可或选择驱动选项。",
-  "native-message-abb2f8fb65a3": "Download Npcap 1.90 directly from https://npcap.com/dist/npcap-1.90.exe ?\n\nNpcap is separate software by the Nmap Project, not bundled with PortMate. Its free license normally permits up to five installations, with exceptions. Downloading does not accept its EULA. Review https://github.com/nmap/npcap/blob/v1.90/LICENSE .\n\n是否从 Npcap 官方下载？Npcap 是独立许可组件，免费许可通常最多允许五台安装（另有例外），下载不代表接受安装许可。"
+  "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
+  "npcap-conflict-error": "冲突的 Packet.dll/WinPcap 安装或额外的运行目录文件阻止了安全加载。请使用官方安装器修复 Npcap/WinPcap，重启 PortMate 后重新检测。"
 }

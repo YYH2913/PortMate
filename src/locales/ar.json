@@ -4103,7 +4103,7 @@
   "npcap-detected": "تم اكتشاف تثبيت محلي؛ يُتحقق منه مجددًا قبل التشغيل",
   "npcap-not-installed": "يلزم تثبيت منفصل",
   "npcap-independent-note": "Npcap برنامج مستقل من Nmap Project. لا يضم PortMate برنامج Npcap أو Packet.dll. يأتي التنزيل مباشرة من npcap.com.",
-  "npcap-license-limits": "راجع اتفاقية Npcap. يسمح الترخيص المجاني عادةً بخمسة تثبيتات مع استثناءات؛ قد تتطلب إعادة توزيع OEM أو التثبيت الصامت أو النشر الأوسع تفويضًا منفصلًا. التنزيل لا يعني قبول الترخيص.",
+  "npcap-license-limits": "اقرأ اتفاقية Npcap قبل التنزيل: يعد التنزيل أو التثبيت أو الاستخدام موافقةً عليها. تابع فقط إذا وافقت والتزمت بالحدود (عادةً خمسة تثبيتات مع استثناءات). قد تتطلب إعادة توزيع OEM أو التثبيت الصامت أو النشر الأوسع تفويضًا منفصلًا.",
   "npcap-interactive-note": "يتطلب كل تنزيل وتشغيل للمثبّت تأكيدًا. يتولى المثبّت الرسمي الاتفاقية وخيارات التشغيل وUAC؛ لا يقبلها PortMate نيابةً عنك. أعد الفحص بعد التثبيت وأعد تشغيل Windows إذا طُلب.",
   "npcap-official-site": "التنزيلات الرسمية",
   "npcap-license": "اتفاقية Npcap",
@@ -4125,5 +4125,6 @@
   "npcap-download-error": "فشل تنزيل Npcap الرسمي أو أُلغي. لم يبدأ المثبّت؛ أعد المحاولة أو استخدم الموقع الرسمي.",
   "npcap-setup-error": "لم يكتمل إعداد Npcap أو رُفض الوصول. أعد الفحص أو المحاولة أو شغّل المثبّت الرسمي يدويًا.",
   "native-message-547ade6a1f9b": "Open the official Npcap installer?\n\nInstallation is interactive: review and accept Npcap's own license and Windows UAC yourself. PortMate will not silently accept the EULA or select driver options.\n\n是否打开 Npcap 官方交互式安装器？请自行阅读并确认其许可与 Windows UAC；PortMate 不代替接受许可或选择驱动选项。",
-  "native-message-abb2f8fb65a3": "Download Npcap 1.90 directly from https://npcap.com/dist/npcap-1.90.exe ?\n\nNpcap is separate software by the Nmap Project, not bundled with PortMate. Its free license normally permits up to five installations, with exceptions. Downloading does not accept its EULA. Review https://github.com/nmap/npcap/blob/v1.90/LICENSE .\n\n是否从 Npcap 官方下载？Npcap 是独立许可组件，免费许可通常最多允许五台安装（另有例外），下载不代表接受安装许可。"
+  "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
+  "npcap-conflict-error": "يمنع تعارض Packet.dll/WinPcap أو ملف غير متوقع التحميل الآمن. أصلح Npcap/WinPcap بالمثبّت الرسمي، ثم أعد تشغيل PortMate والفحص."
 }

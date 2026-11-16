@@ -186,7 +186,8 @@ try {
   const download = setup.getByRole("button", { name: "Download official Npcap 1.90…", exact: true });
   const launch = setup.getByRole("button", { name: "Open interactive installer…", exact: true });
   assert(await launch.isDisabled(), "installer must not launch before download verification");
-  assert((await setup.innerText()).includes("does not accept the license"));
+  assert((await setup.innerText()).includes("its terms treat downloading, installing or using as agreement"));
+  assert(!(await setup.innerText()).includes("does not accept the license"));
   assert.equal(await setup.getByRole("link", { name: "Npcap EULA", exact: true }).getAttribute("href"), "https://github.com/nmap/npcap/blob/v1.90/LICENSE");
   assert.equal(await setup.getByRole("link", { name: "Official downloads", exact: true }).getAttribute("rel"), "noopener noreferrer");
   await windows.evaluate(() => { window.declineNpcapDownload = true; });
