@@ -8,5 +8,5 @@ fn stale_loopback_attempts_leave_budget_to_reload_the_endpoint() {
         .map(|attempt| Duration::from_millis(50 << attempt.min(2)))
         .sum();
     assert!(IPC_CONNECT_TIMEOUT * IPC_DISCOVERY_ATTEMPTS as u32 + backoff < IPC_DISCOVERY_TIMEOUT);
-    assert!(IPC_DISCOVERY_ATTEMPTS > 1);
+    const { assert!(IPC_DISCOVERY_ATTEMPTS > 1) };
 }
