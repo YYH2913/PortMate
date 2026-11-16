@@ -7,18 +7,19 @@
   "pathInVcs": "pty",
   "portmateChanges": [
     "Do not request inherited cursor position on a new Windows ConPTY (avoids missing renderer CPR deadlock).",
-    "Relocate upstream command-builder tests into test/rust/portable-pty/; omit examples and example-only development dependencies from the local package manifest."
+    "Relocate upstream command-builder tests into test/rust/portable-pty/; omit examples and example-only development dependencies from the local package manifest.",
+    "Initialize and pointer-align the Windows native process attribute-list storage; preserve memory-safety lint checks."
   ],
   "unchangedSources": {
     "src/lib.rs": "8b1d45c520f17c8be2d51069bb6ed46a6fa612d0395bc55a5b6e0ef30cc1c004",
     "src/serial.rs": "4c1db2410641b15af1c52d17b3e03a294f11d1a843744e27101d22dc91dbd793",
     "src/unix.rs": "14c85213b32074d71c8af334531fd027d6a0558dee830282620c88bab056c4b3",
     "src/win/mod.rs": "c983e63d15800f73ac05105a69ec2b53fea482c066ea5559682bd024561f999a",
-    "src/win/conpty.rs": "8af0d7654aad62aaa67685b7b8550bc638b732360f7de1357cc5b0a35bc47ca1",
-    "src/win/procthreadattr.rs": "0483a5b43794181f02b20175ba15dc4e913663208d94e4a48aa9cc2cd77fdb1c"
+    "src/win/conpty.rs": "8af0d7654aad62aaa67685b7b8550bc638b732360f7de1357cc5b0a35bc47ca1"
   },
   "changedSourceOriginalHashes": {
     "src/cmdbuilder.rs": "db95387276f7f5a2e6bfd27a0c21ad99090f5d29e3663ad0446becec86748283",
-    "src/win/psuedocon.rs": "297d0622d7b0401708f1ce3b92076632dd5a0c188b4a8d09b2f4891190b0e392"
+    "src/win/psuedocon.rs": "297d0622d7b0401708f1ce3b92076632dd5a0c188b4a8d09b2f4891190b0e392",
+    "src/win/procthreadattr.rs": "0483a5b43794181f02b20175ba15dc4e913663208d94e4a48aa9cc2cd77fdb1c"
   }
 }

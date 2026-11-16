@@ -8,7 +8,7 @@ use winapi::um::processthreadsapi::*;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 
 pub struct ProcThreadAttributeList {
-    data: Vec<u8>,
+    data: Vec<usize>,
 }
 
 impl ProcThreadAttributeList {
@@ -22,11 +22,9 @@ impl ProcThreadAttributeList {
                 &mut bytes_required,
             )
         };
-        let mut data = Vec::with_capacity(bytes_required);
-        // We have the right capacity, so force the vec to consider itself
-        // that length.  The contents of those bytes will be maintained
-        // by the win32 apis used in this impl.
-        unsafe { data.set_len(bytes_required) };
+        // An attribute list is opaque native storage. Initialize it before
+        // exposing Rust slices and retain pointer alignment for the Win32 API.
+        let mut data = vec![0_usize; bytes_required.div_ceil(mem::size_of::<usize>())];
 
         let attr_ptr = data.as_mut_slice().as_mut_ptr() as *mut _;
         let res = unsafe {
@@ -70,3 +68,7 @@ impl Drop for ProcThreadAttributeList {
         unsafe { DeleteProcThreadAttributeList(self.as_mut_ptr()) };
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../test/rust/portable-pty/procthreadattr.rs"]
+mod tests;

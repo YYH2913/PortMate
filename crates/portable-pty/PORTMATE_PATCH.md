@@ -16,3 +16,5 @@ with a source-only test module hook. Examples are omitted from the local package
 manifest, along with example-only development dependencies. The existing real Windows cmd.exe MCP test deliberately runs without
 a renderer and verifies both lines of `run_command` and `run_local_command`.
 The MIT notice is included in installed and portable PortMate packages.
+
+Windows process-attribute-list storage is now initialized and pointer-aligned (`Vec<usize>`), not an uninitialized `Vec<u8>`. A Windows-only regression verifies allocation and alignment. Scoped style-lint allowances preserve the rest of the upstream sources; memory-safety lints are not suppressed.

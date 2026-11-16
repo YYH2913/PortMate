@@ -90,6 +90,10 @@ needless_borrows_for_generic_args = "allow"
 option_as_ref_deref = "allow"
 useless_conversion = "allow"
 manual_map = "allow"
+manual_flatten = "allow"
+manual_ignore_case_cmp = "allow"
+clone_on_copy = "allow"
+upper_case_acronyms = "allow"
 
 [target."cfg(windows)".dependencies.bitflags]
 version = "1.3"
