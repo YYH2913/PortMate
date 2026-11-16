@@ -247,7 +247,7 @@ jobs:
         # Desktop builds always embed the verified platform-specific EasyTier core.
         # Prepare it before the direct Cargo invocation as well as the Tauri build.
         run: node scripts/ci-command-log.mjs target/native-ci/easytier-prepare.log npm run easytier:prepare
-      - name: Verify built-in EasyTier without a separate installation
+      - name: Verify built-in EasyTier and separate dependency boundaries
         run: node scripts/ci-command-log.mjs target/native-ci/easytier-core.log node test/tooling/native-rust-tests.mjs easytier
       - name: Verify workspace Clippy with bundled EasyTier
         run: node scripts/ci-command-log.mjs target/native-ci/clippy.log cargo clippy --locked --workspace --all-targets --features portmate/test-probes -- -D warnings

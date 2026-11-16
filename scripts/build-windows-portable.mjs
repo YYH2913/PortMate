@@ -12,6 +12,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "no
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verifyWindowsPackageLayout } from "./native-package-layout.mjs";
+import { copyEasyTierNotices } from "./easytier-notices.mjs";
 import {
   verifyWindowsLoaderDll,
   verifyWindowsReleaseBinary,
@@ -65,6 +66,7 @@ copy(loader, join(stagingRoot, "WebView2Loader.dll"), 0o644);
 copy(license, join(stagingRoot, "LICENSE"), 0o644);
 copy(thirdPartyLicense, join(stagingRoot, "THIRD_PARTY_LICENSES", "JetBrainsMono-OFL.txt"), 0o644);
 copy(join(projectRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"), join(stagingRoot, "THIRD_PARTY_LICENSES", "gsudo-MIT.txt"), 0o644);
+copyEasyTierNotices(join(stagingRoot, "THIRD_PARTY_LICENSES"));
 
 const payload = verifyWindowsPackageLayout({
   root: stagingRoot,

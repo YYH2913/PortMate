@@ -16,6 +16,7 @@ import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-sm
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 import { extractLinuxRpm } from "./linux-rpm-extract.mjs";
 import { assertNoTestProbeExecutable } from "../../scripts/native-package-layout.mjs";
+import { verifyEasyTierNotices } from "../../scripts/easytier-notices.mjs";
 
 if (process.platform !== "linux") {
   throw new Error("The Linux package check requires a Linux host");
@@ -130,6 +131,7 @@ try {
     0o644,
   );
   assertPortableTree(extracted);
+  for (const packageRoot of [debRoot, rpmRoot, extracted]) verifyEasyTierNotices(join(packageRoot, "usr/lib/PortMate/THIRD_PARTY_LICENSES"));
 
   for (const [kind, bridge] of [["DEB", debBridge], ["RPM", rpmBridge], ["AppImage", appImageBridge]]) {
     checkPackagedBridge(kind, bridge);

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { verifyWindowsPackageLayout } from "./native-package-layout.mjs";
 import { verifyWindowsReleaseBinary, verifyWindowsSidecarBinary } from "./windows-release-binary.mjs";
 import { windowsBundleReference } from "./windows-bundle-reference.mjs";
+import { copyEasyTierNotices, verifyEasyTierNotices } from "./easytier-notices.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const target = resolve(root, process.env.CARGO_TARGET_DIR || "target");
@@ -31,6 +32,7 @@ if (process.platform === "win32" && process.arch === "x64") {
   copyFileSync(join(root, "LICENSE"), join(stage, "LICENSE"));
   copyFileSync(join(root, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"), join(stage, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt"));
   copyFileSync(join(root, "THIRD_PARTY_LICENSES/gsudo-MIT.txt"), join(stage, "THIRD_PARTY_LICENSES/gsudo-MIT.txt"));
+  copyEasyTierNotices(join(stage, "THIRD_PARTY_LICENSES"));
   if (existsSync(join(release, "WebView2Loader.dll"))) copyFileSync(join(release, "WebView2Loader.dll"), join(stage, "WebView2Loader.dll"));
   verifyWindowsReleaseBinary({ executable: join(stage, "portmate.exe"), frontendDist: join(root, "dist") });
   verifyWindowsSidecarBinary(join(stage, "portmate-mcp.exe"));
@@ -46,6 +48,7 @@ if (process.platform === "win32" && process.arch === "x64") {
   mkdirSync(extracted);
   run(windowsTar, ["-x", "-f", basename(archive), "-C", extracted], folder);
   verifyWindowsPackageLayout({ root: extracted, sourceMain: windows.main, sourceSidecar: windows.sidecar, sourceLicense: windows.license, sourceThirdPartyLicense: windows.thirdPartyLicense, sourceElevationLicense: windows.elevationLicense });
+  verifyEasyTierNotices(join(extracted, name, "THIRD_PARTY_LICENSES"));
   artifacts.push(archive);
 } else if (process.platform === "darwin" && process.arch === "arm64") {
   const folder = join(bundle, "macos");

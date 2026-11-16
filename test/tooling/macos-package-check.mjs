@@ -12,6 +12,7 @@ import { smokePackagedApplicationLifecycle } from "./native-packaged-smoke.mjs";
 import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-smoke.mjs";
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 import { mountVerifiedMacDmg } from "./macos-dmg-mount.mjs";
+import { verifyEasyTierNotices } from "../../scripts/easytier-notices.mjs";
 
 if (process.platform !== "darwin") {
   throw new Error("macOS package verification must run on macOS");
@@ -156,6 +157,7 @@ console.log(JSON.stringify({
 }, null, 2));
 
 function verifyApp(path, options = {}) {
+  verifyEasyTierNotices(join(path, "Contents", "Resources", "THIRD_PARTY_LICENSES"));
   const infoPlist = join(path, "Contents", "Info.plist");
   const metadata = Object.fromEntries(Object.keys(expectedMetadata).map((key) => [
     key,

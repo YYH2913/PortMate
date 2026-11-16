@@ -17,6 +17,7 @@ import { smokePackagedSidecarParentWatchdog } from "./native-packaged-sidecar-sm
 import { createNativePackageCheckWorkspace } from "./native-package-workspace.mjs";
 import { runSilentNsis } from "./windows-nsis-silent.mjs";
 import { extractWindowsMsi } from "./windows-msi-admin-extract.mjs";
+import { verifyEasyTierNotices } from "../../scripts/easytier-notices.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("Windows package verification must run on Windows");
@@ -135,6 +136,7 @@ try {
     "uninstall.exe",
     { caseInsensitive: true },
   );
+  for (const payload of [verifiedMsi, verifiedNsis]) verifyEasyTierNotices(join(payload.applicationDirectory, "THIRD_PARTY_LICENSES"));
   if (dirname(uninstaller).toLocaleLowerCase("en-US")
       !== verifiedNsis.applicationDirectory.toLocaleLowerCase("en-US")) {
     throw new Error(`NSIS uninstaller is outside the application directory: ${uninstaller}`);

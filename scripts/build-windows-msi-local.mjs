@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { verifyWindowsPackageLayout } from "./native-package-layout.mjs";
 import { verifyWindowsLoaderDll, verifyWindowsReleaseBinary, verifyWindowsSidecarBinary } from "./windows-release-binary.mjs";
+import { easyTierNotices, verifyEasyTierNotices } from "./easytier-notices.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: {
@@ -93,6 +94,7 @@ const sources = new Map([
   ["jetbrainsmono-ofl.txt", join(root, "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt")],
   ["gsudo-mit.txt", join(root, "THIRD_PARTY_LICENSES/gsudo-MIT.txt")],
 ]);
+for (const name of easyTierNotices) sources.set(name.toLowerCase(), join(root, "licenses", name));
 const files = table(template, "File");
 const components = table(template, "Component");
 const features = table(template, "FeatureComponents");
@@ -127,6 +129,16 @@ if (!names.includes("gsudo-mit.txt")) {
   components.rows.push({ Component: id, ComponentId: stableGuid(property("UpgradeCode"), "THIRD_PARTY_LICENSES/gsudo-MIT.txt"), Directory_: directory, Attributes: "256", Condition: "", KeyPath: id });
   features.rows.push({ Feature_: "MainProgram", Component_: id });
   files.rows.push({ File: id, Component_: id, FileName: "gsudo.txt|gsudo-MIT.txt", FileSize: "0", Version: "", Language: "", Attributes: "512", Sequence: String(Math.max(...files.rows.map((row) => Number(row.Sequence))) + 1) });
+}
+for (const [index, name] of easyTierNotices.entries()) {
+  if (names.includes(name.toLowerCase())) continue;
+  const id = `PortMateEasyTierNotice${index}`;
+  const font = files.rows.find(row => longName(row.FileName) === "jetbrainsmono-ofl.txt");
+  const directory = components.rows.find(row => row.Component === font.Component_)?.Directory_;
+  if (!directory || components.rows.some(row => row.Component === id)) throw new Error("MSI third-party notice layout is invalid");
+  components.rows.push({ Component: id, ComponentId: stableGuid(property("UpgradeCode"), `THIRD_PARTY_LICENSES/${name}`), Directory_: directory, Attributes: "256", Condition: "", KeyPath: id });
+  features.rows.push({ Feature_: "MainProgram", Component_: id });
+  files.rows.push({ File: id, Component_: id, FileName: `etn${index}.txt|${name}`, FileSize: "0", Version: "", Language: "", Attributes: "512", Sequence: String(Math.max(...files.rows.map(row => Number(row.Sequence))) + 1) });
 }
 for (const row of files.rows) {
   const source = sources.get(longName(row.FileName));
@@ -168,6 +180,7 @@ for (const stream of streams.filter((name) => name !== "app.cab" && !name.endsWi
 }
 run(tool("msiextract"), ["-C", extractedRoot, rebuilt]);
 const payload = verifyWindowsPackageLayout({ root: extractedRoot, sourceMain: preparedMain, sourceSidecar, sourceLicense: sources.get("license"), sourceThirdPartyLicense: sources.get("jetbrainsmono-ofl.txt"), sourceElevationLicense: sources.get("gsudo-mit.txt") });
+verifyEasyTierNotices(join(dirname(payload.main), "THIRD_PARTY_LICENSES"));
 const loader = join(dirname(payload.main), "WebView2Loader.dll");
 if (!existsSync(loader) || sha256(loader) !== sha256(sourceLoader)) throw new Error("Extracted MSI loader does not match the Windows x64 source");
 verifyWindowsReleaseBinary({ executable: payload.main, frontendDist: join(root, "dist") });
