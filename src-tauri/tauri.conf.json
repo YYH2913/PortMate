@@ -47,7 +47,12 @@
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt": "THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt",
-      "../THIRD_PARTY_LICENSES/gsudo-MIT.txt": "THIRD_PARTY_LICENSES/gsudo-MIT.txt"
+      "../THIRD_PARTY_LICENSES/gsudo-MIT.txt": "THIRD_PARTY_LICENSES/gsudo-MIT.txt",
+      "../licenses/EasyTier-NOTICE.txt": "THIRD_PARTY_LICENSES/EasyTier-NOTICE.txt",
+      "../licenses/EasyTier-LGPL-3.0.txt": "THIRD_PARTY_LICENSES/EasyTier-LGPL-3.0.txt",
+      "../licenses/GPL-3.0.txt": "THIRD_PARTY_LICENSES/GPL-3.0.txt",
+      "../licenses/Wintun-LICENSE.txt": "THIRD_PARTY_LICENSES/Wintun-LICENSE.txt",
+      "../licenses/WinDivert-LICENSE.txt": "THIRD_PARTY_LICENSES/WinDivert-LICENSE.txt"
     },
     "icon": [
       "icons/32x32.png",

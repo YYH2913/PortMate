@@ -65,6 +65,8 @@ fn prepares_embedded_files_offline_and_repairs_corruption() {
     assert_eq!(fs::read(&binary).unwrap(), CORE);
     assert!(directory.join("LICENSE").exists());
     assert!(directory.join("COPYING").exists());
+    let source = fs::read_to_string(directory.join("SOURCE.txt")).unwrap();
+    assert!(source.contains("Npcap") && source.contains("NOT included") && source.contains("LGPL"));
     let modified = fs::metadata(&binary).unwrap().modified().unwrap();
     assert_eq!(
         bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap(),
@@ -81,6 +83,14 @@ fn prepares_embedded_files_offline_and_repairs_corruption() {
     fs::remove_file(&binary).unwrap();
     bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
     assert_eq!(fs::read(&binary).unwrap(), CORE);
+    fs::write(directory.join("Packet.dll"), b"must not be reused").unwrap();
+    fs::write(directory.join("SOURCE.txt"), b"modified notice").unwrap();
+    bundled::prepare_files(root.path(), &files, "fake-payload-1").unwrap();
+    assert!(!directory.join("Packet.dll").exists());
+    assert_eq!(
+        fs::read_to_string(directory.join("SOURCE.txt")).unwrap(),
+        source
+    );
     #[cfg(unix)]
     {
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o600)).unwrap();
@@ -98,6 +108,17 @@ fn prepares_embedded_files_offline_and_repairs_corruption() {
 async fn bundled_core_and_cli_run_without_an_external_installation() {
     let root = tempfile::tempdir().unwrap();
     let directory = bundled::prepare(root.path()).unwrap();
+    assert!(!directory.join("Packet.dll").exists());
+    #[cfg(windows)]
+    if !npcap::NpcapRuntime::default().status().installed {
+        assert!(
+            matches!(npcap::prepare_run(root.path(), directory).await, Err(error) if error.code == "npcap-required")
+        );
+        // Native CI never downloads/installs Npcap or accepts its license.
+        return;
+    }
+    let component = npcap::prepare_run(root.path(), directory).await.unwrap();
+    let directory = component.directory.clone();
     for name in ["easytier-core", "easytier-cli"] {
         let binary = bundled::executable(&directory, name).unwrap();
         let version = command_output(&binary, &["--version"]).await.unwrap();
@@ -186,6 +207,9 @@ async fn real_easytier_configuration_rpc_and_cleanup() {
         cli: cli.clone(),
         rpc: rpc.clone(),
         started: Instant::now(),
+        _component: npcap::prepare_run(bundled_root.path(), binaries.clone())
+            .await
+            .unwrap(),
     });
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {

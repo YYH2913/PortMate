@@ -9,7 +9,7 @@
     "windows-x86_64": {
       "archive": "easytier-windows-x86_64-v2.6.4.zip",
       "sha256": "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84",
-      "files": ["easytier-core.exe", "easytier-cli.exe", "wintun.dll", "Packet.dll", "WinDivert64.sys"]
+      "files": ["easytier-core.exe", "easytier-cli.exe", "wintun.dll", "WinDivert64.sys"]
     },
     "macos-aarch64": {
       "archive": "easytier-macos-aarch64-v2.6.4.zip",

@@ -34,6 +34,12 @@ pub fn embed() {
         .iter()
         .map(|name| name.as_str().unwrap())
         .collect();
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("Packet.dll")),
+        "Npcap must never be embedded or redistributed with PortMate"
+    );
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut found = HashMap::new();
     for index in 0..zip.len() {
@@ -66,7 +72,11 @@ pub fn embed() {
             "Duplicate upstream component"
         );
     }
-    let mut generated = format!("pub(super) const PAYLOAD_ID: &str = {expected:?};\npub(super) static FILES: &[EmbeddedFile] = &[\n");
+    // The archive also contains files we intentionally do not redistribute.
+    // Bind the installation directory to the selected payload, not the ZIP,
+    // so older runtimes containing Npcap are never reused after this change.
+    let identity = digest(format!("{expected}\n{}", names.join("\n")).as_bytes());
+    let mut generated = format!("pub(super) const PAYLOAD_ID: &str = {identity:?};\npub(super) static FILES: &[EmbeddedFile] = &[\n");
     for name in names {
         let (path, sha256) = found
             .get(name)

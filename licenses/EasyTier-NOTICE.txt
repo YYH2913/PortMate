@@ -1,0 +1,53 @@
+EasyTier integration notice / EasyTier 集成声明
+
+PortMate integrates the unmodified EasyTier 2.6.4 core and CLI as separate
+processes. EasyTier is a project by its upstream authors and contributors.
+PortMate is an independent integration, not an official EasyTier or Nmap/Npcap
+product; inclusion and interface inspiration do not imply endorsement.
+PortMate's Apache-2.0 license does not replace third-party licenses.
+
+EasyTier: GNU LGPL version 3, incorporating GNU GPL version 3.
+License texts accompany this notice as EasyTier-LGPL-3.0.txt and GPL-3.0.txt.
+Project: https://github.com/EasyTier/EasyTier
+Release: https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4
+Corresponding source (tag v2.6.4, commit 8428a89d2dabc94c97d370ec607c6ca142473626):
+https://github.com/EasyTier/EasyTier/archive/8428a89d2dabc94c97d370ec607c6ca142473626.tar.gz
+The upstream source contains the Cargo manifests/lockfile and build scripts.
+PortMate source and integration/build scripts: https://github.com/YYH2913/PortMate
+No EasyTier source modifications are applied. Windows payload selection excludes
+Npcap's Packet.dll; that exclusion does not change the EasyTier executables.
+
+Windows runtime dependencies have their own terms:
+- Wintun 0.14.1 signed amd64 DLL, unchanged from the official distribution:
+  https://www.wintun.net/ ; https://www.wintun.net/builds/wintun-0.14.1.zip
+  Copyright WireGuard LLC. Redistribution alongside software using its permitted
+  API is governed by the accompanying Wintun-LICENSE.txt, not PortMate's license.
+- WinDivert: https://github.com/basil00/WinDivert ; upstream v2.2.2 source:
+  https://github.com/basil00/WinDivert/archive/refs/tags/v2.2.2.tar.gz
+  Its dual LGPLv3/GPLv2 terms accompany this notice as WinDivert-LICENSE.txt.
+- Npcap by the Nmap Project is NOT included in PortMate installers, archives or
+  embedded payloads. Windows EasyTier requires a separate local Npcap installation.
+  After explicit consent, PortMate may download the official installer directly
+  from https://npcap.com/dist/npcap-1.90.exe, verify it, and open its interactive UI.
+  Npcap's own EULA and Windows UAC must be completed by the user. No silent switch,
+  automatic license acceptance, driver option selection or OEM rights are supplied.
+  License: https://github.com/nmap/npcap/blob/v1.90/LICENSE
+  Official downloads: https://npcap.com/#download ; OEM: https://npcap.com/oem/
+  The free license normally permits five installations, with specified exceptions.
+  Users are responsible for the applicable usage/deployment limits and any required
+  OEM or other authorization. Npcap is not LGPL software.
+  At runtime only, PortMate can stage a verified copy of the user's installed
+  Packet.dll in a private per-run directory; it is never publicly redistributed.
+
+Use EasyTier only for lawful purposes and comply with applicable laws. Ensure you
+are authorized to connect to and administer the networks and devices involved.
+Upstream responsible-use statement:
+https://github.com/EasyTier/EasyTier/blob/main/README_CN.md
+
+PortMate 独立集成未修改的 EasyTier 2.6.4 核心与 CLI，程序以独立进程运行，
+不代表 EasyTier、Nmap/Npcap 或 WireGuard 官方产品、合作关系或官方背书。
+EasyTier 遵循 LGPL-3.0；Wintun、WinDivert 各自保留上述原始许可。
+Npcap 不随 PortMate 安装包、便携包或内置组件分发，Windows 用户需另行安装。
+仅在用户确认后从 Npcap 官方下载并验证安装器，由用户自行确认其 EULA、驱动选项与 UAC；
+不静默安装，不代为接受许可，不授予 OEM 权利。免费许可通常限五台安装（另有明确例外），
+应遵守实际使用及部署限制。组网仅用于合法且已获授权的网络和设备。

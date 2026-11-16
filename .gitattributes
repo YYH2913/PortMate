@@ -1,3 +1,6 @@
 # This payload is signed; checkout must preserve its exact bytes on every OS.
 test/fixtures/updater/payload.txt -text
 test/fixtures/stronghold/*.snapshot binary
+# Preserve verbatim upstream license bytes, including CRLF/trailing blank lines.
+licenses/Wintun-LICENSE.txt -text whitespace=cr-at-eol,-blank-at-eof
+licenses/WinDivert-LICENSE.txt -text whitespace=-blank-at-eof

@@ -15,6 +15,36 @@ pub(super) const PAYLOAD_ID: &str = "unavailable";
 #[cfg(not(feature = "bundled-easytier"))]
 pub(super) static FILES: &[EmbeddedFile] = &[];
 
+pub(super) fn notice_files() -> [(&'static str, &'static [u8]); 7] {
+    [
+        (
+            "LICENSE",
+            include_bytes!("../../../licenses/EasyTier-LGPL-3.0.txt"),
+        ),
+        ("COPYING", include_bytes!("../../../licenses/GPL-3.0.txt")),
+        (
+            "EasyTier-LGPL-3.0.txt",
+            include_bytes!("../../../licenses/EasyTier-LGPL-3.0.txt"),
+        ),
+        (
+            "GPL-3.0.txt",
+            include_bytes!("../../../licenses/GPL-3.0.txt"),
+        ),
+        (
+            "SOURCE.txt",
+            include_bytes!("../../../licenses/EasyTier-NOTICE.txt"),
+        ),
+        (
+            "Wintun-LICENSE.txt",
+            include_bytes!("../../../licenses/Wintun-LICENSE.txt"),
+        ),
+        (
+            "WinDivert-LICENSE.txt",
+            include_bytes!("../../../licenses/WinDivert-LICENSE.txt"),
+        ),
+    ]
+}
+
 pub(super) fn executable(directory: &Path, name: &str) -> Result<PathBuf, EasyTierError> {
     let path = directory.join(if cfg!(windows) {
         format!("{name}.exe")
@@ -84,19 +114,9 @@ pub(super) fn prepare_files(
         file.sync_all()
             .map_err(|e| failure("component-failed", e))?;
     }
-    for (name, bytes) in [
-        (
-            "LICENSE",
-            include_bytes!("../../../licenses/EasyTier-LGPL-3.0.txt").as_slice(),
-        ),
-        (
-            "COPYING",
-            include_bytes!("../../../licenses/GPL-3.0.txt").as_slice(),
-        ),
-    ] {
+    for (name, bytes) in notice_files() {
         fs::write(stage.path().join(name), bytes).map_err(|e| failure("component-failed", e))?;
     }
-    fs::write(stage.path().join("SOURCE.txt"), format!("EasyTier {VERSION}\nIncluded with PortMate; unmodified upstream executables.\nhttps://github.com/EasyTier/EasyTier/tree/v{VERSION}\nLGPL-3.0\nhttps://github.com/EasyTier/EasyTier/archive/refs/tags/v{VERSION}.tar.gz\n")).map_err(|e| failure("component-failed", e))?;
     let backup = tempfile::Builder::new()
         .prefix("previous-")
         .tempdir_in(root)
@@ -120,6 +140,26 @@ fn intact(directory: &Path, files: &[EmbeddedFile]) -> bool {
         return false;
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    // A stale or user-supplied Packet.dll must not shadow the separately
+    // installed, verified Npcap dependency. Notices are repaired too.
+    if fs::read_dir(directory).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("Packet.dll")
+        })
+    }) {
+        return false;
+    }
+    if !notice_files().iter().all(|(name, expected)| {
+        let path = directory.join(name);
+        fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            && fs::read(path).is_ok_and(|bytes| bytes == *expected)
+    }) {
         return false;
     }
     files.iter().all(|source| {

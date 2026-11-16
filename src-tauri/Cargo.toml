@@ -75,7 +75,7 @@ tauri = { version = "2.12.0", default-features = false, features = [
 tauri-plugin-dialog = "=2.7.3"
 tauri-plugin-updater = { version = "=2.14.0", default-features = false, features = ["native-tls"] }
 tempfile = "3.27"
-tokio = { version = "1.54.1", features = ["io-util", "net", "process", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "net", "process", "sync", "time"] }
 tokio-native-tls = "0.3.1"
 uuid.workspace = true
 url.workspace = true
@@ -90,6 +90,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",
+  "Win32_System_SystemInformation",
   "Win32_System_JobObjects",
   "Win32_System_Diagnostics_ToolHelp",
 ] }

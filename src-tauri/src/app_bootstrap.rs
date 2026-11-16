@@ -166,6 +166,10 @@ pub fn run() {
             easytier::save_easy_tier_config,
             easytier::start_easy_tier,
             easytier::stop_easy_tier,
+            easytier::npcap::download_npcap_installer,
+            easytier::npcap::launch_npcap_installer,
+            easytier::npcap::cancel_npcap_download,
+            easytier::npcap::recheck_npcap,
         ])
         .build(tauri::generate_context!());
     let app = match app {
@@ -192,6 +196,7 @@ pub fn run() {
                     Some(&format!("window:{label}")),
                 );
                 session_credentials::clear_session_credentials_for_owner(state.inner(), label);
+                easytier::window_closed_for_app(state.inner(), label);
             }
         }
         if matches!(event, tauri::RunEvent::Exit) {

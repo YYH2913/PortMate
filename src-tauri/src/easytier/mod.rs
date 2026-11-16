@@ -5,6 +5,7 @@ use tauri::Manager;
 
 mod bundled;
 mod config;
+pub(crate) mod npcap;
 
 const VERSION: &str = env!("PORTMATE_EASYTIER_VERSION");
 const MAX_LOG_LINES: usize = 160;
@@ -56,6 +57,7 @@ struct Running {
     cli: PathBuf,
     rpc: String,
     started: Instant,
+    _component: npcap::RunFiles,
 }
 
 impl Drop for Running {
@@ -76,10 +78,12 @@ pub(crate) struct EasyTierRuntime {
     gate: tokio::sync::Mutex<()>,
     inner: Arc<Mutex<Inner>>,
     exiting: AtomicBool,
+    npcap: npcap::NpcapRuntime,
 }
 
 impl Drop for EasyTierRuntime {
     fn drop(&mut self) {
+        self.npcap.shutdown();
         inner(self).running.take();
     }
 }
@@ -91,6 +95,7 @@ pub(crate) struct EasyTierView {
     component_ready: bool,
     component_version: &'static str,
     status: NetworkStatus,
+    npcap: npcap::NpcapStatus,
 }
 
 fn authorize(window: &WebviewWindow) -> Result<(), EasyTierError> {
@@ -152,10 +157,12 @@ fn view(state: &AppState, runtime: &EasyTierRuntime) -> Result<EasyTierView, Eas
         component_ready: !bundled::FILES.is_empty(),
         component_version: VERSION,
         status,
+        npcap: runtime.npcap.status(),
     })
 }
 
 fn ensure_idle(runtime: &EasyTierRuntime) -> Result<(), EasyTierError> {
+    runtime.npcap.ensure_idle()?;
     if runtime.exiting.load(Ordering::SeqCst) {
         return Err(failure("unavailable", "PortMate is exiting"));
     }
@@ -297,8 +304,10 @@ pub(crate) async fn start_easy_tier(
     let directory = tauri::async_runtime::spawn_blocking(move || bundled::prepare(&component_root))
         .await
         .map_err(|e| failure("component-failed", e))??;
-    let core = bundled::executable(&directory, "easytier-core")?;
-    let cli = bundled::executable(&directory, "easytier-cli")?;
+    let component = npcap::prepare_run(&root, directory).await?;
+    let directory = &component.directory;
+    let core = bundled::executable(directory, "easytier-core")?;
+    let cli = bundled::executable(directory, "easytier-cli")?;
     for binary in [&core, &cli] {
         let output = command_output(binary, &["--version"]).await?;
         if !String::from_utf8_lossy(&output)
@@ -338,7 +347,7 @@ pub(crate) async fn start_easy_tier(
     let mut command = tokio::process::Command::new(&core);
     clean_environment(&mut command);
     command
-        .current_dir(&directory)
+        .current_dir(directory)
         .arg("--config-file")
         .arg(&file_path)
         .args([
@@ -377,6 +386,7 @@ pub(crate) async fn start_easy_tier(
             cli,
             rpc,
             started: Instant::now(),
+            _component: component,
         });
     }
     let secret = Arc::new(secret);
@@ -644,7 +654,10 @@ pub(super) async fn stop_before_update(state: &AppState) -> Result<(), String> {
         .as_ref()
         .and_then(|app| app.try_state::<EasyTierRuntime>())
     {
+        runtime.npcap.ensure_idle().map_err(|error| error.detail)?;
+        runtime.npcap.cancel_download();
         let _gate = runtime.gate.lock().await;
+        runtime.npcap.ensure_idle().map_err(|error| error.detail)?;
         stop(&runtime).await.map_err(|error| error.detail)?;
     }
     Ok(())
@@ -657,9 +670,20 @@ pub(super) fn shutdown_for_app(state: &AppState) {
         .and_then(|app| app.try_state::<EasyTierRuntime>())
     {
         runtime.exiting.store(true, Ordering::SeqCst);
+        runtime.npcap.shutdown();
         // Dropping the process tree kills all owned descendants immediately;
         // kill-on-drop also covers cancellation of the async supervisor.
         inner(&runtime).running.take();
+    }
+}
+
+pub(super) fn window_closed_for_app(state: &AppState, owner: &str) {
+    if let Some(runtime) = state
+        .app_handle
+        .as_ref()
+        .and_then(|app| app.try_state::<EasyTierRuntime>())
+    {
+        runtime.npcap.cancel_owner(owner);
     }
 }
 

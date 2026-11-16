@@ -17,6 +17,7 @@ describe("bundled EasyTier preparation", () => {
     expect(easyTierRelease("x86_64-unknown-linux-gnu").files).toEqual(["easytier-core", "easytier-cli"]);
     expect(() => easyTierRelease("aarch64-unknown-linux-gnu")).toThrow("does not support");
     expect(easyTierRelease("x86_64-pc-windows-gnu").files).toContain("wintun.dll");
+    expect(easyTierRelease("x86_64-pc-windows-gnu").files.map(name => name.toLowerCase())).not.toContain("packet.dll");
   });
 
   it("verifies archives before caching and never replaces a valid cache with corrupt data", async () => {
