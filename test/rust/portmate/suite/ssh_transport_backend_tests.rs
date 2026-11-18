@@ -172,6 +172,107 @@ fn libssh_direct_tcpip_worker_releases_the_session_after_its_outer_deadline() {
 
 #[cfg(unix)]
 #[test]
+fn libssh_terminal_typing_and_backspace_echo_latency() {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("skipping libssh terminal echo test: ssh-keygen is not installed");
+        return;
+    }
+    let root = canonical_test_tempdir();
+    let host_key = root.path().join("host_key");
+    generate_ed25519_test_key(&host_key);
+    tauri::async_runtime::block_on(async {
+        let user = "echo-fixture";
+        let secret = "local fixture only";
+        let (port, counters, server) = spawn_mixed_auth_test_server(&host_key, user, secret).await;
+        counters.echo_terminal_edits.store(true, Ordering::Relaxed);
+        let session = connect_libssh_password_test_session(port, user, secret);
+        let channel = session.new_channel().unwrap();
+        channel.open_session().unwrap();
+        channel.request_shell().unwrap();
+        let (mut reader, writer) = SshBackendChannel::from_libssh(channel).split_terminal();
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let closed = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&closed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let reader = tokio::spawn(async move {
+            while let Some(message) = reader.wait_until_closed(&stop).await {
+                if let SshBackendMessage::Data(bytes) = message {
+                    for byte in bytes {
+                        tx.send(byte).await.unwrap();
+                    }
+                }
+            }
+        });
+        let mut samples = [Vec::new(), Vec::new()];
+        let extended = std::env::var("PORTMATE_EXTENDED_INPUT_BENCH").as_deref() == Ok("1");
+        let count = if extended { 1024 } else { 128 };
+        for i in 0..count {
+            // Alternate bursts and vary cadence relative to the reader's clock.
+            tokio::time::sleep(Duration::from_millis(3 + (i % 7) * 2)).await;
+            let deleting = i % 16 >= 8;
+            let key = if deleting { 0x7f } else { b'a' + (i % 8) as u8 };
+            let expected = if deleting {
+                &b"\x08 \x08"[..]
+            } else {
+                std::slice::from_ref(&key)
+            };
+            let at = Instant::now();
+            write_ssh_channel_bytes_with_cancellation(
+                &writer,
+                &[key],
+                Duration::from_secs(2),
+                "echo test",
+                None,
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                for &byte in expected {
+                    assert_eq!(rx.recv().await, Some(byte));
+                }
+            })
+            .await
+            .expect("terminal echo stalled");
+            samples[usize::from(deleting)].push(at.elapsed());
+        }
+        closed.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), reader)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(writer);
+        session.disconnect();
+        server.abort();
+        let _ = server.await;
+        for (name, values) in ["type", "backspace"].into_iter().zip(&mut samples) {
+            values.sort_unstable();
+            let percentile = |p: usize| values[(values.len() * p).div_ceil(100) - 1];
+            eprintln!(
+                "libssh loopback {name}: n={} p50={:?} p95={:?} p99={:?} max={:?}",
+                values.len(),
+                percentile(50),
+                percentile(95),
+                percentile(99),
+                values.last().unwrap()
+            );
+            // Leave scheduling headroom on shared CI hosts. Gate P99 only
+            // in the extended run, which takes 512 samples per kind of edit.
+            assert!(
+                percentile(95) < Duration::from_millis(40),
+                "{name} waited for an idle poll"
+            );
+            if extended {
+                assert!(
+                    percentile(99) < Duration::from_millis(40),
+                    "{name} echo P99 stalled"
+                );
+            }
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn libssh_terminal_writer_lock_deadline_recovers_without_an_orphaned_waiter() {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("skipping libssh writer deadline test: ssh-keygen is not installed");
@@ -196,7 +297,7 @@ fn libssh_terminal_writer_lock_deadline_recovers_without_an_orphaned_waiter() {
         channel
             .request_exec("__PORTMATE_TEST_TERMINAL_INPUT__")
             .unwrap();
-        let (reader, writer) = SshBackendChannel::from_libssh(channel).split();
+        let (reader, writer) = SshBackendChannel::from_libssh(channel).split_terminal();
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
         let backend = SshBackendSession::<AcceptAnyTestSshClient>::from_libssh(session.clone());
         let cleanup_warning = request_backend_disconnect_with_timeout(
@@ -263,7 +364,7 @@ fn libssh_uninstalled_runtime_cleanup_drops_channel_before_session_disconnect() 
         channel
             .request_exec("__PORTMATE_TEST_TERMINAL_INPUT__")
             .unwrap();
-        let (read_half, writer) = SshBackendChannel::from_libssh(channel).split();
+        let (read_half, writer) = SshBackendChannel::from_libssh(channel).split_terminal();
         let (tap, _) = broadcast::channel(4);
         let (reader_finished, reader_stopped) = tokio::sync::oneshot::channel();
         let closed = Arc::new(AtomicBool::new(false));

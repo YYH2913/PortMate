@@ -150,6 +150,7 @@ pub(super) struct MixedAuthTestCounters {
     pub(super) reject_pty: AtomicBool,
     pub(super) reject_shell: AtomicBool,
     pub(super) terminal_input_bytes: AtomicU64,
+    pub(super) echo_terminal_edits: AtomicBool,
     pub(super) tmux_exec_requests: AtomicU64,
     pub(super) password_attempts: AtomicU64,
     pub(super) password_completions: AtomicU64,
@@ -516,8 +517,21 @@ impl russh::server::Handler for MixedAuthTestServer {
         &mut self,
         channel: russh::ChannelId,
         data: &[u8],
-        _session: &mut russh::server::Session,
+        session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
+        if self.counters.echo_terminal_edits.load(Ordering::Relaxed) {
+            // A response may not have arrived at the instant the write completes.
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let mut echo = Vec::new();
+            for &byte in data {
+                if byte == 0x7f {
+                    echo.extend_from_slice(b"\x08 \x08");
+                } else {
+                    echo.push(byte);
+                }
+            }
+            session.data(channel, echo)?;
+        }
         self.counters
             .terminal_input_bytes
             .fetch_add(data.len() as u64, Ordering::SeqCst);

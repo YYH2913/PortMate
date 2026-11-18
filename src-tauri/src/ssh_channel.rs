@@ -34,6 +34,14 @@ impl SshBackendChannel {
     }
 
     pub(super) fn split(self) -> (SshBackendChannelReader, SshBackendChannelWriter) {
+        self.split_channel(false)
+    }
+
+    pub(super) fn split_terminal(self) -> (SshBackendChannelReader, SshBackendChannelWriter) {
+        self.split_channel(true)
+    }
+
+    fn split_channel(self, terminal: bool) -> (SshBackendChannelReader, SshBackendChannelWriter) {
         match self {
             Self::Russh(channel) => {
                 let (reader, writer) = channel.split();
@@ -42,8 +50,11 @@ impl SshBackendChannel {
                     SshBackendChannelWriter::Russh(writer),
                 )
             }
-            Self::Libssh(reader) => {
-                let writer = SshBackendChannelWriter::Libssh(reader.shared_channel());
+            Self::Libssh(mut reader) => {
+                let writer = SshBackendChannelWriter::Libssh {
+                    channel: reader.shared_channel(),
+                    input_ready: terminal.then(|| reader.enable_terminal_echo()),
+                };
                 (SshBackendChannelReader::Libssh(reader), writer)
             }
         }
@@ -157,7 +168,10 @@ impl SshBackendChannelReader {
 
 pub(super) enum SshBackendChannelWriter {
     Russh(ChannelWriteHalf<client::Msg>),
-    Libssh(Arc<tokio::sync::Mutex<libssh_rs::Channel>>),
+    Libssh {
+        channel: Arc<tokio::sync::Mutex<libssh_rs::Channel>>,
+        input_ready: Option<Arc<tokio::sync::Notify>>,
+    },
 }
 
 pub(super) async fn write_ssh_channel_bytes_with_cancellation(
@@ -212,7 +226,7 @@ impl SshBackendChannelWriter {
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string()),
-            Self::Libssh(channel) => {
+            Self::Libssh { channel, .. } => {
                 run_libssh_channel_operation_with_timeout(
                     Arc::clone(channel),
                     SSH_TERMINAL_WRITE_TIMEOUT,
@@ -238,8 +252,12 @@ impl SshBackendChannelWriter {
                 .await
                 .map_err(|_| format!("SSH write timed out after {} ms", timeout.as_millis()))?
                 .map_err(|_| "SSH channel 已关闭".to_string()),
-            Self::Libssh(channel) => {
+            Self::Libssh {
+                channel,
+                input_ready,
+            } => {
                 let channel = Arc::clone(channel);
+                let wake = input_ready.as_ref().filter(|_| !data.is_empty());
                 let data = data.to_vec();
                 run_libssh_channel_operation_with_timeout(
                     channel,
@@ -251,7 +269,11 @@ impl SshBackendChannelWriter {
                         stdin.flush().map_err(|error| error.to_string())
                     },
                 )
-                .await
+                .await?;
+                if let Some(wake) = wake {
+                    wake.notify_one();
+                }
+                Ok(())
             }
         }
     }
@@ -269,7 +291,7 @@ impl SshBackendChannelWriter {
                     .map_err(|_| format!("SSH resize timed out after {} ms", timeout.as_millis()))?
                     .map_err(|error| error.to_string())
             }
-            Self::Libssh(channel) => {
+            Self::Libssh { channel, .. } => {
                 let channel = Arc::clone(channel);
                 run_libssh_channel_operation_with_timeout(
                     channel,
@@ -296,7 +318,7 @@ impl SshBackendChannelWriter {
                 .await
                 .map_err(|_| format!("SSH EOF timed out after {} ms", timeout.as_millis()))?
                 .map_err(|error| error.to_string()),
-            Self::Libssh(channel) => {
+            Self::Libssh { channel, .. } => {
                 let channel = Arc::clone(channel);
                 run_libssh_channel_operation_with_timeout(
                     channel,

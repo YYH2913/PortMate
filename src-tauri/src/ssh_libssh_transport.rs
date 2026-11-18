@@ -660,7 +660,7 @@ pub(super) async fn establish_libssh_gssapi_runtime(
             return Err(error);
         }
     };
-    let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split();
+    let (read_half, write_half) = SshBackendChannel::from_libssh(channel).split_terminal();
     let (tap, _) = broadcast::channel(1024);
     let (reader_finished_sender, reader_finished) = tokio::sync::oneshot::channel();
     let terminal_channel_open = Arc::new(AtomicBool::new(true));

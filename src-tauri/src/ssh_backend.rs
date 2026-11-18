@@ -90,7 +90,7 @@ where
                     .await
                     .map_err(|e| e.to_string())?;
                 await_ssh_terminal_reply(&mut channel, &mut pending, "exec").await?;
-                let (reader, writer) = SshBackendChannel::from_russh(channel).split();
+                let (reader, writer) = SshBackendChannel::from_russh(channel).split_terminal();
                 Ok((
                     SshBackendChannelReader::Buffered(Box::new(reader), pending),
                     writer,
@@ -122,7 +122,7 @@ where
                     "libssh tmux terminal",
                 )
                 .await??;
-                Ok(SshBackendChannel::from_libssh(channel).split())
+                Ok(SshBackendChannel::from_libssh(channel).split_terminal())
             }
         }
     }

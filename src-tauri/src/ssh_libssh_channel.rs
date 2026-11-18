@@ -146,6 +146,7 @@ pub(super) struct LibsshChannelReader {
     collect_exit_metadata: bool,
     completed: bool,
     eof_reported: bool,
+    terminal_echo: Option<TerminalEchoPoll>,
 }
 
 impl LibsshChannelReader {
@@ -156,7 +157,17 @@ impl LibsshChannelReader {
             collect_exit_metadata,
             completed: false,
             eof_reported: false,
+            terminal_echo: None,
         }
+    }
+
+    pub(super) fn enable_terminal_echo(&mut self) -> Arc<tokio::sync::Notify> {
+        let wake = Arc::new(tokio::sync::Notify::new());
+        self.terminal_echo = Some(TerminalEchoPoll {
+            wake: Arc::clone(&wake),
+            delay: LIBSSH_CHANNEL_POLL_INTERVAL,
+        });
+        wake
     }
 
     pub(super) async fn wait(&mut self) -> Option<SshBackendMessage> {
@@ -224,7 +235,11 @@ impl LibsshChannelReader {
                 Ok(LibsshChannelPoll::Pending) => {
                     // The channel poll shares libssh's session mutex with SFTP,
                     // tunnels and terminal writes. Wait only after releasing it.
-                    tokio::time::sleep(LIBSSH_CHANNEL_POLL_INTERVAL).await;
+                    if let Some(echo) = &mut self.terminal_echo {
+                        echo.wait_after_empty_poll().await;
+                    } else {
+                        tokio::time::sleep(LIBSSH_CHANNEL_POLL_INTERVAL).await;
+                    }
                 }
                 Ok(LibsshChannelPoll::Finished {
                     exit_status,
@@ -323,6 +338,34 @@ fn poll_libssh_channel(
 }
 
 const LIBSSH_CHANNEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const LIBSSH_ECHO_POLL_MIN: Duration = Duration::from_millis(2);
+
+/// Only split terminal channels have a wake handle. A successful write wakes an idle reader;
+/// a delayed response gets several quick retries without polling idle sessions at typing speed.
+struct TerminalEchoPoll {
+    wake: Arc<tokio::sync::Notify>,
+    delay: Duration,
+}
+
+impl TerminalEchoPoll {
+    async fn wait_after_empty_poll(&mut self) {
+        let earliest = tokio::time::Instant::now() + LIBSSH_ECHO_POLL_MIN;
+        tokio::select! {
+            biased;
+            _ = self.wake.notified() => {
+                self.delay = LIBSSH_ECHO_POLL_MIN;
+                // Coalesced permits cover writes just before the wait. Even a stream
+                // of no-echo writes cannot busy-loop the blocking poll worker.
+                if earliest > tokio::time::Instant::now() {
+                    tokio::time::sleep_until(earliest).await;
+                }
+            }
+            _ = tokio::time::sleep(self.delay) => {
+                self.delay = (self.delay * 2).min(LIBSSH_CHANNEL_POLL_INTERVAL);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "../../test/rust/portmate/unit/ssh_libssh_channel.rs"]
