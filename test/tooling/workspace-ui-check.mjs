@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
@@ -5407,7 +5408,7 @@ Host staging
         maxLength: input.getAttribute("maxlength"),
       }]] : [];
     })));
-    assert(JSON.stringify(terminalBounds) === JSON.stringify({
+    deepStrictEqual(terminalBounds, {
       "终端:(T)": { min: null, max: null, maxLength: "64" },
       "行:(R)": { min: "1", max: "512", maxLength: null },
       "列:(C)": { min: "1", max: "1024", maxLength: null },
@@ -5415,7 +5416,7 @@ Host staging
       "字体:(F)": { min: null, max: null, maxLength: "256" },
       "字号:(Z)": { min: "6", max: "72", maxLength: null },
       "背景不透明度:(O)": { min: "20", max: "100", maxLength: null },
-    }), `terminal input bounds are missing or inconsistent: ${JSON.stringify(terminalBounds)}`);
+    }, "terminal input bounds are missing or inconsistent");
     const themeSelect = dialog.locator(".dialog-field", { hasText: "主题:" }).locator("select");
     const options = await themeSelect.locator("option").evaluateAll((items) => items.map((item) => item.value));
     assert(JSON.stringify(options) === JSON.stringify([

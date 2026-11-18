@@ -5141,6 +5141,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <Suspense fallback={null}>
           <LazySessionSettingsDialog
             draft={draft}
+            semanticHighlighting={terminalPrefs.semanticHighlightingEnabled}
             mode={sessionSettingsMode}
             prepareProfile={prepareSessionProfile}
             serialPorts={serialPorts}

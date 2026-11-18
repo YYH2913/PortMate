@@ -6112,6 +6112,36 @@ fieldset label {
   padding-top: 8px;
 }
 
+/* Keep the sample and controls in separate, scrollable rows on short windows. */
+.session-settings-dialog[data-session-section="terminal"] > .session-form {
+  grid-auto-rows: max-content;
+}
+
+.terminal-color-preview {
+  margin: 2px 0;
+  min-width: 0;
+  max-width: 100%;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.terminal-color-preview figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 11px;
+}
+.terminal-color-preview figcaption span:last-child { font: 10px var(--mono); }
+.terminal-color-sample { overflow-x: auto; padding: 10px 12px 12px; white-space: pre; line-height: 1.5; }
+.terminal-color-swatch-strip { display: flex; gap: 2px; width: min(100%, 240px); margin-bottom: 7px; }
+.terminal-color-swatch-strip i { flex: 1; height: 8px; }
+.terminal-color-swatch-strip i:nth-child(8) { margin-right: 4px; }
+
 .terminal-opacity-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;

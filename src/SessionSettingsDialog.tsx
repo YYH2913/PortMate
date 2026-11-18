@@ -28,6 +28,7 @@ import { hostKeyProfileRequestKey } from "./host-key-profile-state";
 import { sshHealthProfileRequestKey } from "./ssh-health-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
+import TerminalColorPreview from "./TerminalColorPreview";
 import ShellArgumentsEditor from "./ShellArgumentsEditor";
 import {
   convertDraftProtocol,
@@ -103,6 +104,7 @@ type DraftHostKeyDecisionResponse = {
 export default function SessionSettingsDialog({
   draft,
   mode,
+  semanticHighlighting = true,
   prepareProfile,
   serialPorts,
   onRefreshSerialPorts,
@@ -116,6 +118,7 @@ export default function SessionSettingsDialog({
 }: {
   draft: SessionProfile;
   mode: "create" | "edit";
+  semanticHighlighting?: boolean;
   prepareProfile: (profile: SessionProfile) => SessionProfile;
   serialPorts: string[];
   onRefreshSerialPorts?: () => Promise<string[]>;
@@ -370,6 +373,7 @@ export default function SessionSettingsDialog({
             <SessionSettingsContent
               activeProtocol={activeProtocol}
               activeSection={activeSection}
+              semanticHighlighting={semanticHighlighting}
               draft={draft}
               prepareProfile={prepareProfile}
               serialPorts={serialPorts}
@@ -1025,6 +1029,7 @@ function QuickSessionMetadata({ draft, onDraftChange }: { draft: SessionProfile;
 }
 
 function SessionSettingsContent({
+  semanticHighlighting,
   activeProtocol,
   activeSection,
   draft,
@@ -1045,6 +1050,7 @@ function SessionSettingsContent({
   onOpenClientKeyManager,
 }: {
   activeProtocol: ProtocolTab;
+  semanticHighlighting: boolean;
   activeSection: string;
   draft: SessionProfile;
   prepareProfile: (profile: SessionProfile) => SessionProfile;
@@ -1071,29 +1077,16 @@ function SessionSettingsContent({
   if (activeSection === "terminal") {
     return (
       <>
-        <DialogField label={t("terminal-t")}>
-          <input value={draft.terminal.term} maxLength={MAX_TERMINAL_NAME_BYTES} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
-        </DialogField>
-        <DialogField label={t("rows-r")}>
-          <input type="number" min={TERMINAL_PROFILE_BOUNDS.rows.min} max={TERMINAL_PROFILE_BOUNDS.rows.max} step={1} value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
-        </DialogField>
-        <DialogField label={t("columns-c")}>
-          <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
-        </DialogField>
-        {draft.connection.kind === "serial" ? <p className="muted">{t("serial-uses-a-fixed-column-count-independent-of-window")}</p> : null}
-        <DialogField label={t("scrollback-s")}>
-          <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
+        <DialogField label={t("theme-m")}>
+          <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
+            {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
+          </select>
         </DialogField>
         <DialogField label={t("font-f")}>
           <input value={draft.terminal.fontFamily} maxLength={MAX_TERMINAL_FONT_FAMILY_CHARACTERS} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontFamily: event.target.value } })} />
         </DialogField>
         <DialogField label={t("font-size-z")}>
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.fontSize.min} max={TERMINAL_PROFILE_BOUNDS.fontSize.max} step={1} value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
-        </DialogField>
-        <DialogField label={t("theme-m")}>
-          <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
-            {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
-          </select>
         </DialogField>
         <DialogField label={t("background-opacity-o")}>
           <div className="terminal-opacity-control">
@@ -1107,6 +1100,20 @@ function SessionSettingsContent({
             />
             <output>{draft.terminal.backgroundOpacity ?? TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback}%</output>
           </div>
+        </DialogField>
+        <TerminalColorPreview settings={draft.terminal} semantic={semanticHighlighting} />
+        <DialogField label={t("terminal-t")}>
+          <input value={draft.terminal.term} maxLength={MAX_TERMINAL_NAME_BYTES} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
+        </DialogField>
+        <DialogField label={t("rows-r")}>
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.rows.min} max={TERMINAL_PROFILE_BOUNDS.rows.max} step={1} value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
+        </DialogField>
+        <DialogField label={t("columns-c")}>
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
+        </DialogField>
+        {draft.connection.kind === "serial" ? <p className="muted">{t("serial-uses-a-fixed-column-count-independent-of-window")}</p> : null}
+        <DialogField label={t("scrollback-s")}>
+          <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
         </DialogField>
       </>
     );
