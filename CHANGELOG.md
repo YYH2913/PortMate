@@ -6,6 +6,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+- Reduce typing and Backspace echo latency in libssh terminals and avoid repeated screen and log scans while editing. / 降低 libssh 终端打字与退格的回显延迟，减少编辑时重复扫描屏幕和日志造成的卡顿。
+
 ## [0.1.15] - 2026-11-15
 
 ### Added

@@ -242,14 +242,16 @@ not establish long-term service availability. `PORTMATE_UI_TAIL_SECONDS` can ext
 the stress check to 600 seconds; `PORTMATE_UI_TAIL_REPORT` saves its JSON report.
 
 Continuous-typing checks also cover human-cadence completion updates, per-key
-simulated echoes and a 6,000-character command, with 1,024 real keys at 4× CPU
-throttling. They verify input order, echo DOM updates and frame/dispatch P99,
+simulated echoes and a 6,000-character command. At 4× CPU throttling they send
+1,024 printable keys and 512 Backspaces, including held-key repeats. They verify input order, echo DOM updates and frame/dispatch P99,
 without clearing records. Dialog candidates are tracked incrementally rather
 than rescanning the workspace for each key or terminal DOM update; same-task
 dialog changes still block background input immediately. Session/log queries,
 input-channel setup and Enter-history persistence run off the desktop UI thread.
 Alternate-screen TUIs bypass shell completion and keep their Tab/arrow input;
 switching buffers clears stale candidates and pending completion previews.
+A separate libssh loopback test measures native write-to-echo latency for typing
+and Backspace (`PORTMATE_EXTENDED_INPUT_BENCH=1` for 512 samples each).
 These are local regression budgets, not Windows/device end-to-end guarantees.
 
 Double-click or middle-click a workspace tab, or choose **Rename session** from
