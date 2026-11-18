@@ -11,6 +11,7 @@ import { checkTerminalFluidity } from "./terminal-fluidity-regressions.mjs";
 import { checkTerminalRendererLifecycle } from "./terminal-renderer-regressions.mjs";
 import { checkTerminalByteLoad } from "./terminal-byte-load-regressions.mjs";
 import { checkTerminalTailLatency } from "./terminal-tail-latency-regressions.mjs";
+import { checkTerminalColors } from "./terminal-color-regressions.mjs";
 import { checkTerminalTyping } from "./terminal-typing-regressions.mjs";
 import { checkTerminalAlternateInput } from "./terminal-alternate-input-regressions.mjs";
 import { checkInteractionLayerRegressions } from "./interaction-layer-regressions.mjs";
@@ -503,6 +504,12 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_COLORS_ONLY === "1") {
+    await checkTerminalColors(page);
+    assert(!pageErrors.length, `terminal color browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_LAYER_INDEX_ONLY === "1") {
     await checkInteractionLayerRegressions(page);
     assert(!pageErrors.length, `interaction-layer browser errors: ${JSON.stringify(pageErrors)}`);
