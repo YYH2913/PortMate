@@ -39,7 +39,7 @@ export async function checkTerminalTyping(page) {
   await page.evaluate(() => {
     const nativeInvoke = window.__TAURI_INTERNALS__.invoke;
     const state = window.__typing = { phase: "short", frames: [], dispatch: [], echoDom: [], sent: "", received: "", layerScans: 0,
-      keys: [], echoes: [], keyCount: 0, delivered: 0, rendered: 0, longTasks: [], sequence: 0 };
+      keys: [], echoes: [], eraseTurns: [], repeats: 0, keyCount: 0, delivered: 0, rendered: 0, longTasks: [], sequence: 0 };
     let lastFrame = performance.now();
     const frame = () => {
       const now = performance.now();
@@ -49,19 +49,25 @@ export async function checkTerminalTyping(page) {
     };
     state.raf = requestAnimationFrame(frame);
     state.key = event => {
-      if (event.key.length !== 1 || event.ctrlKey || event.altKey || event.metaKey) return;
-      state.keys.push({ text: event.key, at: performance.now(), phase: state.phase });
-      state.sent += event.key;
+      const text = state.phase === "erase" && event.key === "Backspace" ? "\x7f" : event.key;
+      if (text.length !== 1 || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (event.repeat && text === "\x7f") state.repeats++;
+      state.keys.push({ text, at: performance.now(), phase: state.phase });
+      state.sent += text;
       state.keyCount++;
     };
     document.addEventListener("keydown", state.key, true);
     state.longObserver = new PerformanceObserver(list => state.longTasks.push(...list.getEntries().map(entry => entry.duration)));
     state.longObserver.observe({ entryTypes: ["longtask"] });
     state.domObserver = new MutationObserver(() => {
-      const visible = document.querySelector('[data-pane-id="pane-a"] .xterm-rows').textContent.replace(/\s/g, "");
+      if (!state.echoes.length) return;
+      const rows = document.querySelector('[data-pane-id="pane-a"] .xterm-rows');
+      const visible = (state.phase === "erase" ? rows.lastElementChild : rows).textContent.replace(/\s/g, "");
       const now = performance.now();
       state.echoes = state.echoes.filter(echo => {
-        if (!visible.includes(echo.tail)) return true;
+        // A shortened string is already a prefix of the OLD row; deletion
+        // isn't visible until the entire current prompt line matches.
+        if (echo.phase === "erase" ? visible !== echo.tail : !visible.includes(echo.tail)) return true;
         state.echoDom.push({ phase: echo.phase, ms: now - echo.at });
         state.rendered++;
         return false;
@@ -74,27 +80,33 @@ export async function checkTerminalTyping(page) {
       if (command === "send_text" && args?.sessionId === "session-a") {
         const now = performance.now();
         for (const text of args.text) {
-          if (text < " " || text === "\x7f") {
+          if (text < " ") {
             if (text === "\x15" || text === "\r") { line = ""; prompt++; }
             continue;
           }
           const key = state.keys[0];
           // insertText() prefills a long line without pretending those are real
           // keydown samples. Timed keyboard input follows only after it drains.
-          line += text;
+          line = text === "\x7f" ? line.slice(0, -1) : line + text;
           if (key?.text === text) {
             state.keys.shift();
             state.dispatch.push({ phase: key.phase, ms: now - key.at });
             state.received += text;
             state.delivered++;
-            state.echoes.push({ ...key, tail: `TYPE-${prompt}$${line}`.slice(-24).replace(/\s/g, "") });
+            const row = `TYPE-${prompt}$${line}`;
+            state.echoes.push({ ...key, tail: (key.phase === "erase" ? row : row.slice(-24)).replace(/\s/g, "") });
           }
         }
         // A small deterministic transport delay makes the echo path distinct
         // from send_text ACK. This is a fixture, not a real device measurement.
         await new Promise(resolve => setTimeout(resolve, 3));
-        const text = args.text === "\x15" ? `\r\x1b[2KTYPE-${prompt}$ ` : args.text.replace(/\r/g, `\r\nTYPE-${prompt}$ `);
+        const text = args.text === "\x15" ? `\r\x1b[2KTYPE-${prompt}$ `
+          : args.text.replace(/\r/g, `\r\nTYPE-${prompt}$ `).replace(/\x7f/g, "\b\x1b[K");
+        const start = performance.now();
         window.__typingSend(text, state.sequence++);
+        if (state.phase === "erase" && args.text === "\x7f") {
+          queueMicrotask(() => state.eraseTurns.push(performance.now() - start));
+        }
       }
       return nativeInvoke.call(this, command, args, ...rest);
     };
@@ -125,6 +137,27 @@ export async function checkTerminalTyping(page) {
     await page.waitForFunction(() => document.querySelector('[data-pane-id="pane-a"] .xterm-rows')?.textContent.includes("a".repeat(24)));
     await page.keyboard.type(letters(640), { delay: 20 });
     await page.waitForFunction(() => !window.__typing.echoes.length && !window.__typing.keys.length);
+
+    // Fill the screen with actual text: a whole-viewport timestamp scan on
+    // each readline Backspace (BS + CSI K) is not visible on mostly empty rows.
+    await page.evaluate(() => {
+      window.__typing.phase = "erase";
+      window.__typingSend("\r\n" + ("previous output ".repeat(8) + "\r\n").repeat(100), "scrollback");
+    });
+    await page.keyboard.press("Control+u");
+    const lastRow = page.locator('[data-pane-id="pane-a"] .xterm-rows > :last-child');
+    await lastRow.filter({ hasText: /TYPE-\d+\$/ }).waitFor();
+    let rendered = await page.evaluate(() => window.__typing.rendered);
+    for (let burst = 0; burst < 32; burst++) {
+      const seed = letters(16);
+      await page.keyboard.insertText(seed);
+      await lastRow.filter({ hasText: seed }).waitFor();
+      for (let i = 0; i < seed.length; i++) {
+        await page.keyboard.down("Backspace");
+        await page.waitForFunction(n => window.__typing.rendered === n, ++rendered, { polling: 8, timeout: 2000 });
+      }
+      await page.keyboard.up("Backspace");
+    }
   } finally {
     result = await page.evaluate(() => {
       const state = window.__typing;
@@ -135,7 +168,7 @@ export async function checkTerminalTyping(page) {
       window.__TAURI_INTERNALS__.invoke = state.nativeInvoke;
       Document.prototype.querySelectorAll = state.nativeQuery;
       return { frames: state.frames, dispatch: state.dispatch, echoDom: state.echoDom, sent: state.sent, received: state.received,
-        keyCount: state.keyCount, delivered: state.delivered, rendered: state.rendered, longTasks: state.longTasks, layerScans: state.layerScans };
+        eraseTurns: state.eraseTurns, repeats: state.repeats, keyCount: state.keyCount, delivered: state.delivered, rendered: state.rendered, longTasks: state.longTasks, layerScans: state.layerScans };
     });
     if (process.env.PORTMATE_TERMINAL_CPU_PROFILE) {
       const { profile } = await cdp.send("Profiler.stop");
@@ -145,19 +178,21 @@ export async function checkTerminalTyping(page) {
     await cdp.detach();
   }
   const summary = { cpuRate, frames: latencySummary(result.frames), keys: result.keyCount, delivered: result.delivered, rendered: result.rendered,
-    short: {}, long: {}, longTasks: result.longTasks, documentLayerScans: result.layerScans,
+    short: {}, long: {}, erase: {}, eraseEchoAdmissionTurn: latencySummary(result.eraseTurns), repeatedBackspaces: result.repeats, longTasks: result.longTasks, documentLayerScans: result.layerScans,
     scope: "Chromium production frontend, 3ms simulated native echo; DOM mutation, not physical display/device RTT" };
-  for (const phase of ["short", "long"]) {
+  for (const phase of ["short", "long", "erase"]) {
     summary[phase] = { dispatch: latencySummary(result.dispatch.filter(sample => sample.phase === phase).map(sample => sample.ms)),
       keyToEchoDom: latencySummary(result.echoDom.filter(sample => sample.phase === phase).map(sample => sample.ms)) };
   }
   console.log(JSON.stringify({ continuousTyping: summary }));
   if (process.env.PORTMATE_UI_TYPING_REPORT) writeFileSync(process.env.PORTMATE_UI_TYPING_REPORT, `${JSON.stringify(summary, null, 2)}\n`);
   assert.equal(result.received, result.sent, "continuous keyboard input was lost, duplicated or reordered");
-  assert.equal(summary.keys, 1024);
+  assert.equal(summary.keys, 1024 + 512);
+  assert.equal(summary.repeatedBackspaces, 32 * 15);
+  assert.equal(summary.erase.keyToEchoDom.samples, 512);
   assert.equal(summary.rendered, summary.keys, "some echoes were never rendered");
   assert(summary.frames.p99 < 50 && summary.frames.max < 250, "continuous typing froze the UI");
-  for (const phase of ["short", "long"]) {
+  for (const phase of ["short", "long", "erase"]) {
     assert(summary[phase].dispatch.p99 < 50, `${phase} command input dispatch stalled`);
     assert(summary[phase].keyToEchoDom.p99 < 75, `${phase} command echo DOM P99 exceeded 75ms`);
   }

@@ -44,7 +44,7 @@ export async function checkTerminalTailLatency(page) {
   await page.evaluate(() => {
     const started = performance.now();
     const state = window.__tailState = { started, frames: [], inputFrames: [], dispatch: [], timerLag: [], packets: 0, bytes: 0,
-      burstPackets: 0, bursts: 0, sentKeys: 0, deliveredKeys: 0, pendingKeyTimes: [], lastInboundId: -1, retainedInboundIds: [] };
+      burstPackets: 0, bursts: 0, sentKeys: 0, deliveredKeys: 0, sentText: "", receivedText: "", pendingKeyTimes: [], lastInboundId: -1, retainedInboundIds: [] };
     let lastFrame = started;
     const frame = () => {
       const now = performance.now();
@@ -60,7 +60,8 @@ export async function checkTerminalTailLatency(page) {
       deadline = now + 20;
     }, 20);
     state.keyListener = event => {
-      if (event.key !== "p") return;
+      if (event.key !== "p" && event.key !== "Backspace") return;
+      state.sentText += event.key === "p" ? "p" : "\x7f";
       const now = performance.now();
       state.sentKeys++;
       state.pendingKeyTimes.push(now);
@@ -71,7 +72,8 @@ export async function checkTerminalTailLatency(page) {
     state.nativeInvoke = nativeInvoke;
     window.__TAURI_INTERNALS__.invoke = function(command, args, ...rest) {
       if (command === "send_text" && args?.sessionId === "session-a") {
-        for (const character of args.text ?? "") if (character === "p") {
+        for (const character of args.text ?? "") if (character === "p" || character === "\x7f") {
+          state.receivedText += character;
           const now = performance.now(), start = state.pendingKeyTimes.shift();
           state.deliveredKeys++;
           if (start !== undefined) state.dispatch.push({ at: now - started, ms: now - start });
@@ -101,9 +103,9 @@ export async function checkTerminalTailLatency(page) {
   let retainedOutputVerified = false;
   try {
     const started = Date.now();
-    let nextHeapAt = 0, nextProgressAt = 15_000;
+    let nextHeapAt = 0, nextProgressAt = 15_000, key = 0;
     while (Date.now() - started < durationSeconds * 1000) {
-      await page.keyboard.press("p");
+      await page.keyboard.press(key++ % 16 < 8 ? "p" : "Backspace");
       await page.waitForTimeout(45);
       const elapsed = Date.now() - started;
       if (elapsed >= nextHeapAt) {
@@ -159,6 +161,7 @@ export async function checkTerminalTailLatency(page) {
   if (process.env.PORTMATE_UI_TAIL_REPORT) writeFileSync(process.env.PORTMATE_UI_TAIL_REPORT, `${JSON.stringify(summary, null, 2)}\n`);
   assert.equal(pageErrors.length, 0, `browser errors under sustained RX/TX: ${JSON.stringify(pageErrors)}`);
   assert(summary.sentKeys >= 1000, `too few real key samples to report a useful P99: ${summary.sentKeys}`);
+  assert.equal(result.receivedText, result.sentText, "typed/deleted bytes were reordered under sustained traffic");
   assert.equal(summary.deliveredKeys, summary.sentKeys, "input was lost under sustained traffic");
   assert.equal(summary.pendingKeys, 0, "input remained queued after traffic stopped");
   assert.equal(summary.inputNextFrame.samples, summary.sentKeys, "some keys never received an animation-frame opportunity");

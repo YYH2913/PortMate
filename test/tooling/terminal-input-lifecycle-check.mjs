@@ -82,7 +82,9 @@ if (new URL(location.href).searchParams.has("detached")) {
 
 const vite = await createServer({
   configFile: false,
-  server: { host: "127.0.0.1", port: 0 },
+  // This virtual entry never needs HMR or a crawl of local Cargo/build artifacts.
+  optimizeDeps: { entries: ["src/TerminalCanvas.tsx", "src/DetachedPaneApp.tsx"] },
+  server: { host: "127.0.0.1", port: 0, watch: null },
   logLevel: "error",
   plugins: [{
     name: "terminal-input-lifecycle-harness",
