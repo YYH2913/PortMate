@@ -185,6 +185,8 @@ COM / Serial, Shell, Telnet, TCP and Tmux sessions. Switch back to **Profile gro
 to use saved custom groups. The view preference is remembered and synchronized
 between workspace windows; it does not modify session profiles.
 
+In **Session settings → Terminal**, choose a theme to preview its 16 ANSI colors and a sample log before saving. PortMate adds color only to unstyled text: for example, `port=443` is a number, whereas `HTTP/2 404` flags an error. Remote styles and alternate-screen programs keep their colors. To use only device-provided colors, turn off **Terminal settings → Autocomplete → Multicolor commands and output**.
+
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
 Startup recovery runs in the background with at most four simultaneous connections.

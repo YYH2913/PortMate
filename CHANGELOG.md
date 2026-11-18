@@ -6,6 +6,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+- Preview terminal themes and distinguish log times, file modes and HTTP status without overriding remote styles. / 终端主题支持实时预览，可区分日志时间、文件权限和 HTTP 状态，保留设备原有样式。
 - Reduce typing and Backspace echo latency in libssh terminals and avoid repeated screen and log scans while editing. / 降低 libssh 终端打字与退格的回显延迟，减少编辑时重复扫描屏幕和日志造成的卡顿。
 
 ## [0.1.15] - 2026-11-15
