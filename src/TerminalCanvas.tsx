@@ -75,7 +75,7 @@ import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotId
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalRawCorrelator } from "./terminal-raw-correlator";
 import { TerminalTaskScheduler } from "./terminal-task-scheduler";
-import { terminalWriteHasOutput } from "./terminal-write-state";
+import { isStandaloneLineErase, terminalWriteHasOutput } from "./terminal-write-state";
 import { alternateTerminalScreenSnapshot } from "./terminal-screen-snapshot";
 import { inspectTerminalWebglCanvases } from "./terminal-renderer";
 import { TerminalRendererController } from "./terminal-renderer-controller";
@@ -1263,7 +1263,8 @@ function TerminalCanvas({
       terminalSettings.scrollback + Math.max(term.rows, terminalSettings.rows) + 1,
     );
     const timestampIndex = new TerminalTimestampIndex(timestampMarkerLimit);
-    let normalRedrawSnapshot: { marker: IMarker; lines: string[] } | null = null;
+    let standaloneEraseWrite = false;
+    let normalRedrawSnapshot: { marker: IMarker; lines: string[]; cursorLineOnly: boolean } | null = null;
     let restorePending = Boolean(cachedState);
     const cachedAlternateTimestamp = normalizeTerminalTimestamps([
       { line: 0, ts: cachedState?.alternateTimestamp },
@@ -1391,26 +1392,31 @@ function TerminalCanvas({
       registerTimestampLine(firstLine, ts);
       if (following && lastLine + 1 < term.buffer.normal.length) registerTimestampLine(lastLine + 1, following);
     };
-    const captureNormalRedraw = () => {
+    const captureNormalRedraw = (cursorLineOnly: boolean) => {
       if (restorePending || normalRedrawSnapshot || term.buffer.active.type !== "normal") return false;
       const normal = term.buffer.normal;
-      const marker = term.registerMarker(-normal.cursorY);
+      // Readline emits BS + EL for Backspace, or just EL for Delete. The
+      // cursor could have reverse-wrapped on BS: take its position *here*,
+      // when xterm parses EL, not where the write began.
+      const marker = term.registerMarker(cursorLineOnly ? 0 : -normal.cursorY);
       if (marker) normalRedrawSnapshot = {
-        marker,
-        lines: Array.from({ length: term.rows }, (_, row) => normal.getLine(normal.baseY + row)?.translateToString(true) ?? ""),
+        marker, cursorLineOnly,
+        lines: Array.from({ length: cursorLineOnly ? 1 : term.rows }, (_, row) =>
+          normal.getLine(marker.line + row)?.translateToString(true) ?? ""),
       };
       return false;
     };
     // Observe parsed controls, including sequences split across transport frames.
     // Ordinary typing and line feeds never scan the screen.
     const timestampRedrawDisposables = ["H", "f", "A", "B", "E", "F", "d", "e", "J", "K", "u"].map((final) => (
-      term.parser.registerCsiHandler({ final }, captureNormalRedraw)
+      term.parser.registerCsiHandler({ final }, () => captureNormalRedraw(final === "K" && standaloneEraseWrite))
     ));
-    timestampRedrawDisposables.push(term.parser.registerEscHandler({ final: "8" }, captureNormalRedraw));
+    timestampRedrawDisposables.push(term.parser.registerEscHandler({ final: "8" }, () => captureNormalRedraw(false)));
     const commitNormalRedraw = (ts: string) => {
       const snapshot = normalRedrawSnapshot;
       normalRedrawSnapshot = null;
-      if (!snapshot) return false;
+      // A discarded cursor row cannot be compared with the top of a new viewport.
+      if (!snapshot || (snapshot.cursorLineOnly && snapshot.marker.isDisposed)) return false;
       const firstLine = snapshot.marker.isDisposed ? term.buffer.normal.baseY : snapshot.marker.line;
       snapshot.marker.dispose();
       if (firstLine < 0 || term.buffer.active.type !== "normal") return false;
@@ -1651,7 +1657,10 @@ function TerminalCanvas({
         : undefined;
       let callbackCompleted = false;
       let writeReturned = false;
+      standaloneEraseWrite = event.direction === "inbound" && (event.stream === "stdout" || event.stream === "stderr")
+        && isStandaloneLineErase(eventText, rawBytes);
       writeTerminalEvent(term, event, rawBytes, () => {
+        standaloneEraseWrite = false;
         lastParsedTimestamp = first.event.ts;
         let timestampChanged = false;
         if (eventText && event.direction !== "outbound") {

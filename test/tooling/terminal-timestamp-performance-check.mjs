@@ -87,6 +87,23 @@ export async function checkTerminalTimestampPerformance(page) {
   });
   assert.equal(normalAfterTui, normalBeforeTui, "leaving a TUI changed normal-buffer timestamps");
 
+  // A standalone readline erase retimestamps only the edited row. A mixed
+  // packet starting with the same EL still needs ordinary multi-row tracking.
+  const [seed, edit, mixed] = [3, 4, 5].map(s => `2026-11-07T01:00:0${s}.000000Z`);
+  await page.evaluate(([seed, edit, mixed]) => {
+    window.__timestampBurst("edit-seed", "\x1b[2J\x1b[HROW-TOP\r\nROW-MID?\r\nROW-END\x1b[2;9H", seed);
+    window.__timestampBurst("edit-backspace", "\b\x1b[K", edit);
+    window.__timestampBurst("edit-mixed", "\x1b[K\x1b[3;1HROW-NEW", mixed);
+  }, [seed, edit, mixed]);
+  await host.locator(".xterm-rows").getByText("ROW-NEW", { exact: false }).first().waitFor();
+  const edited = await page.evaluate(async ({ sessionId, viewId }) => {
+    const { requestTerminalTextExport } = await import("/src/terminal-export-event.ts");
+    return (await requestTerminalTextExport({ sessionId, viewId, source: "buffer" })).text;
+  }, { sessionId, viewId });
+  for (const [ts, line] of [[seed, "ROW-TOP"], [edit, "ROW-MID"], [mixed, "ROW-NEW"]]) {
+    assert(edited.includes(`[${ts}] ${line}\n`) || edited.endsWith(`[${ts}] ${line}`), `wrong timestamp after line erase: ${line}`);
+  }
+
   await host.locator(".xterm-helper-textarea").focus();
   await page.evaluate(() => {
     window.__invokeCalls = [];

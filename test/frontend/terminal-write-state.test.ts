@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { terminalWriteHasOutput } from "../../src/terminal-write-state";
+import { isStandaloneLineErase, terminalWriteHasOutput } from "../../src/terminal-write-state";
 
 describe("terminal visual write admission", () => {
   it("does not inspect or render outgoing captures and empty acknowledgements", () => {
@@ -15,5 +15,16 @@ describe("terminal visual write admission", () => {
     expect(terminalWriteHasOutput({ direction: "inbound", text: "\x1b[?1049h" })).toBe(true);
     expect(terminalWriteHasOutput({ direction: "system", text: "diagnostic" })).toBe(true);
     expect(terminalWriteHasOutput({ direction: "inbound", text: "not actual raw output" }, new Uint8Array())).toBe(false);
+  });
+  it("narrows redraws only for a complete, isolated EL on the actual wire", () => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    for (const text of ["\x1b[K", "\b\x1b[K"]) {
+      expect(isStandaloneLineErase(text)).toBe(true);
+      expect(isStandaloneLineErase("decoded preview", encode(text))).toBe(true);
+    }
+    for (const text of ["", "\b", "\x1b[", "K", "\x1b[2J", "\x1b[K\r\nnext", "\x1b[H\x1b[K", "\b\x1b[K\x1b[K"]) {
+      expect(isStandaloneLineErase(text)).toBe(false);
+      expect(isStandaloneLineErase("\b\x1b[K", encode(text))).toBe(false);
+    }
   });
 });
