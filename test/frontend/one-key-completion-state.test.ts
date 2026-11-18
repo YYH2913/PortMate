@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectOneKeyTerminalPrompt,
   emptyOneKeyPromptDetectionState,
+  MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS as limit,
   MAX_ONE_KEY_PROMPT_LINE_CHARACTERS,
   oneKeyPromptCandidates,
   oneKeyPromptStateFromEvents,
@@ -98,6 +99,28 @@ describe("OneKey terminal prompt completion", () => {
     expect(oneKeyPromptStateFromEvents(events, "session-a").prompt?.eventId).toBe("b");
     expect(oneKeyPromptStateFromEvents([...events, event("d", null, "outbound", "control")], "session-a").prompt)
       .toBeNull();
+  });
+
+  it("matches live detection across polling checkpoints, split prompts and hidden ANSI tails", () => {
+    const hidden = event("hidden", "x".repeat(limit) + "\rPassword:" + "\x1b[0m".repeat(55));
+    const packets = [event("login", "login:"), hidden, event("reset", null, "outbound"), hidden,
+      event("wide", "😀".repeat(limit)), event("exact", "a".repeat(limit)), event("a", "\rPass"),
+      { ...event("other", null, "outbound"), sessionId: "elsewhere" }, event("b", "word:", "inbound", "stderr"),
+      event("noise", "x".repeat(limit + 1), "system", "audit"), event("replace", "x".repeat(limit) + "\rUsername:")];
+    let live = emptyOneKeyPromptDetectionState();
+    for (const [i, packet] of packets.entries()) {
+      if (packet.sessionId === "session-a") live = reduceOneKeyPromptDetection(live, packet);
+      expect(oneKeyPromptStateFromEvents(packets.slice(0, i + 1), "session-a")).toEqual(live);
+    }
+  });
+
+  it("does not read old history before an outbound boundary or a self-contained receive frame", () => {
+    const old = { ...event("old", ""), get sessionId(): string { throw Error("re-read old history"); } };
+    for (const boundary of [event("sent", null, "outbound"), event("large", "x".repeat(limit) + "\r")]) {
+      const latest = [boundary, event("a", "Pass"), event("b", "word:")];
+      expect(oneKeyPromptStateFromEvents([old, ...latest], "session-a"))
+        .toEqual(latest.reduce(reduceOneKeyPromptDetection, emptyOneKeyPromptDetectionState()));
+    }
   });
 
   it("limits candidates to the bound session, required field, and exact username hint", () => {

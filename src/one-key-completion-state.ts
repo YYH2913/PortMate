@@ -22,19 +22,17 @@ export const emptyOneKeyPromptDetectionState = (): OneKeyPromptDetectionState =>
   prompt: null,
 });
 
+function hasPromptText(event: SessionEvent): event is SessionEvent & { text: string } {
+  return event.direction === "inbound" && (event.stream === "stdout" || event.stream === "stderr") && Boolean(event.text);
+}
+
 export function reduceOneKeyPromptDetection(
   state: OneKeyPromptDetectionState,
   event: SessionEvent,
 ): OneKeyPromptDetectionState {
   if (event.direction === "outbound") return emptyOneKeyPromptDetectionState();
-  if (
-    event.direction !== "inbound"
-    || (event.stream !== "stdout" && event.stream !== "stderr")
-    || !event.text
-  ) {
-    return state;
-  }
-  const raw = trimPromptBuffer(state.raw + event.text);
+  if (!hasPromptText(event)) return state;
+  const raw = trimPromptBuffer(event.text.length > MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS ? event.text : state.raw + event.text);
   // Most terminal traffic cannot be a credential prompt. Preserve the rolling
   // buffer for prompts split across transport packets, but skip ANSI cleanup
   // and regex matching until a prompt-like keyword appears near the tail.
@@ -51,9 +49,29 @@ export function oneKeyPromptStateFromEvents(
   events: readonly SessionEvent[],
   sessionId: string,
 ): OneKeyPromptDetectionState {
-  return events
-    .filter((event) => event.sessionId === sessionId)
-    .reduce(reduceOneKeyPromptDetection, emptyOneKeyPromptDetectionState());
+  let state = emptyOneKeyPromptDetectionState();
+  let start = 0;
+  // History polling runs on the UI thread. Find the most recent packet whose
+  // result cannot depend on older history, instead of parsing up to 600 old
+  // outputs again every time a keystroke changes the tail.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.sessionId !== sessionId) continue;
+    if (event.direction === "outbound") { start = i + 1; break; }
+    if (!hasPromptText(event) || event.text.length <= MAX_ONE_KEY_PROMPT_BUFFER_CHARACTERS) continue;
+    const raw = trimPromptBuffer(event.text);
+    const prompt = detectOneKeyTerminalPrompt(raw, event.id);
+    // An old active prompt bypasses the live keyword prefilter (e.g. a
+    // password prompt followed by long invisible ANSI). Replay in that case.
+    if (prompt && !promptCandidateLikely(raw)) break;
+    state = { raw, prompt };
+    start = i + 1;
+    break;
+  }
+  for (let i = start; i < events.length; i++) {
+    if (events[i].sessionId === sessionId) state = reduceOneKeyPromptDetection(state, events[i]);
+  }
+  return state;
 }
 
 export function detectOneKeyTerminalPrompt(
