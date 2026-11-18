@@ -7,6 +7,16 @@ import {
   TERMINAL_THEME_OPTIONS,
 } from "../../src/terminal-theme";
 
+import { terminalSemanticPalettes } from "../../src/terminal-semantic-palette";
+
+function luminance(hex: string) {
+  const [r, g, b] = hex.slice(1).match(/../g)!.map(pair => {
+    const n = parseInt(pair, 16) / 255;
+    return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 describe("terminal themes", () => {
   it("normalizes unknown and malformed stored theme IDs", () => {
     expect(normalizeTerminalTheme(" graphite ")).toBe("graphite");
@@ -25,6 +35,19 @@ describe("terminal themes", () => {
       backgrounds.add(theme.background!);
     }
     expect(backgrounds.size).toBe(TERMINAL_THEME_OPTIONS.length);
+  });
+
+  it("keeps every semantic foreground legible on its opaque terminal background", () => {
+    for (const { value } of TERMINAL_THEME_OPTIONS) {
+      const bg = luminance(terminalTheme(value).background!);
+      const palette = terminalSemanticPalettes[value];
+      for (const [role, color] of Object.entries(palette)) {
+        const fg = luminance(color);
+        expect((Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05), `${value}:${role}`).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(palette.operator).not.toBe(palette.error);
+      expect(palette.string).not.toBe(palette.warning);
+    }
   });
 
   it("updates an existing terminal without replacing its instance", () => {

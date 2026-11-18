@@ -1,3 +1,5 @@
+import type { IBufferCell } from "@xterm/xterm";
+
 export type TerminalSemanticCell = {
   row: number;
   column: number;
@@ -5,47 +7,36 @@ export type TerminalSemanticCell = {
   colorable?: false;
 };
 
-export type TerminalSemanticBufferCell = {
-  column: number;
-  width: number;
-  chars: string;
-  colorable?: false;
-};
+type SemanticCellReader = (column: number) => Pick<IBufferCell, "getWidth" | "getChars" | "isAttributeDefault"> | undefined;
 
-export type TerminalSemanticMappedRow = {
-  text: string;
-  cells: TerminalSemanticCell[];
-};
-
-export function mapTerminalSemanticRow(
+/**
+ * Map code-point offsets to cells. The trimmed UTF-16 length from translateToString
+ * bounds reads; each code point of a combined glyph maps to the same cell.
+ */
+export function appendTerminalSemanticRow(
+  cells: TerminalSemanticCell[],
   row: number,
-  bufferCells: readonly TerminalSemanticBufferCell[],
-): TerminalSemanticMappedRow {
-  const characters: string[] = [];
-  const cells: TerminalSemanticCell[] = [];
-  const content: boolean[] = [];
-
-  for (const bufferCell of bufferCells) {
-    if (bufferCell.width <= 0) continue;
-    const cellCharacters = Array.from(bufferCell.chars || " ");
-    for (const character of cellCharacters) {
-      characters.push(character);
-      const cell: TerminalSemanticCell = {
-        row,
-        column: bufferCell.column,
-        width: Math.max(1, bufferCell.width),
-      };
-      if (bufferCell.colorable === false) cell.colorable = false;
-      cells.push(cell);
-      content.push(Boolean(bufferCell.chars));
+  columns: number,
+  textUnits: number,
+  read: SemanticCellReader,
+) {
+  let consumedUnits = 0;
+  for (let column = 0; column < columns && consumedUnits < textUnits;) {
+    const cell = read(column);
+    const width = cell?.getWidth() ?? 0;
+    if (!cell || width === 0) {
+      column += 1;
+      continue;
     }
+    const chars = cell.getChars() || " "; // interior empty cells are spaces in translateToString
+    const position: TerminalSemanticCell = { row, column, width };
+    // Foreground, background, inverse, faint and concealed attributes all belong to the remote program.
+    if (!cell.isAttributeDefault()) position.colorable = false;
+    if (chars.length === 1) cells.push(position);
+    else for (const _ of chars) cells.push(position);
+    consumedUnits += chars.length;
+    column += width;
   }
-  while (characters.length && !content.at(-1)) {
-    characters.pop();
-    cells.pop();
-    content.pop();
-  }
-  return { text: characters.join(""), cells };
 }
 
 export function terminalSemanticCellSegments(
@@ -54,7 +45,9 @@ export function terminalSemanticCellSegments(
   end: number,
 ): TerminalSemanticCell[] {
   const segments: TerminalSemanticCell[] = [];
-  for (const cell of cells.slice(Math.max(0, start), Math.max(0, end))) {
+  const stop = Math.min(end, cells.length);
+  for (let i = Math.max(0, start); i < stop; i++) {
+    const cell = cells[i];
     if (cell.colorable === false) continue;
     const previous = segments.at(-1);
     if (previous && previous.row === cell.row && cell.column <= previous.column + previous.width) {

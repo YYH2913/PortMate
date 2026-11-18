@@ -180,11 +180,24 @@ describe("terminal semantic highlighting", () => {
       { kind: "info", text: "listening" },
       { kind: "address", text: "https://127.0.0.1:8787" },
       { kind: "string", text: '"bridge ready"' },
-      { kind: "success", text: "200" },
+      { kind: "number", text: "200" },
     ]);
     expect(terminalSemanticTokens("normal program output")).toEqual([]);
     expect(classified("don't color prose just because it's ordinary")).toEqual([]);
     expect(terminalSemanticTokens("Issue # status remains open")).toEqual([]);
+  });
+
+  it("distinguishes metadata and HTTP outcomes from ordinary counts and addresses", () => {
+    expect(classified("[14:08:21] 2026-11-17T14:08:22.427Z -rw-r-----+ total=503 port=443 status=503")).toEqual([
+      { kind: "timestamp", text: "14:08:21" }, { kind: "timestamp", text: "2026-11-17T14:08:22.427Z" },
+      { kind: "permission", text: "-rw-r-----+" }, { kind: "variable", text: "total=" }, { kind: "number", text: "503" },
+      { kind: "variable", text: "port=" }, { kind: "number", text: "443" }, { kind: "variable", text: "status=" }, { kind: "error", text: "503" },
+    ]);
+    expect(classified('"GET /status HTTP/1.1" 200 403').map(t => t.kind)).toEqual(["string", "success", "number"]);
+    expect(classified("HTTP/2 404")).toEqual([{ kind: "error", text: "404" }]);
+    expect(classified("eth0 UP [2001:db8::1]:443 00-AA-BB-CC-DD-EE").map(t => t.kind)).toEqual(["success", "address", "address"]);
+    expect(classified("25:75:99 constructor __proto__")).toEqual([]);
+    expect(classified("$ constructor --name").map(t => t.kind)).toEqual(["command", "option"]);
   });
 
   it("fails closed for oversized or control-bearing prompt prefixes", () => {

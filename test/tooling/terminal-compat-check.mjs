@@ -633,8 +633,7 @@ checks: try {
       `forced hardware WebGL path did not activate: ${JSON.stringify(forcedRendererState)}`);
   }
   const activeHost = page.locator('[data-pane-id="pane-a"] .terminal-host');
-  const inspectSemanticRendering = async (host, expectedColors) => {
-    await page.waitForTimeout(100);
+  const sampleSemanticRendering = async (host, expectedColors) => {
     const rendering = await host.evaluate((element) => {
       const decorationElements = [...element.querySelectorAll(".xterm-decoration")];
       const decorationRects = decorationElements.map((decoration) => decoration.getBoundingClientRect());
@@ -691,6 +690,13 @@ checks: try {
       bottom: rendering.bottom,
     });
     return { ...rendering, pixelColors };
+  };
+  const inspectSemanticRendering = async (host, colors, minimum = 1) => {
+    const deadline = Date.now() + 3000;
+    let result;
+    do { result = await sampleSemanticRendering(host, colors); }
+    while (result.pixelColors.length < minimum && Date.now() < deadline);
+    return result;
   };
   const inspectCursorRendering = async (host, expectedStyle) => {
     const renderer = await host.getAttribute("data-terminal-renderer");
@@ -970,20 +976,21 @@ checks: try {
       && host.querySelectorAll(".xterm-decoration").length >= 6;
   });
   const semanticDark = await inspectSemanticRendering(activeHost, [
-    "#86efac", "#93c5fd", "#fde047", "#67e8f9", "#5eead4", "#d8b4fe",
-  ]);
+    "#91dccc", "#a3baff", "#e3c598", "#9cccf3", "#74d5e0", "#dba8cb",
+  ], 4);
   assert(semanticDark.pixelColors.length >= 4,
     `semantic command did not render enough distinct dark-theme colors: ${JSON.stringify(semanticDark)}`);
   const semanticSearch = await openAndAssertSearch(semanticCommand);
   const semanticOutput = "ERROR upload failed peer=192.168.1.1 file=/tmp/firmware.bin bytes=4MiB status=503";
   await emitSessionEvent(createEvent("a-semantic-output", "session-a", `\r\n${semanticOutput}`));
-  const semanticOutputSearch = await openAndAssertSearch(semanticOutput);
   await page.waitForFunction(() => (
     Number(document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticDecorationCount ?? "0") >= 12
   ));
-  const semanticOutputDark = await inspectSemanticRendering(activeHost, ["#ff8a8a"]);
-  assert(semanticOutputDark.pixelColors.includes("#ff8a8a"),
+  const semanticOutputDark = await inspectSemanticRendering(activeHost, ["#ff8884"]);
+  assert(semanticOutputDark.pixelColors.includes("#ff8884"),
     `semantic output did not render its error state color: ${JSON.stringify(semanticOutputDark)}`);
+  // Search selects the match, whose foreground intentionally takes priority over syntax colors.
+  const semanticOutputSearch = await openAndAssertSearch(semanticOutput);
   const fastBytesText = "FAST-BYTES-PATH ERROR peer=192.0.2.44\\r\\n";
   await page.evaluate(({ sessionId, eventId, text }) => {
     window.__emitTauriEvent("portmate-terminal-bytes", {
@@ -1936,8 +1943,8 @@ checks: try {
     Number(document.querySelector('[data-pane-id="pane-a"] .terminal-host')?.dataset.terminalSemanticDecorationCount ?? "0") >= 6
   ));
   const semanticLight = await inspectSemanticRendering(activeHost, [
-    "#36965a", "#347cc5", "#a8740b", "#159b8e", "#087f73", "#9757b8",
-  ]);
+    "#116c60", "#425ba5", "#775720", "#2e608a", "#096779", "#90477a",
+  ], 4);
   assert(semanticLight.renderer === "dom" && semanticLight.pixelColors.length >= 4,
     `semantic command did not render enough distinct light-theme colors: ${JSON.stringify(semanticLight)}`);
 

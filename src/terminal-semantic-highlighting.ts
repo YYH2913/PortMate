@@ -1,3 +1,5 @@
+import ipaddr from "ipaddr.js";
+
 export type TerminalSemanticTokenKind =
   | "command"
   | "option"
@@ -7,6 +9,8 @@ export type TerminalSemanticTokenKind =
   | "number"
   | "variable"
   | "operator"
+  | "timestamp"
+  | "permission"
   | "success"
   | "warning"
   | "error"
@@ -162,8 +166,10 @@ export function terminalSemanticHighlightingSupported(value: unknown): boolean {
 }
 
 export function terminalSemanticTokens(line: string): TerminalSemanticToken[] {
+  // At most two UTF-16 units per code point. Reject huge rows before allocating an array.
+  if (!line || line.length > 2 * MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) return [];
   const characters = Array.from(line);
-  if (!characters.length || characters.length > MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) return [];
+  if (characters.length > MAX_TERMINAL_SEMANTIC_LINE_CHARACTERS) return [];
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(line)) return [];
   const commandStart = terminalPromptCommandStart(characters);
   if (commandStart === null || commandStart >= characters.length) {
@@ -180,6 +186,7 @@ function terminalOutputSemanticTokens(characters: readonly string[]): TerminalSe
   const occupied = new Uint8Array(characters.length);
   collectOutputQuotedTokens(characters, tokens, occupied);
 
+  let nextIsHttpStatus = false;
   let index = 0;
   while (index < characters.length) {
     while (index < characters.length && /\s/u.test(characters[index])) index += 1;
@@ -187,8 +194,12 @@ function terminalOutputSemanticTokens(characters: readonly string[]): TerminalSe
     const wordStart = index;
     while (index < characters.length && !/\s/u.test(characters[index])) index += 1;
     const wordEnd = index;
+    const afterHttp = nextIsHttpStatus;
+    // Both an HTTP response line and a quoted access-log request can introduce a status.
+    nextIsHttpStatus = (characters[wordStart] === "H" || characters[wordStart] === "h")
+      && /^HTTP\/\d+(?:\.\d+)?["']?$/iu.test(characters.slice(wordStart, wordEnd).join(""));
     const bounds = outputTokenBounds(characters, wordStart, wordEnd);
-    if (!bounds || occupied.slice(bounds.start, bounds.end).some(Boolean)) continue;
+    if (!bounds || occupied.subarray(bounds.start, bounds.end).some(Boolean)) continue;
 
     const value = characters.slice(bounds.start, bounds.end).join("");
     const assignment = outputAssignment(value);
@@ -197,12 +208,15 @@ function terminalOutputSemanticTokens(characters: readonly string[]): TerminalSe
       tokens.push({ kind: "variable", start: bounds.start, end: separator + 1 });
       const assignedStart = separator + 1;
       const assignedValue = characters.slice(assignedStart, bounds.end).join("");
-      const assignedKind = classifyOutputValue(assignedValue);
+      const key = characters.slice(bounds.start, separator).join("");
+      const assignedKind = classifyOutputValue(assignedValue, /^(?:status|status_code|http_status|http_status_code)$/i.test(key));
       if (assignedKind) tokens.push({ kind: assignedKind, start: assignedStart, end: bounds.end });
       continue;
     }
 
-    const kind = classifyOutputValue(value)
+    const kind = classifyOutputValue(value, afterHttp)
+      ?? ((value === "UP" || value === "DOWN") && /^[\w.:-]+(?:@[-\w.]+)?\s+$/u.test(characters.slice(0, wordStart).join(""))
+        ? value === "UP" ? "success" : "warning" : null)
       ?? (characters[wordEnd - 1] === ":" && outputLabel(value) ? "info" : null);
     if (kind) tokens.push({ kind, start: bounds.start, end: bounds.end });
   }
@@ -242,9 +256,14 @@ function outputTokenBounds(
   start: number,
   end: number,
 ): { start: number; end: number } | null {
-  while (start < end && "[({<".includes(characters[start])) start += 1;
-  while (end > start && ",;)]}>".includes(characters[end - 1])) end -= 1;
-  if (end > start && characters[end - 1] === ":") end -= 1;
+  while (start < end && "({<".includes(characters[start])) start += 1;
+  while (end > start && ",;)}>".includes(characters[end - 1])) end -= 1;
+  // Preserve IPv6 host brackets, including when followed by a port. Strip
+  // ordinary enclosing log brackets such as [WARN] or [14:08:21].
+  if (characters[start] === "[" && characters[end - 1] === "]") {
+    start++; end--;
+  }
+  if (end > start && characters[end - 1] === ":" && characters[end - 2] !== ":") end -= 1;
   return end > start ? { start, end } : null;
 }
 
@@ -258,19 +277,28 @@ function outputLabel(value: string): boolean {
   return /^[\p{L}_][\p{L}\p{N}_.-]{0,31}$/u.test(value);
 }
 
-function classifyOutputValue(value: string): TerminalSemanticTokenKind | null {
-  const status = outputStatusKinds[value.toLocaleLowerCase("en-US")];
-  if (status) return status;
-  if (/^[1-5]\d\d$/u.test(value)) {
+function classifyOutputValue(value: string, httpStatus: boolean): TerminalSemanticTokenKind | null {
+  const name = value.toLowerCase();
+  if (Object.hasOwn(outputStatusKinds, name)) return outputStatusKinds[name];
+  if (/^[bcdlps-][r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-][@+.]?$/u.test(value)) return "permission";
+  if (logTimestamp(value)) return "timestamp";
+  if (httpStatus && /^[1-5]\d\d$/u.test(value)) {
     const category = Number(value[0]);
     if (category === 2) return "success";
     if (category >= 4) return "error";
     return "info";
   }
+  if (/^HTTP\/\d+(?:\.\d+)?$/iu.test(value)) return null;
   if (networkAddress(value)) return "address";
   if (/^[+-]?(?:0x[\dA-Fa-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)(?:%|ns|us|ms|s|m|h|d|B|KiB|MiB|GiB|KiB\/s|MiB\/s|GiB\/s)?$/iu.test(value)) return "number";
   if (pathArgument(value)) return "path";
   return null;
+}
+
+function logTimestamp(value: string): boolean {
+  // Common ISO log dates and 24h clocks; don't mistake a host:port or IPv6 address for a time.
+  return /^(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T)?(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:[.,]\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/u.test(value)
+    || /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u.test(value);
 }
 
 function scanShell(
@@ -405,10 +433,8 @@ function consumeExpectedCommand(
 }
 
 function commandWrapper(value: string): CommandWrapper | null {
-  const positionalValues = wrapperPositionals[value];
-  return positionalValues === undefined
-    ? null
-    : { name: value, positionalValues, optionValue: false, optionsEnded: false };
+  if (!Object.hasOwn(wrapperPositionals, value)) return null;
+  return { name: value, positionalValues: wrapperPositionals[value], optionValue: false, optionsEnded: false };
 }
 
 function wrapperOptionRequiresValue(wrapper: string, value: string): boolean {
@@ -629,7 +655,7 @@ function classifyBareArgument(value: string): TerminalSemanticTokenKind | null {
 function networkAddress(value: string): boolean {
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(value)) return true;
   if (/^[\w.-]+@[\w.-]+:(?:[/~].*)?$/u.test(value)) return true;
-  if (/^(?:[\dA-Fa-f]{2}:){5}[\dA-Fa-f]{2}$/u.test(value)) return true;
+  if (/^[\dA-Fa-f]{2}([:-])(?:[\dA-Fa-f]{2}\1){4}[\dA-Fa-f]{2}$/u.test(value)) return true;
   const bracketedIpv6 = value.match(/^\[([\dA-Fa-f:]+)\](?::(\d{1,5}))?$/u);
   if (bracketedIpv6) return ipv6Address(bracketedIpv6[1]) && validPort(bracketedIpv6[2]);
   const ipv4Cidr = value.match(/^(.+?)(?:\/(\d{1,2}))?(?::(\d{1,5}))?$/u);
@@ -660,7 +686,7 @@ function ipv4Address(value: string): boolean {
 }
 
 function ipv6Address(value: string): boolean {
-  return value.includes(":") && /^[\dA-Fa-f:]+$/u.test(value) && value.split(":").length >= 3;
+  return value.includes(":") && ipaddr.IPv6.isValid(value);
 }
 
 function terminalPromptCommandStart(characters: readonly string[]): number | null {
