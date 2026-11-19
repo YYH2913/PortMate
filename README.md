@@ -70,7 +70,7 @@ To regenerate these documentation fixtures locally, run `npm run docs:screenshot
 
 PortMate follows the operating system language by default, with English fallback for
 unsupported languages. Choose Arabic, Chinese, English, French, Russian, or Spanish in
-the top bar or application settings. The choice applies immediately across windows.
+the top bar or application settings. The top bar applies the choice immediately; in application settings, save to apply it across windows.
 Arabic uses RTL interface layout; terminal content, script editors, and commands remain LTR.
 Internal actions, configuration values, and command syntax stay English/numeric;
 user-authored names, commands, and paths are never translated.
@@ -96,7 +96,7 @@ Catalog and placeholder completeness are checked by the test suite.
 - Target desktop platforms: Linux, Windows, and macOS.
 - Primary current development and native verification environment: Linux on VMware.
 - The terminal uses `@xterm/xterm` 6 with Search, Serialize, Unicode 11, Clipboard, Web Links, Fit, and optional WebGL support.
-- Serial terminals keep the column count in Session Settings → Terminal fixed across window/font changes, with horizontal scrolling in narrow panes. Match this setting to the device's terminal width (`stty size` can report it); PortMate does not send `stty` automatically. Correct existing profiles whose width was previously overwritten by viewport resizing to avoid wrapped-command erase misalignment.
+- Serial terminals keep the column count in Session settings → Terminal behavior fixed across window/font changes, with horizontal scrolling in narrow panes. Match this setting to the device's terminal width (`stty size` can report it); PortMate does not send `stty` automatically. Correct existing profiles whose width was previously overwritten by viewport resizing to avoid wrapped-command erase misalignment.
 - Passive serial width hints recognize two matching Readline-style wrapped-line redraws in normal-screen Shell output. Apply a hint to this view only, dismiss it, or restore the configured width. Reconnection, session switching and manual column changes reset detection. No probe is sent, inferred values are not saved and previously corrupted screen content is not repaired. Replayed history, alternate screens and insufficient evidence produce no hint; this is not universal size negotiation.
 - Command history records known terminal-side edits and submitted pasted commands. Desktop and MCP writers share the history enabled/limit/retention policy. MCP `run_command` is recorded after sending; `send_text` records only complete CR/LF-terminated lines in the current payload, not unfinished fragments or editor controls. Private terminal input is excluded, and bracketed paste waits for a real Enter. History persistence failures do not fail a successful MCP send.
 - Automated compatibility matrices cover SSH/SFTP/SCP, Telnet/TCP, vttest, full-screen applications, and multiple Tmux versions.
@@ -185,7 +185,9 @@ COM / Serial, Shell, Telnet, TCP and Tmux sessions. Switch back to **Profile gro
 to use saved custom groups. The view preference is remembered and synchronized
 between workspace windows; it does not modify session profiles.
 
-In **Session settings → Terminal**, choose a theme to preview its 16 ANSI colors and a sample log before saving. PortMate adds color only to unstyled text: for example, `port=443` is a number, whereas `HTTP/2 404` flags an error. Remote styles and alternate-screen programs keep their colors. To use only device-provided colors, turn off **Terminal settings → Autocomplete → Multicolor commands and output**.
+In **Session settings → Terminal appearance**, choose a theme to preview its 16 ANSI colors and a sample log before saving. PortMate adds color only to unstyled text: for example, `port=443` is a number, whereas `HTTP/2 404` flags an error. Remote styles and alternate-screen programs keep their colors. To use only device-provided colors, turn off **Tools → Application settings → Appearance → Multicolor commands and output**.
+
+Settings search matches individual controls such as font size, baud rate and reconnect. Select a result to jump to it; typing a search does not change the current page or draft. **Save** does not open or reconnect a session. **Save and connect** does both. Closing an edited draft lets you keep editing or discard it.
 
 Each session tab has a connection marker. Green means connected; unavailable states are red, with the precise connecting, reconnecting, blocked, disconnected, or error diagnosis available in the tooltip. Startup recovery silently tries credentials already available to the Profile and does not show a reconnect dialog every time the app opens.
 
@@ -594,7 +596,7 @@ TFTP is also available directly from the desktop Transfer Tasks dialog. It start
 
 `deviceIp` is required. `address`, `fileName`, `serverIp`, `bindHost`, `bindPort`, and `timeoutSeconds` are optional: the load address defaults to `${loadaddr}`, the requested name defaults to the local source name, `serverIp` can be inferred from the route to the device, the bind host defaults to the advertised server IP, the TFTP protocol default port is 69, and the timeout defaults to 60 seconds. The desktop dialog defaults to `bindPort=0` so it does not require Unix root privileges or conflict with a system TFTP daemon. When a request explicitly uses port 69 and that port is unavailable, PortMate automatically falls back to a free high port. The generated U-Boot command includes the explicit `serverIp:port:fileName` form, which is required by LWIP-based U-Boot builds that ignore `tftpdstp`; legacy builds also receive `setenv tftpdstp` for compatibility. Explicit timeouts must be at least 5 seconds and have no application-defined upper limit. `bindPort=0` chooses a free port. The legacy `"destination":"load:tftpboot?deviceIp=..."` string remains supported. PortMate temporarily sends `setenv ipaddr`, `setenv serverip`, and `setenv tftpdstp` followed by `tftpboot`; it never sends `saveenv`.
 
-The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, and `timeout` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot supports either the explicit `serverIp:port:fileName` form or `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
+The server accepts RRQ only from `deviceIp`, serves only the selected name, supports the common `blksize`, `tsize`, `timeout` and `windowsize` options, and closes on completion, cancellation, failure, or timeout. Ports below 1024 may require elevated privileges on Unix; `bindPort=0` or a port above 1023 avoids that requirement when the target U-Boot supports either the explicit `serverIp:port:fileName` form or `tftpdstp`. Transfer starts are asynchronous. Use the returned ID with `get_transfer`; final `bytesDone`, `status`, and `message` report the transferred byte count, completion state, and any error.
 
 Live byte counts and the progress bar are retained, with updates throttled to
 about 300 ms. Commit `2f7bbe66` (2026-10-09) removes full Store writes from this
@@ -602,10 +604,7 @@ hot path; queue/start/finish/failure/cancellation still persist. The original
 0.1.12 builds predate that fix: a slow Store write can delay every TFTP block,
 so the version number alone does not establish that a binary contains it.
 The three 500 ms gaps between U-Boot setup commands are separate from DATA/ACK
-pacing. Completed average speed includes that startup time. DATA is currently
-stop-and-wait (512 bytes by default, up to 1468 via `blksize`); delayed ACKs or an
-explicit session rate limit can also reduce throughput. `windowsize` is not yet
-negotiated.
+pacing. Completed average speed includes that startup time. Legacy requests still use one ACK per block (512 bytes by default, up to 1468 via `blksize`). A client requesting RFC 7440 `windowsize` can receive up to eight blocks per ACK. PortMate does not change bootloader environment settings to enable this. An explicit session rate limit keeps a one-block window.
 
 For content produced on another MCP client, use the virtual source form of `start_transfer`. It sends one standard Base64 value without requiring the source to exist on the desktop host or granting access to a local folder. The decoded payload limit is 4 MiB. For larger files, use the resumable upload workflow below:
 

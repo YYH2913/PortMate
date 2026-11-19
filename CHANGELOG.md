@@ -6,6 +6,8 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+- Separate application and session settings, search individual fields and confirm unsaved changes. / 区分应用与会话设置，支持按字段搜索和未保存更改确认。
+- Negotiate bounded TFTP windows, honor SFTP close failures and coalesce unknown-size receive progress. / TFTP 支持窗口协商，修复 SFTP 关闭失败误报成功及未知大小接收时进度刷新过密。
 - Preview terminal themes and distinguish log times, file modes and HTTP status without overriding remote styles. / 终端主题支持实时预览，可区分日志时间、文件权限和 HTTP 状态，保留设备原有样式。
 - Reduce typing and Backspace echo latency in libssh terminals and avoid repeated screen and log scans while editing. / 降低 libssh 终端打字与退格的回显延迟，减少编辑时重复扫描屏幕和日志造成的卡顿。
 
