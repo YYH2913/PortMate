@@ -24,7 +24,7 @@ fn parses_binary_rrq_and_negotiates_bounded_options() {
     )
     .unwrap();
     assert_eq!(request.file_name, "firmware.bin");
-    let negotiation = negotiate_tftp_options(&request.options, 4_096).unwrap();
+    let negotiation = negotiate_tftp_options(&request.options, 4_096, false).unwrap();
     assert_eq!(negotiation.block_size, TFTP_MAX_BLOCK_SIZE);
     assert_eq!(negotiation.retry_timeout, Duration::from_secs(9));
     let option_ack = negotiation.option_ack.unwrap();
@@ -70,4 +70,32 @@ fn malformed_rrq_uses_illegal_operation_error_code() {
     let error = parse_tftp_read_request(b"\x00\x02firmware.bin\x00octet\x00")
         .expect_err("WRQ is not a supported RRQ");
     assert_eq!(error.code, 4);
+}
+
+#[test]
+fn windows_are_opt_in_bounded_and_respect_the_rate_limiter() {
+    assert_eq!(
+        negotiate_tftp_options(&[], 0, false).unwrap().window_size,
+        1
+    );
+    let opt = |s: &str| vec![("windowsize".into(), s.to_owned())];
+    for bad in ["0", "65536", "+1", "1.5", "NaN"] {
+        assert!(negotiate_tftp_options(&opt(bad), 0, false).is_err());
+    }
+    let capped = negotiate_tftp_options(&opt("65535"), 0, false).unwrap();
+    assert_eq!(capped.window_size, 8);
+    assert_eq!(capped.option_ack.unwrap(), b"\x00\x06windowsize\x008\0");
+    assert_eq!(
+        negotiate_tftp_options(&opt("4"), 0, false)
+            .unwrap()
+            .window_size,
+        4
+    );
+    assert_eq!(
+        negotiate_tftp_options(&opt("8"), 0, true)
+            .unwrap()
+            .window_size,
+        1
+    );
+    assert!(negotiate_tftp_options(&[opt("8").remove(0), opt("1").remove(0)], 0, false).is_err());
 }

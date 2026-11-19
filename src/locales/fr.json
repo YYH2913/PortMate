@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "Délai dépassé en attendant l’accusé de réception du bloc TFTP {0}",
+  "native-message-58cafcb2687c": "Option TFTP en double : {0}",
+  "native-message-5e0073670b1c": "La valeur windowsize de TFTP doit être comprise entre 1 et 65535",
   "native-message-7f20582e799b": "Impossible de fermer la source SFTP {0} : {1}",
   "native-message-d20e021ea016": "Impossible de synchroniser le nouveau fichier SFTP {0} : {1}",
   "terminal-color-preview": "Aperçu des couleurs",

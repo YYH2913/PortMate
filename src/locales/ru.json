@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "Истекло время ожидания подтверждения блока TFTP {0}",
+  "native-message-58cafcb2687c": "Повторяющийся параметр TFTP: {0}",
+  "native-message-5e0073670b1c": "Значение windowsize TFTP должно быть от 1 до 65535",
   "native-message-7f20582e799b": "Не удалось закрыть исходный файл SFTP {0}: {1}",
   "native-message-d20e021ea016": "Не удалось синхронизировать новый файл SFTP {0}: {1}",
   "terminal-color-preview": "Предпросмотр палитры",

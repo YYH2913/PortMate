@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "انتهت مهلة انتظار تأكيد كتلة TFTP {0}",
+  "native-message-58cafcb2687c": "خيار TFTP مكرر: {0}",
+  "native-message-5e0073670b1c": "يجب أن تتراوح قيمة windowsize لبروتوكول TFTP بين 1 و65535",
   "native-message-7f20582e799b": "تعذّر إغلاق ملف مصدر SFTP ‏{0}: {1}",
   "native-message-d20e021ea016": "تعذّرت مزامنة ملف SFTP الجديد ‏{0}: {1}",
   "terminal-color-preview": "معاينة الألوان",

@@ -4,6 +4,7 @@ struct TftpCadenceSample {
     data_elapsed: Duration,
     ack_to_data: Vec<Duration>,
     task_elapsed: Duration,
+    ack_count: usize,
 }
 
 /// Exercise the actual transfer runner, including U-Boot command setup, UDP
@@ -16,12 +17,37 @@ async fn measure_tftp_cadence(
     rate_limit: Option<u64>,
     block_store_checkpoint: bool,
 ) -> TftpCadenceSample {
+    measure_tftp_peer(
+        block_size,
+        negotiated,
+        ack_delay,
+        block_size * full_blocks + 11,
+        rate_limit,
+        block_store_checkpoint,
+        None,
+        false,
+    )
+    .await
+}
+
+// Only the receiver can request a window. Use the same loopback transfer worker for legacy and windowed runs.
+#[allow(clippy::too_many_arguments)]
+async fn measure_tftp_peer(
+    block_size: usize,
+    negotiated: bool,
+    ack_delay: Duration,
+    size: usize,
+    rate_limit: Option<u64>,
+    block_store_checkpoint: bool,
+    window: Option<usize>,
+    lose_second: bool,
+) -> TftpCadenceSample {
     let root = canonical_test_tempdir();
     let store_path = root.path().join("store.sqlite3");
     let peer_store_path = store_path.clone();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
-    let payload = (0..block_size * full_blocks + 11)
+    let payload = (0..size)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
     let expected = payload.clone();
@@ -52,6 +78,10 @@ async fn measure_tftp_cadence(
         if negotiated {
             request.extend_from_slice(format!("blksize\0{block_size}\0tsize\x000\0").as_bytes());
         }
+        if let Some(n) = window {
+            request.extend_from_slice(format!("windowsize\0{n}\0").as_bytes());
+        }
+        let mut flight = 1usize;
         client.send_to(&request, ("127.0.0.1", port)).await.unwrap();
         let mut packet = vec![0u8; 2048];
         if negotiated {
@@ -60,10 +90,21 @@ async fn measure_tftp_cadence(
             assert!(packet[..size]
                 .windows(format!("blksize\0{block_size}\0").len())
                 .any(|value| value == format!("blksize\0{block_size}\0").as_bytes()));
+            if let Some(n) = window {
+                flight = if rate_limit.is_some() { 1 } else { n.min(8) };
+                let option = format!("windowsize\0{flight}\0");
+                assert!(packet[..size]
+                    .windows(option.len())
+                    .any(|s| s == option.as_bytes()));
+            }
             client.send_to(&[0, 4, 0, 0], peer).await.unwrap();
         }
         let mut received = Vec::new();
         let mut expected_block = 1u16;
+        let mut since_ack = 0usize;
+        let mut ack_count = 0usize;
+        let mut dropped = false;
+        let mut skip_to_replay = false;
         let mut first_data = None;
         let mut previous_ack = None;
         let mut ack_to_data = Vec::new();
@@ -83,10 +124,25 @@ async fn measure_tftp_cadence(
                 checkpoint_guard = Some(lock_store_snapshot(&peer_store_path).unwrap());
             }
             let started = *first_data.get_or_insert(received_at);
-            if let Some(ack) = previous_ack {
+            if let Some(ack) = previous_ack.take() {
                 ack_to_data.push(received_at.saturating_duration_since(ack));
             }
             assert_eq!(&packet[..2], &[0, 3]);
+            let block = u16::from_be_bytes([packet[2], packet[3]]);
+            if lose_second && block == 2 && !dropped {
+                dropped = true;
+                skip_to_replay = true;
+                continue;
+            }
+            if skip_to_replay && block != expected_block {
+                // Drop the remainder of this flight, then ACK only the contiguous prefix.
+                if usize::from(block) == flight {
+                    client.send_to(&[0, 4, 0, 1], peer).await.unwrap();
+                    since_ack = 0;
+                }
+                continue;
+            }
+            skip_to_replay = false;
             assert_eq!(u16::from_be_bytes([packet[2], packet[3]]), expected_block);
             if block_store_checkpoint {
                 // Permit brief connection/progress mutex contention, but not
@@ -115,14 +171,19 @@ async fn measure_tftp_cadence(
                 }
             }
             received.extend_from_slice(&packet[4..size]);
-            if !ack_delay.is_zero() {
-                tokio::time::sleep(ack_delay).await;
+            since_ack += 1;
+            if since_ack == flight || size < 4 + block_size {
+                if !ack_delay.is_zero() {
+                    tokio::time::sleep(ack_delay).await;
+                }
+                client
+                    .send_to(&[0, 4, packet[2], packet[3]], peer)
+                    .await
+                    .unwrap();
+                ack_count += 1;
+                since_ack = 0;
+                previous_ack = Some(Instant::now());
             }
-            client
-                .send_to(&[0, 4, packet[2], packet[3]], peer)
-                .await
-                .unwrap();
-            previous_ack = Some(Instant::now());
             if size < 4 + block_size {
                 break received_at.saturating_duration_since(started);
             }
@@ -148,6 +209,7 @@ async fn measure_tftp_cadence(
             ack_to_data,
             command_gaps_ms,
             live_progress.len(),
+            ack_count,
         )
     });
 
@@ -182,7 +244,7 @@ async fn measure_tftp_cadence(
     let completed = wait_for_transfer_terminal_state(&state, &task.id).await;
     let task_elapsed = started.elapsed();
     let _ = release_tx.send(());
-    let (data_elapsed, ack_to_data, command_gaps_ms, live_progress_snapshots) =
+    let (data_elapsed, ack_to_data, command_gaps_ms, live_progress_snapshots, ack_count) =
         tokio::time::timeout(Duration::from_secs(2), device)
             .await
             .expect("TFTP cadence device did not finish")
@@ -196,7 +258,9 @@ async fn measure_tftp_cadence(
     let persisted_task = persisted.transfer_by_id(&task.id).unwrap();
     assert_eq!(persisted_task.status, TransferStatus::Completed);
     assert_eq!(persisted_task.bytes_done, payload.len() as u64);
-    assert_eq!(ack_to_data.len(), full_blocks);
+    if window.is_none() {
+        assert_eq!(ack_to_data.len(), size / block_size);
+    }
     let mut ack_gaps_ms = ack_to_data
         .iter()
         .map(|gap| gap.as_secs_f64() * 1000.0)
@@ -206,7 +270,7 @@ async fn measure_tftp_cadence(
         "TFTP_CADENCE {}",
         serde_json::json!({
             "blockBytes": block_size,
-            "blocks": full_blocks + 1,
+            "blocks": size / block_size + 1, "requestedWindow": window, "acks": ack_count,
             "bytes": payload.len(),
             "negotiated": negotiated,
             "peerAckDelayMs": ack_delay.as_millis(),
@@ -216,7 +280,7 @@ async fn measure_tftp_cadence(
             "commandGapsMs": command_gaps_ms,
             "dataElapsedMs": data_elapsed.as_secs_f64() * 1000.0,
             "taskElapsedMs": task_elapsed.as_secs_f64() * 1000.0,
-            "ackToDataMedianMs": ack_gaps_ms[ack_gaps_ms.len() / 2],
+            "ackToDataMedianMs": ack_gaps_ms.get(ack_gaps_ms.len() / 2),
             "ackToDataMaxMs": ack_gaps_ms.last(),
         })
     );
@@ -224,6 +288,7 @@ async fn measure_tftp_cadence(
         data_elapsed,
         ack_to_data,
         task_elapsed,
+        ack_count,
     }
 }
 
@@ -264,5 +329,47 @@ fn tftp_data_progress_does_not_wait_for_store_checkpoints() {
         let sample =
             measure_tftp_cadence(1468, true, Duration::from_millis(20), 64, None, true).await;
         assert!(sample.data_elapsed < Duration::from_secs(6));
+    });
+}
+
+#[test]
+fn tftp_window_recovers_a_gap_and_acknowledges_the_final_empty_block() {
+    tauri::async_runtime::block_on(async {
+        let r = measure_tftp_peer(
+            512,
+            true,
+            Duration::ZERO,
+            512 * 16,
+            None,
+            false,
+            Some(8),
+            true,
+        )
+        .await;
+        assert_eq!(r.ack_count, 2); // partial ACK(1), then full windows ending at 9 and 17
+        let empty =
+            measure_tftp_peer(512, true, Duration::ZERO, 0, None, false, Some(8), false).await;
+        assert_eq!(empty.ack_count, 1);
+    });
+}
+
+#[test]
+#[ignore = "opt-in loopback TFTP window comparison with deterministic ACK delay"]
+fn tftp_window_throughput_comparison() {
+    tauri::async_runtime::block_on(async {
+        for window in [1, 8, 8, 1, 1, 8] {
+            let r = measure_tftp_peer(
+                1468,
+                true,
+                Duration::from_millis(4),
+                663_175,
+                None,
+                false,
+                Some(window),
+                false,
+            )
+            .await;
+            assert_eq!(r.ack_count, 452usize.div_ceil(window));
+        }
     });
 }

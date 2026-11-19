@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "等待设备确认 TFTP 块 {0} 超时",
+  "native-message-58cafcb2687c": "重复的 TFTP 选项: {0}",
+  "native-message-5e0073670b1c": "TFTP windowsize 必须介于 1 和 65535 之间",
   "native-message-7f20582e799b": "SFTP 关闭远端源文件失败 {0}: {1}",
   "native-message-d20e021ea016": "SFTP 刷新新建远端文件失败 {0}: {1}",
   "terminal-color-preview": "配色预览",

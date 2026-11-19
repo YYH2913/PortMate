@@ -1,5 +1,20 @@
 [
   {
+    "id": "native-message-7a193a828d9d",
+    "source": "等待设备确认 TFTP 块 {0} 超时",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-58cafcb2687c",
+    "source": "重复的 TFTP 选项: {0}",
+    "causeIndices": []
+  },
+  {
+    "id": "native-message-5e0073670b1c",
+    "source": "TFTP windowsize 必须介于 1 和 65535 之间",
+    "causeIndices": []
+  },
+  {
     "id": "native-message-7f20582e799b",
     "source": "SFTP 关闭远端源文件失败 {0}: {1}",
     "causeIndices": [

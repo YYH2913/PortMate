@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "Timed out waiting for the device to acknowledge TFTP block {0}",
+  "native-message-58cafcb2687c": "Duplicate TFTP option: {0}",
+  "native-message-5e0073670b1c": "TFTP windowsize must be between 1 and 65535",
   "native-message-7f20582e799b": "Could not close SFTP source {0}: {1}",
   "native-message-d20e021ea016": "Could not flush newly created SFTP file {0}: {1}",
   "terminal-color-preview": "Color preview",

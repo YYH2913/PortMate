@@ -1,4 +1,7 @@
 {
+  "native-message-7a193a828d9d": "Se agotó el tiempo de espera de confirmación del bloque TFTP {0}",
+  "native-message-58cafcb2687c": "Opción TFTP duplicada: {0}",
+  "native-message-5e0073670b1c": "El parámetro windowsize de TFTP debe estar entre 1 y 65535",
   "native-message-7f20582e799b": "No se pudo cerrar el origen SFTP {0}: {1}",
   "native-message-d20e021ea016": "No se pudo sincronizar el nuevo archivo SFTP {0}: {1}",
   "terminal-color-preview": "Vista previa de colores",

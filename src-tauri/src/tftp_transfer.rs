@@ -10,6 +10,8 @@ const TFTP_OPCODE_ERROR: u16 = 5;
 const TFTP_OPCODE_OACK: u16 = 6;
 const TFTP_DEFAULT_BLOCK_SIZE: usize = 512;
 const TFTP_MAX_BLOCK_SIZE: usize = 1_468;
+// RFC 7440 is strictly opt-in. Keep the flight small enough for a bootloader and a LAN MTU.
+const TFTP_MAX_WINDOW_SIZE: usize = 8;
 const TFTP_MAX_PACKET_SIZE: usize = 65_535;
 const TFTP_ACK_BUFFER_SIZE: usize = 4 + TFTP_MAX_BLOCK_SIZE + 512;
 // U-Boot's default tftp timeout is 5 seconds. Matching it avoids premature
@@ -62,6 +64,7 @@ impl std::fmt::Display for TftpRequestError {
 }
 
 struct TftpNegotiation {
+    window_size: usize,
     block_size: usize,
     retry_timeout: Duration,
     option_ack: Option<Vec<u8>>,
@@ -330,59 +333,66 @@ async fn serve_tftp_file(
     let (read_request, peer) =
         wait_for_tftp_read_request(socket, file_name, device_ip, deadline, binding, progress)
             .await?;
-    let negotiation = match negotiate_tftp_options(&read_request.options, total) {
+    let negotiation = match negotiate_tftp_options(
+        &read_request.options,
+        total,
+        progress.rate_limit_bytes_per_second.is_some(),
+    ) {
         Ok(negotiation) => negotiation,
         Err(error) => {
             send_tftp_error(socket, peer, 8, &error).await;
             return Err(error);
         }
     };
-    if let Some(option_ack) = negotiation.option_ack.as_deref() {
-        send_tftp_packet_with_ack(
-            socket,
-            peer,
-            option_ack,
-            0,
-            negotiation.retry_timeout,
-            deadline,
-            binding,
-            progress,
-        )
-        .await?;
+    let link = TftpSender {
+        socket,
+        peer,
+        retry_timeout: negotiation.retry_timeout,
+        deadline,
+        binding,
+        progress,
+    };
+    if let Some(oack) = negotiation.option_ack.as_ref() {
+        link.send_window(std::slice::from_ref(oack), 0).await?;
     }
 
-    let mut block = 1_u16;
-    let mut bytes_done = 0_u64;
-    let mut data = vec![0_u8; negotiation.block_size];
-    let mut packet = Vec::with_capacity(4 + negotiation.block_size);
+    let mut source = std::io::BufReader::with_capacity(64 * 1024, source);
+    let block_size = negotiation.block_size;
+    let mut packets: Vec<Vec<u8>> = (0..negotiation.window_size)
+        .map(|_| Vec::with_capacity(4 + block_size))
+        .collect();
+    let (mut first, mut pending) = (1_u16, 0usize);
+    let (mut bytes_read, mut bytes_done) = (0u64, 0u64);
+    let mut eof = false;
     loop {
-        let remaining = total.saturating_sub(bytes_done);
-        let read_length = remaining.min(negotiation.block_size as u64) as usize;
-        data.resize(read_length, 0);
-        source
-            .read_exact(&mut data)
-            .map_err(|error| format!("读取 TFTP 本地传输源失败: {error}"))?;
-        packet.clear();
-        packet.extend_from_slice(&TFTP_OPCODE_DATA.to_be_bytes());
-        packet.extend_from_slice(&block.to_be_bytes());
-        packet.extend_from_slice(&data);
-        send_tftp_packet_with_ack(
-            socket,
-            peer,
-            &packet,
-            block,
-            negotiation.retry_timeout,
-            deadline,
-            binding,
-            progress,
-        )
-        .await?;
-        bytes_done = bytes_done.saturating_add(data.len() as u64);
+        progress.check_cancelled()?;
+        while pending < packets.len() && !eof {
+            let size = (total - bytes_read).min(block_size as u64) as usize;
+            let packet = &mut packets[pending];
+            packet.resize(4 + size, 0);
+            packet[..2].copy_from_slice(&TFTP_OPCODE_DATA.to_be_bytes());
+            packet[2..4].copy_from_slice(&first.wrapping_add(pending as u16).to_be_bytes());
+            source
+                .read_exact(&mut packet[4..])
+                .map_err(|error| format!("读取 TFTP 本地传输源失败: {error}"))?;
+            pending += 1;
+            bytes_read += size as u64;
+            eof = size < block_size; // exact multiples require a zero-length final DATA
+        }
+        let acked = link.send_window(&packets[..pending], first).await?;
+        bytes_done += packets[..acked]
+            .iter()
+            .map(|p| (p.len() - 4) as u64)
+            .sum::<u64>();
         progress.update(bytes_done, total).await?;
-        if data.len() < negotiation.block_size {
+        pending -= acked;
+        if eof && pending == 0 {
             return Ok(bytes_done);
         }
-        block = block.wrapping_add(1);
+        // A cumulative ACK can stop in the middle of a window. Keep the unacknowledged
+        // suffix, refill the rest, and open the next window at the first missing block.
+        packets.rotate_left(acked);
+        first = first.wrapping_add(acked as u16);
     }
 }
 
@@ -482,12 +492,31 @@ fn take_tftp_field(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 fn negotiate_tftp_options(
     requested: &[(String, String)],
     total: u64,
+    rate_limited: bool,
 ) -> Result<TftpNegotiation, String> {
+    let mut window_size = 1;
     let mut block_size = TFTP_DEFAULT_BLOCK_SIZE;
     let mut retry_timeout = TFTP_RETRY_TIMEOUT;
     let mut accepted = Vec::new();
     for (name, value) in requested {
+        if accepted.iter().any(|(key, _)| key == name) {
+            return Err(format!("重复的 TFTP 选项: {name}"));
+        }
         match name.as_str() {
+            "windowsize" => {
+                let requested = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|n| *n > 0 && value.bytes().all(|b| b.is_ascii_digit()))
+                    .ok_or_else(|| "TFTP windowsize 必须介于 1 和 65535 之间".to_string())?;
+                // Preserve the existing per-block pacing for explicitly rate-limited sessions.
+                window_size = if rate_limited {
+                    1
+                } else {
+                    usize::from(requested).min(TFTP_MAX_WINDOW_SIZE)
+                };
+                accepted.push((name.as_str(), window_size.to_string()));
+            }
             "blksize" => {
                 let requested = value
                     .parse::<usize>()
@@ -531,64 +560,81 @@ fn negotiate_tftp_options(
         Some(packet)
     };
     Ok(TftpNegotiation {
+        window_size,
         block_size,
         retry_timeout,
         option_ack,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_tftp_packet_with_ack(
-    socket: &UdpSocket,
+struct TftpSender<'a> {
+    socket: &'a UdpSocket,
     peer: SocketAddr,
-    packet: &[u8],
-    expected_block: u16,
     retry_timeout: Duration,
     deadline: Instant,
-    binding: &ModemRuntimeBinding,
-    progress: &TransferProgressContext,
-) -> Result<(), String> {
-    // ACK/OACK/ERROR packets are small. Avoid allocating a full 64 KiB UDP
-    // buffer for every data block while retaining room for negotiated options.
-    let mut response = vec![0_u8; TFTP_ACK_BUFFER_SIZE];
-    let mut attempts = 0_u32;
-    loop {
-        attempts = attempts.saturating_add(1);
-        progress.check_cancelled()?;
-        binding.ensure_current()?;
-        socket
-            .send_to(packet, peer)
-            .await
-            .map_err(|error| format!("发送 TFTP 数据包失败: {error}"))?;
-        let attempt_deadline = deadline.min(Instant::now() + retry_timeout);
+    binding: &'a ModemRuntimeBinding,
+    progress: &'a TransferProgressContext,
+}
+
+impl TftpSender<'_> {
+    /// Returns only the acknowledged prefix. The small window makes modular comparisons
+    /// unambiguous at 65535 -> 0. ACK 0 also acknowledges a one-packet OACK.
+    async fn send_window(&self, packets: &[Vec<u8>], first: u16) -> Result<usize, String> {
+        let mut response = [0u8; TFTP_ACK_BUFFER_SIZE];
+        let mut fast_retry = packets.len() > 1;
         loop {
-            match receive_tftp_packet(socket, &mut response, attempt_deadline, binding, progress)
-                .await
-            {
-                Ok((size, sender)) if sender == peer && size >= 4 => {
-                    let opcode = u16::from_be_bytes([response[0], response[1]]);
-                    let block = u16::from_be_bytes([response[2], response[3]]);
-                    if opcode == TFTP_OPCODE_ACK && block == expected_block {
-                        return Ok(());
-                    }
-                    if opcode == TFTP_OPCODE_ERROR {
-                        let message = response[4..size]
-                            .split(|byte| *byte == 0)
-                            .next()
-                            .map(String::from_utf8_lossy)
-                            .unwrap_or_default();
-                        return Err(format!("设备返回 TFTP 错误 {block}: {message}"));
-                    }
+            for packet in packets {
+                self.progress.check_cancelled()?;
+                self.binding.ensure_current()?;
+                if Instant::now() >= self.deadline {
+                    return Err(format!("等待设备确认 TFTP 块 {first} 超时"));
                 }
-                Ok(_) => {}
-                Err(_) if Instant::now() >= attempt_deadline && Instant::now() < deadline => break,
-                Err(error) => return Err(error),
+                self.socket
+                    .send_to(packet, self.peer)
+                    .await
+                    .map_err(|error| format!("发送 TFTP 数据包失败: {error}"))?;
             }
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "等待设备确认 TFTP 块 {expected_block} 超时，已重试 {attempts} 次"
-            ));
+            let attempt_deadline = self.deadline.min(Instant::now() + self.retry_timeout);
+            loop {
+                match receive_tftp_packet(
+                    self.socket,
+                    &mut response,
+                    attempt_deadline,
+                    self.binding,
+                    self.progress,
+                )
+                .await
+                {
+                    Ok((size, peer)) if peer == self.peer && size >= 4 => {
+                        let opcode = u16::from_be_bytes([response[0], response[1]]);
+                        let block = u16::from_be_bytes([response[2], response[3]]);
+                        if opcode == TFTP_OPCODE_ACK && size == 4 {
+                            let offset = usize::from(block.wrapping_sub(first));
+                            if offset < packets.len() {
+                                return Ok(offset + 1);
+                            }
+                            if fast_retry && block == first.wrapping_sub(1) {
+                                fast_retry = false; // at most one immediate replay for duplicate gap ACKs
+                                break;
+                            }
+                        } else if opcode == TFTP_OPCODE_ERROR {
+                            let message = response[4..size]
+                                .split(|b| *b == 0)
+                                .next()
+                                .unwrap_or_default();
+                            let message = String::from_utf8_lossy(message);
+                            return Err(format!("设备返回 TFTP 错误 {block}: {message}"));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_)
+                        if Instant::now() >= attempt_deadline && Instant::now() < self.deadline =>
+                    {
+                        break
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         }
     }
 }
