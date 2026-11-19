@@ -13,7 +13,7 @@ export function terminalSettingsDraftHasUnsavedChanges(
     || !sameStructuredValue(draft.workspaceKeymap, saved.workspaceKeymap);
 }
 
-function sameStructuredValue(left: unknown, right: unknown): boolean {
+export function sameStructuredValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     return Array.isArray(left)

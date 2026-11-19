@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { t } from "../../src/i18n";
 import {
-  filterSessionTree,
   flattenSessionTree,
   MAX_SESSION_PROFILE_GROUP_CHARACTERS,
   MAX_SESSION_PROFILE_NAME_CHARACTERS,
@@ -22,7 +21,7 @@ import {
   createTcpConnection,
 } from "../../src/session-profile-helpers";
 
-const sharedPagesAfterProtocol = ["terminal", "logs", "transfers", "triggers"];
+const sharedPagesAfterProtocol = ["terminal-appearance", "terminal-behavior", "logs", "transfers", "triggers"];
 const sshAuthPages = ["public-key", "password", "ssh-agent", "proxy", "verification"];
 
 describe("session settings navigation", () => {
@@ -46,35 +45,6 @@ describe("session settings navigation", () => {
     expect(flattenSessionTree(sessionSettingTrees.Serial)).toEqual(["session", "serial", ...sharedPagesAfterProtocol]);
     expect(protocolSettingsSection("Serial")).toBe("serial");
     expect(protocolSettingsSection("SSH")).toBe("SSH");
-  });
-
-  it("filters the session tree by visible labels without dropping parents", () => {
-    const tree = sessionSettingTrees.SSH;
-    const labels: Record<string, string> = {
-      session: "会话",
-      terminal: "终端",
-      logs: "日志",
-      triggers: "触发器",
-      transfers: "传输",
-      SSH: "SSH",
-      proxy: "代理",
-      verification: "验证",
-      "ssh-agent": "代理人",
-      password: "密码",
-      "public-key": "公钥",
-    };
-    const labelOf = (section: string) => labels[section] ?? section;
-
-    expect(flattenSessionTree(filterSessionTree(tree, "公钥", labelOf))).toEqual(["SSH", "public-key"]);
-    expect(flattenSessionTree(filterSessionTree(tree, "ssh", labelOf))).toEqual([
-      "SSH",
-      "public-key",
-      "password",
-      "ssh-agent",
-      "proxy",
-      "verification",
-    ]);
-    expect(filterSessionTree(tree, "不存在", labelOf)).toEqual([]);
   });
 
   it("does not expose duplicate or non-runtime settings", () => {

@@ -13,6 +13,7 @@ const checks = [
   ["terminal palettes, selection precedence and live color preview", "terminal-compat-check.mjs", "PORTMATE_UI_COLORS_ONLY", { PORTMATE_UI_PRODUCTION: "1", PORTMATE_UI_FORCE_WEBGL: "0" }],
   ["terminal palettes on WebGL (simulated driver)", "terminal-compat-check.mjs", "PORTMATE_UI_COLORS_ONLY", { PORTMATE_UI_PRODUCTION: "1", PORTMATE_UI_FORCE_WEBGL: "1" }],
   ["WebGL context lifecycle (simulated driver)", "terminal-compat-check.mjs", "PORTMATE_UI_RENDERER_LIFECYCLE_ONLY", { PORTMATE_UI_FORCE_WEBGL: "1", PORTMATE_UI_PRODUCTION: "0" }],
+  ["settings navigation and profile boundaries", "workspace-ui-check.mjs", "PORTMATE_UI_SETTINGS_NAVIGATION_ONLY"],
   ["background startup and SSH order", "workspace-ui-check.mjs", "PORTMATE_UI_STARTUP_PERF_ONLY"],
 ];
 for (const [label, script, flag, environment] of checks) {

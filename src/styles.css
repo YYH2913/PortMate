@@ -6112,8 +6112,23 @@ fieldset label {
   padding-top: 8px;
 }
 
+.settings-results { overflow: auto; min-height: 0; padding: 4px 6px; }
+.settings-results button { display: grid; gap: 3px; width: 100%; padding: 6px 9px; text-align: start; background: transparent; border: 0; color: var(--text); cursor: pointer; }
+.settings-results button:is(:hover, :focus-visible) { background: var(--panel); outline: 1px solid var(--cyan); outline-offset: -1px; }
+.settings-results small, .settings-scope-note, .session-settings-pane-title p { color: var(--muted); font-size: 12px; }
+.session-settings-pane-title p, .settings-scope-note { margin: 0; line-height: 1.5; }
+.session-settings-pane-title:has(p) { display: grid; gap: 4px; }
+.settings-discard { width: min(320px, calc(100% - 28px)); padding: 20px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.settings-discard::backdrop { background: rgb(4 8 14 / 65%); }
+.settings-discard h2 { margin: 0 0 18px; font-size: 16px; }
+.settings-discard > div { display: flex; justify-content: flex-end; gap: 8px; }
+.settings-discard button { padding: 6px 12px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.settings-discard button:focus-visible { outline: 2px solid var(--cyan); }
+:is(.session-settings-dialog, .terminal-settings-dialog) > .dialog-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.session-settings-dialog, .terminal-settings-dialog) > .dialog-title button { flex-shrink: 0; }
+
 /* Keep the sample and controls in separate, scrollable rows on short windows. */
-.session-settings-dialog[data-session-section="terminal"] > .session-form {
+.session-settings-dialog[data-session-section="terminal-appearance"] > .session-form {
   grid-auto-rows: max-content;
 }
 

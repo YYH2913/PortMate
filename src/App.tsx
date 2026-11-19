@@ -2348,12 +2348,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function openSessionSettingsFromContext(sessionId?: string | null) {
-    const session = contextSession(sessionId);
-    openSessionProfileDialog(
-      session?.profile ?? createSessionDraft(),
-      session?.profile ?? null,
-      "session",
-    );
+    const session = sessionsRef.current.find(item => item.profile.id === sessionId);
+    if (session) openSessionProfileDialog(session.profile, session.profile, "session");
   }
 
   async function writeSessionClipboardText(title: string, text: string) {
@@ -5150,13 +5146,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             onDraftChange={setDraft}
             onSave={saveDraft}
             onConnect={connectSavedDraft}
-            onOpenClientKeyManager={async () => {
-              const saved = await saveDraft();
-              if (saved) {
-                setDialog(null);
-                setUtilityDialog("keys");
-              }
-            }}
+            onOpenClientKeyManager={async () => { setUtilityDialog("keys"); }}
             onExportProfile={async () => {
               const json = serializePortMateProfileTransfer([draft]);
               const blob = new Blob([json], { type: "application/json" });

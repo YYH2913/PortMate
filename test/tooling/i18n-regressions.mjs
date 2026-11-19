@@ -76,6 +76,7 @@ export async function checkI18n(context, appUrl, screenshotPrefix = "/tmp/portma
     assert.equal(await flow.inputValue(), "hardware");
     await page.screenshot({ path: `${screenshotPrefix}-french-serial-settings.png`, fullPage: true });
     await sessionSettings.locator(".dialog-title button").click();
+    await sessionSettings.locator("dialog.settings-discard").getByRole("button", { name: await message("discard-changes") }).click();
     await sessionSettings.waitFor({ state: "detached" });
     await page.evaluate(async () => {
       const { updateSystemLanguage, setLanguagePreference } = await import("/src/i18n.ts");

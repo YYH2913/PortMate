@@ -28,14 +28,18 @@ import {
   workspaceKeymapConflicts,
 } from "./workspace-hotkeys";
 import type { WorkspaceHotkeyCommandId, WorkspaceKeymap } from "./workspace-hotkeys";
+import { DiscardSettingsPrompt, SettingsResults, navigateSettingsResults, useSettingsTarget } from "./SettingsNavigation";
+import { findSettings } from "./settings-navigation";
+import type { SettingsHit, FieldLabel } from "./settings-navigation";
 import LanguageSelector from "./LanguageSelector";
-import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { t, useLocale, localizeDiagnostic, setLanguagePreference, type LanguagePreference } from "./i18n";
 
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
 
 const terminalSettingPages = [
   "application",
+  "appearance",
   "keyboard-shortcuts",
   "mouse",
   "autocomplete",
@@ -78,7 +82,8 @@ export default function TerminalSettingsDialog({
   onWorkspaceKeymapChange: (keymap: WorkspaceKeymap) => void;
   onClose: () => void;
 }) {
-  const { locale } = useLocale();
+  const { locale, preference } = useLocale();
+  const [languageDraft, setLanguageDraft] = useState<LanguagePreference | null>(null);
   const [activeItem, setActiveItem] = useState("application");
   const [pageQuery, setPageQuery] = useState("");
   const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
@@ -89,21 +94,14 @@ export default function TerminalSettingsDialog({
   const directoryRequestGate = useRef(new KeyedRequestGate<"directory">());
   const updatePref = <K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]) => setPrefs((current) => ({ ...current, [key]: value }));
   const keymapConflictCount = workspaceKeymapConflicts(workspaceKeymapDraft).length;
-  const visiblePages = useMemo(() => {
-    const needle = pageQuery.trim().toLocaleLowerCase();
-    if (!needle) return [...terminalSettingPages];
-    return terminalSettingPages.filter((page) => t(page).toLocaleLowerCase().includes(needle));
-  }, [locale, pageQuery]);
-  const dirty = terminalSettingsDraftHasUnsavedChanges(
+  const { panel, focusHit } = useSettingsTarget();
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const hits = useMemo(() => findSettings(terminalSettingPages, pageQuery), [locale, pageQuery]);
+  function selectResult(hit: SettingsHit) { setActiveItem(hit.page); setPageQuery(""); focusHit(hit); }
+  const dirty = (languageDraft !== null && languageDraft !== preference) || terminalSettingsDraftHasUnsavedChanges(
     { prefs, syncSettings: syncDraft, workspaceKeymap: workspaceKeymapDraft },
     { prefs: initialPrefs, syncSettings, workspaceKeymap },
   );
-
-  useEffect(() => {
-    if (visiblePages.length && !visiblePages.includes(activeItem as typeof terminalSettingPages[number])) {
-      setActiveItem(visiblePages[0]);
-    }
-  }, [activeItem, visiblePages]);
 
   useEffect(() => () => {
     directoryRequestGate.current.invalidateAll();
@@ -132,6 +130,7 @@ export default function TerminalSettingsDialog({
     const normalizedPrefs = normalizePrefs(prefs);
     saveLocalValue("portmate.terminalPrefs", normalizedPrefs);
     saveLocalValue(WORKSPACE_KEYMAP_STORAGE_KEY, normalizedKeymap);
+    if (languageDraft !== null && languageDraft !== preference) setLanguagePreference(languageDraft);
     onPrefsChange(normalizedPrefs);
     onSyncSettingsChange(normalizeSyncInputSettings(syncDraft));
     onWorkspaceKeymapChange(normalizedKeymap);
@@ -139,8 +138,8 @@ export default function TerminalSettingsDialog({
   }
 
   function closeDialog() {
-    if (dirty && !window.confirm(t("terminal-settings-have-unsaved-changes-closing-will-discard-them"))) return;
-    onClose();
+    if (dirty) setConfirmDiscard(true);
+    else onClose();
   }
 
   return (
@@ -155,28 +154,29 @@ export default function TerminalSettingsDialog({
             aria-label={t("search-settings")}
             onChange={(event) => setPageQuery(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              navigateSettingsResults(event);
+              if (event.key === "Enter" && hits[0]) { event.preventDefault(); selectResult(hits[0]); }
               if (event.key === "Escape" && pageQuery) {
                 event.preventDefault();
+                event.stopPropagation();
                 setPageQuery("");
               }
             }}
           />
         </label>
-        <div className="settings-tabs" role="tablist" aria-label={t("terminal-settings-pages")}>
-          {visiblePages.length ? visiblePages.map((page) => (
-            <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>
-              {t(page)}
-            </button>
-          )) : (
-            <p className="settings-search-empty">{t("no-matching-settings")}</p>
-          )}
-        </div>
+        {pageQuery.trim() ? <SettingsResults hits={hits} onSelect={selectResult} /> :
+          <div className="settings-tabs" role="tablist" aria-label={t("terminal-settings-pages")}>
+            {terminalSettingPages.map(page => <button key={page} type="button" role="tab" aria-selected={activeItem === page} className={activeItem === page ? "active" : ""} onClick={() => setActiveItem(page)}>{t(page)}</button>)}
+          </div>}
       </nav>
-      <section className="settings-content" role="tabpanel">
+      <section ref={panel} tabIndex={-1} className="settings-content" role="tabpanel">
         <header className="session-settings-pane-title">
           <h2>{t(activeItem)}</h2>
         </header>
         <TerminalSettingsContent
+          language={languageDraft ?? preference}
+          onLanguageChange={setLanguageDraft}
           activeItem={activeItem}
           prefs={prefs}
           sessions={sessions}
@@ -204,11 +204,13 @@ export default function TerminalSettingsDialog({
           <button onClick={closeDialog}>{t("cancel")}</button>
         </div>
       </div>
+      {confirmDiscard && <DiscardSettingsPrompt onKeep={() => setConfirmDiscard(false)} onDiscard={onClose} />}
     </DialogFrame>
   );
 }
 
 function TerminalSettingsContent({
+  language, onLanguageChange,
   activeItem,
   prefs,
   sessions,
@@ -224,6 +226,8 @@ function TerminalSettingsContent({
   onExportDirectoryChange,
 }: {
   activeItem: string;
+  language: LanguagePreference;
+  onLanguageChange: (value: LanguagePreference) => void;
   prefs: TerminalPrefs;
   sessions: readonly SessionSummary[];
   workspaceKeymap: WorkspaceKeymap;
@@ -243,13 +247,13 @@ function TerminalSettingsContent({
       return (
         <>
           <SettingsSection title={t("interface-language")}>
-            <LanguageSelector />
-            <p className="dialog-note">{t("applies-immediately-to-all-windows-unsupported-languages-use-english")}</p>
+            <LanguageSelector value={language} onChange={onLanguageChange} />
+            <p className="dialog-note">{t("language-applies-after-save")}</p>
           </SettingsSection>
           <SettingsSection title={t("start")}>
-            <SettingRadio label={t("no-sessions-n")} checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
-            <SettingRadio label={t("previous-sessions-l")} checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
-            <SettingRadio label={t("specific-session-or-session-group-s")} checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
+            <SettingRadio labelKey="no-sessions-n" checked={prefs.startupMode === "none"} onChange={() => updatePref("startupMode", "none")} name="startup-mode" />
+            <SettingRadio labelKey="previous-sessions-l" checked={prefs.startupMode === "last"} onChange={() => updatePref("startupMode", "last")} name="startup-mode" />
+            <SettingRadio labelKey="specific-session-or-session-group-s" checked={prefs.startupMode === "specific"} onChange={() => updatePref("startupMode", "specific")} name="startup-mode" />
             {[0, 1, 2, 3].map((index) => (
               <SettingSelect
                 key={index}
@@ -267,7 +271,7 @@ function TerminalSettingsContent({
           </SettingsSection>
           <SettingsSection title={t("terminal-text-export")}>
             <SettingPath
-              label={t("default-directory")}
+              labelKey="default-directory"
               value={prefs.terminalTextExportDirectory}
               placeholder={t("portmate-default-exports-directory")}
               canBrowse={canChooseExportDirectory}
@@ -281,9 +285,9 @@ function TerminalSettingsContent({
     case "security":
       return (
         <SettingsSection title={t("security")}>
-          <SettingCheck label={t("lock-screen-after-idle-time")} checked={prefs.lockOnIdle} onChange={(value) => updatePref("lockOnIdle", value)} />
+          <SettingCheck labelKey="lock-screen-after-idle-time" checked={prefs.lockOnIdle} onChange={(value) => updatePref("lockOnIdle", value)} />
           <SettingInput
-            label={t("lock-timeout-minutes")}
+            labelKey="lock-timeout-minutes"
             type="number"
             value={prefs.lockScreenTimeoutMinutes}
             min={MIN_SCREEN_LOCK_TIMEOUT_MINUTES}
@@ -291,7 +295,7 @@ function TerminalSettingsContent({
             step={1}
             onChange={(value) => updatePref("lockScreenTimeoutMinutes", normalizeScreenLockTimeoutMinutes(value))}
           />
-          <SettingCheck label={t("lock-screen-on-startup")} checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
+          <SettingCheck labelKey="lock-screen-on-startup" checked={prefs.requireMasterPassword} onChange={(value) => updatePref("requireMasterPassword", value)} />
         </SettingsSection>
       );
     case "keyboard-shortcuts":
@@ -315,7 +319,7 @@ function TerminalSettingsContent({
             ))}
           </SettingsSection>
           <SettingsSection title={t("input-transformation")}>
-            <label className="setting-row">
+            <label className="setting-row" data-settings-key="newline-policy">
               <span>{t("newline-policy")}</span>
               <select value={syncSettings.newlineMode} onChange={(event) => onSyncSettingsChange({ ...syncSettings, newlineMode: event.target.value as SyncNewlineMode })}>
                 <option value="protocol">{t("protocol-default")}</option>
@@ -324,30 +328,34 @@ function TerminalSettingsContent({
                 <option value="crlf">CRLF</option>
               </select>
             </label>
-            <SettingInput label={t("delay-between-targets-ms")} type="number" value={syncSettings.delayMs} onChange={(value) => onSyncSettingsChange({ ...syncSettings, delayMs: Math.min(5000, Math.max(0, Math.trunc(Number(value) || 0))) })} />
-            <SettingInput label={t("batch-prefix")} value={syncSettings.prefix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, prefix: value.slice(0, 1024) })} />
-            <SettingInput label={t("batch-suffix")} value={syncSettings.suffix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, suffix: value.slice(0, 1024) })} />
+            <SettingInput labelKey="delay-between-targets-ms" type="number" value={syncSettings.delayMs} onChange={(value) => onSyncSettingsChange({ ...syncSettings, delayMs: Math.min(5000, Math.max(0, Math.trunc(Number(value) || 0))) })} />
+            <SettingInput labelKey="batch-prefix" value={syncSettings.prefix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, prefix: value.slice(0, 1024) })} />
+            <SettingInput labelKey="batch-suffix" value={syncSettings.suffix} onChange={(value) => onSyncSettingsChange({ ...syncSettings, suffix: value.slice(0, 1024) })} />
           </SettingsSection>
         </>
       );
+    case "appearance":
+      return <SettingsSection title={t("terminal-appearance")}>
+            <SettingCheck labelKey="multicolor-commands-and-output" checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
+        <p className="dialog-note">{t("global-colors-help")}</p>
+      </SettingsSection>;
     case "autocomplete":
       return (
         <>
           <SettingsSection title={t("completion")}>
-            <SettingCheck label={t("enable-autocomplete-a")} checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
-            <SettingCheck label={t("onekey-terminal-prompt-completion-k")} checked={prefs.oneKeyCompletionEnabled} onChange={(value) => updatePref("oneKeyCompletionEnabled", value)} />
+            <SettingCheck labelKey="enable-autocomplete-a" checked={prefs.completionEnabled} onChange={(value) => updatePref("completionEnabled", value)} />
+            <SettingCheck labelKey="onekey-terminal-prompt-completion-k" checked={prefs.oneKeyCompletionEnabled} onChange={(value) => updatePref("oneKeyCompletionEnabled", value)} />
             <div className="settings-subtitle">{t("autocomplete-sources")}</div>
-            <SettingCheck label={t("command-names-n")} checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
-            <SettingCheck label={t("command-options-o")} checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
-            <SettingCheck label={t("subcommands-and-arguments-p")} checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
-            <SettingCheck label={t("command-history-h")} checked={prefs.completionHistory} onChange={(value) => updatePref("completionHistory", value)} />
-            <SettingCheck label={t("quick-commands-q")} checked={prefs.completionQuickCommands} onChange={(value) => updatePref("completionQuickCommands", value)} />
-            <SettingSelect label={t("start-autocomplete-after-s")} value={String(prefs.completionTriggerChars)} options={[1, 2, 3].map(value => ({ value: String(value), label: t(value === 1 ? "1-character" : `${value}-characters`) }))} onChange={(value) => updatePref("completionTriggerChars", Number(value))} />
+            <SettingCheck labelKey="command-names-n" checked={prefs.completionCommandNames} onChange={(value) => updatePref("completionCommandNames", value)} />
+            <SettingCheck labelKey="command-options-o" checked={prefs.completionCommandOptions} onChange={(value) => updatePref("completionCommandOptions", value)} />
+            <SettingCheck labelKey="subcommands-and-arguments-p" checked={prefs.completionCommandArgs} onChange={(value) => updatePref("completionCommandArgs", value)} />
+            <SettingCheck labelKey="command-history-h" checked={prefs.completionHistory} onChange={(value) => updatePref("completionHistory", value)} />
+            <SettingCheck labelKey="quick-commands-q" checked={prefs.completionQuickCommands} onChange={(value) => updatePref("completionQuickCommands", value)} />
+            <SettingSelect labelKey="start-autocomplete-after-s" value={String(prefs.completionTriggerChars)} options={[1, 2, 3].map(value => ({ value: String(value), label: t(value === 1 ? "1-character" : `${value}-characters`) }))} onChange={(value) => updatePref("completionTriggerChars", Number(value))} />
           </SettingsSection>
           <SettingsSection title={t("appearance")}>
-            <SettingCheck label={t("multicolor-commands-and-output")} checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
-            <SettingSelect label={t("completion-list-height-h")} value={String(prefs.completionListHeight)} options={[5, 7, 10].map(value => ({ value: String(value), label: t(`${value}-rows`) }))} onChange={(value) => updatePref("completionListHeight", Number(value))} />
-            <SettingSelect label={t("preview-best-match-p")} value={prefs.completionPreviewMode} options={[{ value: "none", label: t("no-preview") }, { value: "input", label: t("input-field") }, { value: "top", label: t("top-of-list") }]} onChange={(value) => updatePref("completionPreviewMode", value)} />
+            <SettingSelect labelKey="completion-list-height-h" value={String(prefs.completionListHeight)} options={[5, 7, 10].map(value => ({ value: String(value), label: t(`${value}-rows`) }))} onChange={(value) => updatePref("completionListHeight", Number(value))} />
+            <SettingSelect labelKey="preview-best-match-p" value={prefs.completionPreviewMode} options={[{ value: "none", label: t("no-preview") }, { value: "input", label: t("input-field") }, { value: "top", label: t("top-of-list") }]} onChange={(value) => updatePref("completionPreviewMode", value)} />
           </SettingsSection>
         </>
       );
@@ -355,12 +363,12 @@ function TerminalSettingsContent({
       return (
         <>
           <SettingsSection title={t("capacity")}>
-            <SettingInput label={t("history-retention-days-d")} type="number" min={0} max={MAX_COMMAND_HISTORY_RETENTION_DAYS} step={1} value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
-            <SettingInput label={t("history-size-h")} type="number" min={1} max={MAX_COMMAND_HISTORY_LIMIT} step={1} value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
+            <SettingInput labelKey="history-retention-days-d" type="number" min={0} max={MAX_COMMAND_HISTORY_RETENTION_DAYS} step={1} value={prefs.historyRetentionDays} onChange={(value) => updatePref("historyRetentionDays", value)} />
+            <SettingInput labelKey="history-size-h" type="number" min={1} max={MAX_COMMAND_HISTORY_LIMIT} step={1} value={prefs.historyLimit} onChange={(value) => updatePref("historyLimit", value)} />
           </SettingsSection>
           <SettingsSection title={t("storage")}>
-            <SettingCheck label={t("save-command-history-to-disk-s")} checked={prefs.historyEnabled} onChange={(value) => updatePref("historyEnabled", value)} />
-            <SettingButtonRow label={t("saved-command-history")}>
+            <SettingCheck labelKey="save-command-history-to-disk-s" checked={prefs.historyEnabled} onChange={(value) => updatePref("historyEnabled", value)} />
+            <SettingButtonRow labelKey="saved-command-history">
               <button className="settings-secondary-button" type="button" onClick={onClearCommandHistory}>{t("clear-c")}</button>
             </SettingButtonRow>
           </SettingsSection>
@@ -369,8 +377,8 @@ function TerminalSettingsContent({
     case "mouse":
       return (
         <SettingsSection title={t("mouse")}>
-          <SettingCheck label={t("allow-terminal-applications-to-receive-mouse-events")} checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
-          <SettingCheck label={t("copy-on-selection")} checked={prefs.mouseCopyOnSelect} onChange={(value) => updatePref("mouseCopyOnSelect", value)} />
+          <SettingCheck labelKey="allow-terminal-applications-to-receive-mouse-events" checked={prefs.mouseReporting} onChange={(value) => updatePref("mouseReporting", value)} />
+          <SettingCheck labelKey="copy-on-selection" checked={prefs.mouseCopyOnSelect} onChange={(value) => updatePref("mouseCopyOnSelect", value)} />
         </SettingsSection>
       );
     default:
@@ -469,7 +477,7 @@ function WorkspaceKeymapSettings({
           const pendingBinding = capturePrefix?.commandId === command.id ? capturePrefix.binding : "";
           const formattedBinding = formatWorkspaceKeyBinding(keymap[command.id]);
           return (
-            <div key={command.id} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
+            <div key={command.id} data-settings-key={command.label} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
               <span className="workspace-keymap-command">
                 <strong>{t(command.label)}</strong>
                 {conflictLabels ? <small>{t("with")}{conflictLabels}{conflict?.kind === "prefix" ? t("prefix-conflict") : t("conflict")}</small> : invalid ? <small>{t("each-chord-requires-a-modifier-key")}</small> : null}
@@ -533,7 +541,8 @@ function DialogFrame({
   useLocale();
   return (
     <div className="dialog-backdrop">
-      <section className={`wind-dialog ${className}`}>
+      <section role="dialog" aria-modal="true" aria-label={title} className={`wind-dialog ${className}`}
+        onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
@@ -555,30 +564,33 @@ function SettingsSection({ title, children }: { title?: string; children: ReactN
   );
 }
 
-function SettingRadio({ label, checked, name, onChange }: { label: string; checked: boolean; name: string; onChange: () => void }) {
+function SettingRadio({ label: text, labelKey, checked, name, onChange }: FieldLabel & { checked: boolean; name: string; onChange: () => void }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="setting-radio">
+    <label className="setting-radio" data-settings-key={labelKey}>
       <input type="radio" name={name} checked={checked} onChange={onChange} />
       <span>{label}</span>
     </label>
   );
 }
 
-function SettingCheck({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+function SettingCheck({ label: text, labelKey, checked, onChange }: FieldLabel & { checked: boolean; onChange: (value: boolean) => void }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="setting-check">
+    <label className="setting-check" data-settings-key={labelKey}>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span>{label}</span>
     </label>
   );
 }
 
-function SettingInput({ label, value, type = "text", min, max, step, onChange }: { label: string; value: string | number; type?: string; min?: number; max?: number; step?: number; onChange: (value: string) => void }) {
+function SettingInput({ label: text, labelKey, value, type = "text", min, max, step, onChange }: FieldLabel & { value: string | number; type?: string; min?: number; max?: number; step?: number; onChange: (value: string) => void }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="setting-row">
+    <label className="setting-row" data-settings-key={labelKey}>
       <span>{label}</span>
       <input type={type} value={value} min={min} max={max} step={step} onChange={(event) => onChange(event.target.value)} />
     </label>
@@ -586,15 +598,14 @@ function SettingInput({ label, value, type = "text", min, max, step, onChange }:
 }
 
 function SettingPath({
-  label,
+  label: text, labelKey,
   value,
   placeholder,
   canBrowse,
   disabled,
   onBrowse,
   onChange,
-}: {
-  label: string;
+}: FieldLabel & {
   value: string;
   placeholder: string;
   canBrowse: boolean;
@@ -603,8 +614,9 @@ function SettingPath({
   onChange: (value: string) => void;
 }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="setting-row terminal-export-path-setting">
+    <label className="setting-row terminal-export-path-setting" data-settings-key={labelKey}>
       <span>{label}</span>
       <span className="setting-path-control">
         <input
@@ -631,10 +643,11 @@ function SettingPath({
 
 type SettingSelectOption = string | { value: string; label: string };
 
-function SettingSelect({ label, value, options, disabled = false, onChange }: { label: string; value: string; options: readonly SettingSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
+function SettingSelect({ label: text, labelKey, value, options, disabled = false, onChange }: FieldLabel & { value: string; options: readonly SettingSelectOption[]; disabled?: boolean; onChange: (value: string) => void }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="setting-row">
+    <label className="setting-row" data-settings-key={labelKey}>
       <span>{label}</span>
       <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => {
@@ -649,10 +662,11 @@ function SettingSelect({ label, value, options, disabled = false, onChange }: { 
   );
 }
 
-function SettingButtonRow({ label, children }: { label: string; children: ReactNode }) {
+function SettingButtonRow({ label: text, labelKey, children }: FieldLabel & { children: ReactNode }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <div className="setting-row">
+    <div className="setting-row" data-settings-key={labelKey}>
       <span>{label}</span>
       <div className="setting-row-actions">{children}</div>
     </div>

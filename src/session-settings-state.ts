@@ -14,7 +14,8 @@ export type QuickConnectField = "target" | "port" | "baudRate";
 export type QuickConnectIssue = { field: QuickConnectField; message: string };
 
 const sharedSessionTreeAfterProtocol: readonly SessionTreeNode[] = [
-  { label: "terminal" },
+  { label: "terminal-appearance" },
+  { label: "terminal-behavior" },
   { label: "logs" },
   { label: "transfers" },
   { label: "triggers" },
@@ -41,28 +42,6 @@ export function protocolSettingsSection(protocol: ProtocolTab): string {
 
 export function sessionSectionLabel(section: string): string {
   return t(section);
-}
-
-export function filterSessionTree(
-  tree: readonly SessionTreeNode[],
-  query: string,
-  labelOf: (section: string) => string = sessionSectionLabel,
-): SessionTreeNode[] {
-  const needle = query.trim().toLocaleLowerCase();
-  if (!needle) return tree.map((node) => ({ ...node, children: node.children ? [...node.children] : undefined }));
-  return tree.flatMap((node) => {
-    const selfMatches = labelOf(node.label).toLocaleLowerCase().includes(needle);
-    const matchingChildren = (node.children ?? []).filter((child) => (
-      selfMatches || labelOf(child).toLocaleLowerCase().includes(needle)
-    ));
-    if (selfMatches) {
-      return [{ label: node.label, children: node.children ? [...node.children] : undefined }];
-    }
-    if (matchingChildren.length) {
-      return [{ label: node.label, children: matchingChildren }];
-    }
-    return [];
-  });
 }
 
 export function validateQuickConnectProfile(

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import process from "node:process";
 import { chromium } from "playwright-core";
+import { checkSettingsNavigation } from "./settings-navigation-regressions.mjs";
 import { checkPacedSender } from "./paced-sender-regressions.mjs";
 import { checkHostScripts } from "./host-script-regressions.mjs";
 import { checkTerminalFontZoom } from "./terminal-font-zoom-regressions.mjs";
@@ -2012,6 +2013,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_SETTINGS_NAVIGATION_ONLY === "1") {
+    await checkSettingsNavigation(context, appUrl, screenshotPrefix);
+    console.log("Settings scopes, field search, draft actions and mobile layout passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SESSION_GROUPING_ONLY === "1") {
     await checkSessionExplorerGrouping(context, appUrl, screenshotPrefix);
     console.log("Explorer protocol grouping, persistent/cross-window preference, filtering and responsive six-language layout passed");
@@ -4925,7 +4932,7 @@ Host staging
 
   async function openTerminalSettings() {
     await page.locator(".menu-trigger", { hasText: "工具" }).click();
-    await page.locator(".menu-popover button", { hasText: "终端设置" }).click();
+    await page.locator(".menu-popover button", { hasText: "应用设置" }).click();
     await page.locator(".terminal-settings-dialog").waitFor();
   }
 
@@ -4940,6 +4947,7 @@ Host staging
     .evaluateAll((buttons) => buttons.map((button) => button.textContent?.trim()));
   assert(JSON.stringify(settingsPages) === JSON.stringify([
     "应用",
+    "外观",
     "快捷键",
     "鼠标",
     "自动补全",
@@ -5000,7 +5008,6 @@ Host staging
   assert(!settingsText.includes("语言:")
     && !settingsText.includes("窗口不透明度")
     && !settingsText.includes("显示关闭标签页确认")
-    && !settingsText.includes("外观")
     && !settingsText.includes("小部件")
     && !settingsText.includes("X Server"),
   `unimplemented application preferences are still visible: ${settingsText}`);
@@ -5089,47 +5096,23 @@ Host staging
   await page.screenshot({ path: `${screenshotPrefix}-terminal-export-settings-mobile.png`, fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await terminalExportDirectory.fill("/tmp/private-unsaved-terminal-export");
-  await page.evaluate(() => {
-    window.__terminalSettingsDiscardPrompts = [];
-    window.__originalTerminalSettingsConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__terminalSettingsDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
   await page.locator(".terminal-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
-  assert(await page.locator(".terminal-settings-dialog").isVisible()
-    && await terminalExportDirectory.inputValue() === "/tmp/private-unsaved-terminal-export",
-  "terminal settings discarded an unsaved path after close cancellation");
-  await page.evaluate(() => {
-    window.confirm = (message) => {
-      window.__terminalSettingsDiscardPrompts.push(String(message));
-      return true;
-    };
-  });
-  await page.getByRole("button", { name: "关闭终端设置", exact: true }).click();
-  await page.locator(".terminal-settings-dialog").waitFor({ state: "detached" });
-  const terminalSettingsDiscardState = await page.evaluate(() => {
-    const prompts = window.__terminalSettingsDiscardPrompts;
-    window.confirm = window.__originalTerminalSettingsConfirm;
-    return {
-      prompts,
-      savedPath: JSON.parse(localStorage.getItem("portmate.terminalPrefs")).terminalTextExportDirectory,
-    };
-  });
-  assert(terminalSettingsDiscardState.savedPath === "/tmp/portmate-terminal-text"
-    && terminalSettingsDiscardState.prompts.length === 2
-    && terminalSettingsDiscardState.prompts.every((prompt) => prompt.includes("未保存的更改"))
-    && terminalSettingsDiscardState.prompts.every((prompt) => !prompt.includes("private-unsaved-terminal-export")),
-  `terminal settings draft was persisted or exposed without confirmation: ${JSON.stringify(terminalSettingsDiscardState)}`);
+  const discardPrompt = page.locator("dialog.settings-discard");
+  assert(!(await discardPrompt.innerText()).includes("private-unsaved-terminal-export"), "confirmation disclosed draft contents");
+  await discardPrompt.getByRole("button", {name: "继续编辑"}).click();
+  assert(await terminalExportDirectory.inputValue() === "/tmp/private-unsaved-terminal-export", "keep editing discarded a draft");
+  await page.getByRole("button", { name: "关闭应用设置", exact: true }).click();
+  await discardPrompt.getByRole("button", {name: "放弃更改"}).click();
+  await page.locator(".terminal-settings-dialog").waitFor({state: "detached"});
+  assert(await page.evaluate(() => JSON.parse(localStorage.getItem("portmate.terminalPrefs")).terminalTextExportDirectory) === "/tmp/portmate-terminal-text", "discard persisted the draft");
 
   const expectedSessionPages = {
-    Shell: ["会话", "Shell", "终端", "日志", "传输", "触发器"],
-    SSH: ["会话", "SSH", "公钥", "密码", "代理人", "代理", "验证", "终端", "日志", "传输", "触发器"],
-    Tmux: ["会话", "Tmux", "公钥", "密码", "代理人", "代理", "验证", "终端", "日志", "传输", "触发器"],
-    Telnet: ["会话", "Telnet", "代理", "终端", "日志", "传输", "触发器"],
-    Tcp: ["会话", "Tcp", "代理", "终端", "日志", "传输", "触发器"],
-    Serial: ["会话", "串口", "终端", "日志", "传输", "触发器"],
+    Shell: ["会话", "Shell", "终端外观", "终端行为", "日志", "传输", "触发器"],
+    SSH: ["会话", "SSH", "公钥", "密码", "代理人", "代理", "验证", "终端外观", "终端行为", "日志", "传输", "触发器"],
+    Tmux: ["会话", "Tmux", "公钥", "密码", "代理人", "代理", "验证", "终端外观", "终端行为", "日志", "传输", "触发器"],
+    Telnet: ["会话", "Telnet", "代理", "终端外观", "终端行为", "日志", "传输", "触发器"],
+    Tcp: ["会话", "Tcp", "代理", "终端外观", "终端行为", "日志", "传输", "触发器"],
+    Serial: ["会话", "串口", "终端外观", "终端行为", "日志", "传输", "触发器"],
   };
   const protocolPageLabels = {
     Shell: "Shell",
@@ -5153,7 +5136,7 @@ Host staging
   assert(await createSessionDialog.getByRole("tab", { name: "Serial", exact: true }).getAttribute("aria-selected") === "true",
     "new session dialog did not select the draft protocol");
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "串口");
-  const quickConnectButton = createSessionDialog.getByRole("button", { name: "连接", exact: true });
+  const quickConnectButton = createSessionDialog.getByRole("button", { name: "保存并连接", exact: true });
   const quickSaveButton = createSessionDialog.getByRole("button", { name: "仅保存", exact: true });
   assert(await quickConnectButton.isDisabled() && !await quickSaveButton.isDisabled(),
     "incomplete quick session draft blocks saving or allows connecting");
@@ -5363,6 +5346,7 @@ Host staging
   `session settings dialog is not compact: ${JSON.stringify(sessionSettingsBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-session-settings.png`, fullPage: true });
   await page.locator(".session-settings-dialog .dialog-actions button", { hasText: "取消" }).click();
+  await page.locator("dialog.settings-discard").getByRole("button", { name: "放弃更改" }).click();
   await page.locator(".session-settings-dialog").waitFor({ state: "detached" });
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session", { hasText: "Bench UART" }).click();
@@ -5398,8 +5382,7 @@ Host staging
     await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
     const dialog = page.locator(".session-settings-dialog");
     await dialog.waitFor();
-    await dialog.getByRole("treeitem", { name: "终端", exact: true }).click();
-    const terminalBounds = await dialog.locator(".dialog-field").evaluateAll((fields) => Object.fromEntries(fields.flatMap((field) => {
+    const readBounds = () => dialog.locator(".dialog-field").evaluateAll((fields) => Object.fromEntries(fields.flatMap((field) => {
       const label = field.querySelector(":scope > span")?.textContent?.trim() ?? "";
       const input = field.querySelector("input");
       return input ? [[label, {
@@ -5408,7 +5391,10 @@ Host staging
         maxLength: input.getAttribute("maxlength"),
       }]] : [];
     })));
-    deepStrictEqual(terminalBounds, {
+    await dialog.getByRole("treeitem", { name: "终端行为", exact: true }).click();
+    const behavior = await readBounds();
+    await dialog.getByRole("treeitem", { name: "终端外观", exact: true }).click();
+    deepStrictEqual({ ...behavior, ...await readBounds() }, {
       "终端:(T)": { min: null, max: null, maxLength: "64" },
       "行:(R)": { min: "1", max: "512", maxLength: null },
       "列:(C)": { min: "1", max: "1024", maxLength: null },
@@ -9661,6 +9647,7 @@ Host staging
   await cancelDraftSecret.waitFor({ state: "visible" });
   await cancelledDraftSecretPage.waitForFunction(() => !document.querySelector(".session-settings-dialog .dialog-actions button:last-child")?.disabled);
   await cancelDraftSecret.click();
+  await cancelledDraftSecretDialog.locator("dialog.settings-discard").getByRole("button", { name: "放弃更改" }).click();
   await cancelledDraftSecretDialog.waitFor({ state: "detached" });
   const cancelledDraftSecretState = await cancelledDraftSecretPage.evaluate(() => ({
     retainedSecrets: Object.keys(window.__secrets),

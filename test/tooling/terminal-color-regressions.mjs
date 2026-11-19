@@ -110,14 +110,14 @@ export async function checkTerminalColors(page) {
   async function openTerminalSettings() {
     await page.locator(".menu-trigger", { hasText: "会话" }).click();
     await page.locator(".menu-popover button", { hasText: "会话设置" }).click();
-    await dialog.getByRole("treeitem", { name: "终端", exact: true }).click();
+    await dialog.getByRole("treeitem", { name: "终端外观", exact: true }).click();
     await preview.waitFor();
   }
   async function assertPreviewFits() {
     assert(await preview.evaluate(el => {
       const box = el.getBoundingClientRect();
       const sample = el.querySelector(".terminal-color-sample").getBoundingClientRect();
-      return sample.bottom <= box.bottom + 1 && el.nextElementSibling.getBoundingClientRect().top >= box.bottom - 1
+      return sample.bottom <= box.bottom + 1 && (!el.nextElementSibling || el.nextElementSibling.getBoundingClientRect().top >= box.bottom - 1)
         && box.width <= el.parentElement.clientWidth + 1;
     }), "the entire sample must fit its own row without clipping or covering the next setting");
   }

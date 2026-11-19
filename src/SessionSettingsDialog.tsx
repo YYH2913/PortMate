@@ -28,6 +28,10 @@ import { hostKeyProfileRequestKey } from "./host-key-profile-state";
 import { sshHealthProfileRequestKey } from "./ssh-health-profile-state";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import type { ProxyPasswordUpdate } from "./proxy-settings";
+import { DiscardSettingsPrompt, SettingsResults, navigateSettingsResults, useSettingsTarget } from "./SettingsNavigation";
+import { findSettings } from "./settings-navigation";
+import type { SettingsHit, FieldLabel } from "./settings-navigation";
+import { sameStructuredValue } from "./terminal-settings-draft-state";
 import TerminalColorPreview from "./TerminalColorPreview";
 import ShellArgumentsEditor from "./ShellArgumentsEditor";
 import {
@@ -46,7 +50,6 @@ import {
   chooseSshPrivateKeyPath,
 } from "./session-profile-helpers";
 import {
-  filterSessionTree,
   flattenSessionTree,
   MAX_SESSION_PROFILE_GROUP_CHARACTERS,
   MAX_SESSION_PROFILE_NAME_CHARACTERS,
@@ -133,6 +136,9 @@ export default function SessionSettingsDialog({
   const { locale } = useLocale();
   const [activeProtocol, setActiveProtocol] = useState<ProtocolTab>(() => protocolFromKind(draft.kind));
   const [activeSection, setActiveSection] = useState(initialSection);
+  const original = useRef(draft);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const { panel, focusHit } = useSettingsTarget();
   const [surface, setSurface] = useState<"quick" | "advanced">(() => (
     mode === "create" && initialSection === "session" ? "quick" : "advanced"
   ));
@@ -152,11 +158,12 @@ export default function SessionSettingsDialog({
   const quickTargetRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const sessionTree = sessionSettingTrees[activeProtocol];
   const allowedSections = useMemo(() => flattenSessionTree(sessionTree), [sessionTree]);
-  const visibleTree = useMemo(
-    () => filterSessionTree(sessionTree, sectionQuery, sessionSectionLabel),
-    [locale, sectionQuery, sessionTree],
-  );
-  const visibleSections = useMemo(() => flattenSessionTree(visibleTree), [visibleTree]);
+  const hits = useMemo(() => findSettings(allowedSections, sectionQuery), [allowedSections, locale, sectionQuery]);
+  function selectResult(hit: SettingsHit) {
+    setSectionQuery("");
+    setActiveSection(hit.page);
+    focusHit(hit);
+  }
   const quickValidation = useMemo(() => validateQuickConnectProfile(draft), [draft, locale]);
   const busy = writeBusy;
   const quickSurface = mode === "create" && surface === "quick";
@@ -194,16 +201,13 @@ export default function SessionSettingsDialog({
   }, [onRefreshSerialPorts]);
 
   useEffect(() => {
-    if (!allowedSections.includes(activeSection)) {
-      setActiveSection("session");
-      return;
-    }
-    if (visibleSections.length && !visibleSections.includes(activeSection)) {
-      setActiveSection(visibleSections[0]);
-    }
-  }, [activeSection, allowedSections, visibleSections]);
+    if (!allowedSections.includes(activeSection)) setActiveSection("session");
+  }, [activeSection, allowedSections]);
 
   useEffect(() => {
+    original.current = draft;
+    setProxyPasswordUpdates({});
+    setConfirmDiscard(false);
     writeGate.current.invalidateAll();
     setWriteBusy(false);
     void cleanupStagedSecrets();
@@ -287,7 +291,7 @@ export default function SessionSettingsDialog({
     return failures.length === 0;
   }
 
-  async function submit(connectAfterSave: boolean) {
+  async function submit(connectAfterSave: boolean, openKeys = false) {
     const token = beginWriteOperation();
     if (token === null) return;
     setSecretCleanupError("");
@@ -298,12 +302,25 @@ export default function SessionSettingsDialog({
       if (!cleaned || !writeGate.current.isCurrent("write", token)) return;
       onClose();
       if (connectAfterSave) onConnect(saved);
+      if (openKeys) await onOpenClientKeyManager?.();
     } finally {
       finishWriteOperation(token);
     }
   }
 
+  function requestClose() {
+    if (busy) return;
+    // Each protocol tab retains its draft. Returning to the original protocol
+    // must not silently discard edits made on a different tab when closing.
+    const otherProtocolEdited = [...connectionDrafts.current].some(([tab, connection]) => tab !== activeProtocol
+      && !sameStructuredValue(connection, convertDraftProtocol(original.current, tab).connection));
+    if (otherProtocolEdited || !sameStructuredValue(draft, original.current) || Object.keys(proxyPasswordUpdates).length || stagedSecretRefs.current.size) {
+      setConfirmDiscard(true);
+    } else void cancel();
+  }
+
   async function cancel() {
+    setConfirmDiscard(false);
     const token = beginWriteOperation();
     if (token === null) return;
     setSecretCleanupError("");
@@ -318,11 +335,11 @@ export default function SessionSettingsDialog({
 
   return (
     <DialogFrame
-      title={mode === "create" ? t("new-session") : t("session-settings")}
+      title={mode === "create" ? t("new-session") : `${t("session-settings")} · ${original.current.name || t("unnamed-session")}`}
       className={`session-settings-dialog ${mode === "create" ? "create-session-dialog" : "edit-session-dialog"} ${quickSurface ? "quick" : "advanced"}`}
       dataSessionProtocol={activeProtocol}
       dataSessionSection={activeSection}
-      onClose={() => void cancel()}
+      onClose={requestClose}
       closeDisabled={busy}
     >
       {quickSurface ? (
@@ -357,7 +374,9 @@ export default function SessionSettingsDialog({
             mode={mode}
             busy={busy}
             query={sectionQuery}
-            tree={visibleTree}
+            tree={sessionTree}
+            hits={hits}
+            onResult={selectResult}
             activeSection={activeSection}
             onQueryChange={setSectionQuery}
             onSelectSection={setActiveSection}
@@ -366,9 +385,10 @@ export default function SessionSettingsDialog({
               setSurface("quick");
             }}
           />
-          <section className="session-form" id="session-settings-panel" role="tabpanel" aria-label={sessionSectionLabel(activeSection)} inert={busy}>
+          <section ref={panel} tabIndex={-1} className="session-form" id="session-settings-panel" role="tabpanel" aria-label={sessionSectionLabel(activeSection)} inert={busy}>
             <header className="session-settings-pane-title">
               <h2>{sessionSectionLabel(activeSection)}</h2>
+              {activeSection === protocolSettingsSection(activeProtocol) && <p>{t("connection-changes-next-open")}</p>}
             </header>
             <SessionSettingsContent
               activeProtocol={activeProtocol}
@@ -389,7 +409,7 @@ export default function SessionSettingsDialog({
               onWriteFinish={finishWriteOperation}
               selectedIdentityId={selectedIdentityId}
               onSelectedIdentityIdChange={setSelectedIdentityId}
-              onOpenClientKeyManager={onOpenClientKeyManager}
+              onOpenClientKeyManager={onOpenClientKeyManager ? () => submit(false, true) : undefined}
             />
           </section>
         </>
@@ -406,21 +426,22 @@ export default function SessionSettingsDialog({
         </span>
         {mode === "create" ? (
           <>
-            <button type="button" className="session-cancel-button" onClick={() => void cancel()} disabled={busy}>{t("cancel")}</button>
+            <button type="button" className="session-cancel-button" onClick={requestClose} disabled={busy}>{t("cancel")}</button>
             <button type="button" className="session-save-button" onClick={() => void submit(false)} disabled={busy}>
               <Save size={15} />{t("save-only")}</button>
             <button type="button" className="session-connect-button" onClick={() => void submit(true)} disabled={busy || !quickValidation.valid}>
-              <PlugZap size={15} />{t("connect")}</button>
+              <PlugZap size={15} />{t("save-and-connect")}</button>
           </>
         ) : (
           <>
             {onExportProfile ? <button type="button" onClick={() => void onExportProfile()} disabled={busy}>{t("export-portable-profile")}</button> : null}
             <button onClick={() => void submit(false)} disabled={busy}>{t("save")}</button>
             <button onClick={() => void submit(true)} disabled={busy}>{t("save-and-connect")}</button>
-            <button onClick={() => void cancel()} disabled={busy}>{t("cancel")}</button>
+            <button onClick={requestClose} disabled={busy}>{t("cancel")}</button>
           </>
         )}
       </div>
+      {confirmDiscard && <DiscardSettingsPrompt onKeep={() => setConfirmDiscard(false)} onDiscard={() => void cancel()} />}
     </DialogFrame>
   );
 }
@@ -466,7 +487,7 @@ function SessionSettingsSidebar({
   mode,
   busy,
   query,
-  tree,
+  tree, hits, onResult,
   activeSection,
   onQueryChange,
   onSelectSection,
@@ -475,6 +496,8 @@ function SessionSettingsSidebar({
   mode: "create" | "edit";
   busy: boolean;
   query: string;
+  hits: SettingsHit[];
+  onResult: (hit: SettingsHit) => void;
   tree: readonly { label: string; children?: readonly string[] }[];
   activeSection: string;
   onQueryChange: (value: string) => void;
@@ -499,14 +522,18 @@ function SessionSettingsSidebar({
           aria-label={t("search-settings")}
           onChange={(event) => onQueryChange(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            navigateSettingsResults(event);
+            if (query.trim() && event.key === "Enter" && hits[0]) { event.preventDefault(); onResult(hits[0]); }
             if (event.key === "Escape" && query) {
               event.preventDefault();
+              event.stopPropagation();
               onQueryChange("");
             }
           }}
         />
       </label>
-      <nav className="session-settings-tree" role="tree" aria-label={t("session-settings-pages")}>
+      {query.trim() ? <SettingsResults hits={hits} onSelect={onResult} disabled={busy} /> : <nav className="session-settings-tree" role="tree" aria-label={t("session-settings-pages")}>
         {tree.length ? tree.map((node) => (
           <SessionTreeBranch
             key={node.label}
@@ -518,7 +545,7 @@ function SessionSettingsSidebar({
         )) : (
           <p className="settings-search-empty">{t("no-matching-settings")}</p>
         )}
-      </nav>
+      </nav>}
     </aside>
   );
 }
@@ -1074,21 +1101,21 @@ function SessionSettingsContent({
     return <SessionCommonOverviewFields draft={draft} onDraftChange={onDraftChange} />;
   }
 
-  if (activeSection === "terminal") {
+  if (activeSection === "terminal-appearance") {
     return (
       <>
-        <DialogField label={t("theme-m")}>
+        <DialogField labelKey="theme-m">
           <select value={normalizeTerminalTheme(draft.terminal.theme)} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, theme: event.target.value } })}>
             {TERMINAL_THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
           </select>
         </DialogField>
-        <DialogField label={t("font-f")}>
+        <DialogField labelKey="font-f">
           <input value={draft.terminal.fontFamily} maxLength={MAX_TERMINAL_FONT_FAMILY_CHARACTERS} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontFamily: event.target.value } })} />
         </DialogField>
-        <DialogField label={t("font-size-z")}>
+        <DialogField labelKey="font-size-z">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.fontSize.min} max={TERMINAL_PROFILE_BOUNDS.fontSize.max} step={1} value={draft.terminal.fontSize} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, fontSize: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label={t("background-opacity-o")}>
+        <DialogField labelKey="background-opacity-o">
           <div className="terminal-opacity-control">
             <input
               type="range"
@@ -1101,18 +1128,25 @@ function SessionSettingsContent({
             <output>{draft.terminal.backgroundOpacity ?? TERMINAL_PROFILE_BOUNDS.backgroundOpacity.fallback}%</output>
           </div>
         </DialogField>
+        <p className="settings-scope-note">{t(semanticHighlighting ? "global-colors-on" : "global-colors-off")}</p>
         <TerminalColorPreview settings={draft.terminal} semantic={semanticHighlighting} />
-        <DialogField label={t("terminal-t")}>
+      </>
+    );
+  }
+  if (activeSection === "terminal-behavior") {
+    return (
+      <>
+        <DialogField labelKey="terminal-t">
           <input value={draft.terminal.term} maxLength={MAX_TERMINAL_NAME_BYTES} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, term: event.target.value } })} />
         </DialogField>
-        <DialogField label={t("rows-r")}>
+        <DialogField labelKey="rows-r">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.rows.min} max={TERMINAL_PROFILE_BOUNDS.rows.max} step={1} value={draft.terminal.rows} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, rows: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label={t("columns-c")}>
+        <DialogField labelKey="columns-c">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.cols.min} max={TERMINAL_PROFILE_BOUNDS.cols.max} step={1} value={draft.terminal.cols} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, cols: Number(event.target.value) } })} />
         </DialogField>
         {draft.connection.kind === "serial" ? <p className="muted">{t("serial-uses-a-fixed-column-count-independent-of-window")}</p> : null}
-        <DialogField label={t("scrollback-s")}>
+        <DialogField labelKey="scrollback-s">
           <input type="number" min={TERMINAL_PROFILE_BOUNDS.scrollback.min} max={TERMINAL_PROFILE_BOUNDS.scrollback.max} step={1} value={draft.terminal.scrollback} onChange={(event) => onDraftChange({ ...draft, terminal: { ...draft.terminal, scrollback: Number(event.target.value) } })} />
         </DialogField>
       </>
@@ -1122,19 +1156,19 @@ function SessionSettingsContent({
   if (activeSection === "logs") {
     return (
       <>
-        <DialogField label={t("enabled-e")}>
+        <DialogField labelKey="enabled-e">
           <select value={draft.logging.enabled ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, enabled: event.target.value === "on" } })}>
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("raw-not-redacted-r")}>
+        <DialogField labelKey="raw-not-redacted-r">
           <select value={draft.logging.raw ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, raw: event.target.value === "on" } })}>
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("ui-text-t")}>
+        <DialogField labelKey="ui-text-t">
           <select value={draft.logging.text ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, text: event.target.value === "on" } })}>
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("close")}</option>
@@ -1146,16 +1180,16 @@ function SessionSettingsContent({
             <option value="off">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("sensitive-fields-s")}>
+        <DialogField labelKey="sensitive-fields-s">
           <select value={draft.logging.redactSecrets ? "redact" : "plain"} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, redactSecrets: event.target.value === "redact" } })}>
             <option value="redact">{t("hide-2")}</option>
             <option value="plain">{t("record-in-full")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("path-p")}>
+        <DialogField labelKey="path-p">
           <input value={draft.logging.pathTemplate} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, pathTemplate: event.target.value } })} />
         </DialogField>
-        <DialogField label={t("retention-days-d")}>
+        <DialogField labelKey="retention-days-d">
           <input type="number" min={0} max={3650} value={draft.logging.retentionDays ?? 0} onChange={(event) => onDraftChange({ ...draft, logging: { ...draft.logging, retentionDays: Math.min(3650, Math.max(0, Math.trunc(Number(event.target.value) || 0))) } })} />
         </DialogField>
       </>
@@ -1215,13 +1249,13 @@ function SessionCommonOverviewFields({
   }, [draft.id]);
   return (
     <>
-      <DialogField label={t("name-n")}>
+      <DialogField labelKey="name-n">
         <input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_NAME_CHARACTERS) })} />
       </DialogField>
-      <DialogField label={t("group-g")}>
+      <DialogField labelKey="group-g">
         <input value={draft.group} onChange={(event) => onDraftChange({ ...draft, group: normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_GROUP_CHARACTERS) })} placeholder={t("nested-group-a-b-c")} />
       </DialogField>
-      <DialogField label={t("tags-l")}>
+      <DialogField labelKey="tags-l">
         <input value={tagsText} onChange={(event) => {
           const nextText = normalizeSessionMetadataText(event.target.value, MAX_SESSION_PROFILE_TAG_INPUT_CHARACTERS);
           setTagsText(nextText);
@@ -1256,10 +1290,10 @@ function SessionTransferFields({
       <DialogToggleField label="XModem:" checked={draft.transfer.xmodem} onChange={(xmodem) => update({ xmodem })} />
       <DialogToggleField label="YModem:" checked={draft.transfer.ymodem} onChange={(ymodem) => update({ ymodem })} />
       <DialogToggleField label="ZModem:" checked={draft.transfer.zmodem} onChange={(zmodem) => update({ zmodem })} />
-      <DialogField label={t("rate-limit-b-s")}>
+      <DialogField labelKey="rate-limit-b-s">
         <input type="number" min={0} value={draft.transfer.rateLimitBytesPerSecond ?? 0} onChange={(event) => update({ rateLimitBytesPerSecond: Number(event.target.value) > 0 ? Number(event.target.value) : null })} />
       </DialogField>
-      <DialogField label={t("default-directory-d")}>
+      <DialogField labelKey="default-directory-d">
         <input value={draft.transfer.defaultLocalDir ?? ""} onChange={(event) => update({ defaultLocalDir: event.target.value || null })} />
       </DialogField>
     </>
@@ -1277,17 +1311,17 @@ function ShellProcessFields({
   const shell = draft.connection.kind === "shell" ? draft.connection : createShellConnection();
   return (
     <>
-      <DialogField label={t("program-p")}>
+      <DialogField labelKey="program-p">
         <input dir="ltr" value={shell.program} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, program: event.target.value } })} />
       </DialogField>
-      <div className="dialog-field shell-arguments-field">
+      <div className="dialog-field shell-arguments-field" data-settings-key="arguments-a">
         <span>{t("arguments-a")}</span>
         <ShellArgumentsEditor
           args={shell.args}
           onChange={(args) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, args } })}
         />
       </div>
-      <DialogField label={t("directory-w")}>
+      <DialogField labelKey="directory-w">
         <input dir="ltr" value={shell.cwd ?? ""} onChange={(event) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, cwd: event.target.value || null } })} />
       </DialogField>
       <ShellElevationField checked={shell.elevated === true} onChange={(elevated) => onDraftChange({ ...draft, kind: "shell", connection: { ...shell, elevated } })} />
@@ -1299,7 +1333,7 @@ function ShellElevationField({ checked, onChange }: { checked: boolean; onChange
   useLocale();
   const hintId = useId();
   return (
-    <div className="shell-elevation-field">
+    <div className="shell-elevation-field" data-settings-key="shell-elevation">
       <label>
         <input type="checkbox" checked={checked} aria-describedby={hintId} onChange={(event) => onChange(event.target.checked)} />
         <span>{t("shell-elevation")}</span>
@@ -1417,7 +1451,7 @@ function TriggerFields({ draft, onDraftChange }: { draft: SessionProfile; onDraf
           </section>
         );
       })}
-      <button type="button" className="trigger-add" disabled={!canAddTrigger(draft.triggers.length)} title={canAddTrigger(draft.triggers.length) ? t("add-trigger") : t("at-most-64-triggers-per-session")} onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />{t("add-trigger")}</button>
+      <button type="button" className="trigger-add" data-settings-key="add-trigger" disabled={!canAddTrigger(draft.triggers.length)} title={canAddTrigger(draft.triggers.length) ? t("add-trigger") : t("at-most-64-triggers-per-session")} onClick={() => setTriggers([...draft.triggers, createDefaultTrigger()])}><Plus size={14} />{t("add-trigger")}</button>
     </div>
   );
 }
@@ -1559,22 +1593,22 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label={t("host-h")}>
+        <DialogField labelKey="host-h">
           <input
             value={ssh.endpoint.host}
             onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, host: event.target.value } })}
           />
         </DialogField>
-        <DialogField label={t("username-u")}>
+        <DialogField labelKey="username-u">
           <input value={ssh.username} autoComplete="username" onChange={(event) => updateSsh({ username: event.target.value })} />
         </DialogField>
-        <DialogField label={t("port-p")}>
+        <DialogField labelKey="port-p">
           <input type="number" min={1} max={65535} value={ssh.endpoint.port} onChange={(event) => updateSsh({ endpoint: { ...ssh.endpoint, port: Number(event.target.value) } })} />
         </DialogField>
-        <DialogField label={t("alias-a")}>
+        <DialogField labelKey="alias-a">
           <input value={ssh.hostKeyPolicy.alias ?? ""} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, alias: event.target.value || null } } })} />
         </DialogField>
-        <DialogField label={t("ui-jump-host")} group>
+        <DialogField labelKey="ui-jump-host" group>
           <div className="jump-list">
             {ssh.jumps.map((jump, index) => {
               const policy = jump.hostKeyPolicy ?? createJumpHostKeyPolicy(jump);
@@ -1659,10 +1693,10 @@ function SshAdvancedFields({
             </button>
           </div>
         </DialogField>
-        <DialogToggleField label={t("ssh-keepalive")} checked={ssh.keepaliveEnabled} onChange={(keepaliveEnabled) => updateSsh({ keepaliveEnabled })} />
+        <DialogToggleField labelKey="ssh-keepalive" checked={ssh.keepaliveEnabled} onChange={(keepaliveEnabled) => updateSsh({ keepaliveEnabled })} />
         {ssh.keepaliveEnabled ? (
           <>
-            <DialogField label={t("probe-interval-s")}>
+            <DialogField labelKey="probe-interval-s">
               <input
                 type="number"
                 min={sshConnectionBounds.keepaliveIntervalSeconds.min}
@@ -1671,7 +1705,7 @@ function SshAdvancedFields({
                 onChange={(event) => updateSsh({ keepaliveIntervalSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label={t("unanswered-limit-0-no-automatic-disconnect")}>
+            <DialogField labelKey="unanswered-limit-0-no-automatic-disconnect">
               <input
                 type="number"
                 min={sshConnectionBounds.keepaliveMaxMissed.min}
@@ -1682,7 +1716,7 @@ function SshAdvancedFields({
             </DialogField>
           </>
         ) : null}
-        <DialogField label={t("ui-tcp-keepalive")}>
+        <DialogField labelKey="ui-tcp-keepalive">
           <select
             value={ssh.tcpKeepaliveEnabled === null ? "system" : ssh.tcpKeepaliveEnabled ? "enabled" : "disabled"}
             onChange={(event) => updateSsh({
@@ -1696,15 +1730,15 @@ function SshAdvancedFields({
             <option value="disabled">{t("close")}</option>
           </select>
         </DialogField>
-        <DialogToggleField label={t("auto-reconnect")} checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
+        <DialogToggleField labelKey="auto-reconnect" checked={ssh.reconnect} onChange={(reconnect) => updateSsh({ reconnect })} />
         <DialogToggleField
-          label={t("reconnect-ignore-host-key-changes")}
+          labelKey="reconnect-ignore-host-key-changes"
           checked={ssh.reconnectIgnoreHostKeyChanges === true}
           disabled={!ssh.reconnect}
           onChange={(reconnectIgnoreHostKeyChanges) => updateSsh({ reconnectIgnoreHostKeyChanges })}
         />
         <div className="session-identity-hint" role="note">{t("reconnect-ignore-host-key-changes-hint")}</div>
-        <DialogField label={t("reconnect-delay-ms")}>
+        <DialogField labelKey="reconnect-delay-ms">
           <input
             type="number"
             min={sshConnectionBounds.reconnectDelayMs.min}
@@ -1810,39 +1844,39 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label={t("ui-hostkey")}>
+        <DialogField labelKey="ui-hostkey">
           <select value={ssh.hostKeyPolicy.mode} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, mode: event.target.value as "strict" | "trust-on-first-use" | "ask-every-time" } } })}>
             <option value="strict">{t("ui-strict")}</option>
             <option value="trust-on-first-use">{t("ui-trust-on-first-use")}</option>
             <option value="ask-every-time">{t("ui-ask-every-time")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("rotation-r")}>
+        <DialogField labelKey="rotation-r">
           <select value={ssh.hostKeyPolicy.allowRotation ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, allowRotation: event.target.value === "on" } } })}>
             <option value="off">{t("block-changes")}</option>
             <option value="on">{t("allow-appending")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("verify-ip-i")}>
+        <DialogField labelKey="verify-ip-i">
           <select value={ssh.hostKeyPolicy.checkIp ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, checkIp: event.target.value === "on" } } })}>
             <option value="off">{t("close")}</option>
             <option value="on">{t("enabled")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("trust-scope-s")}>
+        <DialogField labelKey="trust-scope-s">
           <select value={ssh.hostKeyPolicy.trustScope} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, hostKeyPolicy: { ...ssh.hostKeyPolicy, trustScope: event.target.value as "profile" | "project" | "user" } } })}>
             <option value="profile">{t("ui-profile")}</option>
             <option value="project">{t("ui-project")}</option>
             <option value="user">{t("ui-user")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("scan-2")} group>
+        <DialogField labelKey="scan-2" group>
           <div className="inline-actions">
             <button type="button" onClick={() => void scanHostKey()} disabled={hostKeyBusy || writeBusy}>{hostKeyBusy ? t("scanning-2") : t("scan-host-key")}</button>
             <span>{hostKeyScan ? describeHostKeyEvaluation(hostKeyScan) : hostKeyStatus}</span>
           </div>
         </DialogField>
-        <DialogField label={t("health")} group>
+        <DialogField labelKey="health" group>
           <div className="inline-actions ssh-health-check">
             <button type="button" aria-label={t("check-ssh-health")} onClick={() => void checkHealth()} disabled={sshHealthBusy}>
               <Activity size={14} />{sshHealthBusy ? t("checking") : t("check-ssh-health")}
@@ -1853,7 +1887,7 @@ function SshAdvancedFields({
           </div>
         </DialogField>
         {hostKeyScan ? (
-          <DialogField label={t("action-2")} group>
+          <DialogField labelKey="action-2" group>
             <div className="inline-actions">
               <button type="button" onClick={() => void trustHostKey("append-to-profile")} disabled={hostKeyBusy || writeBusy}>{t("add-to-profile")}</button>
               <button type="button" onClick={() => void trustHostKey("replace-for-profile")} disabled={hostKeyBusy || writeBusy}>{t("replace-profile")}</button>
@@ -1867,19 +1901,19 @@ function SshAdvancedFields({
   if (section === "ssh-agent") {
     return (
       <>
-        <DialogField label={t("ui-agent-a")}>
+        <DialogField labelKey="ui-agent-a">
           <select value={ssh.agentPolicy.enabled ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, enabled: event.target.value === "on" } } })}>
             <option value="off">{t("disable")}</option>
             <option value="on">{t("enable")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("ui-forward-f")}>
+        <DialogField labelKey="ui-forward-f">
           <select value={ssh.agentPolicy.forwarding ? "on" : "off"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, forwarding: event.target.value === "on" } } })}>
             <option value="off">{t("disable")}</option>
             <option value="on">{t("enable")}</option>
           </select>
         </DialogField>
-        <DialogField label={t("ui-offer-o")}>
+        <DialogField labelKey="ui-offer-o">
           <select value={ssh.agentPolicy.offerMode} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, agentPolicy: { ...ssh.agentPolicy, offerMode: event.target.value as "disabled" | "after-profile-keys" | "before-profile-keys" } } })}>
             <option value="disabled">{t("ui-disabled")}</option>
             <option value="after-profile-keys">{t("ui-after-profile-keys")}</option>
@@ -1900,19 +1934,19 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label={t("password-reference")}>
+        <DialogField labelKey="password-reference">
           <div className="inline-actions">
             <input value={ssh.passwordSecretRef ?? ""} readOnly placeholder={t("not-saved")} />
             <button type="button" onClick={() => void deleteSavedSecret("passwordSecretRef")} disabled={!ssh.passwordSecretRef}>{t("delete")}</button>
           </div>
         </DialogField>
-        <DialogField label={t("passphrase-reference")}>
+        <DialogField labelKey="passphrase-reference">
           <div className="inline-actions">
             <input value={ssh.passphraseSecretRef ?? ""} readOnly placeholder={t("not-saved")} />
             <button type="button" onClick={() => void deleteSavedSecret("passphraseSecretRef")} disabled={!ssh.passphraseSecretRef}>{t("delete")}</button>
           </div>
         </DialogField>
-        <DialogField label={t("status-2")}>
+        <DialogField labelKey="status-2">
           <input value={secretStatus} readOnly placeholder={t("a-reference-is-created-when-you-select-save-in")} />
         </DialogField>
       </>
@@ -1988,7 +2022,7 @@ function SshAdvancedFields({
     };
     return (
       <>
-        <DialogField label={t("identity-i")}>
+        <DialogField labelKey="identity-i">
           <select value={ssh.identityPolicy.identitiesOnly ? "only" : "agent"} onChange={(event) => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, identitiesOnly: event.target.value === "only" } } })}>
             <option value="only">{t("ui-identitiesonly")}</option>
             <option value="agent">{t("ui-profile-agent")}</option>
@@ -1996,7 +2030,7 @@ function SshAdvancedFields({
         </DialogField>
         <SshAuthOrderEditor order={ssh.identityPolicy.authOrder} onChange={authOrder => onDraftChange({ ...draft, kind, connection: { ...ssh, kind, identityPolicy: { ...ssh.identityPolicy, authOrder, lastSuccessful: authOrder.includes(ssh.identityPolicy.lastSuccessful!) ? ssh.identityPolicy.lastSuccessful : null } } })} />
         <DialogToggleField
-          label={t("remember-successful-method-r")}
+          labelKey="remember-successful-method-r"
           checked={ssh.identityPolicy.recordSuccess}
           onChange={(recordSuccess) => onDraftChange({
             ...draft,
@@ -2012,7 +2046,7 @@ function SshAdvancedFields({
             },
           })}
         />
-        <DialogField label={t("public-key-k-client-identity")}>
+        <DialogField labelKey="public-key-k-client-identity">
           <select value={selectedIdentity.source} onChange={(event) => updateIdentity({ source: event.target.value as IdentityRef["source"], ...(event.target.value === "system-file" ? {} : { path: null }), ...(event.target.value === "profile-vault" ? {} : { secretRef: null }) })} disabled={selectedIdentityIndex < 0} aria-label={t("client-identity-source")}>
             <option value="system-file">{t("local-private-key-file")}</option>
             <option value="profile-vault">{t("ui-profile-vault-stronghold")}</option>
@@ -2041,29 +2075,29 @@ function SshAdvancedFields({
               setIdentityManagerBusy(true);
               try { await onOpenClientKeyManager(); } finally { setIdentityManagerBusy(false); }
             }} disabled={identityManagerBusy || writeBusy}>
-              {identityManagerBusy ? t("opening-identity-manager") : t("manage-client-identities")}
+              {identityManagerBusy ? t("opening-identity-manager") : t("save-manage-identities")}
             </button>
           ) : null}
         </div>
-        <DialogField label={t("name-n")}>
+        <DialogField labelKey="name-n">
           <input value={selectedIdentity.label} onChange={(event) => updateIdentity({ label: event.target.value })} disabled={selectedIdentityIndex < 0} />
         </DialogField>
-        <DialogField label={t("private-key-file-f")}>
+        <DialogField labelKey="private-key-file-f">
           <div className="inline-actions">
             <input value={selectedIdentity.path ?? ""} onChange={(event) => updateIdentity({ path: event.target.value || null, source: event.target.value ? "system-file" : selectedIdentity.source })} placeholder="~/.ssh/id_ed25519" disabled={selectedIdentity.source !== "system-file"} />
             <button type="button" onClick={() => void choosePrivateKey()} disabled={selectedIdentityIndex < 0} title={t("select-local-ssh-private-key-file")}>{t("select-2")}</button>
           </div>
         </DialogField>
-        <DialogField label={t("ui-vault-ref")}>
+        <DialogField labelKey="ui-vault-ref">
           <input value={selectedIdentity.secretRef ? t("securely-saved-in-stronghold") : ""} readOnly placeholder={t("no-private-key-saved")} />
         </DialogField>
         {selectedIdentity.source === "profile-vault" ? (
-          <DialogField label={t("private-key-content")}>
+          <DialogField labelKey="private-key-content">
             <textarea value={vaultPrivateKey} onChange={(event) => setVaultPrivateKey(event.target.value)} placeholder={t("paste-an-openssh-private-key-only-secretref-is-retained")} />
           </DialogField>
         ) : null}
         {selectedIdentity.source === "profile-vault" ? (
-          <DialogField label={t("vault")}>
+          <DialogField labelKey="vault">
             <div className="inline-actions">
               <button type="button" onClick={() => void saveVaultPrivateKey()} disabled={vaultBusy || writeBusy || !vaultPrivateKey.trim()}>{t("save-to-stronghold")}</button>
               <button type="button" onClick={() => void deleteVaultPrivateKey()} disabled={vaultBusy || !selectedIdentity.secretRef}>{t("delete")}</button>
@@ -2071,7 +2105,7 @@ function SshAdvancedFields({
             </div>
           </DialogField>
         ) : null}
-        <DialogField label={t("fingerprint-p")}>
+        <DialogField labelKey="fingerprint-p">
           <input value={selectedIdentity.fingerprintSha256 ?? ""} onChange={(event) => updateIdentity({ fingerprintSha256: event.target.value || null })} placeholder="SHA256:..." disabled={selectedIdentityIndex < 0} />
         </DialogField>
       </>
@@ -2098,25 +2132,25 @@ function ProxyAdvancedFields({
   const passwordPendingClear = passwordUpdate?.action === "clear";
   return (
     <>
-      <DialogToggleField label={t("enable-proxy")} checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
+      <DialogToggleField labelKey="enable-proxy" checked={proxy.enabled} onChange={(enabled) => update({ enabled })} />
       {proxy.enabled ? (
         <>
-          <DialogField label={t("protocol")}>
+          <DialogField labelKey="protocol">
             <select value={proxy.kind} onChange={(event) => update({ kind: event.target.value as ProxyConfig["kind"] })}>
               <option value="socks5">SOCKS5</option>
               <option value="http-connect">HTTP CONNECT</option>
             </select>
           </DialogField>
-          <DialogField label={t("proxy-host")}>
+          <DialogField labelKey="proxy-host">
             <input value={proxy.host} onChange={(event) => update({ host: event.target.value })} />
           </DialogField>
-          <DialogField label={t("proxy-port")}>
+          <DialogField labelKey="proxy-port">
             <input type="number" min={1} max={65535} value={proxy.port} onChange={(event) => update({ port: Number(event.target.value) })} />
           </DialogField>
-          <DialogField label={t("proxy-username")}>
+          <DialogField labelKey="proxy-username">
             <input value={proxy.username} autoComplete="username" onChange={(event) => update({ username: event.target.value })} />
           </DialogField>
-          <DialogField label={t("proxy-password")}>
+          <DialogField labelKey="proxy-password">
             <form className="proxy-password-control" onSubmit={(event) => event.preventDefault()}>
               <input type="text" name="username" autoComplete="username" value={proxy.username} readOnly hidden aria-hidden="true" tabIndex={-1} />
               <input
@@ -2172,14 +2206,14 @@ function TcpLikeAdvancedFields({
     });
     return (
       <>
-        <DialogField label={t("host-h")}>
+        <DialogField labelKey="host-h">
           <input value={tcp.host} onChange={(event) => updateTcp({ host: event.target.value })} />
         </DialogField>
-        <DialogField label={t("port-p")}>
+        <DialogField labelKey="port-p">
           <input type="number" min={1} max={65535} value={tcp.port} onChange={(event) => updateTcp({ port: Number(event.target.value) })} />
         </DialogField>
-        <DialogToggleField label={t("auto-reconnect")} checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
-        <DialogField label={t("reconnect-delay-ms")}>
+        <DialogToggleField labelKey="auto-reconnect" checked={tcp.reconnect} onChange={(reconnect) => updateTcp({ reconnect })} />
+        <DialogField labelKey="reconnect-delay-ms">
           <input
             type="number"
             min={tcpConnectionBounds.reconnectDelayMs.min}
@@ -2190,10 +2224,10 @@ function TcpLikeAdvancedFields({
             onChange={(event) => updateTcp({ reconnectDelayMs: Number(event.target.value) })}
           />
         </DialogField>
-        <DialogToggleField label={t("ui-tcp-keepalive")} checked={tcp.keepaliveEnabled} onChange={(keepaliveEnabled) => updateTcp({ keepaliveEnabled })} />
+        <DialogToggleField labelKey="ui-tcp-keepalive" checked={tcp.keepaliveEnabled} onChange={(keepaliveEnabled) => updateTcp({ keepaliveEnabled })} />
         {tcp.keepaliveEnabled ? (
           <>
-            <DialogField label={t("idle-time-s")}>
+            <DialogField labelKey="idle-time-s">
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveIdleSeconds.min}
@@ -2202,7 +2236,7 @@ function TcpLikeAdvancedFields({
                 onChange={(event) => updateTcp({ keepaliveIdleSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label={t("probe-interval-s")}>
+            <DialogField labelKey="probe-interval-s">
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveIntervalSeconds.min}
@@ -2211,7 +2245,7 @@ function TcpLikeAdvancedFields({
                 onChange={(event) => updateTcp({ keepaliveIntervalSeconds: Number(event.target.value) })}
               />
             </DialogField>
-            <DialogField label={t("failure-count")}>
+            <DialogField labelKey="failure-count">
               <input
                 type="number"
                 min={tcpConnectionBounds.keepaliveRetries.min}
@@ -2231,7 +2265,7 @@ function TcpLikeAdvancedFields({
         <DialogToggleField label="TLS/SSL:" checked={tcp.tlsEnabled} onChange={(tlsEnabled) => updateTcp({ tlsEnabled })} />
         {tcp.tlsEnabled ? (
           <>
-            <DialogField label={t("ui-tls-server-name")}>
+            <DialogField labelKey="ui-tls-server-name">
               <input
                 value={tcp.tlsServerName ?? ""}
                 placeholder={tcp.host}
@@ -2240,7 +2274,7 @@ function TcpLikeAdvancedFields({
               />
             </DialogField>
             <DialogToggleField
-              label={t("accept-invalid-certificates-unsafe")}
+              labelKey="accept-invalid-certificates-unsafe"
               checked={tcp.tlsAcceptInvalidCert}
               onChange={(tlsAcceptInvalidCert) => updateTcp({ tlsAcceptInvalidCert })}
             />
@@ -2274,7 +2308,7 @@ function SerialAdvancedFields({
 
   return (
     <>
-      <DialogField label={t("serial-port-s")}>
+      <DialogField labelKey="serial-port-s">
         <div className="serial-port-picker">
           <select value={serial.port} onChange={(event) => update({ port: event.target.value })}>
             <option value="">{serialPorts.length ? t("select-serial-port") : t("no-serial-ports-found")}</option>
@@ -2295,7 +2329,7 @@ function SerialAdvancedFields({
         </div>
       </DialogField>
       {serialPortsRefreshError ? <div className="serial-port-refresh-status" role="status">{localizeDiagnostic(serialPortsRefreshError)}</div> : null}
-      <DialogField label={t("baud-rate-b")}>
+      <DialogField labelKey="baud-rate-b">
         <input
           type="number"
           min={serialConnectionBounds.baudRate.min}
@@ -2309,7 +2343,7 @@ function SerialAdvancedFields({
           {COMMON_SERIAL_BAUD_RATES.map((baudRate) => <option key={baudRate} value={baudRate} />)}
         </datalist>
       </DialogField>
-      <DialogField label={t("data-bits-d")}>
+      <DialogField labelKey="data-bits-d">
         <select value={serial.dataBits} onChange={(event) => update({ dataBits: Number(event.target.value) })}>
           <option value={5}>5</option>
           <option value={6}>6</option>
@@ -2317,20 +2351,20 @@ function SerialAdvancedFields({
           <option value={8}>8</option>
         </select>
       </DialogField>
-      <DialogField label={t("stop-bits-s")}>
+      <DialogField labelKey="stop-bits-s">
         <select value={serial.stopBits} onChange={(event) => update({ stopBits: Number(event.target.value) })}>
           <option value={1}>1</option>
           <option value={2}>2</option>
         </select>
       </DialogField>
-      <DialogField label={t("parity-p")}>
+      <DialogField labelKey="parity-p">
         <select value={serial.parity} onChange={(event) => update({ parity: event.target.value })}>
           <option value="none">{t("none")}</option>
           <option value="odd">{t("odd")}</option>
           <option value="even">{t("even")}</option>
         </select>
       </DialogField>
-      <DialogField label={t("flow-control-f")}>
+      <DialogField labelKey="flow-control-f">
         <select value={serial.flowControl} onChange={(event) => update({ flowControl: event.target.value })}>
           <option value="none">{t("none")}</option>
           <option value="software">{t("software")}</option>
@@ -2349,8 +2383,8 @@ function SerialAdvancedFields({
           <option value="on">{t("enabled")}</option>
         </select>
       </DialogField>
-      <DialogToggleField label={t("auto-reconnect")} checked={serial.reconnect} onChange={(reconnect) => update({ reconnect })} />
-      <DialogField label={t("reconnect-delay-ms")}>
+      <DialogToggleField labelKey="auto-reconnect" checked={serial.reconnect} onChange={(reconnect) => update({ reconnect })} />
+      <DialogField labelKey="reconnect-delay-ms">
         <input
           type="number"
           min={serialConnectionBounds.reconnectDelayMs.min}
@@ -2361,9 +2395,9 @@ function SerialAdvancedFields({
           onChange={(event) => update({ reconnectDelayMs: Number(event.target.value) })}
         />
       </DialogField>
-      <DialogToggleField label={t("receive-idle-timeout")} checked={serial.receiveIdleTimeoutEnabled} onChange={(receiveIdleTimeoutEnabled) => update({ receiveIdleTimeoutEnabled })} />
+      <DialogToggleField labelKey="receive-idle-timeout" checked={serial.receiveIdleTimeoutEnabled} onChange={(receiveIdleTimeoutEnabled) => update({ receiveIdleTimeoutEnabled })} />
       {serial.receiveIdleTimeoutEnabled ? (
-        <DialogField label={t("idle-limit-s")}>
+        <DialogField labelKey="idle-limit-s">
           <input
             type="number"
             min={serialConnectionBounds.receiveIdleTimeoutSeconds.min}
@@ -2397,7 +2431,8 @@ function DialogFrame({
   useLocale();
   return (
     <div className="dialog-backdrop">
-      <section
+      <section role="dialog" aria-modal="true" aria-label={title}
+        onKeyDown={event => { if (!closeDisabled && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); onClose(); } }}
         className={`wind-dialog ${className}`}
         data-session-protocol={dataSessionProtocol}
         data-session-section={dataSessionSection}
@@ -2413,28 +2448,30 @@ function DialogFrame({
   );
 }
 
-function DialogField({ label, children, group = false }: { label: string; children: ReactNode; group?: boolean }) {
+function DialogField({ label: text, labelKey, children, group = false }: FieldLabel & { children: ReactNode; group?: boolean }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   if (group) {
     return (
-      <div className="dialog-field" role="group" aria-label={label}>
+      <div className="dialog-field" data-settings-key={labelKey ?? text} role="group" aria-label={label}>
         <span>{label}</span>
         {children}
       </div>
     );
   }
   return (
-    <label className="dialog-field">
+    <label className="dialog-field" data-settings-key={labelKey ?? text}>
       <span>{label}</span>
       {children}
     </label>
   );
 }
 
-function DialogToggleField({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
+function DialogToggleField({ label: text, labelKey, checked, onChange, disabled = false }: FieldLabel & { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
   useLocale();
+  const label = labelKey ? t(labelKey) : text;
   return (
-    <label className="dialog-field dialog-toggle-field">
+    <label className="dialog-field dialog-toggle-field" data-settings-key={labelKey ?? text}>
       <span>{label}</span>
       <button type="button" className={checked ? "switch-toggle on" : "switch-toggle"} onClick={() => onChange(!checked)} aria-pressed={checked} disabled={disabled}>
         <span />
