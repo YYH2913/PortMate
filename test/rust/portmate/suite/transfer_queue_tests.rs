@@ -803,3 +803,40 @@ fn local_copy_does_not_depend_on_remote_ssh_transfer_flags() {
         assert_eq!(request.destination, "output.bin");
     }
 }
+
+#[test]
+fn unknown_size_modem_progress_is_coalesced_without_losing_completion() {
+    tauri::async_runtime::block_on(async {
+        let root = canonical_test_tempdir();
+        let profile = test_shell_profile();
+        let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+        let task = test_transfer_task(&profile.id, TransferStatus::Running);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        let progress =
+            test_transfer_progress_context(&state, &task.id, Arc::new(AtomicBool::new(false)));
+        *progress.last_emit.lock().unwrap() = Instant::now() - Duration::from_secs(1);
+        progress.update(128, 0).await.unwrap();
+        progress.update(256, 0).await.unwrap();
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .bytes_done,
+            128
+        );
+        progress.update(256, 256).await.unwrap();
+        assert_eq!(
+            state
+                .store
+                .lock()
+                .unwrap()
+                .transfer_by_id(&task.id)
+                .unwrap()
+                .bytes_done,
+            256
+        );
+    });
+}

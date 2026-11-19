@@ -65,7 +65,10 @@ pub(super) fn record_transfer_progress(
     if task.status == TransferStatus::Cancelled {
         return Err(TRANSFER_CANCELLED_MESSAGE.to_string());
     }
-    if !matches!(task.status, TransferStatus::Queued | TransferStatus::Running) {
+    if !matches!(
+        task.status,
+        TransferStatus::Queued | TransferStatus::Running
+    ) {
         return Ok(task.clone());
     }
     task.bytes_done = bytes_done;
@@ -115,7 +118,9 @@ impl TransferProgressContext {
         self.throttle(bytes_done).await?;
         let should_emit = {
             let mut last_emit = self.last_emit.lock().map_err(|error| error.to_string())?;
-            if last_emit.elapsed() < Duration::from_millis(300) && bytes_done < bytes_total {
+            if last_emit.elapsed() < Duration::from_millis(300)
+                && (bytes_total == 0 || bytes_done < bytes_total)
+            {
                 false
             } else {
                 *last_emit = Instant::now();
