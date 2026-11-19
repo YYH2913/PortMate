@@ -1,4 +1,6 @@
 {
+  "native-message-7f20582e799b": "Impossible de fermer la source SFTP {0} : {1}",
+  "native-message-d20e021ea016": "Impossible de synchroniser le nouveau fichier SFTP {0} : {1}",
   "terminal-color-preview": "Aperçu des couleurs",
   "file-kind-file": "Fichier",
   "file-kind-symlink": "Lien symbolique",

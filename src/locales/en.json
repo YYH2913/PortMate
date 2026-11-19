@@ -1,4 +1,6 @@
 {
+  "native-message-7f20582e799b": "Could not close SFTP source {0}: {1}",
+  "native-message-d20e021ea016": "Could not flush newly created SFTP file {0}: {1}",
   "terminal-color-preview": "Color preview",
   "file-kind-file": "File",
   "file-kind-symlink": "Symbolic link",

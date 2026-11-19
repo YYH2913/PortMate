@@ -1,4 +1,6 @@
 {
+  "native-message-7f20582e799b": "No se pudo cerrar el origen SFTP {0}: {1}",
+  "native-message-d20e021ea016": "No se pudo sincronizar el nuevo archivo SFTP {0}: {1}",
   "terminal-color-preview": "Vista previa de colores",
   "file-kind-file": "Archivo",
   "file-kind-symlink": "Enlace simbólico",

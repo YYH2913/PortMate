@@ -1,5 +1,19 @@
 [
   {
+    "id": "native-message-7f20582e799b",
+    "source": "SFTP 关闭远端源文件失败 {0}: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
+    "id": "native-message-d20e021ea016",
+    "source": "SFTP 刷新新建远端文件失败 {0}: {1}",
+    "causeIndices": [
+      1
+    ]
+  },
+  {
     "id": "native-message-b4dc4b646ce8",
     "source": "目标目录路径已被非目录占用: {0}",
     "causeIndices": []

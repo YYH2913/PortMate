@@ -139,6 +139,11 @@ fn fully_resumed_sftp_download_probes_for_source_growth_before_commit() {
             if grown {
                 assert!(result.unwrap_err().contains("size mismatch"));
                 assert_eq!(fs::read(&target).unwrap(), b"old target");
+                assert_eq!(
+                    fs::read(local_resume_part_path(&target)).unwrap(),
+                    [1, 2],
+                    "never append the growth probe to a valid part"
+                );
             } else {
                 assert_eq!(result.unwrap(), 2);
                 assert_eq!(fs::read(&target).unwrap(), [1, 2]);

@@ -1,4 +1,6 @@
 {
+  "native-message-7f20582e799b": "Не удалось закрыть исходный файл SFTP {0}: {1}",
+  "native-message-d20e021ea016": "Не удалось синхронизировать новый файл SFTP {0}: {1}",
   "terminal-color-preview": "Предпросмотр палитры",
   "file-kind-file": "Файл",
   "file-kind-symlink": "Символическая ссылка",

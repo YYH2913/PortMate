@@ -191,3 +191,82 @@ fn libssh_idle_terminal_does_not_serialize_sftp_writes_on_poll_timeouts() {
     });
     sshd.stop();
 }
+
+#[test]
+fn libssh_denied_close_must_not_publish_an_upload() {
+    let _guard = shared_runtime_test_guard();
+    let Some(sshd_path) = openssh_test_server_path() else {
+        return;
+    };
+    let root = canonical_test_tempdir();
+    let key = root.path().join("key");
+    let host_key = root.path().join("host-key");
+    generate_ed25519_test_key(&key);
+    generate_ed25519_test_key(&host_key);
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = root.path().join("sshd_config");
+    write_openssh_test_config(
+        &config,
+        &host_key,
+        &root.path().join("pid"),
+        &key.with_extension("pub"),
+        port,
+    );
+    let text = fs::read_to_string(&config).unwrap().replace(
+        "Subsystem sftp internal-sftp",
+        "Subsystem sftp internal-sftp -P close",
+    );
+    fs::write(&config, text).unwrap();
+    let mut sshd = spawn_openssh_test_server(sshd_path, &config);
+    let profile = super::sftp_component_benchmarks::profile_for_backend(port, &key, "libssh");
+    let state = test_app_state(profile.clone(), root.path().join("store.sqlite3"));
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    fs::write(&source, b"local-only test payload").unwrap();
+    tauri::async_runtime::block_on(async {
+        wait_for_openssh_test_server(&mut sshd, port, "SFTP close regression").await;
+        open_ssh_session(&state, profile.clone(), None, None)
+            .await
+            .unwrap();
+        let auxiliary = ssh_auxiliary_lease(&state, &profile.id).unwrap();
+        let sftp = auxiliary.sftp().await.unwrap();
+        assert!(matches!(&*sftp, SftpBackendSession::Libssh(_)));
+        let task = test_transfer_task(&profile.id, TransferStatus::Running);
+        state.store.lock().unwrap().record_transfer(task.clone());
+        let progress =
+            test_transfer_progress_context(&state, &task.id, Arc::new(AtomicBool::new(false)));
+        let result = sftp_upload(
+            &sftp,
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+            &progress,
+        )
+        .await;
+        assert!(
+            result.is_err() && !target.exists(),
+            "failed CLOSE must not publish the target: {result:?}"
+        );
+        let local = root.path().join("download");
+        fs::write(&local, b"original").unwrap();
+        let result = sftp_download(
+            &sftp,
+            source.to_str().unwrap(),
+            local.to_str().unwrap(),
+            &progress,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(local).unwrap(),
+            b"original",
+            "failed source CLOSE must not replace the local destination"
+        );
+        drop(sftp);
+        drop(auxiliary);
+        close_session_inner(&state, profile.id).await.unwrap();
+    });
+}

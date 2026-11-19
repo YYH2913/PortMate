@@ -48,6 +48,7 @@ pub(super) async fn sftp_upload(
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
+        progress.check_cancelled()?;
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
         return Ok(copied);
     }
@@ -63,12 +64,13 @@ pub(super) async fn sftp_upload(
             if read == 0 {
                 break;
             }
+            let next = copied.saturating_add(read as u64);
+            ensure_transfer_not_oversized(next, total, "SFTP upload")?;
             remote_file
                 .write_all(&buffer[..read])
                 .await
                 .map_err(|error| format!("SFTP 写入远端文件失败 {temp_target}: {error}"))?;
-            copied += read as u64;
-            ensure_transfer_not_oversized(copied, total, "SFTP upload")?;
+            copied = next;
             progress.update(copied, total).await?;
         }
         ensure_exact_transfer_size(copied, total, "SFTP upload")?;
@@ -86,6 +88,7 @@ pub(super) async fn sftp_upload(
 
     match copy_result {
         Ok(copied) => {
+            progress.check_cancelled()?;
             sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
             Ok(copied)
         }
@@ -130,11 +133,12 @@ pub(super) async fn sftp_download(
         if read == 0 {
             break;
         }
+        let next = copied.saturating_add(read as u64);
+        ensure_transfer_not_oversized(next, total, "SFTP download")?;
         local_file
             .write_all(&buffer[..read])
             .map_err(|error| format!("写入本地目标文件失败 {}: {error}", temp_target.display()))?;
-        copied += read as u64;
-        ensure_transfer_not_oversized(copied, total, "SFTP download")?;
+        copied = next;
         progress.update(copied, total).await?;
     }
     ensure_exact_transfer_size(copied, total, "SFTP download")?;
@@ -142,8 +146,12 @@ pub(super) async fn sftp_download(
         .flush()
         .map_err(|error| format!("刷新本地目标文件失败 {}: {error}", temp_target.display()))?;
     drop(local_file);
+    remote_file
+        .shutdown()
+        .await
+        .map_err(|error| format!("SFTP 关闭远端源文件失败 {remote_source}: {error}"))?;
+    progress.check_cancelled()?;
     finalize_local_resume_file(&temp_target, &target)?;
-    let _ = remote_file.shutdown().await;
     Ok(copied)
 }
 
@@ -178,8 +186,12 @@ pub(super) async fn sftp_remote_copy(
         progress.update(copied, total).await?;
     }
     if total > 0 && copied == total {
+        source_file
+            .shutdown()
+            .await
+            .map_err(|error| format!("SFTP 关闭远端源文件失败 {remote_source}: {error}"))?;
+        progress.check_cancelled()?;
         sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
-        let _ = source_file.shutdown().await;
         return Ok(copied);
     }
     let mut target_file = sftp_open_resume_writer(sftp, &temp_target, copied).await?;
@@ -196,12 +208,13 @@ pub(super) async fn sftp_remote_copy(
             if read == 0 {
                 break;
             }
+            let next = copied.saturating_add(read as u64);
+            ensure_transfer_not_oversized(next, total, "SFTP remote copy")?;
             target_file
                 .write_all(&buffer[..read])
                 .await
                 .map_err(|error| format!("SFTP 写入远端目标文件失败 {temp_target}: {error}"))?;
-            copied += read as u64;
-            ensure_transfer_not_oversized(copied, total, "SFTP remote copy")?;
+            copied = next;
             progress.update(copied, total).await?;
         }
         ensure_exact_transfer_size(copied, total, "SFTP remote copy")?;
@@ -216,10 +229,13 @@ pub(super) async fn sftp_remote_copy(
         Ok(copied)
     }
     .await;
-    let _ = source_file.shutdown().await;
+    let source_close = source_file.shutdown().await;
 
     match copy_result {
         Ok(copied) => {
+            source_close
+                .map_err(|error| format!("SFTP 关闭远端源文件失败 {remote_source}: {error}"))?;
+            progress.check_cancelled()?;
             sftp_finalize_resume_file(sftp, &temp_target, &target).await?;
             Ok(copied)
         }

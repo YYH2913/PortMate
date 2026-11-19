@@ -1,4 +1,6 @@
 {
+  "native-message-7f20582e799b": "تعذّر إغلاق ملف مصدر SFTP ‏{0}: {1}",
+  "native-message-d20e021ea016": "تعذّرت مزامنة ملف SFTP الجديد ‏{0}: {1}",
   "terminal-color-preview": "معاينة الألوان",
   "file-kind-file": "ملف",
   "file-kind-symlink": "رابط رمزي",

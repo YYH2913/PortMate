@@ -415,6 +415,19 @@ impl SftpFile {
         }
     }
 
+    /// Close exactly once and report the server's status. libssh consumes the
+    /// file on both success and failure; Drop remains best-effort for abandonment.
+    pub fn close(mut self) -> std::io::Result<()> {
+        let file = std::mem::replace(&mut self.file_inner, std::ptr::null_mut());
+        let _session = self.sftp.sess.lock().unwrap();
+        // SAFETY: this owned handle was taken above, and the session is locked.
+        if unsafe { sys::sftp_close(file) } == sys::SSH_OK as i32 {
+            Ok(())
+        } else {
+            Err(io_err_from_sftp(self.sftp.sftp_inner, "close"))
+        }
+    }
+
     /// Retrieve metadata for the file
     pub fn metadata(&self) -> SshResult<Metadata> {
         let (_sess, file) = self.lock_session();

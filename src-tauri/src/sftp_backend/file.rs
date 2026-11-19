@@ -172,7 +172,9 @@ impl SftpBackendFile {
             Self::Russh(file) => {
                 let mut filled = 0;
                 while filled < buffer.len() {
-                    let read = file.read_pipelined(&mut buffer[filled..], SFTP_READ_WINDOW).await?;
+                    let read = file
+                        .read_pipelined(&mut buffer[filled..], SFTP_READ_WINDOW)
+                        .await?;
                     if read == 0 {
                         return Err(std::io::ErrorKind::UnexpectedEof.into());
                     }
@@ -254,16 +256,9 @@ impl SftpBackendFile {
                     file,
                     SSH_RUNTIME_OPERATION_TIMEOUT,
                     "libssh SFTP shutdown",
-                    |session, file, deadline| {
-                        let Some(mut file) = file.take() else {
-                            return Ok(());
-                        };
-                        file.flush()?;
-                        session
-                            .set_session_timeout_until(deadline)
-                            .map_err(std::io::Error::other)?;
-                        drop(file);
-                        Ok(())
+                    |_, file, _| match file.take() {
+                        Some(file) => file.close(),
+                        None => Ok(()),
                     },
                 )
                 .await

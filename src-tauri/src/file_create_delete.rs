@@ -41,6 +41,9 @@ pub(super) async fn file_operation_inner(
                         )
                         .await
                         .map_err(|error| format!("SFTP 新建远端文件失败 {path}: {error}"))?;
+                    file.flush()
+                        .await
+                        .map_err(|error| format!("SFTP 刷新新建远端文件失败 {path}: {error}"))?;
                     file.shutdown()
                         .await
                         .map_err(|error| format!("SFTP 关闭新建远端文件失败 {path}: {error}"))
