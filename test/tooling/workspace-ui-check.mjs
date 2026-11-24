@@ -17,6 +17,7 @@ import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkMcpHttpAddressSelection } from "./mcp-http-address-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 import { checkI18n } from "./i18n-regressions.mjs";
+import { checkWorkspaceInteractions } from "./workspace-interaction-regressions.mjs";
 import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
 import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
 import { checkWorkspaceDragOverflow } from "./workspace-drag-overflow-regressions.mjs";
@@ -27,6 +28,7 @@ import { checkStartupPerformance } from "./startup-performance-regressions.mjs";
 import { checkTunnelHelp } from "./tunnel-help-regressions.mjs";
 import { checkShellElevation } from "./shell-elevation-regressions.mjs";
 import { checkSessionExplorerGrouping } from "./session-explorer-grouping-regressions.mjs";
+import { respondAppConfirm, respondAppPrompt } from "./app-dialog-helpers.mjs";
 
 const chromeExecutable = process.env.PORTMATE_CHROME ?? "/usr/bin/google-chrome";
 const screenshotPrefix = process.env.PORTMATE_WORKSPACE_UI_SCREENSHOT_PREFIX
@@ -37,20 +39,19 @@ function assert(condition, message) {
 }
 
 async function closeMcpBridgeDiscardingDraft(page, dialogLocator) {
-  // Navigation cases intentionally discard an adapter-selected HTTP draft.
-  // Keep this listener scoped so other tests still exercise cancel/confirmation.
-  const discard = async dialog => {
-    if (dialog.type() === "confirm" && dialog.message().includes("MCP")
-      && dialog.message().includes("未保存")) await dialog.accept();
-    else await dialog.dismiss();
-  };
-  page.on("dialog", discard);
-  try {
-    await dialogLocator.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
-    await dialogLocator.waitFor({ state: "detached" });
-  } finally {
-    page.off("dialog", discard);
+  await dialogLocator.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  const confirmDialog = page.locator('.app-dialog[data-app-dialog="confirm"]');
+  const appeared = await confirmDialog.waitFor({ timeout: 1_500 }).then(() => true).catch(() => false);
+  if (appeared) {
+    const message = (await confirmDialog.locator(".app-dialog-message").textContent()) ?? "";
+    if (message.includes("MCP") && message.includes("未保存")) {
+      await confirmDialog.locator('button[type="submit"]').click();
+    } else {
+      await confirmDialog.locator('footer button[type="button"]').click();
+    }
+    await confirmDialog.waitFor({ state: "detached" });
   }
+  await dialogLocator.waitFor({ state: "detached" });
 }
 
 function protocolTabName(protocol) {
@@ -2013,6 +2014,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_WORKSPACE_INTERACTIONS_ONLY === "1") {
+    await checkWorkspaceInteractions(context, appUrl);
+    console.log("Workspace menus, dialogs, reconnect boundaries and detached exports passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_SETTINGS_NAVIGATION_ONLY === "1") {
     await checkSettingsNavigation(context, appUrl, screenshotPrefix);
     console.log("Settings scopes, field search, draft actions and mobile layout passed");
@@ -2164,6 +2171,7 @@ try {
     // not publish into the storage of the next independently initialized check.
     await Promise.all(context.pages().map(openPage => openPage.close()));
   };
+  await runAndRetirePages(checkWorkspaceInteractions);
   await runAndRetirePages(checkI18n);
   await runAndRetirePages(checkWorkspaceDragging, screenshotPrefix);
   await runAndRetirePages(checkWorkspaceDragOverflow);
@@ -2372,13 +2380,13 @@ try {
   "the popup takeover approval did not close through its modal boundary");
 
   const edgeTabLabel = page.locator('.workspace-pane-tab[data-view-id="view-edge"] .workspace-pane-tab-label');
-  await edgeTabLabel.dispatchEvent("auxclick", { button: 1 });
-  const middleClickRename = page.locator(".workspace-view-rename-dialog");
-  await middleClickRename.waitFor();
-  assert(await middleClickRename.getByLabel("会话名称", { exact: true }).inputValue() === "Edge Router",
-    "middle-clicking a workspace tab did not open its session rename dialog");
-  await middleClickRename.getByRole("button", { name: "取消", exact: true }).click();
-  await middleClickRename.waitFor({ state: "detached" });
+  await edgeTabLabel.dblclick();
+  const doubleClickRename = page.locator(".workspace-view-rename-dialog");
+  await doubleClickRename.waitFor();
+  assert(await doubleClickRename.getByLabel("会话名称", { exact: true }).inputValue() === "Edge Router",
+    "double-clicking a workspace tab did not open its session rename dialog");
+  await doubleClickRename.getByRole("button", { name: "取消", exact: true }).click();
+  await doubleClickRename.waitFor({ state: "detached" });
 
   await page.locator(".menu-trigger", { hasText: "会话" }).click();
   const sessionMenuState = await page.locator(".menu-popover button").evaluateAll((buttons) => Object.fromEntries(
@@ -2459,33 +2467,19 @@ Host staging
     && !(await openSshImportDialog.textContent()).includes("Host * 不是字面条目"),
   "OpenSSH config import preview did not apply safe Host * defaults to literal Host entries");
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import.png`, fullPage: true });
-  await page.evaluate(() => {
-    window.__sessionImportPrompts = [];
-    window.__originalSessionImportConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__sessionImportPrompts.push(String(message));
-      return false;
-    };
-  });
+  const sessionImportPrompts = [];
   await openSshImportDialog.getByRole("button", { name: "PuTTY", exact: true }).click();
+  sessionImportPrompts.push(await respondAppConfirm(page, false));
   await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
+  sessionImportPrompts.push(await respondAppConfirm(page, false));
   assert(await openSshConfigInput.inputValue().then((value) => value.includes("Host production"))
     && await openSshImportDialog.getByRole("button", { name: "OpenSSH", exact: true }).getAttribute("aria-pressed") === "true",
   "Session import discarded its OpenSSH draft after a cancelled switch or close");
-  await page.evaluate(() => {
-    window.confirm = (message) => {
-      window.__sessionImportPrompts.push(String(message));
-      return true;
-    };
-  });
   await openSshImportDialog.getByRole("button", { name: "PuTTY", exact: true }).click();
+  sessionImportPrompts.push(await respondAppConfirm(page, true));
   await openSshImportDialog.getByRole("textbox", { name: "PuTTY 配置内容", exact: true }).waitFor();
   await openSshImportDialog.getByRole("button", { name: "取消", exact: true }).click();
   await openSshImportDialog.waitFor({ state: "detached" });
-  const sessionImportPrompts = await page.evaluate(() => {
-    window.confirm = window.__originalSessionImportConfirm;
-    return window.__sessionImportPrompts;
-  });
   assert(sessionImportPrompts.length === 3
     && sessionImportPrompts[0].includes("切换格式")
     && sessionImportPrompts[1].includes("关闭窗口")
@@ -3569,23 +3563,23 @@ Host staging
     && !firstMenuText.includes("拆分为")
     && !firstMenuText.includes("选择分组"),
   `redundant context actions survived: ${firstMenuText}`);
-  assert(await page.locator(".portmate-context-menu .context-label", { hasText: /^水平拆分视图\(H\)$/ }).count() === 1,
+  assert(await page.locator(".portmate-context-menu .context-label", { hasText: /^水平拆分视图$/ }).count() === 1,
     "horizontal split appears more than once");
-  assert(await page.locator(".portmate-context-menu .context-label", { hasText: /^垂直拆分视图\(V\)$/ }).count() === 1,
+  assert(await page.locator(".portmate-context-menu .context-label", { hasText: /^垂直拆分视图$/ }).count() === 1,
     "vertical split appears more than once");
-  await page.locator(".context-menu-row", { hasText: "开启同步输入(S)" }).click();
+  await page.locator(".context-menu-row", { hasText: "开启同步输入" }).click();
   await page.locator(".sync-status.active").waitFor();
   await edge.click({ button: "right" });
-  assert(await page.locator(".context-menu-row", { hasText: "关闭同步输入(S)" }).count() === 1,
+  assert(await page.locator(".context-menu-row", { hasText: "关闭同步输入" }).count() === 1,
     "enabled synchronized input did not expose the inverse action");
-  await page.locator(".context-menu-row", { hasText: "关闭同步输入(S)" }).click();
+  await page.locator(".context-menu-row", { hasText: "关闭同步输入" }).click();
   await page.waitForFunction(() => !document.querySelector(".sync-status")?.classList.contains("active"));
   await page.evaluate(() => {
     window.__clipboardText = "clipboard-before-denial";
     window.__clipboardWriteFailures = 1;
   });
   await edge.click({ button: "right" });
-  await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
+  await page.locator(".context-menu-row", { hasText: "复制会话名称" }).click();
   const sessionNameClipboardError = page.locator(".notice-dialog", { hasText: "复制会话名称失败" });
   await sessionNameClipboardError.waitFor();
   assert(await sessionNameClipboardError.locator(".notice-content").textContent() === "simulated clipboard denial"
@@ -3593,12 +3587,12 @@ Host staging
   "resource session name copy did not report a clipboard write failure");
   await sessionNameClipboardError.getByRole("button", { name: "确定", exact: true }).click();
   await edge.click({ button: "right" });
-  await page.locator(".context-menu-row", { hasText: "复制会话名称(N)" }).click();
+  await page.locator(".context-menu-row", { hasText: "复制会话名称" }).click();
   assert(await page.evaluate(() => window.__clipboardText) === "Edge Router",
     "resource context menu targeted a different session");
   await page.evaluate(() => { window.__clipboardWriteFailures = 1; });
   await edge.click({ button: "right" });
-  await page.locator(".context-menu-row", { hasText: "复制会话 URL(U)" }).click();
+  await page.locator(".context-menu-row", { hasText: "复制会话 URL" }).click();
   const sessionUrlClipboardError = page.locator(".notice-dialog", { hasText: "复制会话 URL失败" });
   await sessionUrlClipboardError.waitFor();
   assert(await sessionUrlClipboardError.locator(".notice-content").textContent() === "simulated clipboard denial",
@@ -4007,17 +4001,10 @@ Host staging
     "file manager did not begin from a cross-platform home path");
   const initialLocalPane = leftDock.locator('.file-browser-pane[data-file-pane="local"]');
   const homeCreateCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
-  await page.evaluate(() => {
-    window.__originalPrompt = window.prompt;
-    window.prompt = () => "home-note.txt";
-  });
   await initialLocalPane.getByRole("button", { name: "新建文件", exact: true }).click();
+  await respondAppPrompt(page, "home-note.txt");
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "create_file").length === count + 1, homeCreateCallsBefore);
   const homeCreateRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").at(-1)?.args.request);
-  await page.evaluate(() => {
-    window.prompt = window.__originalPrompt;
-    delete window.__originalPrompt;
-  });
   assert(homeCreateRequest?.path === "~/home-note.txt" && homeCreateRequest?.remote === false,
     `home file creation did not preserve the portable path: ${JSON.stringify(homeCreateRequest)}`);
   const homeListCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => (
@@ -4194,18 +4181,11 @@ Host staging
 
   const moveCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "move_paths").length);
   await localFilePane.locator(".file-row", { hasText: "FAST-RESULT" }).click();
-  await page.evaluate(() => {
-    window.__originalPrompt = window.prompt;
-    window.prompt = () => "/portmate-target ";
-  });
   await openFileActionOverflow();
   await localFilePane.getByRole("button", { name: "移动到...", exact: true }).click();
+  await respondAppPrompt(page, "/portmate-target ");
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "move_paths").length === count + 1, moveCallsBefore);
   const moveRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "move_paths").at(-1)?.args.request);
-  await page.evaluate(() => {
-    window.prompt = window.__originalPrompt;
-    delete window.__originalPrompt;
-  });
   assert(moveRequest?.destination === "/portmate-target "
     && JSON.stringify(moveRequest?.paths) === JSON.stringify(["/portmate-fast/FAST-RESULT"])
     && moveRequest?.remote === false
@@ -4213,17 +4193,10 @@ Host staging
   `Move To did not target the selected local item: ${JSON.stringify(moveRequest)}`);
 
   const newFileCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").length);
-  await page.evaluate(() => {
-    window.__originalPrompt = window.prompt;
-    window.prompt = () => " workspace-note.txt ";
-  });
   await localFilePane.getByRole("button", { name: "新建文件", exact: true }).click();
+  await respondAppPrompt(page, " workspace-note.txt ");
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "create_file").length === count + 1, newFileCallsBefore);
   const newFileRequest = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "create_file").at(-1)?.args.request);
-  await page.evaluate(() => {
-    window.prompt = window.__originalPrompt;
-    delete window.__originalPrompt;
-  });
   assert(newFileRequest?.path === "/portmate-fast/ workspace-note.txt "
     && newFileRequest?.remote === false
     && newFileRequest?.sessionId === "edge-router",
@@ -4249,27 +4222,21 @@ Host staging
   await localFilePane.locator(".file-row", { hasText: "DELETE-TWO" }).click({ modifiers: ["Control"] });
   const deleteCallsBefore = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_paths").length);
   await page.evaluate(() => {
-    window.__originalConfirm = window.confirm;
-    window.__fileDeleteConfirmCalls = 0;
     window.__deferFileMutations = true;
-    window.confirm = () => {
-      window.__fileDeleteConfirmCalls += 1;
-      return true;
-    };
   });
   const deleteButton = localFilePane.getByRole("button", { name: "删除", exact: true });
   await deleteButton.evaluate((button) => {
     button.click();
     button.click();
   });
+  await respondAppConfirm(page, true);
   await page.waitForFunction((count) => window.__invokeCalls.filter((call) => call.command === "delete_paths").length === count + 1, deleteCallsBefore);
   await page.waitForFunction(() => window.__pendingFileMutations.length === 1);
   const pendingDeleteState = await page.evaluate(() => ({
-    confirms: window.__fileDeleteConfirmCalls,
     pending: window.__pendingFileMutations.map((request) => request.command),
     request: window.__pendingFileMutations[0]?.args.request,
   }));
-  assert(pendingDeleteState.confirms === 1
+  assert(await page.locator('.app-dialog[data-app-dialog="confirm"]').count() === 0
     && JSON.stringify(pendingDeleteState.pending) === JSON.stringify(["delete_paths"])
     && await deleteButton.isDisabled()
     && await localFilePath.isDisabled()
@@ -4288,10 +4255,6 @@ Host staging
       && pane?.querySelector('[aria-label="本地路径"]')?.disabled === false;
   });
   const deleteRequest = pendingDeleteState.request;
-  await page.evaluate(() => {
-    window.confirm = window.__originalConfirm;
-    delete window.__originalConfirm;
-  });
   assert(JSON.stringify(deleteRequest?.paths) === JSON.stringify([
     "/portmate-delete/DELETE-ONE",
     "/portmate-delete/DELETE-TWO",
@@ -4422,9 +4385,9 @@ Host staging
 
   const historyFilter = page.getByRole("textbox", { name: "筛选历史命令", exact: true });
   await historyFilter.fill("COMPOSE UP");
-  assert(await page.locator(".history-list button").count() === 1,
+  assert(await page.locator(".history-list .history-entry-pick").count() === 1,
     "history filter did not normalize case and multiline whitespace");
-  await page.locator(".history-list button").click();
+  await page.locator(".history-list .history-entry-pick").click();
   const historyFreeInput = page.getByRole("textbox", { name: "自由输入内容", exact: true });
   await historyFreeInput.waitFor();
   assert(await historyFreeInput.inputValue() === "docker compose\nup -d",
@@ -4590,7 +4553,7 @@ Host staging
     recordCalls: window.__invokeCalls.filter((call) => call.command === "record_command_history").length,
     local: localStorage.getItem("portmate.commandHistory"),
   }));
-  const historyRowsBeforeInvalid = await page.locator(".history-list button").allTextContents();
+  const historyRowsBeforeInvalid = await page.locator(".history-list .history-entry-pick").allTextContents();
   for (const invalidCommand of ["bad\0command", "界".repeat(8_193)]) {
     await sender.getByRole("textbox", { name: "发送文本", exact: true }).evaluate((textarea, value) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
@@ -4606,7 +4569,7 @@ Host staging
     recordCalls: window.__invokeCalls.filter((call) => call.command === "record_command_history").length,
     local: localStorage.getItem("portmate.commandHistory"),
   }));
-  const historyRowsAfterInvalid = await page.locator(".history-list button").allTextContents();
+  const historyRowsAfterInvalid = await page.locator(".history-list .history-entry-pick").allTextContents();
   assert(JSON.stringify(invalidHistoryResult) === JSON.stringify(invalidHistoryBaseline)
     && JSON.stringify(historyRowsAfterInvalid) === JSON.stringify(historyRowsBeforeInvalid),
   `invalid commands reached command history state or persistence: ${JSON.stringify({
@@ -5570,7 +5533,7 @@ Host staging
     && !detachedRuntimeHealth.text.includes("Invalid Date")
     && !detachedRuntimeHealth.text.includes("\n")
     && detachedRuntimeHealth.live === "polite"
-    && detachedRuntimeHealth.indicatorColor === "rgb(248, 113, 113)"
+    && detachedRuntimeHealth.indicatorColor === "rgb(244, 184, 96)"
     && detachedRuntimeHealth.indicatorWidth === "7px"
     && detachedRuntimeHealth.indicatorHeight === "7px",
   `detached terminal did not normalize its runtime health: ${JSON.stringify({ detachedHealth, detachedRuntimeHealth })}`);
@@ -6000,12 +5963,11 @@ Host staging
   const serialExportButton = serialAnalyzerPage.getByRole("button", { name: "导出筛选串口帧", exact: true });
   await serialAnalyzerPage.evaluate(() => {
     window.__deferSerialCaptureOperations = true;
-    window.__serialAnalyzerOriginalConfirm = window.confirm;
-    window.confirm = () => true;
     const button = document.querySelector('[aria-label="清空串口捕获"]');
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
+  await respondAppConfirm(serialAnalyzerPage, true);
   await serialAnalyzerPage.waitForFunction(() => window.__pendingSerialCaptureOperations.length === 1);
   const serialListCallsDuringClear = await serialAnalyzerPage.evaluate(() => (
     window.__invokeCalls.filter((call) => call.command === "list_serial_capture").length
@@ -6069,7 +6031,6 @@ Host staging
   await serialAnalyzerPage.evaluate(() => {
     window.__pendingSerialCaptureOperations.shift().resolve();
     window.__deferSerialCaptureOperations = false;
-    window.confirm = window.__serialAnalyzerOriginalConfirm;
   });
   await serialAnalyzerPage.locator(".serial-analyzer-footer", { hasText: "/tmp/portmate-serial-capture.txt" }).waitFor();
   await serialAnalyzerPage.evaluate(() => { window.__deferSessionLists = true; });
@@ -6109,23 +6070,20 @@ Host staging
     "custom script manager can run a stale saved body while the editor has unsaved changes");
   assert(await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).isEnabled(),
     "custom script refresh must remain available to recover from concurrent save conflicts");
-  await page.evaluate(() => {
-    window.__customScriptDiscardPrompts = [];
-    window.__originalCustomScriptConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__customScriptDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
+  const customScriptDiscardPrompts = [];
   await customScriptDialog.getByRole("button", { name: "关闭自定义脚本", exact: true }).click();
+  customScriptDiscardPrompts.push(await respondAppConfirm(page, false));
   await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).click();
+  customScriptDiscardPrompts.push(await respondAppConfirm(page, false));
   await customScriptDialog.getByRole("button", { name: "添加自定义脚本", exact: true }).click();
+  customScriptDiscardPrompts.push(await respondAppConfirm(page, false));
   await customScriptDialog.getByRole("option", { name: /Inspect service/ }).click();
-  const retainedCustomScriptDraft = await page.evaluate(() => ({
-    prompts: window.__customScriptDiscardPrompts,
+  customScriptDiscardPrompts.push(await respondAppConfirm(page, false));
+  const retainedCustomScriptDraft = await page.evaluate((prompts) => ({
+    prompts,
     dialogVisible: Boolean(document.querySelector(".custom-script-dialog")),
     body: document.querySelector('[aria-label="脚本正文"]')?.value,
-  }));
+  }), customScriptDiscardPrompts);
   assert(retainedCustomScriptDraft.dialogVisible
     && retainedCustomScriptDraft.body === "systemctl status portmate\nwhoami"
     && retainedCustomScriptDraft.prompts.length === 4
@@ -6134,9 +6092,6 @@ Host staging
     && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("新建脚本"))
     && retainedCustomScriptDraft.prompts.some((prompt) => prompt.includes("切换脚本")),
   `custom script draft was discarded without confirmation: ${JSON.stringify(retainedCustomScriptDraft)}`);
-  await page.evaluate(() => {
-    window.confirm = window.__originalCustomScriptConfirm;
-  });
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
   await page.waitForFunction(() => window.__invokeCalls.filter((call) => call.command === "save_custom_script").length === 1);
   assert(!await customScriptDialog.getByRole("button", { name: "运行自定义脚本", exact: true }).isDisabled(),
@@ -6260,30 +6215,17 @@ Host staging
   await customScriptDialog.getByRole("button", { name: "保存自定义脚本", exact: true }).click();
   await customScriptDialog.getByRole("alert").filter({ hasText: "changed in another window" }).waitFor();
   assert(await scriptBody.inputValue() === "echo local-unsaved-edit", "failed save lost the local draft");
-  await page.evaluate(() => {
-    window.__originalConflictConfirm = window.confirm;
-    window.confirm = () => true;
-  });
   await customScriptDialog.getByRole("button", { name: "刷新自定义脚本", exact: true }).click();
+  await respondAppConfirm(page, true);
   await page.waitForFunction(() => document.querySelector('[aria-label="脚本正文"]')?.value === "echo concurrent-save");
-  await page.evaluate(() => { window.confirm = window.__originalConflictConfirm; });
-  await page.evaluate(() => {
-    window.__customScriptDeletePrompts = [];
-    window.__originalCustomScriptConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__customScriptDeletePrompts.push(String(message));
-      return true;
-    };
-  });
+  const customScriptDeletePrompts = [];
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
+  customScriptDeletePrompts.push(await respondAppConfirm(page, true));
   await page.waitForFunction(() => window.__customScripts.length === 2);
   await customScriptDialog.getByRole("option", { name: /Concurrent window script/ }).click();
   await customScriptDialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
+  customScriptDeletePrompts.push(await respondAppConfirm(page, true));
   await page.waitForFunction(() => window.__customScripts.length === 1);
-  const customScriptDeletePrompts = await page.evaluate(() => {
-    window.confirm = window.__originalCustomScriptConfirm;
-    return window.__customScriptDeletePrompts;
-  });
   assert(customScriptDeletePrompts.length === 2
     && customScriptDeletePrompts[0].includes("Collect diagnostics")
     && customScriptDeletePrompts[1].includes("Concurrent window script"),
@@ -6416,24 +6358,20 @@ Host staging
   await page.evaluate(() => {
     window.__deferLogMutations = true;
     window.__pendingLogMutations = [];
-    window.__logDeletePrompts = [];
-    window.__originalLogConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__logDeletePrompts.push(String(message));
-      return true;
-    };
   });
   const deleteLogsButton = logManager.getByRole("button", { name: "删除选中分片", exact: true });
   await deleteLogsButton.evaluate((button) => {
     button.click();
     button.click();
   });
+  const logDeletePrompt = await respondAppConfirm(page, true);
   await page.waitForFunction(() => window.__pendingLogMutations.length === 1);
-  const pendingDeleteRequests = await page.evaluate(() => ({
+  const pendingDeleteRequests = await page.evaluate((prompt) => ({
     commands: window.__pendingLogMutations.map((pending) => pending.command),
-    prompts: window.__logDeletePrompts,
-  }));
+    prompts: [prompt],
+  }), logDeletePrompt);
   assert(JSON.stringify(pendingDeleteRequests.commands) === JSON.stringify(["delete_log_shards"])
+    && await page.locator('.app-dialog[data-app-dialog="confirm"]').count() === 0
     && pendingDeleteRequests.prompts.length === 1
     && pendingDeleteRequests.prompts[0].includes("1 个日志分片"),
   `log deletion was confirmed or submitted more than once: ${JSON.stringify(pendingDeleteRequests)}`);
@@ -6445,7 +6383,6 @@ Host staging
     window.__deferLogMutations = false;
     window.__pendingLogMutations.shift().resolve();
     window.__pendingLogMutations = [];
-    window.confirm = window.__originalLogConfirm;
   });
   await logManager.getByRole("button", { name: /logs\/a\.txt/ }).waitFor({ state: "detached" });
   assert(await logManager.getByRole("button", { name: /logs\/a\.txt/ }).count() === 0,
@@ -6510,18 +6447,10 @@ Host staging
     `MCP audit export ignored the active filters: ${JSON.stringify(exportCall)}`);
   assert((await auditView.locator(".mcp-audit-export").textContent()).includes("已导出 1 条"),
     "MCP audit export result is not visible");
-  await page.evaluate(() => {
-    window.__mcpAuditDeletePrompts = [];
-    window.__originalMcpConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mcpAuditDeletePrompts.push(message);
-      return true;
-    };
-  });
   await mcpDialog.getByRole("button", { name: "删除当前 MCP 审计", exact: true }).click();
+  const deletedAuditPrompt = await respondAppConfirm(page, true);
   await auditView.locator(".mcp-audit-list > button").waitFor({ state: "detached" });
   const deletedAuditCall = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_mcp_audit").at(-1));
-  const deletedAuditPrompt = await page.evaluate(() => window.__mcpAuditDeletePrompts.at(-1));
   assert(JSON.stringify(deletedAuditCall?.args?.request?.recordIds) === JSON.stringify(["audit-read"])
     && deletedAuditPrompt?.includes("1 条 MCP 审计记录"),
   "MCP audit record deletion did not confirm and target the inspected record");
@@ -6529,12 +6458,12 @@ Host staging
   assert(await auditView.locator(".mcp-audit-list > button").count() === mcpAudit.length - 1,
     "MCP audit record deletion did not update the visible history");
   await mcpDialog.getByRole("button", { name: "清空全部 MCP 审计", exact: true }).click();
+  await respondAppConfirm(page, true);
   await auditView.locator(".mcp-audit-list > button").waitFor({ state: "detached" });
   const clearAuditCall = await page.evaluate(() => window.__invokeCalls.filter((call) => call.command === "delete_mcp_audit").at(-1));
   assert(clearAuditCall?.args?.request?.all === true
     && await auditView.locator(".mcp-audit-list > button").count() === 0,
   "MCP audit clear-all action did not remove the remaining history");
-  await page.evaluate(() => { window.confirm = window.__originalMcpConfirm; });
   await page.screenshot({ path: `${screenshotPrefix}-mcp-audit.png`, fullPage: true });
   await page.evaluate(() => {
     window.__mcpHttpRuntime = {
@@ -6782,7 +6711,7 @@ Host staging
   `double-click did not restore the default left dock size: ${JSON.stringify(resetDockLayout)}`);
 
   await page.locator(".workspace-dock-content.panel-explorer .tree-session").first().click({ button: "right" });
-  const restoreSplitAction = page.locator(".portmate-context-menu .context-label", { hasText: /^水平拆分视图\(H\)$/ });
+  const restoreSplitAction = page.locator(".portmate-context-menu .context-label", { hasText: /^水平拆分视图$/ });
   await restoreSplitAction.click();
   await page.waitForFunction(() => document.querySelectorAll(".terminal-pane").length > 1);
   await page.getByRole("button", { name: "工作区", exact: true }).click();
@@ -6952,20 +6881,9 @@ Host staging
     && mobileOpenSshBounds.modeHeight > 0,
   `mobile OpenSSH import dialog overflows: ${JSON.stringify(mobileOpenSshBounds)}`);
   await page.screenshot({ path: `${screenshotPrefix}-openssh-import-mobile.png`, fullPage: true });
-  await page.evaluate(() => {
-    window.__mobileImportPrompts = [];
-    window.__originalMobileImportConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mobileImportPrompts.push(String(message));
-      return true;
-    };
-  });
   await mobileOpenSshImport.getByRole("button", { name: "取消", exact: true }).click();
+  const mobileImportPrompts = [await respondAppConfirm(page, true)];
   await mobileOpenSshImport.waitFor({ state: "detached" });
-  const mobileImportPrompts = await page.evaluate(() => {
-    window.confirm = window.__originalMobileImportConfirm;
-    return window.__mobileImportPrompts;
-  });
   assert(mobileImportPrompts.length === 1
     && mobileImportPrompts[0].includes("关闭窗口")
     && !mobileImportPrompts[0].includes("mobile.example.test"),
@@ -7129,18 +7047,12 @@ Host staging
   const deleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
   await deleteAction.waitFor();
   await page.screenshot({ path: `${screenshotPrefix}-profile-delete.png`, fullPage: true });
-  await page.evaluate(() => {
-    window.__profileDeletePrompts = [];
-    window.__originalProfileDeleteConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__profileDeletePrompts.push(String(message));
-      return true;
-    };
-  });
   await deleteAction.evaluate((button) => {
     button.click();
     button.click();
   });
+  const profileDeletePrompt = await respondAppConfirm(page, true);
+  await page.evaluate((message) => { window.__profileDeletePrompts = [message]; }, profileDeletePrompt);
   await page.waitForFunction(() => window.__pendingSessionProfileDeletes.length === 1);
   await deleteTarget.click({ button: "right" });
   const pendingDeleteAction = page.locator(".context-menu-row", { hasText: "删除会话 Profile" });
@@ -7151,7 +7063,6 @@ Host staging
     window.__invokeCalls.filter((call) => call.command === "serial_set_lines").length
   ));
   const staleSerialControlClicked = await page.evaluate(() => {
-    window.confirm = window.__originalProfileDeleteConfirm;
     window.__deferSessionProfileDeletes = false;
     window.__pendingSessionProfileDeletes.shift().resolve();
     const staleDtrButton = document.querySelector('.pane-serial-tools button[title="切换 DTR"]');
@@ -7251,7 +7162,7 @@ Host staging
   await startupRacePage.getByRole("button", { name: "会话", exact: true }).waitFor();
   await startupRacePage.waitForFunction(() => window.__pendingSessionLists.length >= 2);
   await startupRacePage.getByRole("button", { name: "会话", exact: true }).click();
-  await startupRacePage.getByRole("button", { name: "新建会话", exact: true }).click();
+  await startupRacePage.locator(".menu-popover").getByRole("button", { name: "新建会话", exact: true }).click();
   const startupSessionDialog = startupRacePage.locator(".session-settings-dialog");
   await startupSessionDialog.waitFor();
   await startupSessionDialog.getByRole("heading", { name: "会话信息", exact: true }).waitFor();
@@ -7580,20 +7491,9 @@ Host staging
   assert(await lifecycleMcpDialog.locator(".dialog-field", { hasText: "客户端 ID:" }).locator("input").isDisabled()
     && await lifecycleMcpDialog.locator(".dialog-field", { hasText: "名称:" }).locator("input").isDisabled(),
   "MCP grant editor remained mutable while a save request was pending");
-  await grantLifecyclePage.evaluate(() => {
-    window.__mcpPendingSavePrompts = [];
-    window.__originalMcpConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__mcpPendingSavePrompts.push(String(message));
-      return true;
-    };
-  });
   await lifecycleMcpDialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+  const pendingMcpSavePrompts = [await respondAppConfirm(grantLifecyclePage, true)];
   await lifecycleMcpDialog.waitFor({ state: "detached" });
-  const pendingMcpSavePrompts = await grantLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalMcpConfirm;
-    return window.__mcpPendingSavePrompts;
-  });
   assert(pendingMcpSavePrompts.length === 1
     && pendingMcpSavePrompts[0].includes("授权草稿")
     && !pendingMcpSavePrompts[0].includes("late-close-client"),
@@ -7647,20 +7547,9 @@ Host staging
     && await firstOneKeyDialog.locator(".one-key-fields label", { hasText: "名称" }).locator("input").isDisabled()
     && await firstOneKeyDialog.getByRole("button", { name: "添加 OneKey", exact: true }).isDisabled(),
   `OneKey save was duplicated or the editor remained mutable: ${JSON.stringify(pendingOneKeySave)}`);
-  await oneKeyLifecyclePage.evaluate(() => {
-    window.__oneKeyClosePrompts = [];
-    window.__originalOneKeyConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__oneKeyClosePrompts.push(String(message));
-      return true;
-    };
-  });
   await firstOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
+  const pendingOneKeyClosePrompts = [await respondAppConfirm(oneKeyLifecyclePage, true)];
   await firstOneKeyDialog.waitFor({ state: "detached" });
-  const pendingOneKeyClosePrompts = await oneKeyLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalOneKeyConfirm;
-    return window.__oneKeyClosePrompts;
-  });
   assert(pendingOneKeyClosePrompts.length === 1
     && pendingOneKeyClosePrompts[0].includes("关闭窗口")
     && !pendingOneKeyClosePrompts[0].includes("first-secret"),
@@ -7717,22 +7606,17 @@ Host staging
   await secondOneKeyUsername.fill("unsaved-second-user");
   assert(await sendSavedOneKeyUsername.isDisabled(),
     "OneKey manager could send a stale saved username while a different value was visible");
-  await oneKeyLifecyclePage.evaluate(() => {
-    window.__oneKeyDiscardPrompts = [];
-    window.__originalOneKeyConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__oneKeyDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
+  const oneKeyDiscardPrompts = [];
   await secondOneKeyDialog.locator('.one-key-list [role="option"]', { hasText: "First deferred key" }).click();
+  oneKeyDiscardPrompts.push(await respondAppConfirm(oneKeyLifecyclePage, false));
   await secondOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
-  const retainedOneKeyDraft = await oneKeyLifecyclePage.evaluate(() => ({
-    prompts: window.__oneKeyDiscardPrompts,
+  oneKeyDiscardPrompts.push(await respondAppConfirm(oneKeyLifecyclePage, false));
+  const retainedOneKeyDraft = await oneKeyLifecyclePage.evaluate((prompts) => ({
+    prompts,
     selected: document.querySelector('.one-key-list [role="option"][aria-selected="true"] strong')?.textContent ?? "",
     username: document.querySelector('.one-key-fields label:nth-child(3) input')?.value ?? "",
     dialogVisible: Boolean(document.querySelector(".one-key-dialog")),
-  }));
+  }), oneKeyDiscardPrompts);
   assert(retainedOneKeyDraft.dialogVisible
     && retainedOneKeyDraft.selected === "Second current key"
     && retainedOneKeyDraft.username === "unsaved-second-user"
@@ -7741,9 +7625,6 @@ Host staging
     && retainedOneKeyDraft.prompts.some((prompt) => prompt.includes("关闭窗口"))
     && retainedOneKeyDraft.prompts.every((prompt) => !prompt.includes("second-secret")),
   `OneKey draft was discarded or exposed without confirmation: ${JSON.stringify(retainedOneKeyDraft)}`);
-  await oneKeyLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalOneKeyConfirm;
-  });
   await secondOneKeyUsername.fill("second-user");
   await secondOneKeyDialog.getByRole("button", { name: "关闭 OneKey 管理器", exact: true }).click();
   await secondOneKeyDialog.waitFor({ state: "detached" });
@@ -7947,31 +7828,16 @@ Host staging
   await quickCommandDialog.getByRole("button", { name: "添加快速命令", exact: true }).click();
   await quickCommandDialog.getByRole("textbox", { name: "快速命令名称", exact: true }).fill("Unsaved private command");
   await quickCommandDialog.getByRole("textbox", { name: "快速命令内容", exact: true }).fill("printf hidden-command-body");
-  await quickCommandDraftPage.evaluate(() => {
-    window.__quickCommandDiscardPrompts = [];
-    window.__originalQuickCommandConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__quickCommandDiscardPrompts.push(String(message));
-      return false;
-    };
-  });
+  const quickCommandDiscardPrompts = [];
   await quickCommandDialog.getByRole("button", { name: "关闭快速命令", exact: true }).click();
+  quickCommandDiscardPrompts.push(await respondAppConfirm(quickCommandDraftPage, false));
   assert(await quickCommandDialog.isVisible()
     && await quickCommandDialog.getByRole("textbox", { name: "快速命令名称", exact: true }).inputValue() === "Unsaved private command"
     && await quickCommandDialog.getByRole("textbox", { name: "快速命令内容", exact: true }).inputValue() === "printf hidden-command-body",
   "quick-command close discarded an unsaved draft after cancellation");
-  await quickCommandDraftPage.evaluate(() => {
-    window.confirm = (message) => {
-      window.__quickCommandDiscardPrompts.push(String(message));
-      return true;
-    };
-  });
   await quickCommandDialog.getByRole("button", { name: "取消", exact: true }).click();
+  quickCommandDiscardPrompts.push(await respondAppConfirm(quickCommandDraftPage, true));
   await quickCommandDialog.waitFor({ state: "detached" });
-  const quickCommandDiscardPrompts = await quickCommandDraftPage.evaluate(() => {
-    window.confirm = window.__originalQuickCommandConfirm;
-    return window.__quickCommandDiscardPrompts;
-  });
   assert(quickCommandDiscardPrompts.length === 2
     && quickCommandDiscardPrompts.every((prompt) => prompt.includes("未保存的更改"))
     && quickCommandDiscardPrompts.every((prompt) => !prompt.includes("Unsaved private command") && !prompt.includes("hidden-command-body")),
@@ -8017,15 +7883,9 @@ Host staging
   `known_hosts import submitted duplicate writes: ${JSON.stringify(firstHostKeyImportState)}`);
   assert(await firstKeyManager.locator('.dialog-field', { hasText: "known_hosts 文件:" }).locator("textarea").isDisabled(),
     "known_hosts editor remained mutable while an import was pending");
-  await hostKeyLifecyclePage.evaluate(() => {
-    window.__keyManagerClosePrompts = [];
-    window.__originalKeyManagerConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__keyManagerClosePrompts.push(String(message));
-      return true;
-    };
-  });
+  const keyManagerClosePrompts = [];
   await firstKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  keyManagerClosePrompts.push(await respondAppConfirm(hostKeyLifecyclePage, true));
   await firstKeyManager.waitFor({ state: "detached" });
   await hostKeyLifecyclePage.evaluate(() => {
     const pending = window.__pendingHostKeyMutations.shift();
@@ -8042,11 +7902,8 @@ Host staging
   await secondKeyManager.locator(".key-actions").getByRole("button", { name: "导入", exact: true }).click();
   await hostKeyLifecyclePage.waitForFunction(() => window.__pendingHostKeyMutations.length === 1);
   await secondKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  keyManagerClosePrompts.push(await respondAppConfirm(hostKeyLifecyclePage, true));
   await secondKeyManager.waitFor({ state: "detached" });
-  const keyManagerClosePrompts = await hostKeyLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalKeyManagerConfirm;
-    return window.__keyManagerClosePrompts;
-  });
   assert(keyManagerClosePrompts.length === 2
     && keyManagerClosePrompts.every((prompt) => prompt.includes("known_hosts 导入内容"))
     && keyManagerClosePrompts.every((prompt) => !prompt.includes("AAAAFIRST") && !prompt.includes("AAAASECOND")),
@@ -8072,30 +7929,15 @@ Host staging
   const hostKeyEditPanel = thirdKeyManager.locator(".key-edit-panel");
   await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").fill("Operator label");
   const secondHostKeyRow = thirdKeyManager.locator(".key-row", { hasText: "second.example:22" });
-  await hostKeyLifecyclePage.evaluate(() => {
-    window.__hostKeyDraftPrompts = [];
-    window.__originalHostKeyDraftConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__hostKeyDraftPrompts.push(String(message));
-      return false;
-    };
-  });
+  const hostKeyDraftPrompts = [];
   await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  hostKeyDraftPrompts.push(await respondAppConfirm(hostKeyLifecyclePage, false));
   assert(await hostKeyEditPanel.locator(".dialog-field", { hasText: "别名:" }).locator("input").inputValue() === "first.example"
     && await hostKeyEditPanel.locator(".dialog-field", { hasText: "名称:" }).locator("input").inputValue() === "Operator label",
   "Host Key editor discarded an unsaved draft after switch cancellation");
-  await hostKeyLifecyclePage.evaluate(() => {
-    window.confirm = (message) => {
-      window.__hostKeyDraftPrompts.push(String(message));
-      return true;
-    };
-  });
   await secondHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
+  hostKeyDraftPrompts.push(await respondAppConfirm(hostKeyLifecyclePage, true));
   await firstHostKeyRow.getByRole("button", { name: "编辑", exact: true }).click();
-  const hostKeyDraftPrompts = await hostKeyLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalHostKeyDraftConfirm;
-    return window.__hostKeyDraftPrompts;
-  });
   assert(hostKeyDraftPrompts.length === 2
     && hostKeyDraftPrompts.every((prompt) => prompt.includes("切换 Host Key"))
     && hostKeyDraftPrompts.every((prompt) => !prompt.includes("Operator label")),
@@ -8323,15 +8165,9 @@ Host staging
   assert(await firstProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").isDisabled()
     && await firstProfileManager.locator(".client-key-edit-button").first().isDisabled(),
   "Identity editor remained mutable while a save was pending");
-  await profileLifecyclePage.evaluate(() => {
-    window.__identityClosePrompts = [];
-    window.__originalIdentityCloseConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__identityClosePrompts.push(String(message));
-      return true;
-    };
-  });
+  const identityClosePrompts = [];
   await firstProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  identityClosePrompts.push(await respondAppConfirm(profileLifecyclePage, true));
   await firstProfileManager.waitFor({ state: "detached" });
   await profileLifecyclePage.evaluate(() => {
     const pending = window.__pendingProfileMutations.shift();
@@ -8345,14 +8181,15 @@ Host staging
   await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).waitFor();
   await secondProfileManager.getByRole("button", { name: "编辑 Closed identity", exact: true }).click();
   await secondProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input").fill("Deferred identity");
+  // This case isolates out-of-order mutation acknowledgements. The mock
+  // applies writes before resolving their IPC, so do not let an unrelated
+  // 2.5 s summary poll publish the pending second write to the third editor.
+  await profileLifecyclePage.evaluate(() => { window.__deferSessionLists = true; });
   await secondProfileManager.getByRole("button", { name: "保存字段", exact: true }).click();
   await profileLifecyclePage.waitForFunction(() => window.__pendingProfileMutations.length === 1);
   await secondProfileManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  identityClosePrompts.push(await respondAppConfirm(profileLifecyclePage, true));
   await secondProfileManager.waitFor({ state: "detached" });
-  const identityClosePrompts = await profileLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalIdentityCloseConfirm;
-    return window.__identityClosePrompts;
-  });
   assert(identityClosePrompts.length === 2
     && identityClosePrompts.every((prompt) => prompt.includes("Identity 草稿"))
     && identityClosePrompts.every((prompt) => !prompt.includes("Closed identity") && !prompt.includes("Deferred identity")),
@@ -8371,6 +8208,8 @@ Host staging
   await profileLifecyclePage.evaluate(() => {
     const pending = window.__pendingProfileMutations.shift();
     pending.resolve(pending.result);
+    window.__deferSessionLists = false;
+    for (const list of window.__pendingSessionLists.splice(0)) list.resolve(structuredClone(window.__sessions));
   });
   await profileLifecyclePage.waitForTimeout(100);
   const profileLifecycleState = await profileLifecyclePage.evaluate(() => {
@@ -8396,25 +8235,15 @@ Host staging
   `a stale Profile mutation replaced the latest identity state: ${JSON.stringify(profileLifecycleState)}`);
   const currentIdentityLabel = thirdProfileManager.locator(".client-key-inspector label", { hasText: "名称" }).locator("input");
   await currentIdentityLabel.fill("Unsaved identity label");
-  await profileLifecyclePage.evaluate(() => {
-    window.__identityDraftPrompts = [];
-    window.__originalIdentityDraftConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__identityDraftPrompts.push(String(message));
-      return false;
-    };
-  });
+  const identityDraftPrompts = [];
   await thirdProfileManager.getByRole("button", { name: "关闭 identity 检查器", exact: true }).click();
+  identityDraftPrompts.push(await respondAppConfirm(profileLifecyclePage, false));
   assert(await currentIdentityLabel.inputValue() === "Unsaved identity label"
     && await thirdProfileManager.locator(".client-key-inspector").isVisible(),
   "Identity inspector discarded an unsaved draft after close cancellation");
   await currentIdentityLabel.fill("Current identity");
   await thirdProfileManager.getByRole("button", { name: "关闭 identity 检查器", exact: true }).click();
   await thirdProfileManager.locator(".client-key-inspector").waitFor({ state: "detached" });
-  const identityDraftPrompts = await profileLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalIdentityDraftConfirm;
-    return window.__identityDraftPrompts;
-  });
   assert(identityDraftPrompts.length === 1
     && identityDraftPrompts[0].includes("关闭检查器")
     && !identityDraftPrompts[0].includes("Unsaved identity label"),
@@ -8540,20 +8369,9 @@ Host staging
   await privateKeyImportLifecyclePage.waitForFunction(() => window.__pendingSecretWrites.length === 1);
   assert(await importPanel.getByPlaceholder("粘贴 OpenSSH private key", { exact: true }).isDisabled(),
     "private-key import editor remained mutable while a secret write was pending");
-  await privateKeyImportLifecyclePage.evaluate(() => {
-    window.__privateKeyClosePrompts = [];
-    window.__originalPrivateKeyCloseConfirm = window.confirm;
-    window.confirm = (message) => {
-      window.__privateKeyClosePrompts.push(String(message));
-      return true;
-    };
-  });
   await importingKeyManager.getByRole("button", { name: "关闭密钥管理器", exact: true }).click();
+  const privateKeyClosePrompts = [await respondAppConfirm(privateKeyImportLifecyclePage, true)];
   await importingKeyManager.waitFor({ state: "detached" });
-  const privateKeyClosePrompts = await privateKeyImportLifecyclePage.evaluate(() => {
-    window.confirm = window.__originalPrivateKeyCloseConfirm;
-    return window.__privateKeyClosePrompts;
-  });
   assert(privateKeyClosePrompts.length === 1
     && privateKeyClosePrompts[0].includes("私钥导入内容")
     && !privateKeyClosePrompts[0].includes("test-key-body")
@@ -8806,8 +8624,8 @@ Host staging
   await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
   const sessionContextMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
   await sessionContextMenu.waitFor();
-  const sessionReconnect = sessionContextMenu.locator("button", { hasText: "重新连接会话(R)" });
-  const sessionDisconnect = sessionContextMenu.locator("button", { hasText: "断开会话(C)" });
+  const sessionReconnect = sessionContextMenu.locator("button", { hasText: "重新连接会话" });
+  const sessionDisconnect = sessionContextMenu.locator("button", { hasText: "断开会话" });
   assert(await sessionReconnect.isDisabled() && !await sessionDisconnect.isDisabled(),
     "session context menu exposed reconnect or hid disconnect during a pending connection");
   await connectionLifecyclePage.mouse.click(700, 400);
@@ -8874,7 +8692,7 @@ Host staging
   await lifecycleSession.dispatchEvent("contextmenu", { clientX: 120, clientY: 160 });
   const reconnectContextMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
   await reconnectContextMenu.waitFor();
-  const reconnectAction = reconnectContextMenu.locator("button", { hasText: "重新连接会话(R)" });
+  const reconnectAction = reconnectContextMenu.locator("button", { hasText: "重新连接会话" });
   assert(!await reconnectAction.isDisabled(), "connected session context menu disabled reconnect");
   await reconnectAction.evaluate((button) => {
     button.click();
@@ -8901,16 +8719,18 @@ Host staging
   await lifecycleSession.click({ button: "right" });
   const pendingSessionMenu = connectionLifecyclePage.locator(".portmate-context-menu:not(.workspace-view-context-menu):not(.terminal-context-menu)");
   await pendingSessionMenu.waitFor();
-  assert(await pendingSessionMenu.locator("button", { hasText: "重新连接会话(R)" }).isDisabled()
-    && await pendingSessionMenu.locator("button", { hasText: "断开会话(C)" }).isDisabled(),
+  assert(await pendingSessionMenu.locator("button", { hasText: "重新连接会话" }).isDisabled()
+    && await pendingSessionMenu.locator("button", { hasText: "断开会话" }).isDisabled(),
   "session context actions remained enabled during a pending disconnect");
-  await connectionLifecyclePage.mouse.click(700, 400);
+  await connectionLifecyclePage.keyboard.press("Escape");
+  await pendingSessionMenu.waitFor({ state: "detached" });
   await lifecycleTab.click({ button: "right" });
   const pendingViewMenu = connectionLifecyclePage.locator(".workspace-view-context-menu");
   await pendingViewMenu.waitFor();
   assert(await pendingViewMenu.getByRole("button", { name: "重新连接会话", exact: true }).isDisabled(),
     "view reconnect remained enabled during a pending disconnect");
-  await connectionLifecyclePage.mouse.click(700, 400);
+  await connectionLifecyclePage.keyboard.press("Escape");
+  await pendingViewMenu.waitFor({ state: "detached" });
   await connectionLifecyclePage.evaluate(() => {
     window.__deferSessionCloses = false;
     window.__pendingSessionCloses.shift().resolve();
@@ -9555,7 +9375,7 @@ Host staging
     return window.__invokeCalls.filter((call) => call.command === "save_session_profile").length;
   });
   await profileShortcutTarget.click({ button: "right" });
-  const profileShortcutSave = profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" });
+  const profileShortcutSave = profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话" });
   await profileShortcutSave.evaluate((button) => {
     button.click();
     button.click();
@@ -9563,7 +9383,7 @@ Host staging
   await profileShortcutPage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
   await profileShortcutTarget.click({ button: "right" });
   const busyProfileMenu = profileShortcutPage.locator('.portmate-context-menu[aria-label="会话菜单"]');
-  for (const label of ["重命名会话(R)", "保存会话(S)", "移动视图到分组(M)", "会话设置...(S)", "删除会话 Profile"]) {
+  for (const label of ["重命名会话", "保存会话", "移动到文件夹...", "会话设置...", "删除会话 Profile"]) {
     assert(await busyProfileMenu.locator(".context-menu-row", { hasText: label }).isDisabled(),
       `pending Profile shortcut left ${label} actionable`);
   }
@@ -9582,7 +9402,7 @@ Host staging
 
   await profileShortcutPage.evaluate(() => { window.__failNextProfileSave = true; });
   await profileShortcutTarget.click({ button: "right" });
-  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" }).click();
+  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话" }).click();
   const profileShortcutFailure = profileShortcutPage.locator(".notice-dialog", { hasText: "保存会话失败" });
   await profileShortcutFailure.waitFor();
   assert((await profileShortcutFailure.textContent())?.includes("simulated Profile save failure"),
@@ -9594,7 +9414,7 @@ Host staging
     window.__pendingSessionProfileSaves = [];
   });
   await profileShortcutTarget.click({ button: "right" });
-  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话(S)" }).click();
+  await profileShortcutPage.locator(".context-menu-row", { hasText: "保存会话" }).click();
   await profileShortcutPage.waitForFunction(() => window.__pendingSessionProfileSaves.length === 1);
   await profileShortcutPage.evaluate(() => {
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
@@ -10227,7 +10047,7 @@ Host staging
   await profileSyncPage.locator(".terminal-context-menu .context-menu-row", { hasText: /^导出终端文本$/ }).click();
   await profileSyncPage.waitForFunction(() => window.__pendingTerminalTextExports.length === 1);
   await profileSyncTree.filter({ hasText: "Updated edge profile" }).click({ button: "right" });
-  const staleProfileSaveAction = profileSyncPage.getByRole("button", { name: /保存会话\(S\)/ });
+  const staleProfileSaveAction = profileSyncPage.getByRole("button", { name: /^保存会话$/ });
   await staleProfileSaveAction.waitFor();
   const staleProfileSaveBaseline = await profileSyncPage.evaluate(() => (
     window.__invokeCalls.filter((call) => call.command === "save_session_profile").length
@@ -10236,7 +10056,7 @@ Host staging
     window.__sessions = window.__sessions.filter((session) => session.profile.id !== "edge-router");
     window.__emitTauriEvent("portmate-session-profile-deleted", "edge-router");
     const staleSaveButton = [...document.querySelectorAll('[aria-label="会话菜单"] button')]
-      .find((button) => button.textContent?.includes("保存会话(S)"));
+      .find((button) => button.textContent?.trim() === "保存会话");
     staleSaveButton?.click();
     window.__emitTauriEvent("portmate-detached-pane-command", {
       action: "reattach",

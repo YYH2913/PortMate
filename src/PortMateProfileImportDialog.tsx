@@ -112,8 +112,22 @@ export default function PortMateProfileImportDialog({
   }
 
   return (
-    <div className="dialog-backdrop">
-      <section className="wind-dialog session-import-dialog">
+    <div className="dialog-backdrop" onMouseDown={(event) => {
+      if (!locked && event.target === event.currentTarget) onClose();
+    }}>
+      <section
+        className="wind-dialog session-import-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("import-portmate-profiles")}
+        onKeyDown={(event) => {
+          if (!locked && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{t("import-portmate-profiles")}</strong>

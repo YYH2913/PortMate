@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "../../src/menu-capabilities";
+import { menuGroups, menuItemDisabled, menuItemShortcut, menuSectionsForGroup } from "../../src/menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "../../src/menu-capabilities";
 
 const ready: MenuCapabilityContext = {
@@ -81,13 +81,29 @@ describe("top menu capabilities", () => {
   it("locks terminal exports while the active view is exporting", () => {
     const exporting = context({ terminalExportBusy: true });
     expect(menuItemDisabled("export-terminal-text", exporting)).toBe(true);
+    expect(menuItemDisabled("export-terminal-text-to", exporting)).toBe(true);
     expect(menuItemDisabled("export-selected-text", exporting)).toBe(true);
     expect(menuItemDisabled("find", exporting)).toBe(false);
   });
 
-  it("disables selected-text export without a terminal selection", () => {
+  it("disables selected-text export without a terminal selection and all exports without an active view", () => {
     expect(menuItemDisabled("export-selected-text", context({ hasSelection: false }))).toBe(true);
     expect(menuItemDisabled("export-terminal-text", context({ hasSelection: false }))).toBe(false);
+    expect(menuItemDisabled("export-terminal-text-to", context({ hasSelection: false }))).toBe(false);
+    expect(menuItemDisabled("export-terminal-text", context({ hasActiveView: false }))).toBe(true);
+    expect(menuItemDisabled("export-terminal-text-to", context({ hasActiveView: false }))).toBe(true);
+    expect(menuItemDisabled("export-selected-text", context({ hasActiveView: false }))).toBe(true);
+  });
+
+  it("exposes focus-mode, lock-screen, and export-terminal-text-to with platform-aware shortcut hints", () => {
+    expect(menuGroups.find((group) => group.label === "workspace")?.items).toContain("focus-mode");
+    expect(menuGroups.find((group) => group.label === "workspace")?.items).toContain("lock-screen");
+    expect(menuGroups.find((group) => group.label === "terminal")?.items).toContain("export-terminal-text-to");
+    expect(menuItemShortcut("find", undefined, false)).toEqual({ display: "Ctrl+F", aria: "Control+F" });
+    expect(menuItemShortcut("find", undefined, true)).toEqual({ display: "Cmd+F", aria: "Meta+F" });
+    expect(menuItemShortcut("focus-mode", undefined, false)).toEqual({ display: "Alt+Enter", aria: "Alt+Enter" });
+    expect(menuItemShortcut("lock-screen", undefined, false)).toEqual({ display: "Ctrl+Alt+L", aria: "Control+Alt+L" });
+    expect(menuItemShortcut("lock-screen", undefined, true)).toEqual({ display: "Cmd+Option+L", aria: "Meta+Alt+L" });
   });
 });
 

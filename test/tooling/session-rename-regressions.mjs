@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { respondAppPrompt } from "./app-dialog-helpers.mjs";
 
 export async function checkSessionRename(context, appUrl) {
   const page = await context.newPage();
@@ -60,9 +61,9 @@ export async function checkSessionRename(context, appUrl) {
     // Explorer rename must update every open view and closed-view history.
     await tab("rename-closed").locator(".workspace-pane-tab-close").click();
     await tab("rename-closed").waitFor({ state: "detached" });
-    await page.evaluate(() => { window.prompt = () => "Renamed from Explorer"; });
     await tree("Edge Router").click({ button: "right" });
-    await page.locator(".portmate-context-menu").getByRole("button", { name: "重命名会话(R)", exact: true }).click();
+    await page.locator(".portmate-context-menu").getByRole("button", { name: "重命名会话", exact: true }).click();
+    await respondAppPrompt(page, "Renamed from Explorer");
     await synchronized("Renamed from Explorer", ["rename-original", "rename-mirror"]);
     const after = await page.evaluate(() => ({
       connectedSince: window.__sessions.find(session => session.profile.id === "edge-router").runtime.connectedSince,
@@ -75,7 +76,7 @@ export async function checkSessionRename(context, appUrl) {
 
     // Tab rename must persist the Profile, fence duplicate submissions, and
     // update siblings rather than creating another local title override.
-    await label("rename-original").dispatchEvent("auxclick", { button: 1 });
+    await label("rename-original").dblclick();
     await rename.getByLabel("会话名称", { exact: true }).fill("Renamed from Tab");
     await page.evaluate(() => { window.__deferSessionProfileSaves = true; });
     await rename.getByRole("button", { name: "保存", exact: true }).click();

@@ -1,4 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowDown, ArrowUp, Pencil, Play, Plus, Trash2, X } from "lucide-react";
@@ -78,18 +79,29 @@ export default function QuickCommandDialog({
     onSave(normalized.items);
   }
 
-  function closeDialog() {
-    if (dirty && !window.confirm(t("quick-commands-have-unsaved-changes-closing-will-discard-them"))) return;
+  async function closeDialog() {
+    if (dirty && !(await requestAppConfirm({
+      title: t("quick-commands"),
+      message: t("quick-commands-have-unsaved-changes-closing-will-discard-them"),
+      danger: true,
+    }))) return;
     onClose();
   }
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && void closeDialog()}>
       <form
         className="wind-dialog utility-dialog quick-command-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="quick-command-dialog-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeDialog();
+          }
+        }}
         onSubmit={submit}
       >
         <header className="dialog-title">

@@ -144,6 +144,9 @@ type TerminalCanvasProps = {
     field: OneKeyPromptField,
     promptEventId: string,
   ) => Promise<void>;
+  onNewSession?: () => void;
+  onOpenLocalTerminal?: () => void;
+  onImportSessions?: () => void;
 };
 
 const MAX_SERIALIZED_SCROLLBACK = 2000;
@@ -254,6 +257,9 @@ function TerminalCanvas({
   onInput,
   onCommandSubmit,
   onOneKeyCompletion,
+  onNewSession,
+  onOpenLocalTerminal,
+  onImportSessions,
 }: TerminalCanvasProps) {
   const { locale } = useLocale();
   const themeId = normalizeTerminalTheme(active?.profile.terminal.theme);
@@ -3221,7 +3227,18 @@ function TerminalCanvas({
           </div>
         </>
       ) : (
-        <div className="terminal-empty">{t("no-session-open")}</div>
+        <div className="terminal-empty">
+          <div className="terminal-empty-card">
+            <p>{t("no-session-open")}</p>
+            {(onNewSession || onOpenLocalTerminal || onImportSessions) ? (
+              <div className="terminal-empty-actions">
+                {onNewSession ? <button type="button" className="primary" onClick={onNewSession}>{t("new-session")}</button> : null}
+                {onOpenLocalTerminal ? <button type="button" onClick={onOpenLocalTerminal}>{t("local-terminal")}</button> : null}
+                {onImportSessions ? <button type="button" onClick={onImportSessions}>{t("import-sessions")}</button> : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
       )}
     </div>
   );

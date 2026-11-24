@@ -13,7 +13,8 @@ export type WorkspaceHotkeyAction =
   | { kind: "zoom" }
   | { kind: "cycle-view"; offset: -1 | 1 }
   | { kind: "view-history"; operation: "close" | "reopen" }
-  | { kind: "one-keys" };
+  | { kind: "one-keys" }
+  | { kind: "search-sessions" };
 
 export type WorkspaceHotkeyCommandId =
   | "focus-up"
@@ -210,6 +211,11 @@ export function resolveWorkspaceHotkeySequence(
     return { kind: "action", action: exactMatches[0].action };
   }
   if (!exactMatches.length && longerMatches.length) return { kind: "pending", prefix: binding };
+  // The search shortcut is a fallback; never swallow user bindings or chords.
+  if (!prefix && !exactMatches.length && !longerMatches.length
+    && (stroke === "Ctrl+Shift+KeyP" || stroke === "Shift+Meta+KeyP")) {
+    return { kind: "action", action: { kind: "search-sessions" } };
+  }
   return { kind: "none" };
 }
 

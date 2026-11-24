@@ -21,13 +21,19 @@ afterAll(() => {
 });
 
 describe("session context menu", () => {
-  it("renders one direct command for each supported action without permanent placeholders", () => {
+  it("renders clean direct commands without fake conflicting mnemonics or permanent placeholders", () => {
     const html = renderMenu(false);
-    expect(html).toContain("开启同步输入(S)");
-    expect(html).toContain("水平拆分视图(H)");
-    expect(html).toContain("垂直拆分视图(V)");
-    expect(html).toContain("移动视图到分组(M)");
+    expect(html).toContain("开启同步输入");
+    expect(html).toContain("启动会话");
+    expect(html).toContain("水平拆分视图");
+    expect(html).toContain("垂直拆分视图");
+    expect(html).toContain("移动到文件夹...");
+    expect(html).toContain("断开下方会话");
+    expect(html).toContain("清除颜色");
     expect(html).toContain("删除会话 Profile");
+    expect(html).not.toContain("(R)");
+    expect(html).not.toContain("(S)");
+    expect(html).not.toContain("(C)");
     expect(html).not.toContain("Ctrl+Shift+D");
     expect(html).not.toContain("Alt+H");
     expect(html).not.toContain("Alt+V");
@@ -39,38 +45,43 @@ describe("session context menu", () => {
 
   it("turns the synchronized-input row into the inverse action when enabled", () => {
     const html = renderMenu(true);
-    expect(html).toContain("关闭同步输入(S)");
-    expect(html).not.toContain("开启同步输入(S)");
+    expect(html).toContain("关闭同步输入");
+    expect(html).not.toContain("开启同步输入");
   });
 
-  it("matches reconnect and disconnect availability to the runtime state", () => {
+  it("matches start, reconnect, paste, and disconnect availability to the runtime state", () => {
     const disconnected = renderMenu(false, "disconnected");
     const connected = renderMenu(false, "connected");
     const reconnecting = renderMenu(false, "reconnecting");
-    expect(buttonMarkup(disconnected, "断开会话(C)")).toContain("disabled");
-    expect(buttonMarkup(connected, "断开会话(C)")).not.toContain("disabled");
-    expect(buttonMarkup(disconnected, "重新连接会话(R)")).not.toContain("disabled");
-    expect(buttonMarkup(reconnecting, "重新连接会话(R)")).toContain("disabled");
-    expect(buttonMarkup(reconnecting, "断开会话(C)")).not.toContain("disabled");
-    expect(buttonMarkup(disconnected, "开启同步输入(S)")).toContain("disabled");
-    expect(buttonMarkup(connected, "开启同步输入(S)")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "启动会话")).not.toContain("disabled");
+    expect(buttonMarkup(connected, "启动会话")).toContain("disabled");
+    expect(buttonMarkup(reconnecting, "启动会话")).toContain("disabled");
+    expect(buttonMarkup(disconnected, "粘贴")).toContain("disabled");
+    expect(buttonMarkup(connected, "粘贴")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "断开会话")).toContain("disabled");
+    expect(buttonMarkup(connected, "断开会话")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "重新连接会话")).not.toContain("disabled");
+    expect(buttonMarkup(reconnecting, "重新连接会话")).toContain("disabled");
+    expect(buttonMarkup(reconnecting, "断开会话")).not.toContain("disabled");
+    expect(buttonMarkup(disconnected, "开启同步输入")).toContain("disabled");
+    expect(buttonMarkup(connected, "开启同步输入")).not.toContain("disabled");
   });
 
   it("locks Profile mutation actions while a shortcut save is pending", () => {
     const html = renderMenu(false, "connected", true);
     for (const label of [
-      "重命名会话(R)",
-      "保存会话(S)",
-      "移动视图到分组(M)",
-      "会话设置...(S)",
+      "重命名会话",
+      "保存会话",
+      "移动到文件夹...",
+      "会话设置...",
       "删除会话 Profile",
     ]) {
       expect(buttonMarkup(html, label)).toContain("disabled");
     }
-    expect(buttonMarkup(html, "复制会话(D)")).not.toContain("disabled");
+    expect(buttonMarkup(html, "复制会话")).not.toContain("disabled");
   });
 
-  it("locks workspace-view Profile actions while a shortcut save is pending", () => {
+  it("locks workspace-view Profile actions and exposes start/disconnect/sync-input controls", () => {
     const view = {
       id: "view-a",
       sessionId: "session-a",
@@ -83,6 +94,7 @@ describe("session context menu", () => {
         state={{ x: 100, y: 100 }}
         view={view}
         sessionStatus="connected"
+        syncInput={false}
         profileBusy
         exportBusy
         label="Primary"
@@ -105,6 +117,9 @@ describe("session context menu", () => {
         onAction={() => {}}
       />,
     );
+    expect(buttonMarkup(html, "启动会话")).toContain("disabled");
+    expect(buttonMarkup(html, "断开会话")).not.toContain("disabled");
+    expect(buttonMarkup(html, "开启同步输入")).not.toContain("disabled");
     expect(buttonMarkup(html, "保存会话配置")).toContain("disabled");
     expect(buttonMarkup(html, "会话设置...")).toContain("disabled");
     expect(buttonMarkup(html, "导出终端文本")).toContain("disabled");

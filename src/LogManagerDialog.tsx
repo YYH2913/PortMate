@@ -1,4 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import { Archive, Copy, FileText, Package, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
@@ -125,7 +126,12 @@ export default function LogManagerDialog({
     const bytes = shards.filter((shard) => selectedSet.has(shard.path)).reduce((sum, shard) => sum + shard.size, 0);
     const mutationToken = mutationGate.current.begin("write");
     if (mutationToken === null) return;
-    if (!window.confirm(t("delete-log-segments", [selected.length, formatBytes(bytes)]))) {
+    if (!(await requestAppConfirm({
+      title: t("log-manager"),
+      message: t("delete-log-segments", [selected.length, formatBytes(bytes)]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !isCurrentMutation(mutationToken)) {
       mutationGate.current.finish("write", mutationToken);
       return;
     }
@@ -255,7 +261,19 @@ export default function LogManagerDialog({
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog log-manager-dialog">
+      <section
+        className="wind-dialog log-manager-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("log-manager")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <FileText size={17} />
           <strong>{t("log-manager")}</strong>

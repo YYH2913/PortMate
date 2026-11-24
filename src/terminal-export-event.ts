@@ -40,8 +40,10 @@ export function requestTerminalTextExport(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      if (response.ok) resolve(response.payload);
-      else reject(new Error(response.error));
+      if (!response.ok) reject(new Error(response.error));
+      else if (response.payload.sessionId !== request.sessionId || response.payload.viewId !== request.viewId
+        || response.payload.source !== request.source) reject(new Error(t("terminal-export-response-does-not-match-the-target-view")));
+      else resolve(response.payload);
     };
     target.dispatchEvent(new CustomEvent<TerminalTextExportRequestDetail>(TERMINAL_TEXT_EXPORT_REQUEST_EVENT, {
       detail: { ...request, respond },

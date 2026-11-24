@@ -4144,5 +4144,22 @@
   "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
   "npcap-conflict-error": "Конфликт Packet.dll/WinPcap или посторонний файл препятствует безопасной загрузке. Исправьте Npcap/WinPcap официальным установщиком, перезапустите PortMate и проверьте снова.",
   "confirm": "Подтвердить",
-  "terminal-key-mode-alternate-hint": "Переключение режимов Insert/Normal (полноэкранное приложение: Shift+Esc для Normal, i для возврата к вводу; Esc отправляется приложению)"
+  "remove-client-identity-confirm": "{0} «{1}» ({2})?{3}",
+  "set-tab-color": "Задать цвет вкладки",
+  "enable-synchronized-input": "Включить синхронный ввод",
+  "disable-synchronized-input": "Отключить синхронный ввод",
+  "move-session-to-folder": "Переместить в папку...",
+  "disconnect-all-sessions": "Отключить все сеансы",
+  "disconnect-inactive-sessions": "Отключить неактивные сеансы",
+  "disconnect-sessions-below": "Отключить сеансы ниже",
+  "clear-command-history": "Очистить историю всех сеансов",
+  "confirm-clear-command-history": "Очистить историю команд всех сеансов?",
+  "send-textarea-placeholder": "Введите текст или шестнадцатеричные байты для отправки...",
+  "hex-mode": "Hex",
+  "open-folder": "Открыть папку",
+  "collapse-group": "Свернуть группу {0}",
+  "expand-group": "Развернуть группу {0}",
+  "terminal-key-mode-alternate-hint": "Переключение режимов Insert/Normal (полноэкранное приложение: Shift+Esc для Normal, i для возврата к вводу; Esc отправляется приложению)",
+  "file-actions-menu": "Действия с файлом",
+  "search-sessions-shortcut": "Поиск сеансов ({0})"
 }

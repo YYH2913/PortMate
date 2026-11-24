@@ -4144,5 +4144,22 @@
   "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
   "npcap-conflict-error": "A conflicting Packet.dll/WinPcap installation or unexpected runtime file prevents safe loading. Repair Npcap/WinPcap with its official installer, restart PortMate, and recheck.",
   "confirm": "Confirm",
-  "terminal-key-mode-alternate-hint": "Toggle Insert/Normal mode (full-screen app: Shift+Esc for Normal, i to resume input; Esc is sent to the application)"
+  "remove-client-identity-confirm": "{0} \"{1}\" ({2})?{3}",
+  "set-tab-color": "Set tab color",
+  "enable-synchronized-input": "Enable synchronized input",
+  "disable-synchronized-input": "Disable synchronized input",
+  "move-session-to-folder": "Move to folder...",
+  "disconnect-all-sessions": "Disconnect all sessions",
+  "disconnect-inactive-sessions": "Disconnect inactive sessions",
+  "disconnect-sessions-below": "Disconnect sessions below",
+  "clear-command-history": "Clear all session history",
+  "confirm-clear-command-history": "Clear command history for all sessions?",
+  "send-textarea-placeholder": "Type text or hex bytes to send...",
+  "hex-mode": "Hex",
+  "open-folder": "Open folder",
+  "collapse-group": "Collapse group {0}",
+  "expand-group": "Expand group {0}",
+  "terminal-key-mode-alternate-hint": "Toggle Insert/Normal mode (full-screen app: Shift+Esc for Normal, i to resume input; Esc is sent to the application)",
+  "file-actions-menu": "File actions",
+  "search-sessions-shortcut": "Search sessions ({0})"
 }

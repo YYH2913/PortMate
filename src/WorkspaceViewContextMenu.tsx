@@ -1,10 +1,15 @@
 import { t, useLocale } from "./i18n";
 import { Ban } from "lucide-react";
-import type { ReactNode } from "react";
+import { ContextDivider, ContextMenuButton, ContextSubmenu } from "./ContextMenus";
+import { useMeasuredMenuPosition } from "./context-menu-position";
+import { sessionConnectionAction } from "./session-runtime-state";
 import type { WorkspaceView } from "./workspace-state";
 import type { SessionStatus } from "./types";
 
 export type WorkspaceViewContextAction =
+  | "start"
+  | "disconnect"
+  | "sync-toggle"
   | "copy-name"
   | "copy-url"
   | "reconnect"
@@ -37,6 +42,7 @@ export default function WorkspaceViewContextMenu({
   state,
   view,
   sessionStatus,
+  syncInput = false,
   connectionBusy = false,
   profileBusy = false,
   exportBusy = false,
@@ -63,6 +69,7 @@ export default function WorkspaceViewContextMenu({
   state: { x: number; y: number };
   view: WorkspaceView;
   sessionStatus: SessionStatus;
+  syncInput?: boolean;
   connectionBusy?: boolean;
   profileBusy?: boolean;
   exportBusy?: boolean;
@@ -87,14 +94,18 @@ export default function WorkspaceViewContextMenu({
   onAction: (action: WorkspaceViewContextAction) => void;
 }) {
   useLocale();
-  const left = Math.max(8, Math.min(state.x, window.innerWidth - 252));
-  const top = Math.max(8, Math.min(state.y, window.innerHeight - 560));
+  const { ref, style } = useMeasuredMenuPosition(state.x, state.y, 244, 560);
+  const startDisabled = connectionBusy || sessionStatus === "connecting" || sessionStatus === "connected" || sessionStatus === "reconnecting";
+  const reconnectDisabled = connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting";
+  const disconnectDisabled = connectionBusy || sessionConnectionAction(sessionStatus) !== "disconnect";
+
   return (
     <div
+      ref={ref}
       className="portmate-context-menu workspace-view-context-menu"
       aria-label={t("view-menu")}
       tabIndex={-1}
-      style={{ left, top }}
+      style={style}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -131,83 +142,54 @@ export default function WorkspaceViewContextMenu({
           <Ban size={13} />
         </button>
       </div>
-      <Divider />
-      <MenuButton label={t("duplicate-view")} disabled={!canDuplicate} onClick={onDuplicate} />
-      <MenuButton label={t("rename-session")} disabled={profileBusy} onClick={onRename} />
-      <Divider />
-      <MenuButton label={t("copy-session-name")} onClick={() => onAction("copy-name")} />
-      <MenuButton label={t("copy-session-url")} onClick={() => onAction("copy-url")} />
-      <Divider />
-      <MenuButton label={t("reconnect-session")} disabled={connectionBusy || sessionStatus === "connecting" || sessionStatus === "reconnecting"} onClick={() => onAction("reconnect")} />
-      <MenuButton label={t("save-session-settings")} disabled={profileBusy} onClick={() => onAction("save")} />
-      <MenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
-      <MenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
-      <MenuButton label={t("export-selected-text")} disabled={exportBusy || !hasSelection} onClick={() => onAction("export-selection")} />
-      <Divider />
-      <MenuButton label={t("split-view-horizontally")} onClick={() => onAction("split-horizontal")} />
-      <MenuButton label={t("split-view-vertically")} onClick={() => onAction("split-vertical")} />
-      <MenuButton label={t("move-view-to-group")} disabled={!canMove} onClick={() => onAction("move-group")} />
+      <ContextDivider />
+      <ContextMenuButton
+        label={syncInput ? t("disable-synchronized-input") : t("enable-synchronized-input")}
+        checked={syncInput}
+        disabled={sessionStatus !== "connected"}
+        onClick={() => onAction("sync-toggle")}
+      />
+      <ContextMenuButton label={t("duplicate-view")} disabled={!canDuplicate} onClick={onDuplicate} />
+      <ContextMenuButton label={t("rename-session")} disabled={profileBusy} onClick={onRename} />
+      <ContextDivider />
+      <ContextMenuButton label={t("copy-session-name")} onClick={() => onAction("copy-name")} />
+      <ContextMenuButton label={t("copy-session-url")} onClick={() => onAction("copy-url")} />
+      <ContextDivider />
+      <ContextMenuButton label={t("start-session")} disabled={startDisabled} onClick={() => onAction("start")} />
+      <ContextMenuButton label={t("reconnect-session")} disabled={reconnectDisabled} onClick={() => onAction("reconnect")} />
+      <ContextMenuButton label={t("disconnect-session")} disabled={disconnectDisabled} onClick={() => onAction("disconnect")} />
+      <ContextMenuButton label={t("save-session-settings")} disabled={profileBusy} onClick={() => onAction("save")} />
+      <ContextMenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <ContextMenuButton label={t("export-selected-text")} disabled={exportBusy || !hasSelection} onClick={() => onAction("export-selection")} />
+      <ContextDivider />
+      <ContextMenuButton label={t("split-view-horizontally")} onClick={() => onAction("split-horizontal")} />
+      <ContextMenuButton label={t("split-view-vertically")} onClick={() => onAction("split-vertical")} />
+      <ContextMenuButton label={t("move-view-to-group")} disabled={!canMove} onClick={() => onAction("move-group")} />
       <ContextSubmenu label={t("move-to-new-group")} disabled={!canMoveToNewGroup}>
-        <MenuButton label={t("left")} onClick={() => onAction("move-new-left")} />
-        <MenuButton label={t("right")} onClick={() => onAction("move-new-right")} />
-        <MenuButton label={t("above")} onClick={() => onAction("move-new-up")} />
-        <MenuButton label={t("below")} onClick={() => onAction("move-new-down")} />
+        <ContextMenuButton label={t("left")} onClick={() => onAction("move-new-left")} />
+        <ContextMenuButton label={t("right")} onClick={() => onAction("move-new-right")} />
+        <ContextMenuButton label={t("above")} onClick={() => onAction("move-new-up")} />
+        <ContextMenuButton label={t("below")} onClick={() => onAction("move-new-down")} />
       </ContextSubmenu>
-      <MenuButton label={t("move-to-new-window")} disabled={!canDetach} onClick={() => onAction("detach-pane")} />
-      <Divider />
-      <MenuButton label={t("close-view")} disabled={!canClose} onClick={() => onAction("close")} />
-      <MenuButton label={t("close-other-views")} disabled={!canCloseOther} onClick={() => onAction("close-other")} />
-      <MenuButton label={t("close-views-to-the-right")} disabled={!canCloseRight} onClick={() => onAction("close-right")} />
-      <MenuButton label={t("reopen-closed-view")} disabled={!canReopen} onClick={() => onAction("reopen")} />
-      <MenuButton label={t("close-pane-3")} disabled={!canClosePane} onClick={() => onAction("close-pane")} />
-      <Divider />
-      <MenuButton label={t("merge-current-group")} disabled={!canMerge} onClick={() => onAction("merge-group")} />
+      <ContextMenuButton label={t("move-to-new-window")} disabled={!canDetach} onClick={() => onAction("detach-pane")} />
+      <ContextDivider />
+      <ContextMenuButton label={t("close-view")} disabled={!canClose} onClick={() => onAction("close")} />
+      <ContextMenuButton label={t("close-other-views")} disabled={!canCloseOther} onClick={() => onAction("close-other")} />
+      <ContextMenuButton label={t("close-views-to-the-right")} disabled={!canCloseRight} onClick={() => onAction("close-right")} />
+      <ContextMenuButton label={t("reopen-closed-view")} disabled={!canReopen} onClick={() => onAction("reopen")} />
+      <ContextMenuButton label={t("close-pane-3")} disabled={!canClosePane} onClick={() => onAction("close-pane")} />
+      <ContextDivider />
+      <ContextMenuButton label={t("merge-current-group")} disabled={!canMerge} onClick={() => onAction("merge-group")} />
       <ContextSubmenu label={t("swap-panes")} disabled={!Object.values(canSwap).some(Boolean)}>
-        <MenuButton label={t("up")} disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
-        <MenuButton label={t("down")} disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
-        <MenuButton label={t("left-2")} disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
-        <MenuButton label={t("right-2")} disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
+        <ContextMenuButton label={t("up")} disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
+        <ContextMenuButton label={t("down")} disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
+        <ContextMenuButton label={t("left-2")} disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
+        <ContextMenuButton label={t("right-2")} disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
       </ContextSubmenu>
-      <MenuButton label={t("toggle-pane-zoom")} disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
-      <Divider />
-      <MenuButton label={t("session-settings-2")} disabled={profileBusy} onClick={() => onAction("settings")} />
+      <ContextMenuButton label={t("toggle-pane-zoom")} disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
+      <ContextDivider />
+      <ContextMenuButton label={t("session-settings-2")} disabled={profileBusy} onClick={() => onAction("settings")} />
     </div>
   );
-}
-
-function MenuButton({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void }) {
-  useLocale();
-  return (
-    <button type="button" className="context-menu-row" disabled={disabled} onClick={onClick}>
-      <span className="context-check" />
-      <span className="context-label">{label}</span>
-    </button>
-  );
-}
-
-function ContextSubmenu({
-  label,
-  disabled,
-  children,
-}: {
-  label: string;
-  disabled?: boolean;
-  children: ReactNode;
-}) {
-  useLocale();
-  return (
-    <div className={disabled ? "context-submenu disabled" : "context-submenu"}>
-      <button type="button" className="context-menu-row" aria-label={label} disabled={disabled}>
-        <span className="context-check" />
-        <span className="context-label">{label}</span>
-        <span className="context-arrow">›</span>
-      </button>
-      {!disabled ? <div className="context-submenu-panel">{children}</div> : null}
-    </div>
-  );
-}
-
-function Divider() {
-  useLocale();
-  return <div className="context-divider" />;
 }

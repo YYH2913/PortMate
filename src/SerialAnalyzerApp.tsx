@@ -1,4 +1,5 @@
 import { t, useLocale } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
@@ -254,7 +255,10 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
     const gate = captureOperationGateRef.current;
     const token = gate.begin("capture");
     if (token === null) return;
-    if (!window.confirm(t("clear-all-captured-frames-from-memory-for-the-current"))) {
+    if (!(await requestAppConfirm({
+      message: t("clear-all-captured-frames-from-memory-for-the-current"),
+      danger: true,
+    })) || !gate.isCurrent("capture", token)) {
       gate.finish("capture", token);
       return;
     }

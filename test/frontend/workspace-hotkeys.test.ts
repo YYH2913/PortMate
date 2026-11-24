@@ -125,6 +125,9 @@ describe("workspace hotkeys", () => {
   });
 
   it("resolves a custom binding and formats canonical key labels", () => {
+    const search = { ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyP" };
+    expect(resolveWorkspaceHotkey(search, 2)).toEqual({ kind: "search-sessions" });
+    expect(resolveWorkspaceHotkey({ ...search, ctrlKey: false, metaKey: true }, 2)).toEqual({ kind: "search-sessions" });
     const keymap = { ...defaultWorkspaceKeymap, "zoom-pane": "Ctrl+Shift+KeyP" };
 
     expect(resolveWorkspaceHotkey({ ...baseInput, altKey: false, ctrlKey: true, shiftKey: true, code: "KeyP" }, 2, keymap)).toEqual({ kind: "zoom" });

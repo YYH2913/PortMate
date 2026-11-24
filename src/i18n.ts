@@ -151,3 +151,13 @@ export function formatUiNumber(value: number, options?: Intl.NumberFormatOptions
 export function formatUiDate(value: Date | number, options?: Intl.DateTimeFormatOptions): string {
   return new Intl.DateTimeFormat(state.locale === "zh" ? "zh-CN" : state.locale, options).format(value);
 }
+
+export function formatUiList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  try {
+    if (typeof Intl !== "undefined" && "ListFormat" in Intl) {
+      return new Intl.ListFormat(state.locale === "zh" ? "zh-CN" : state.locale, { style: "short", type: "conjunction" }).format(items);
+    }
+  } catch { /* Fall back to locale-appropriate separator below. */ }
+  return items.join(state.locale === "zh" ? "、" : ", ");
+}

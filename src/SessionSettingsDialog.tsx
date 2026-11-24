@@ -220,8 +220,9 @@ export default function SessionSettingsDialog({
   }, [draft.id, initialSection, mode]);
 
   useEffect(() => {
+    if (protocolFromKind(draft.kind) !== activeProtocol) return;
     connectionDrafts.current.set(activeProtocol, draft.connection);
-  }, [activeProtocol, draft.connection]);
+  }, [activeProtocol, draft.kind, draft.connection]);
 
   useEffect(() => {
     if (!quickSurface) return;
@@ -2430,7 +2431,9 @@ function DialogFrame({
 }) {
   useLocale();
   return (
-    <div className="dialog-backdrop">
+    <div className="dialog-backdrop" onMouseDown={(event) => {
+      if (!closeDisabled && event.target === event.currentTarget) onClose();
+    }}>
       <section role="dialog" aria-modal="true" aria-label={title}
         onKeyDown={event => { if (!closeDisabled && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); onClose(); } }}
         className={`wind-dialog ${className}`}

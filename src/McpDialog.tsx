@@ -1,4 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarClock, Copy, Dices, Download, KeyRound, ListX, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
@@ -143,7 +144,7 @@ export default function McpDialog({
     return http.savedConfig?.clientId === clientId;
   }
 
-  function requestGrantRevocation(clientId: string) {
+  async function requestGrantRevocation(clientId: string) {
     if (grantBusy || http.isMutating()) return;
     const target = grants.find(grant => grant.clientId === clientId);
     if (!target) return;
@@ -151,7 +152,12 @@ export default function McpDialog({
     const bridgeWarning = isHttpBindingClient(clientId)
       ? t("this-identity-is-bound-to-http-bridge-the-managed")
       : "";
-    if (!window.confirm(t("revoke-mcp-grant", [target.name || clientId, clientId, bridgeWarning, unsavedWarning]))) return;
+    if (!(await requestAppConfirm({
+      title: t("mcp-bridge"),
+      message: t("revoke-mcp-grant", [target.name || clientId, clientId, bridgeWarning, unsavedWarning]),
+      danger: true,
+    }))) return;
+    if (grantBusy || http.isMutating()) return;
     setError("");
     setRevokeConfirmation({ clientId, name: target.name });
   }
@@ -222,14 +228,22 @@ export default function McpDialog({
 
   async function deleteAudit(recordIds: string[], all = false) {
     if (auditBusy || (!all && !recordIds.length)) return;
+    const token = requestGateRef.current.begin("audit");
+    if (token === null) return;
     const targetLabel = all
       ? t("all-mcp-audit-records")
       : recordIds.length === filteredAudit.length && recordIds.length === audit.length
         ? t("all-mcp-audit-records")
         : t("mcp-audit-records", [recordIds.length]);
-    if (!window.confirm(t("delete-this-cannot-be-undone", [targetLabel]))) return;
-    const token = requestGateRef.current.begin("audit");
-    if (token === null) return;
+    if (!(await requestAppConfirm({
+      title: t("mcp-bridge"),
+      message: t("delete-this-cannot-be-undone", [targetLabel]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !requestGateRef.current.isCurrent("audit", token)) {
+      requestGateRef.current.finish("audit", token);
+      return;
+    }
     setError("");
     setAuditBusy(true);
     setAuditExport(null);
@@ -248,8 +262,10 @@ export default function McpDialog({
     }
   }
 
-  function selectGrant(grant: McpGrant) {
-    if (grantBusy || !confirmDiscardGrant(t("switch-grant"))) return;
+  async function selectGrant(grant: McpGrant) {
+    if (grantBusy) return;
+    if (!(await confirmDiscardGrant(t("switch-grant")))) return;
+    if (grantBusy) return;
     setExpiryEditor(null);
     loadedGrantRef.current = grant;
     setGrantNotice("");
@@ -259,8 +275,10 @@ export default function McpDialog({
     setError("");
   }
 
-  function newGrant() {
-    if (grantBusy || !confirmDiscardGrant(t("new-grant"))) return;
+  async function newGrant() {
+    if (grantBusy) return;
+    if (!(await confirmDiscardGrant(t("new-grant")))) return;
+    if (grantBusy) return;
     setExpiryEditor(null);
     loadedGrantRef.current = null;
     setGrantNotice("");
@@ -355,21 +373,43 @@ export default function McpDialog({
     });
   }
 
-  function confirmDiscardGrant(action: string): boolean {
-    return !grantDirty || window.confirm(t("the-current-mcp-grant-has-unsaved-changes-will-discard", [action]));
+  async function confirmDiscardGrant(action: string): Promise<boolean> {
+    if (!grantDirty) return true;
+    return requestAppConfirm({
+      title: t("mcp-bridge"),
+      message: t("the-current-mcp-grant-has-unsaved-changes-will-discard", [action]),
+      danger: true,
+    });
   }
 
-  function closeDialog() {
+  async function closeDialog() {
     const dirtySections = [grantDirty ? t("grant-draft") : "", http.dirty ? t("http-settings") : ""].filter(Boolean);
     if (dirtySections.length
-      && !window.confirm(t("mcp-has-unsaved-changes-closing-will-discard-them-continue", [dirtySections.join(t("and"))]))) return;
+      && !(await requestAppConfirm({
+        title: t("mcp-bridge"),
+        message: t("mcp-has-unsaved-changes-closing-will-discard-them-continue", [dirtySections.join(t("and"))]),
+        danger: true,
+      }))) return;
     onClose();
   }
 
   return (
     <>
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
-      <section className="wind-dialog mcp-dialog" data-tab={tab} aria-label={t("mcp-bridge")}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && void closeDialog()}>
+      <section
+        className="wind-dialog mcp-dialog"
+        data-tab={tab}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("mcp-bridge")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeDialog();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>MCP Bridge</strong>

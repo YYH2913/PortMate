@@ -1,4 +1,5 @@
 import { t, useLocale } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { KeyRound, Plus, Save, Send, Trash2, UserRound, X } from "lucide-react";
@@ -166,31 +167,40 @@ export default function OneKeyDialog({
     });
   }, [sessions]);
 
-  function selectItem(item: OneKeySummary) {
-    if (busy !== null || !confirmDiscardChanges(t("switch-onekey"))) return;
+  async function selectItem(item: OneKeySummary) {
+    if (busy !== null) return;
+    if (!(await confirmDiscardChanges(t("switch-onekey")))) return;
+    if (!mountedRef.current || busy !== null) return;
     setSelectedId(item.id);
     setDraft(draftFromItem(item));
     setFeedback(null);
   }
 
-  function addItem() {
+  async function addItem() {
     if (busy !== null) return;
     if (items.length >= MAX_ONE_KEYS) {
       setFeedback({ kind: "error", text: t("at-most-onekeys-can-be-saved", [MAX_ONE_KEYS]) });
       return;
     }
-    if (!confirmDiscardChanges(t("new-onekey"))) return;
+    if (!(await confirmDiscardChanges(t("new-onekey")))) return;
+    if (!mountedRef.current || busy !== null) return;
     setSelectedId("");
     setDraft(emptyDraft());
     setFeedback(null);
   }
 
-  function confirmDiscardChanges(action: string): boolean {
-    return !hasUnsavedChanges || window.confirm(t("this-onekey-has-unsaved-changes-will-discard-them-continue", [action]));
+  async function confirmDiscardChanges(action: string): Promise<boolean> {
+    if (!hasUnsavedChanges) return true;
+    return requestAppConfirm({
+      title: t("onekey-manager"),
+      message: t("this-onekey-has-unsaved-changes-will-discard-them-continue", [action]),
+      danger: true,
+    });
   }
 
-  function closeDialog() {
-    if (!confirmDiscardChanges(t("close-window"))) return;
+  async function closeDialog() {
+    if (!(await confirmDiscardChanges(t("close-window")))) return;
+    if (!mountedRef.current) return;
     onClose();
   }
 
@@ -269,7 +279,12 @@ export default function OneKeyDialog({
     const operationToken = operationGateRef.current.begin("operation");
     if (operationToken === null) return;
     const unsavedWarning = hasUnsavedChanges ? t("unsaved-editor-changes-will-also-be-discarded") : "";
-    if (!window.confirm(t("delete-onekey", [draft.label, unsavedWarning]))) {
+    if (!(await requestAppConfirm({
+      title: t("onekey-manager"),
+      message: t("delete-onekey", [draft.label, unsavedWarning]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !mountedRef.current) {
       operationGateRef.current.finish("operation", operationToken);
       return;
     }
@@ -333,8 +348,21 @@ export default function OneKeyDialog({
   );
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
-      <form className="wind-dialog utility-dialog one-key-dialog" role="dialog" aria-modal="true" aria-labelledby="one-key-dialog-title" onSubmit={(event) => void save(event)}>
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && void closeDialog()}>
+      <form
+        className="wind-dialog utility-dialog one-key-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="one-key-dialog-title"
+        onKeyDown={(event) => {
+          if (busy === null && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeDialog();
+          }
+        }}
+        onSubmit={(event) => void save(event)}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong id="one-key-dialog-title">{t("onekey-manager")}</strong>

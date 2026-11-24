@@ -29,13 +29,13 @@ export async function checkPacedSender(context, appUrl) {
       await page.waitForFunction(() => !document.body.hasAttribute('data-portmate-modal-open'));
     };
 
-    await sender.getByRole('radio', { name: 'Hex(H)' }).check();
+    await sender.getByRole('radio', { name: '十六进制' }).check();
     await text.fill('01 GG 02');
     await start.click();
     await page.locator('.notice-dialog', { hasText: 'Hex 格式无效' }).waitFor();
     assert.equal(await page.evaluate(() => window.__invokeCalls.filter(c => c.command === 'begin_paced_send').length), 0);
     await dismiss();
-    await sender.getByRole('radio', { name: '文本(T)' }).check();
+    await sender.getByRole('radio', { name: '文本' }).check();
 
     await checkSendLineEndings(page, sender, start, text, count, interval, dismiss);
 
@@ -98,7 +98,7 @@ export async function checkPacedSender(context, appUrl) {
 
     // Both text and Hex jobs must retire immediately on a connection change.
     for (const mode of ['text', 'hex']) {
-      await sender.getByRole('radio', { name: mode === 'text' ? '文本(T)' : 'Hex(H)' }).check();
+      await sender.getByRole('radio', { name: mode === 'text' ? '文本' : '十六进制' }).check();
       await text.fill(mode === 'text' ? 'no-replay-after-disconnect' : '01 02 FF');
       await page.evaluate(() => { window.__pacedWrites = []; });
       await start.click();

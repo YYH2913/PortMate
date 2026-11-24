@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { respondAppConfirm, respondAppPrompt } from "./app-dialog-helpers.mjs";
 
 export async function checkModuleAuditRegressions(context, appUrl) {
   async function withPage(test, url = appUrl) {
@@ -49,17 +50,18 @@ export async function checkModuleAuditRegressions(context, appUrl) {
     }
     await load(local, "/audit-loaded", [entry("/audit-loaded", "file.txt")]);
     await local.getByRole("textbox").fill("/unconfirmed-draft");
-    await page.evaluate(() => { window.prompt = () => "new.txt"; });
     await local.getByRole("button", { name: "新建文件", exact: true }).click();
+    await respondAppPrompt(page, "new.txt");
+    await page.waitForFunction(() => window.__invokeCalls.some(call => call.command === "create_file"));
     assert.equal((await calls("create_file")).at(-1).args.request.path, "/audit-loaded/new.txt", "creation used an unsubmitted directory draft");
     await local.locator('[aria-label="新建文件"]:not(:disabled)').waitFor();
     assert.equal(await local.getByRole("textbox").inputValue(), "/unconfirmed-draft", "mutation refresh discarded the address draft");
     await load(local, "/audit-selected", [entry("/audit-selected", "file.txt")]);
     await local.getByRole("option", { name: /file.txt/ }).click();
     await local.locator("summary").click();
-    await page.evaluate(() => { window.prompt = () => "648junk"; });
     const chmodBefore = (await calls("chmod_path")).length;
     await local.getByRole("button", { name: "修改权限", exact: true }).click();
+    await respondAppPrompt(page, "648junk");
     await local.getByRole("alert").filter({ hasText: "八进制" }).waitFor();
     assert.equal((await calls("chmod_path")).length, chmodBefore, "partially valid permissions were sent");
     await page.evaluate(() => { window.__deferFileLoads = true; });
@@ -216,6 +218,7 @@ export async function checkModuleAuditRegressions(context, appUrl) {
     await page.locator(".notice-dialog").getByRole("button", { name: "确定", exact: true }).click();
     await dialog.getByLabel("脚本运行结果").waitFor();
     await dialog.getByRole("button", { name: "删除自定义脚本", exact: true }).click();
+    await respondAppConfirm(page, true);
     await page.waitForFunction(() => document.querySelector('[aria-label="脚本名称"]')?.value === "Second script");
     assert.equal(await dialog.getByLabel("脚本运行结果").count(), 0, "another script inherited the deleted script's result");
     assert.equal(await dialog.getByLabel("脚本运行参数").inputValue(), "{}");
@@ -248,7 +251,10 @@ export async function checkModuleAuditRegressions(context, appUrl) {
         return { clipboard: window.__clipboardText, rotations: window.__mcpHttpTokenSequence };
       });
       if (action === "copy") await copy.click();
-      else if (action === "rotate") await dialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
+      else if (action === "rotate") {
+        await dialog.getByRole("button", { name: "轮换 Token", exact: true }).click();
+        await respondAppConfirm(page, true);
+      }
       else if (action === "start") await dialog.getByRole("button", { name: "启动服务", exact: true }).click();
       else await dialog.getByRole("button", { name: "保存配置", exact: true }).click();
       await dialog.getByRole("alert").filter({ hasText: "其他窗口" }).waitFor();

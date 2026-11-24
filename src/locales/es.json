@@ -4144,5 +4144,22 @@
   "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
   "npcap-conflict-error": "Un conflicto de Packet.dll/WinPcap o un archivo inesperado impide cargar de forma segura. Repare Npcap/WinPcap con su instalador oficial, reinicie PortMate y compruebe de nuevo.",
   "confirm": "Confirmar",
-  "terminal-key-mode-alternate-hint": "Cambiar entre modo Insertar/Normal (aplicación a pantalla completa: Shift+Esc para Normal, i para reanudar entrada; Esc se envía a la aplicación)"
+  "remove-client-identity-confirm": "¿{0} \"{1}\" ({2})?{3}",
+  "set-tab-color": "Establecer color de pestaña",
+  "enable-synchronized-input": "Activar entrada sincronizada",
+  "disable-synchronized-input": "Desactivar entrada sincronizada",
+  "move-session-to-folder": "Mover a carpeta...",
+  "disconnect-all-sessions": "Desconectar todas las sesiones",
+  "disconnect-inactive-sessions": "Desconectar sesiones inactivas",
+  "disconnect-sessions-below": "Desconectar sesiones inferiores",
+  "clear-command-history": "Borrar el historial de todas las sesiones",
+  "confirm-clear-command-history": "¿Borrar el historial de comandos de todas las sesiones?",
+  "send-textarea-placeholder": "Escriba texto o bytes hexadecimales para enviar...",
+  "hex-mode": "Hex",
+  "open-folder": "Abrir carpeta",
+  "collapse-group": "Contraer grupo {0}",
+  "expand-group": "Expandir grupo {0}",
+  "terminal-key-mode-alternate-hint": "Cambiar entre modo Insertar/Normal (aplicación a pantalla completa: Shift+Esc para Normal, i para reanudar entrada; Esc se envía a la aplicación)",
+  "file-actions-menu": "Acciones de archivo",
+  "search-sessions-shortcut": "Buscar sesiones ({0})"
 }

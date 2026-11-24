@@ -23,6 +23,17 @@ describe("terminal export request event", () => {
     expect(dispatchEvent).toHaveBeenCalledOnce();
   });
 
+  it("rejects an export payload from another view before either window can write it", async () => {
+    const request = { sessionId: "s", viewId: "selected", source: "buffer" } as const;
+    await expect(requestTerminalTextExport(request, {
+      dispatchEvent(event) {
+        (event as CustomEvent<TerminalTextExportRequestDetail>).detail.respond({ ok: true,
+          payload: { ...request, viewId: "other", text: "wrong", bytes: 5, lineCount: 1 } });
+        return true;
+      },
+    })).rejects.toThrow();
+  });
+
   it("rejects explicit extraction errors and missing listeners", async () => {
     const rejectingTarget = {
       dispatchEvent(event: Event) {

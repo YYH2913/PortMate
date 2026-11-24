@@ -1,4 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import { Braces, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { invokeBackend } from "./api";
@@ -58,34 +59,43 @@ export default function CustomScriptDialog({
     };
   }, []);
 
-  function selectScript(script: CustomScript) {
+  async function selectScript(script: CustomScript) {
     if (operationGate.current.isActive("operation") || loading || busy) return;
-    if (!confirmDiscardChanges(t("switch-script"))) return;
+    if (!(await confirmDiscardChanges(t("switch-script")))) return;
+    if (operationGate.current.isActive("operation") || loading || busy) return;
     setDraft(customScriptDraft(script));
     setResult(null);
     setParameters("{}");
     setError("");
   }
 
-  function createScript() {
+  async function createScript() {
     if (operationGate.current.isActive("operation") || loading || busy) return;
     if (scripts.length >= MAX_CUSTOM_SCRIPTS) {
       setError(t("at-most-custom-scripts-can-be-saved", [MAX_CUSTOM_SCRIPTS]));
       return;
     }
-    if (!confirmDiscardChanges(t("new-script"))) return;
+    if (!(await confirmDiscardChanges(t("new-script")))) return;
+    if (operationGate.current.isActive("operation") || loading || busy) return;
     setDraft(newCustomScriptDraft());
     setResult(null);
     setParameters("{}");
     setError("");
   }
 
-  function confirmDiscardChanges(action: string): boolean {
-    return !hasUnsavedChanges || window.confirm(t("this-script-has-unsaved-changes-will-discard-them-continue", [action]));
+  async function confirmDiscardChanges(action: string): Promise<boolean> {
+    if (!hasUnsavedChanges) return true;
+    return requestAppConfirm({
+      title: t("custom-scripts"),
+      message: t("this-script-has-unsaved-changes-will-discard-them-continue", [action]),
+      danger: true,
+    });
   }
 
-  function closeDialog() {
-    if (operationGate.current.isActive("operation") || loading || busy || !confirmDiscardChanges(t("close-window"))) return;
+  async function closeDialog() {
+    if (operationGate.current.isActive("operation") || loading || busy) return;
+    if (!(await confirmDiscardChanges(t("close-window")))) return;
+    if (operationGate.current.isActive("operation") || loading || busy) return;
     onClose();
   }
 
@@ -97,7 +107,7 @@ export default function CustomScriptDialog({
 
   async function refreshScripts() {
     if (loading || busy || operationGate.current.isActive("operation")) return;
-    if (!confirmDiscardChanges(t("refresh-scripts"))) return;
+    if (!(await confirmDiscardChanges(t("refresh-scripts")))) return;
     const gate = operationGate.current;
     const token = gate.begin("operation");
     if (token === null) return;
@@ -153,11 +163,19 @@ export default function CustomScriptDialog({
 
   async function deleteScript() {
     if (!selectedScript || busy || operationGate.current.isActive("operation")) return;
-    const unsavedWarning = hasUnsavedChanges ? t("unsaved-editor-changes-will-also-be-discarded") : "";
-    if (!window.confirm(t("delete-custom-script", [selectedScript.name, unsavedWarning]))) return;
     const gate = operationGate.current;
     const token = gate.begin("operation");
     if (token === null) return;
+    const unsavedWarning = hasUnsavedChanges ? t("unsaved-editor-changes-will-also-be-discarded") : "";
+    if (!(await requestAppConfirm({
+      title: t("custom-scripts"),
+      message: t("delete-custom-script", [selectedScript.name, unsavedWarning]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !gate.isCurrent("operation", token)) {
+      gate.finish("operation", token);
+      return;
+    }
     const pendingScript = selectedScript;
     setBusy(true);
     setError("");
@@ -217,8 +235,20 @@ export default function CustomScriptDialog({
   }
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
-      <section className="wind-dialog custom-script-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-script-title">
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && void closeDialog()}>
+      <section
+        className="wind-dialog custom-script-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="custom-script-title"
+        onKeyDown={(event) => {
+          if (!loading && !busy && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeDialog();
+          }
+        }}
+      >
         <header className="dialog-title">
           <Braces size={18} />
           <strong id="custom-script-title">{t("custom-scripts")}</strong>

@@ -1,4 +1,5 @@
 import type { SessionKind, SessionStatus } from "./types";
+import { formatWorkspaceKeyBinding, type WorkspaceKeymap } from "./workspace-hotkeys";
 
 export const menuGroups = [
   {
@@ -28,6 +29,7 @@ export const menuGroups = [
       "synchronized-input",
       "free-input",
       "export-terminal-text",
+      "export-terminal-text-to",
       "export-selected-text",
     ],
   },
@@ -42,6 +44,8 @@ export const menuGroups = [
       "send",
       "quick-bar",
       "status-bar",
+      "focus-mode",
+      "lock-screen",
       "restore-layout",
     ],
   },
@@ -84,12 +88,12 @@ const menuSections = {
   terminal: [
     { label: "edit", items: ["find", "go-to-line", "block-selection"] },
     { label: "input", items: ["insert-mode", "normal-mode", "local-mode", "local-editing", "synchronized-input", "free-input"] },
-    { label: "export", items: ["export-terminal-text", "export-selected-text"] },
+    { label: "export", items: ["export-terminal-text", "export-terminal-text-to", "export-selected-text"] },
   ],
   workspace: [
     { label: "", items: ["new-workspace-window"] },
     { label: "", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar"] },
-    { label: "", items: ["restore-layout"] },
+    { label: "", items: ["focus-mode", "lock-screen", "restore-layout"] },
   ],
   tools: [
     { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "easytier-network", "tmux", "serial-analyzer", "sysmon"] },
@@ -111,9 +115,15 @@ export type MenuCapabilityContext = {
   terminalExportBusy: boolean;
 };
 
+export type MenuShortcutHint = {
+  display: string;
+  aria: string;
+};
+
 const activeSessionItems = new Set<MenuItem>([
   "session-settings",
   "export-terminal-text",
+  "export-terminal-text-to",
   "export-selected-text",
   "duplicate-session",
   "transfer-tasks",
@@ -130,12 +140,37 @@ const activeViewItems = new Set<MenuItem>([
   "local-mode",
   "normal-mode",
   "local-editing",
+  "export-terminal-text",
+  "export-terminal-text-to",
+  "export-selected-text",
 ]);
 
 const connectedViewItems = new Set<MenuItem>(["synchronized-input", "free-input"]);
 
+export function menuItemShortcut(
+  item: MenuItem,
+  workspaceKeymap?: Partial<WorkspaceKeymap>,
+  isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform),
+): MenuShortcutHint | null {
+  switch (item) {
+    case "find":
+      return isMac ? { display: "Cmd+F", aria: "Meta+F" } : { display: "Ctrl+F", aria: "Control+F" };
+    case "focus-mode":
+      return { display: "Alt+Enter", aria: "Alt+Enter" };
+    case "lock-screen":
+      return isMac ? { display: "Cmd+Option+L", aria: "Meta+Alt+L" } : { display: "Ctrl+Alt+L", aria: "Control+Alt+L" };
+    case "one-keys": {
+      const binding = workspaceKeymap?.["manage-one-keys"]?.trim();
+      if (!binding) return null;
+      return { display: formatWorkspaceKeyBinding(binding), aria: binding.replace(/\bCtrl\b/g, "Control") };
+    }
+    default:
+      return null;
+  }
+}
+
 export function menuItemDisabled(item: MenuItem, context: MenuCapabilityContext): boolean {
-  if (context.terminalExportBusy && (item === "export-terminal-text" || item === "export-selected-text")) return true;
+  if (context.terminalExportBusy && (item === "export-terminal-text" || item === "export-terminal-text-to" || item === "export-selected-text")) return true;
   if (item === "export-selected-text" && !context.hasSelection) return true;
   if (activeSessionItems.has(item) && !context.hasActiveSession) return true;
   if (activeViewItems.has(item) && !context.hasActiveView) return true;

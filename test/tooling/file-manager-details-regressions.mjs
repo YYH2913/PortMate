@@ -43,6 +43,20 @@ export async function checkFileManagerDetails(context, appUrl, screenshotPrefix 
     const row = (pane, name) => pane.locator("[data-file-path]").filter({ has: page.locator(".file-entry-name", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
     await load(local, "/details", entries);
     await load(remote, "/remote-details", entries.map(entry => ({ ...entry, path: entry.path.replace("/details", "/remote-details") })));
+    // Tab can focus a different file without changing the list selection.
+    // F2/Delete must target that focused row (or its selected group), not an
+    // unrelated previously selected file.
+    await row(local, "file1.txt").click();
+    await row(local, "file2.log").press("F2");
+    const renamePrompt = page.locator('.app-dialog[data-app-dialog="prompt"]');
+    assert.equal(await renamePrompt.locator("input").inputValue(), "file2.log");
+    await renamePrompt.locator("input").press("Escape");
+    await row(local, "file1.txt").press("Delete");
+    const deletePrompt = page.locator('.app-dialog[data-app-dialog="confirm"]');
+    await deletePrompt.locator('button[type="submit"]').click();
+    await page.waitForFunction(() => window.__invokeCalls.some(call => call.command === "delete_paths"));
+    assert.deepEqual(await page.evaluate(() => window.__invokeCalls.findLast(call => call.command === "delete_paths").args.request.paths), ["/details/file1.txt"]);
+    await load(local, "/details", entries);
     assert.equal(await remote.locator('option[value="overwrite"]').isDisabled(), true, 'remote destination must not advertise unsafe overwrite');
     await local.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).selectOption('overwrite');
     assert.equal(await remote.getByRole('combobox', { name: await message('file-conflict-policy'), exact: true }).inputValue(), 'overwrite',

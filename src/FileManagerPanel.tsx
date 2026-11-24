@@ -1,4 +1,8 @@
 import { t, tr, useLocale, localizeDiagnostic, formatUiDate, formatUiNumber } from "./i18n";
+import { requestAppConfirm, requestAppPrompt } from "./app-dialog";
+import { ContextDivider, ContextMenuButton } from "./ContextMenus";
+import { useMeasuredMenuPosition } from "./context-menu-position";
+import { INTERACTION_LAYER_DISMISS_EVENT } from "./modal-interaction-boundary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -90,6 +94,7 @@ type FileDragState = {
 
 type TransferConflictPolicy = "fail" | "overwrite" | "skip" | "rename";
 type FileSelectionModifiers = { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean };
+const singleFileSelection = { shiftKey: false, ctrlKey: false, metaKey: false };
 type FileLoadNavigation = "record" | "preserve" | "reset" | { type: "restore"; index: number };
 type FilePaneKey = "local" | "remote";
 
@@ -149,6 +154,12 @@ export default function FileManagerPanel({
   const [busyFileOperationKeys, setBusyFileOperationKeys] = useState<Set<FilePaneKey>>(() => new Set());
   const transferOperationGate = useRef(new KeyedRequestGate<string>());
   const [busyTransferIds, setBusyTransferIds] = useState<Set<string>>(() => new Set());
+  const [fileContextMenu, setFileContextMenu] = useState<{
+    remote: boolean;
+    x: number;
+    y: number;
+    entry: FileEntry;
+  } | null>(null);
   const canRemote = Boolean(active && isSshLikeProfile(active.profile) && active.runtime.status === "connected");
   const remoteConnectionKey = canRemote ? JSON.stringify([active?.profile.id, active?.runtime.connectedSince]) : "";
   activeFileConnectionKeyRef.current = remoteConnectionKey;
@@ -167,6 +178,12 @@ export default function FileManagerPanel({
 
   useEffect(() => {
     void loadFiles(false, defaultLocalPath(), "reset");
+  }, []);
+
+  useEffect(() => {
+    const dismiss = () => setFileContextMenu(null);
+    window.addEventListener(INTERACTION_LAYER_DISMISS_EVENT, dismiss);
+    return () => window.removeEventListener(INTERACTION_LAYER_DISMISS_EVENT, dismiss);
   }, []);
 
   useEffect(() => () => {
@@ -189,6 +206,7 @@ export default function FileManagerPanel({
     setDraggedFile(null);
     setDropTarget(null);
     setExternalDrop(null);
+    setFileContextMenu(current => current?.remote ? null : current);
     filePropertiesGate.current.invalidate("properties");
     setPropertiesDialog(null);
     if (canRemote) {
@@ -366,6 +384,7 @@ export default function FileManagerPanel({
     const sessionId = remote ? active?.profile.id ?? "" : "";
     const connectionKey = activeFileConnectionKeyRef.current;
     if (remote && (!canRemote || !sessionId)) return;
+    setFileContextMenu(current => current?.remote === remote ? null : current);
     const epoch = fileLoadEpochs.current[loadKey] + 1;
     fileLoadEpochs.current[loadKey] = epoch;
     activeFileLoadEpochs.current[loadKey] = epoch;
@@ -404,12 +423,20 @@ export default function FileManagerPanel({
   async function runFileMutation(
     remote: boolean,
     refreshPath: string,
-    mutate: (sessionId: string | null, expectedConnectedSince: string | null) => Promise<boolean>,
+    prepare: () => Promise<{
+      command: "create_directory" | "create_file" | "delete_paths" | "rename_path" | "move_paths" | "chmod_path";
+      args: Record<string, unknown>;
+    } | null>,
   ) {
     const operation = beginFileOperation([remote]);
     if (!operation) return;
     try {
-      if (!await mutate(operation.requestSessionId, operation.expectedConnectedSince)) return;
+      const mutation = await prepare();
+      // Confirmation is asynchronous: the originating pane or connection may
+      // have disappeared while the user was deciding. Never send its old RPC.
+      if (!mutation || !isFileOperationCurrent(operation)) return;
+      await invokeBackend(mutation.command, { request: { ...mutation.args, remote,
+        sessionId: operation.requestSessionId, expectedConnectedSince: operation.expectedConnectedSince } });
       if (!releaseCurrentFileOperation(operation)) return;
       await loadFiles(remote, refreshPath, "preserve");
     } catch (error) {
@@ -423,12 +450,14 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
-      const name = exactNonBlankPathInput(window.prompt(t("directory-name")));
-      if (name === null) return false;
+    await runFileMutation(remote, directory, async () => {
+      const name = exactNonBlankPathInput(await requestAppPrompt({
+        title: t("new-folder"),
+        label: t("directory-name"),
+      }));
+      if (name === null) return null;
       const nextPath = joinFilePath(directory, name, remote);
-      await invokeBackend("create_directory", { request: { sessionId, expectedConnectedSince, path: nextPath, remote } });
-      return true;
+      return { command: "create_directory", args: { path: nextPath } };
     });
   }
 
@@ -436,42 +465,45 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
-      const name = exactNonBlankPathInput(window.prompt(t("file-name")));
-      if (name === null) return false;
+    await runFileMutation(remote, directory, async () => {
+      const name = exactNonBlankPathInput(await requestAppPrompt({
+        title: t("new-file"),
+        label: t("file-name"),
+      }));
+      if (name === null) return null;
       const nextPath = joinFilePath(directory, name, remote);
-      await invokeBackend("create_file", { request: { sessionId, expectedConnectedSince, path: nextPath, remote } });
-      return true;
+      return { command: "create_file", args: { path: nextPath } };
     });
   }
 
-  async function deleteSelected(remote: boolean) {
+  async function deleteSelected(remote: boolean, row?: FileEntry) {
     const panel = remote ? remotePanel : localPanel;
-    if (!panel.selected.length || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
-      if (!window.confirm(t("delete-selected-items", [panel.selected.length]))) return false;
-      await invokeBackend("delete_paths", {
-        request: {
-          sessionId,
-          expectedConnectedSince,
-          paths: panel.selected.map((entry) => entry.path),
-          remote,
-        },
-      });
-      return true;
+    const selected = row && !panel.selected.some(item => item.path === row.path) ? [row] : panel.selected;
+    if (!selected.length || panel.directory === null) return;
+    await runFileMutation(remote, panel.directory, async () => {
+      if (!(await requestAppConfirm({
+        title: t("delete"),
+        message: t("delete-selected-items", [selected.length]),
+        confirmLabel: t("delete"),
+        danger: true,
+      }))) return null;
+      return { command: "delete_paths", args: { paths: selected.map((entry) => entry.path) } };
     });
   }
 
-  async function renameSelected(remote: boolean) {
+  async function renameSelected(remote: boolean, row?: FileEntry) {
     const panel = remote ? remotePanel : localPanel;
-    const selected = panel.selected[0];
-    if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
-      const nextName = exactNonBlankPathInput(window.prompt(t("new-name"), selected.name));
-      if (nextName === null) return false;
+    const selected = row ?? (panel.selected.length === 1 ? panel.selected[0] : null);
+    if (!selected || panel.directory === null) return;
+    await runFileMutation(remote, panel.directory, async () => {
+      const nextName = exactNonBlankPathInput(await requestAppPrompt({
+        title: t("rename"),
+        label: t("new-name"),
+        defaultValue: selected.name,
+      }));
+      if (nextName === null) return null;
       const nextPath = joinFilePath(parentPath(selected.path, remote), nextName, remote);
-      await invokeBackend("rename_path", { request: { sessionId, expectedConnectedSince, oldPath: selected.path, newPath: nextPath, remote } });
-      return true;
+      return { command: "rename_path", args: { oldPath: selected.path, newPath: nextPath } };
     });
   }
 
@@ -479,23 +511,15 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     if (!panel.selected.length || panel.directory === null) return;
     const directory = panel.directory;
-    await runFileMutation(remote, directory, async (sessionId, expectedConnectedSince) => {
+    await runFileMutation(remote, directory, async () => {
       const suggestedDestination = parentPath(directory, remote);
-      const destination = exactNonBlankPathInput(window.prompt(
-        t("move-to-directory"),
-        suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
-      ));
-      if (destination === null) return false;
-      await invokeBackend("move_paths", {
-        request: {
-          sessionId,
-          expectedConnectedSince,
-          paths: panel.selected.map((entry) => entry.path),
-          destination,
-          remote,
-        },
-      });
-      return true;
+      const destination = exactNonBlankPathInput(await requestAppPrompt({
+        title: t("move-to"),
+        label: t("move-to-directory"),
+        defaultValue: suggestedDestination === "/" || suggestedDestination === "." || suggestedDestination === "~" ? "" : suggestedDestination,
+      }));
+      if (destination === null) return null;
+      return { command: "move_paths", args: { paths: panel.selected.map((entry) => entry.path), destination } };
     });
   }
 
@@ -516,12 +540,15 @@ export default function FileManagerPanel({
     const panel = remote ? remotePanel : localPanel;
     const selected = panel.selected[0];
     if (panel.selected.length !== 1 || !selected || panel.directory === null) return;
-    await runFileMutation(remote, panel.directory, async (sessionId, expectedConnectedSince) => {
-      const modeText = window.prompt(t("octal-permissions"), "0644");
-      if (!modeText?.trim()) return false;
+    await runFileMutation(remote, panel.directory, async () => {
+      const modeText = await requestAppPrompt({
+        title: t("change-permissions"),
+        label: t("octal-permissions"),
+        defaultValue: "0644",
+      });
+      if (!modeText?.trim()) return null;
       const mode = parseFilePermissionMode(modeText);
-      await invokeBackend("chmod_path", { request: { sessionId, expectedConnectedSince, path: selected.path, mode, remote } });
-      return true;
+      return { command: "chmod_path", args: { path: selected.path, mode } };
     });
   }
 
@@ -771,8 +798,20 @@ export default function FileManagerPanel({
     });
   }
 
+  function openFileContextMenu(remote: boolean, entry: FileEntry, event: ReactMouseEvent<HTMLElement>) {
+    const panel = remote ? remotePanel : localPanel;
+    const locked = panel.busy || busyFileOperationKeys.has(filePaneKey(remote));
+    if (locked) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!panel.selected.some((item) => item.path === entry.path)) {
+      selectFileEntry(remote, entry, singleFileSelection);
+    }
+    setFileContextMenu({ remote, x: event.clientX, y: event.clientY, entry });
+  }
+
   return (
-    <div className={canRemote ? "file-manager dual" : "file-manager"}>
+    <div className={canRemote ? "file-manager dual" : "file-manager"} onClick={() => setFileContextMenu(null)}>
       <div className="file-panels">
         <FileBrowserPane
           title={t("local")}
@@ -782,6 +821,7 @@ export default function FileManagerPanel({
           sort={fileSorts.local}
           onSort={(key) => changeFileSort(false, key)}
           onInspect={(entry) => void showProperties(false, entry)}
+          onOpenEntryContextMenu={(entry, event) => openFileContextMenu(false, entry, event)}
           operationBusy={busyFileOperationKeys.has("local")}
           canTransfer={canTransferFiles}
           transferLabel={t("upload")}
@@ -811,8 +851,8 @@ export default function FileManagerPanel({
           onDrop={(event) => void dropFile(false, event)}
           onCreateDir={() => void createDir(false)}
           onCreateFile={() => void createFile(false)}
-          onDelete={() => void deleteSelected(false)}
-          onRename={() => void renameSelected(false)}
+          onDelete={row => void deleteSelected(false, row)}
+          onRename={row => void renameSelected(false, row)}
           onMove={() => void moveSelected(false)}
           onCopyPaths={() => void copySelectedPaths(false)}
           onChmod={() => void chmodSelected(false)}
@@ -828,6 +868,7 @@ export default function FileManagerPanel({
             sort={fileSorts.remote}
             onSort={(key) => changeFileSort(true, key)}
             onInspect={(entry) => void showProperties(true, entry)}
+            onOpenEntryContextMenu={(entry, event) => openFileContextMenu(true, entry, event)}
             operationBusy={busyFileOperationKeys.has("remote")}
             canTransfer={canTransferFiles}
             transferLabel={t("download")}
@@ -857,8 +898,8 @@ export default function FileManagerPanel({
             onDrop={(event) => void dropFile(true, event)}
             onCreateDir={() => void createDir(true)}
             onCreateFile={() => void createFile(true)}
-            onDelete={() => void deleteSelected(true)}
-            onRename={() => void renameSelected(true)}
+            onDelete={row => void deleteSelected(true, row)}
+            onRename={row => void renameSelected(true, row)}
             onMove={() => void moveSelected(true)}
             onCopyPaths={() => void copySelectedPaths(true)}
             onChmod={() => void chmodSelected(true)}
@@ -875,6 +916,54 @@ export default function FileManagerPanel({
         onCancel={cancelTransfer}
         onDismiss={onDismissTransfer}
       />
+      {fileContextMenu ? (
+        <FileEntryContextMenu
+          state={fileContextMenu}
+          selectedCount={(fileContextMenu.remote ? remotePanel : localPanel).selected.length}
+          canTransfer={canTransferFiles}
+          transferLabel={fileContextMenu.remote ? t("download") : t("upload")}
+          onOpenDir={() => {
+            const { remote, entry } = fileContextMenu;
+            setFileContextMenu(null);
+            void loadFiles(remote, entry.path);
+          }}
+          onTransfer={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void transferBetween(!remote);
+          }}
+          onCopyPaths={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void copySelectedPaths(remote);
+          }}
+          onRename={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void renameSelected(remote);
+          }}
+          onMove={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void moveSelected(remote);
+          }}
+          onChmod={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void chmodSelected(remote);
+          }}
+          onProperties={() => {
+            const { remote, entry } = fileContextMenu;
+            setFileContextMenu(null);
+            void showProperties(remote, entry);
+          }}
+          onDelete={() => {
+            const { remote } = fileContextMenu;
+            setFileContextMenu(null);
+            void deleteSelected(remote);
+          }}
+        />
+      ) : null}
       {propertiesDialog ? <FilePropertiesDialog state={propertiesDialog} onClose={closePropertiesDialog} /> : null}
     </div>
   );
@@ -888,6 +977,7 @@ function FileBrowserPane({
   sort,
   onSort,
   onInspect,
+  onOpenEntryContextMenu,
   operationBusy,
   canTransfer,
   transferLabel,
@@ -929,6 +1019,7 @@ function FileBrowserPane({
   sort: FileSort;
   onSort: (key: FileSortKey) => void;
   onInspect: (entry: FileEntry) => void;
+  onOpenEntryContextMenu: (entry: FileEntry, event: ReactMouseEvent<HTMLElement>) => void;
   operationBusy: boolean;
   canTransfer: boolean;
   transferLabel: string;
@@ -955,8 +1046,8 @@ function FileBrowserPane({
   onDrop: (event: ReactDragEvent<HTMLElement>) => void;
   onCreateDir: () => void;
   onCreateFile: () => void;
-  onDelete: () => void;
-  onRename: () => void;
+  onDelete: (row?: FileEntry) => void;
+  onRename: (row?: FileEntry) => void;
   onMove: () => void;
   onCopyPaths: () => void;
   onChmod: () => void;
@@ -974,12 +1065,36 @@ function FileBrowserPane({
   }), [locale]);
   const byteFormatter = useMemo(() => new Intl.NumberFormat(locale), [locale]);
   const listRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDetailsElement>(null);
   const rightToLeft = locale === "ar";
   useEffect(() => {
     // Browser scroll offsets change sign in RTL; don't carry a previous direction's
     // offset into the new layout and leave the first column partially offscreen.
     if (listRef.current) listRef.current.scrollLeft = 0;
   }, [rightToLeft]);
+
+  useEffect(() => {
+    const closeOverflowOnOutsidePointer = (event: PointerEvent) => {
+      const details = overflowRef.current;
+      if (details?.open && event.target instanceof Node && !details.contains(event.target)) {
+        details.open = false;
+      }
+    };
+    const closeOverflowOnEscape = (event: KeyboardEvent) => {
+      const details = overflowRef.current;
+      if (details?.open && event.key === "Escape") {
+        event.preventDefault();
+        details.open = false;
+        details.querySelector("summary")?.focus();
+      }
+    };
+    window.addEventListener("pointerdown", closeOverflowOnOutsidePointer, true);
+    window.addEventListener("keydown", closeOverflowOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOverflowOnOutsidePointer, true);
+      window.removeEventListener("keydown", closeOverflowOnEscape);
+    };
+  }, []);
 
   function closeOverflowAndRun(event: ReactMouseEvent<HTMLButtonElement>, action: () => void) {
     event.currentTarget.closest("details")?.removeAttribute("open");
@@ -1011,8 +1126,8 @@ function FileBrowserPane({
         <button type="button" title={panel.selected.length === panel.entries.length && panel.entries.length ? t("clear-selection") : t("select-all-2")} aria-label={panel.selected.length === panel.entries.length && panel.entries.length ? t("clear-selection") : t("select-all-2")} onClick={onSelectAll} disabled={locked}><ListChecks size={13} /></button>
         <button type="button" title={t("new-folder")} aria-label={t("new-folder")} onClick={onCreateDir} disabled={locked || panel.directory === null}><FolderPlus size={13} /></button>
         <button type="button" title={t("new-file")} aria-label={t("new-file")} onClick={onCreateFile} disabled={locked || panel.directory === null}><FilePlus size={13} /></button>
-        <button type="button" title={t("delete")} aria-label={t("delete")} onClick={onDelete} disabled={locked || !panel.selected.length}><Trash2 size={13} /></button>
-        <details className="file-action-overflow">
+        <button type="button" title={t("delete")} aria-label={t("delete")} onClick={() => onDelete()} disabled={locked || !panel.selected.length}><Trash2 size={13} /></button>
+        <details ref={overflowRef} className="file-action-overflow">
           <summary title={t("more-file-actions")} aria-label={t("more-file-actions")}><MoreHorizontal size={13} /></summary>
           <div className="file-action-overflow-menu">
             <button type="button" title={t("copy-path")} aria-label={t("copy-path")} onClick={(event) => closeOverflowAndRun(event, onCopyPaths)} disabled={locked || !panel.selected.length}><Copy size={13} /><span>{t("copy-path")}</span></button>
@@ -1082,7 +1197,7 @@ function FileBrowserPane({
           <span>..</span>
         </button>
         <div className="file-list-entries" role="listbox" aria-label={`${title} · ${t("file-manager")}`} aria-multiselectable="true">
-        {entries.map((entry) => (
+        {entries.map((entry, entryIndex) => (
           <div
             key={entry.path}
             data-file-path={entry.path}
@@ -1090,7 +1205,7 @@ function FileBrowserPane({
             role="option"
             aria-selected={selectedPaths.has(entry.path)}
             aria-disabled={locked}
-            aria-keyshortcuts="Alt+Enter"
+            aria-keyshortcuts="Alt+Enter F2 Delete"
             tabIndex={locked ? -1 : 0}
             draggable={canTransfer && !locked}
             onDragStart={(event) => {
@@ -1100,11 +1215,41 @@ function FileBrowserPane({
             onClick={(event) => {
               if (!locked) onSelect(entry, event);
             }}
+            onContextMenu={(event) => {
+              if (!locked) onOpenEntryContextMenu(entry, event);
+            }}
             onKeyDown={(event) => {
-              if (!locked && event.key === "Enter" && event.altKey) {
+              if (locked) return;
+              if (event.key === "Enter" && event.altKey) {
                 event.preventDefault();
                 onInspect(entry);
-              } else if (!locked && (event.key === "Enter" || event.key === " ")) {
+              } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                const nextIndex = event.key === "ArrowDown"
+                  ? Math.min(entries.length - 1, entryIndex + 1)
+                  : Math.max(0, entryIndex - 1);
+                const nextEntry = entries[nextIndex];
+                if (nextEntry && nextIndex !== entryIndex) {
+                  event.preventDefault();
+                  onSelect(nextEntry, event);
+                  const rows = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>(".file-row[data-file-path]");
+                  rows?.[nextIndex]?.focus();
+                }
+              } else if (event.key === "Backspace" && panel.directory !== null) {
+                event.preventDefault();
+                onNavigate(parentPath(panel.directory, remote));
+              } else if (event.key === "F2" && (!selectedPaths.has(entry.path) || panel.selected.length === 1)) {
+                event.preventDefault();
+                if (!selectedPaths.has(entry.path)) onSelect(entry, singleFileSelection);
+                onRename(entry);
+              } else if (event.key === "Delete") {
+                event.preventDefault();
+                if (!selectedPaths.has(entry.path)) onSelect(entry, singleFileSelection);
+                onDelete(entry);
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                if (entry.isDir) onNavigate(entry.path);
+                else onSelect(entry, event);
+              } else if (event.key === " ") {
                 event.preventDefault();
                 onSelect(entry, event);
               }
@@ -1138,12 +1283,77 @@ function FileBrowserPane({
   );
 }
 
+function FileEntryContextMenu({
+  state,
+  selectedCount,
+  canTransfer,
+  transferLabel,
+  onOpenDir,
+  onTransfer,
+  onCopyPaths,
+  onRename,
+  onMove,
+  onChmod,
+  onProperties,
+  onDelete,
+}: {
+  state: { remote: boolean; x: number; y: number; entry: FileEntry };
+  selectedCount: number;
+  canTransfer: boolean;
+  transferLabel: string;
+  onOpenDir: () => void;
+  onTransfer: () => void;
+  onCopyPaths: () => void;
+  onRename: () => void;
+  onMove: () => void;
+  onChmod: () => void;
+  onProperties: () => void;
+  onDelete: () => void;
+}) {
+  useLocale();
+  const { ref, style } = useMeasuredMenuPosition(state.x, state.y, 220, 320);
+  return (
+    <div
+      ref={ref}
+      className="portmate-context-menu file-context-menu"
+      aria-label={t("file-actions-menu")}
+      tabIndex={-1}
+      style={style}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {state.entry.isDir ? <ContextMenuButton label={t("open-folder")} onClick={onOpenDir} /> : null}
+      <ContextMenuButton label={transferLabel} disabled={!canTransfer || !selectedCount} onClick={onTransfer} />
+      <ContextMenuButton label={t("copy-path")} disabled={!selectedCount} onClick={onCopyPaths} />
+      <ContextDivider />
+      <ContextMenuButton label={t("rename")} shortcut="F2" disabled={selectedCount !== 1} onClick={onRename} />
+      <ContextMenuButton label={t("move-to")} disabled={!selectedCount} onClick={onMove} />
+      <ContextMenuButton label={t("change-permissions")} disabled={selectedCount !== 1} onClick={onChmod} />
+      <ContextMenuButton label={t("file-properties")} shortcut="Alt+Enter" disabled={selectedCount !== 1} onClick={onProperties} />
+      <ContextDivider />
+      <ContextMenuButton label={t("delete")} shortcut="Del" danger disabled={!selectedCount} onClick={onDelete} />
+    </div>
+  );
+}
+
 function FilePropertiesDialog({ state, onClose }: { state: NonNullable<FilePropertiesDialogState>; onClose: () => void }) {
   useLocale();
   const properties = state.properties;
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="wind-dialog file-properties-dialog" role="dialog" aria-modal="true" aria-labelledby="file-properties-title">
+      <div
+        className="wind-dialog file-properties-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="file-properties-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span id="file-properties-title">{t("file-properties")}</span>
           <button type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button>

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { respondAppConfirm } from "./app-dialog-helpers.mjs";
 
 const messages = Object.fromEntries(["zh", "en", "fr", "es", "ru", "ar"].map(locale => [
   locale, JSON.parse(readFileSync(new URL(`../../src/locales/${locale}.json`, import.meta.url), "utf8")),
@@ -9,18 +10,10 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
   const page = await context.newPage();
   const errors = [];
   const confirmations = [];
-  let accept = false;
   page.on("pageerror", error => errors.push(error.message));
-  page.on("dialog", async dialog => {
-    confirmations.push(dialog.message());
-    await (accept ? dialog.accept() : dialog.dismiss());
-  });
-  await page.route("**/src/TerminalCanvas.tsx", async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: (await response.text()).replace(
-      "termRef.current = term;", "termRef.current = term; window.__elevationTerminal = term;",
-    ) });
-  });
+  const answerConfirm = async accept => {
+    confirmations.push(await respondAppConfirm(page, accept));
+  };
   const menu = async key => {
     await page.locator('.menu-trigger[aria-controls="menu-session"]').click();
     await page.locator("#menu-session").getByRole("button", { name: messages.zh[key], exact: true }).click();
@@ -29,6 +22,7 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
     await page.goto(appUrl);
     await page.locator(".wind-root").waitFor();
     await menu("elevated-local-terminal");
+    await answerConfirm(false);
     await page.waitForFunction(() => window.__sessions.some(s => s.profile.connection.elevated));
     assert.equal(confirmations.length, 1);
     assert(confirmations[0].includes("MCP") && confirmations[0].includes("UAC") && confirmations[0].includes("参数"));
@@ -39,8 +33,8 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
     assert.equal(state.elevated.runtime.status, "disconnected");
     assert.equal(state.opens.length, 0, "declined consent still launched a process");
     const id = state.elevated.profile.id;
-    accept = true;
     await menu("elevated-local-terminal");
+    await answerConfirm(true);
     await page.waitForFunction(id => window.__sessions.find(s => s.profile.id === id)?.runtime.status === "connected", id);
     state = await page.evaluate(id => ({
       elevated: window.__sessions.find(s => s.profile.id === id),
@@ -55,9 +49,16 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
 
     // sudo's fixed prompt uses the existing private-input boundary: no history
     // or synchronized password broadcast, even before a localized shell prompt.
-    await page.waitForFunction(() => window.__elevationTerminal);
-    await page.evaluate(() => new Promise(resolve => window.__elevationTerminal.write("\r\nPortMate sudo password: ", resolve)));
-    const host = page.locator('.terminal-canvas[data-terminal-focused="true"] .terminal-host');
+    const host = page.locator(`.terminal-canvas[data-terminal-focused="true"][data-terminal-session-id="${id}"] .terminal-host[data-terminal-ready="true"]`);
+    await host.waitFor();
+    await page.evaluate(id => {
+      const text = "\r\nPortMate sudo password: ";
+      const event = { id: "elevation-password-prompt", sessionId: id, paneId: `${id}:main`, ts: new Date().toISOString(),
+        direction: "inbound", stream: "stdout", text, bytesRef: null, annotations: {} };
+      const bytes = [...new TextEncoder().encode(text)];
+      window.__emitTauriEvent("portmate-terminal-live", { event, bytes, originalLength: bytes.length, truncated: false });
+    }, id);
+    await page.waitForFunction(() => document.querySelector('.terminal-canvas[data-terminal-focused="true"] .xterm-rows')?.textContent.includes("PortMate sudo password:"));
     await host.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("fixture-sudo-secret");
     await page.keyboard.press("Enter");
@@ -78,6 +79,7 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
     // must not acquire the consent just given for the old configuration.
     await page.evaluate(() => { window.__changeElevatedShellOnSave = "C:\\Windows\\System32\\cmd.exe"; });
     await page.getByRole("button", { name: `连接 ${messages.zh["elevated-local-terminal"]}`, exact: true }).click();
+    await answerConfirm(true);
     const notice = page.locator(".notice-dialog");
     await notice.waitFor();
     assert((await notice.textContent()).includes(messages.zh["shell-elevation-config-changed"]));
@@ -145,6 +147,7 @@ export async function checkShellElevation(context, appUrl, screenshotPrefix) {
       await preview.locator(".notice-dialog").waitFor();
       assert((await preview.locator(".notice-dialog").textContent()).includes(messages.zh["shell-elevation-desktop-only"]));
       assert.equal(confirmations.length, 3);
+      assert.equal(await preview.locator(".app-dialog").count(), 0);
       assert.deepEqual(previewErrors, []);
     } finally { await previewContext.close(); }
     assert.deepEqual(errors, []);

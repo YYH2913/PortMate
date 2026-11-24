@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { respondAppConfirm } from "./app-dialog-helpers.mjs";
 
 export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
   const page = await context.newPage();
@@ -13,7 +14,12 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
   const revoke = () => dialog.getByRole("button", { name: "撤销", exact: true }).click();
   const start = () => dialog.getByRole("button", { name: /^(保存并启动|生成 Token 并启动|启动服务)$/ }).click();
   const stop = () => dialog.getByRole("button", { name: "停止服务", exact: true }).click();
-  const setConfirm = value => page.evaluate(value => { window.__mcpConfirmResult = value; }, value);
+  const mcpPrompts = [];
+  const answerConfirm = async accept => {
+    const message = await respondAppConfirm(page, accept);
+    mcpPrompts.push(message);
+    return message;
+  };
   async function createGrant(id, name) {
     await tab("授权");
     await dialog.locator(".mcp-new").click();
@@ -53,11 +59,6 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
   try {
     await page.goto(appUrl);
     await page.locator(".tree-session", { hasText: "Edge Router" }).waitFor();
-    await page.evaluate(() => {
-      window.__mcpPrompts = [];
-      window.__mcpConfirmResult = true;
-      window.confirm = message => { window.__mcpPrompts.push(String(message)); return window.__mcpConfirmResult; };
-    });
     await page.getByRole("button", { name: "工具", exact: true }).click();
     await page.getByRole("button", { name: "MCP Bridge", exact: true }).click();
     await dialog.locator(".mcp-grant-select").first().waitFor();
@@ -80,22 +81,22 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await dialog.getByRole("button", { name: "随机生成 Client ID", exact: true }).click();
     const randomId = await grantId.inputValue();
     assert.match(randomId, /^client-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    await setConfirm(false);
     await select("Operations Console");
+    await answerConfirm(false);
     assert.equal(await grantId.inputValue(), randomId, "cancelled switch discarded the grant draft");
     await tab("HTTP");
     await tab("授权");
     assert.equal(await grantId.inputValue(), randomId, "switching tabs discarded the grant draft");
-    await setConfirm(true);
     await select("Operations Console");
+    await answerConfirm(true);
 
     const beforeCancel = mutations(await records()).length;
     await select("Audit Reader");
-    await setConfirm(false);
     await revoke();
+    await answerConfirm(false);
     assert.equal(await confirm.count(), 0, "cancelled first confirmation opened the second step");
-    await setConfirm(true);
     await revoke();
+    await answerConfirm(true);
     await confirm.waitFor();
     const finalRevoke = confirm.getByRole("button", { name: "确认撤销", exact: true });
     assert(await finalRevoke.isDisabled());
@@ -119,6 +120,7 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await tab("授权");
     await select("Audit Reader");
     await revoke();
+    await answerConfirm(true);
     await confirm.getByLabel("输入 Client ID", { exact: true }).fill("audit-reader");
     await finalRevoke.click();
     await dialog.locator(".mcp-grant-select", { hasText: "Audit Reader" }).waitFor({ state: "detached" });
@@ -126,7 +128,8 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
 
     await select("Operations Console");
     await revoke();
-    assert((await page.evaluate(() => window.__mcpPrompts.at(-1))).includes("HTTP Bridge"));
+    const revokeMessage = await answerConfirm(true);
+    assert(revokeMessage.includes("HTTP Bridge"));
     await confirm.getByLabel("输入 Client ID", { exact: true }).fill("ops-console");
     await page.screenshot({ path: `${screenshotPrefix}-mcp-revoke.png`, fullPage: true, animations: "disabled" });
     await page.evaluate(() => { window.__deferGrantMutations = true; });
@@ -205,11 +208,10 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await dialog.getByLabel("MCP HTTP 客户端地址", { exact: true }).fill("192.0.2.42");
     await dialog.locator(".mcp-http-network summary").click();
     await dialog.getByLabel("MCP HTTP 允许的来源", { exact: true }).fill("https://console.example.test");
-    await setConfirm(false);
     await dialog.getByRole("button", { name: "关闭 MCP Bridge", exact: true }).click();
+    const closeWarning = await answerConfirm(false);
     assert(await dialog.isVisible());
-    assert((await page.evaluate(() => window.__mcpPrompts.at(-1))).includes("HTTP 配置"));
-    await setConfirm(true);
+    assert(closeWarning.includes("HTTP 配置"));
     await page.evaluate(() => { window.__deferMcpHttpMutations = true; });
     await dialog.getByRole("button", { name: "保存配置", exact: true }).click();
     await page.waitForFunction(() => window.__pendingMcpHttpMutations.length === 1);
@@ -247,12 +249,14 @@ export async function checkMcpManagement(context, appUrl, screenshotPrefix) {
     await bounds(".mcp-expiry-editor");
     await dialog.getByLabel("MCP 授权到期日期", { exact: true }).press("Escape");
     await revoke();
+    await answerConfirm(true);
     await confirm.waitFor();
     await bounds(".mcp-revoke-dialog");
     await page.screenshot({ path: `${screenshotPrefix}-mcp-revoke-mobile.png`, fullPage: true, animations: "disabled" });
     await page.keyboard.press("Escape");
     await confirm.waitFor({ state: "detached" });
     await revoke();
+    await answerConfirm(true);
     await confirm.getByLabel("输入 Client ID", { exact: true }).fill("replacement-client");
     await page.evaluate(() => { window.__mcpCleanupWarnings = ["授权已失效，但清除旧 Token 失败：simulated keyring failure"]; });
     await finalRevoke.click();

@@ -81,9 +81,12 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
       setSourceError(t("configuration-exceeds-the-character-limit", [maxSourceChars.toLocaleString()]));
       return;
     }
+    const nextParsed = parse(value, name);
     setSource(value);
     setSourceName(name);
     setSourceError("");
+    setSelectedIds(new Set(nextParsed.candidates.map((candidate) => candidate.id)));
+    setResultMessage(null);
     onDraftDirtyChange(Boolean(value || name));
   }
 
@@ -164,7 +167,20 @@ export default function SessionConfigImportDialog<C extends SessionConfigImportC
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => {
       if (!locked && event.target === event.currentTarget) onClose();
     }}>
-      <form className="wind-dialog session-config-import-dialog" role="dialog" aria-modal="true" aria-labelledby="session-config-import-title" onSubmit={(event) => void submit(event)}>
+      <form
+        className="wind-dialog session-config-import-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-config-import-title"
+        onKeyDown={(event) => {
+          if (!locked && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+        onSubmit={(event) => void submit(event)}
+      >
         <header className="dialog-title">
           <FileUp size={17} />
           <strong id="session-config-import-title">{title}</strong>

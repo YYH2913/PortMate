@@ -1,4 +1,5 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm, requestAppPrompt } from "./app-dialog";
 import { useWorkspacePointerDrag, workspacePointerAfter, workspacePointerDropZone } from "./use-workspace-pointer-drag";
 import type { WorkspaceDockDropAnchor } from "./use-workspace-pointer-drag";
 import { workspaceDockInsertionIndex } from "./workspace-panel-state";
@@ -66,7 +67,7 @@ import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import McpBridgeQuickStart from "./McpBridgeQuickStart";
 import { localTerminalTag, matchesLocalTerminal, shellElevationConsentMatches, shellElevationRequested } from "./shell-elevation";
 import ShellElevationIndicator from "./ShellElevationIndicator";
-import { menuGroups, menuItemDisabled, menuSectionsForGroup } from "./menu-capabilities";
+import { menuGroups, menuItemDisabled, menuItemShortcut, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import {
   hasActiveInteractionLayer,
@@ -114,6 +115,7 @@ import {
   chooseTerminalTextExportPath,
   normalizeTerminalExportDirectory,
   terminalTextExportFileName,
+  terminalTextExportRequest,
 } from "./terminal-export-path";
 import type { TerminalBufferAction } from "./terminal-buffer-event";
 import type { TerminalSelectionAction } from "./terminal-selection-event";
@@ -261,6 +263,7 @@ type ContextMenuState = {
   x: number;
   y: number;
   sessionId: string | null;
+  orderedIds?: readonly string[];
 } | {
   kind: "terminal";
   x: number;
@@ -398,6 +401,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     normalizeWorkspaceDockSizes(workspacePanelStorageKey ? loadLocalValue<unknown>(workspacePanelStorageKey, null) : null)
   ));
   const [draggedWorkspacePanel, setDraggedWorkspacePanel] = useState<WorkspaceDockPanelId | null>(null);
+  const [mobileDockDrawer, setMobileDockDrawer] = useState<WorkspaceDockId | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [hostKeyPrompt, setHostKeyPromptState] = useState<HostKeyPromptState | null>(null);
@@ -1397,6 +1401,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         else reopenClosedWorkspaceView();
       } else if (!event.repeat && hotkey.kind === "zoom") {
         toggleWorkspaceZoom();
+      } else if (!event.repeat && hotkey.kind === "search-sessions") {
+        handleMenuAction("session-search");
       } else if (!event.repeat && hotkey.kind === "one-keys") {
         setUtilityDialog("one-keys");
       }
@@ -1630,15 +1636,26 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }, []);
 
   useEffect(() => {
+    if (!mobileDockDrawer) return;
+    const narrow = window.matchMedia("(max-width: 760px)");
+    const closeOnDesktop = () => { if (!narrow.matches) setMobileDockDrawer(null); };
+    closeOnDesktop();
+    narrow.addEventListener("change", closeOnDesktop);
+    return () => narrow.removeEventListener("change", closeOnDesktop);
+  }, [mobileDockDrawer]);
+
+  useEffect(() => {
     if (!contextMenu) return;
     const closeOnScroll = (event: Event) => {
       // XTerm can emit a deferred scroll after selection/search work. Keep that
       // bookkeeping event from immediately dismissing a newly opened menu;
       // actual terminal wheel input is handled separately below.
-      if (event.target instanceof Element && event.target.closest(".terminal-canvas")) return;
+      if (event.target instanceof Element && event.target.closest(".terminal-canvas, .portmate-context-menu")) return;
       setContextMenu(null);
     };
-    const closeOnWheel = () => setContextMenu(null);
+    const closeOnWheel = (event: WheelEvent) => {
+      if (!(event.target instanceof Element && event.target.closest(".portmate-context-menu"))) setContextMenu(null);
+    };
     const closeOnResize = () => setContextMenu(null);
     window.addEventListener("scroll", closeOnScroll, true);
     window.addEventListener("wheel", closeOnWheel, true);
@@ -2026,6 +2043,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       "free-input",
       "go-to-line",
       "export-terminal-text",
+      "export-terminal-text-to",
       "export-selected-text",
       "start-session",
       "reconnect-session",
@@ -2042,6 +2060,17 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (activeSnapshotStale && sessionBoundItem) return;
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) {
+      if (window.innerWidth <= 760 && workspacePanel !== "statusBar") {
+        const dock = workspaceDockIds.find((candidate) => workspaceDockLayout[candidate].includes(workspacePanel)) ?? "left";
+        if (!focusMode && mobileDockDrawer === dock && activeDockPanels[dock] === workspacePanel) {
+          setMobileDockDrawer(null);
+          return;
+        }
+        if (focusMode) setFocusMode(false);
+        setWorkspacePanelVisible(workspacePanel, true);
+        setMobileDockDrawer(dock);
+        return;
+      }
       const visible = focusMode || !workspacePanels[workspacePanel];
       if (focusMode) setFocusMode(false);
       setWorkspacePanelVisible(workspacePanel, visible);
@@ -2112,8 +2141,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       else setNotice({ title: t("go-to-line"), message: t("open-a-terminal-session-first") });
       return;
     }
-    if (item === "export-terminal-text" || item === "export-selected-text") {
-      void exportTerminalText(item === "export-terminal-text" ? "buffer" : "selection");
+    if (item === "export-terminal-text" || item === "export-terminal-text-to" || item === "export-selected-text") {
+      void exportTerminalText(
+        item === "export-selected-text" ? "selection" : "buffer",
+        undefined,
+        item === "export-terminal-text-to" ? "choose" : "default",
+      );
+      return;
+    }
+    if (item === "focus-mode") {
+      setFocusMode((current) => !current);
+      return;
+    }
+    if (item === "lock-screen") {
+      lockScreen("manual");
       return;
     }
     if (terminalKeyMode) {
@@ -2222,11 +2263,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setNotice({ title: t(item), message: t("unknown-menu-item") });
   }
 
-  function openAppContextMenu(event: ReactMouseEvent, sessionId?: string) {
-    event.preventDefault();
-    event.stopPropagation();
+  function openAppContextMenu(event: ReactMouseEvent, sessionId?: string, orderedIds?: readonly string[]) {
     const target = event.target instanceof Element ? event.target : null;
     const terminalHost = target?.closest<HTMLElement>(".terminal-host");
+    if (!sessionId && !terminalHost) {
+      if (target?.closest(
+        "input, textarea, select, [contenteditable=\"true\"], .wind-menu, .status-bar, .quick-command-bar, .workspace-dock-tabs, .panel-fileManager, .panel-history, .panel-sysmon, .panel-sender, .file-row, .panel-filter, .explorer-grouping",
+      )) {
+        return;
+      }
+    }
+    event.preventDefault();
+    event.stopPropagation();
     const paneElement = terminalHost?.closest<HTMLElement>(".terminal-pane[data-pane-id]");
     const pane = paneElement?.dataset.paneId
       ? findWorkspacePane(workspaceRootRef.current, paneElement.dataset.paneId)
@@ -2254,7 +2302,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     setOpenMenu(null);
     setWorkspaceViewContextMenu(null);
-    setContextMenu({ kind: "session", x: event.clientX, y: event.clientY, sessionId: nextSessionId });
+    setContextMenu({ kind: "session", x: event.clientX, y: event.clientY, sessionId: nextSessionId, orderedIds });
   }
 
   function contextSession(sessionId?: string | null) {
@@ -2284,7 +2332,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   async function mutateSessionProfileFromContext(
     sessionId: string | null | undefined,
     title: string,
-    createProfile: (profile: SessionProfile) => SessionProfile | null,
+    createProfile: (profile: SessionProfile) => Promise<SessionProfile | null> | SessionProfile | null,
     activateWorkspace = true,
     successMessage?: (saved: SessionSummary) => string,
   ) {
@@ -2295,8 +2343,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (token === null) return;
     const gate = profileShortcutOperationGateRef.current;
     try {
-      const profile = createProfile(session.profile);
-      if (!profile) return;
+      const profile = await createProfile(session.profile);
+      if (!profile || !gate.isCurrent(profileId, token)) return;
       const saved = await saveProfile(profile, session.profile);
       if (!gate.isCurrent(profileId, token)) return;
       applySavedSession(saved, activateWorkspace);
@@ -2311,15 +2359,23 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   async function renameSessionFromContext(sessionId?: string | null) {
-    await mutateSessionProfileFromContext(sessionId, t("rename-session"), (profile) => {
-      const nextName = window.prompt(t("tab-name"), profile.name);
+    await mutateSessionProfileFromContext(sessionId, t("rename-session"), async (profile) => {
+      const nextName = await requestAppPrompt({
+        title: t("rename-session"),
+        label: t("tab-name"),
+        defaultValue: profile.name,
+      });
       return nextName?.trim() ? { ...profile, name: nextName.trim() } : null;
     });
   }
 
   async function moveSessionToGroupFromContext(sessionId?: string | null) {
-    await mutateSessionProfileFromContext(sessionId, t("move-session-group"), (profile) => {
-      const nextGroup = window.prompt(t("move-to-group"), profile.group || "Sessions");
+    await mutateSessionProfileFromContext(sessionId, t("move-session-group"), async (profile) => {
+      const nextGroup = await requestAppPrompt({
+        title: t("move-session-group"),
+        label: t("move-to-group"),
+        defaultValue: profile.group || "Sessions",
+      });
       return nextGroup === null
         ? null
         : { ...profile, group: nextGroup.trim() || "Sessions" };
@@ -2344,7 +2400,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
     const duplicate = cloneSessionProfile(session.profile);
     duplicate.id = createSessionId();
-    duplicate.name = `${session.profile.name} copy`;
+    duplicate.name = t("copy-2", [session.profile.name]);
     duplicate.connection = isolateDuplicatedConnection(duplicate.id, duplicate.connection);
     openSessionProfileDialog(duplicate, null, "session");
   }
@@ -2404,22 +2460,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       if (destination === "choose" && isBackendAvailable() && destinationPath === null) return;
       const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId, source });
       if (!gate.isCurrent(viewId, token)) return;
-      if (payload.sessionId !== session.profile.id || payload.viewId !== viewId || payload.source !== source) {
-        throw new Error(t("terminal-export-response-does-not-match-the-target-view"));
-      }
       if (isBackendAvailable()) {
         const result = await invokeBackend<ExportTerminalTextResult>("export_terminal_text", {
-          request: {
-            sessionId: payload.sessionId,
-            viewId: payload.viewId,
-            source: payload.source,
-            text: payload.text,
-            destinationDirectory: destination === "default"
-              ? normalizeTerminalExportDirectory(terminalPrefs.terminalTextExportDirectory) || null
-              : null,
-            destinationPath,
-            overwrite: destinationPath !== null,
-          },
+          request: terminalTextExportRequest(payload, terminalPrefs.terminalTextExportDirectory, destinationPath),
         });
         if (!gate.isCurrent(viewId, token)) return;
         setNotice({
@@ -2514,7 +2557,27 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function setTabColorFromContext(sessionId: string | null | undefined, color: string) {
     const session = contextSession(sessionId);
     if (!session) return;
-    setTabColors((current) => ({ ...current, [session.profile.id]: color }));
+    const profileId = session.profile.id;
+    setTabColors((current) => {
+      if (!color) {
+        if (!(profileId in current)) return current;
+        const next = { ...current };
+        delete next[profileId];
+        return next;
+      }
+      return { ...current, [profileId]: color };
+    });
+    setWorkspaceRoot((current) => {
+      let next = current;
+      for (const pane of workspacePaneLeaves(current)) {
+        for (const view of pane.views) {
+          if (view.sessionId === profileId) {
+            next = setWorkspacePaneViewColor(next, pane.id, view.id, color);
+          }
+        }
+      }
+      return next;
+    });
   }
 
   async function pasteFromClipboardIntoContext(sessionId?: string | null, viewId?: string) {
@@ -2645,10 +2708,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const profileId = target.profile.id;
     const token = beginProfileShortcutOperation(profileId);
     if (token === null) return;
-    const confirmed = window.confirm(
-      t("delete-session-profile-active-connections-will-be-disconnected-first", [target.profile.name]),
-    );
-    if (!confirmed) {
+    const confirmed = await requestAppConfirm({
+      title: t("delete-session-profile"),
+      message: t("delete-session-profile-active-connections-will-be-disconnected-first", [target.profile.name]),
+      confirmLabel: t("delete"),
+      danger: true,
+    });
+    if (!confirmed || !profileShortcutOperationGateRef.current.isCurrent(profileId, token)) {
       finishProfileShortcutOperation(profileId, token);
       return;
     }
@@ -2676,21 +2742,27 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     }
   }
 
-  function closeSideSessionsFromContext(sessionId?: string | null) {
+  function closeSideSessionsFromContext(sessionId?: string | null, orderedIds?: readonly string[]) {
     const target = contextSession(sessionId);
     if (!target) return;
-    const currentSessions = sessionsRef.current;
-    const index = currentSessions.findIndex((session) => session.profile.id === target.profile.id);
+    const ids = orderedIds?.includes(target.profile.id)
+      ? orderedIds
+      : sessionsRef.current.map((session) => session.profile.id);
+    const index = ids.indexOf(target.profile.id);
     if (index < 0) return;
-    const rightIds = currentSessions.slice(index + 1).map((session) => session.profile.id);
-    void closeSessionsByIds(rightIds);
+    const belowIds = ids.slice(index + 1);
+    void closeSessionsByIds(belowIds);
   }
 
   function handleContextMenuAction(action: SessionContextAction, sessionId?: string | null) {
+    const orderedIds = contextMenu?.kind === "session" ? contextMenu.orderedIds : undefined;
     setContextMenu(null);
     const target = contextSession(sessionId);
     if (sessionId && !target) return;
     switch (action) {
+      case "start":
+        if (target) void connectSession(target.profile.id);
+        return;
       case "sync-toggle":
         updateSyncInput(!syncInputRef.current);
         return;
@@ -2750,7 +2822,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           .map((session) => session.profile.id));
         return;
       case "close-side":
-        closeSideSessionsFromContext(sessionId);
+        closeSideSessionsFromContext(sessionId, orderedIds);
         return;
       case "settings":
         openSessionSettingsFromContext(sessionId);
@@ -3111,8 +3183,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function changeWorkspaceViewColor(paneId: string, viewId: string, color: string) {
-    if (!currentWorkspaceTarget({ paneId, viewId })) return;
-    setWorkspaceRoot((current) => setWorkspacePaneViewColor(current, paneId, viewId, color));
+    const current = currentWorkspaceTarget({ paneId, viewId });
+    if (!current) return;
+    const profileId = current.view.sessionId;
+    setWorkspaceRoot((root) => setWorkspacePaneViewColor(root, paneId, viewId, color));
+    setTabColors((colors) => {
+      if (!color) {
+        if (!(profileId in colors)) return colors;
+        const next = { ...colors };
+        delete next[profileId];
+        return next;
+      }
+      return { ...colors, [profileId]: color };
+    });
     setWorkspaceViewContextMenu(null);
     focusWorkspacePaneInput(paneId);
   }
@@ -3240,6 +3323,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     if (!current) return;
     const { pane, view } = current;
     switch (action) {
+      case "start":
+        void connectSession(view.sessionId, undefined, false);
+        return;
+      case "disconnect":
+        void disconnectSession(view.sessionId, false);
+        return;
+      case "sync-toggle":
+        updateSyncInput(!syncInputRef.current);
+        return;
       case "copy-name":
         copySessionNameFromContext(view.sessionId);
         return;
@@ -3779,12 +3871,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           return;
         }
         const shell = prepareSessionProfile(session.profile).connection;
-        if (shell.kind !== "shell" || !window.confirm(t("shell-elevation-confirm", [
-          session.profile.name,
-          JSON.stringify(shell.program || t("system-default-shell")),
-          JSON.stringify(shell.args),
-          JSON.stringify(shell.cwd || t("current-user-s-directory")),
-        ]))) return;
+        if (shell.kind !== "shell" || !(await requestAppConfirm({
+          title: t("elevated-local-terminal"),
+          message: t("shell-elevation-confirm", [
+            session.profile.name,
+            JSON.stringify(shell.program || t("system-default-shell")),
+            JSON.stringify(shell.args),
+            JSON.stringify(shell.cwd || t("current-user-s-directory")),
+          ]),
+          danger: true,
+        }))) return;
         if (!attemptIsCurrent()) return;
         consentedShell = { ...shell, args: [...shell.args] };
       }
@@ -4514,6 +4610,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     const workspacePanel = workspacePanelMenuItems[item];
     if (workspacePanel) return visibleWorkspacePanels[workspacePanel];
     if (item === "quick-bar") return visibleQuickBar;
+    if (item === "focus-mode") return focusMode;
     const terminalKeyMode = terminalKeyModeMenuItems[item];
     if (terminalKeyMode) return activeTerminalKeyMode === terminalKeyMode;
     if (item === "synchronized-input") return syncInput;
@@ -4647,7 +4744,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             colors={tabColors}
             icons={workspaceUtilityIcons}
             onSelect={activateSession}
-            onOpenContextMenu={(event, sessionId) => openAppContextMenu(event, sessionId)}
+            onConnect={(sessionId) => void connectSession(sessionId)}
+            onNewSession={openNewSessionDialog}
+            onImportSessions={() => setUtilityDialog("session-import")}
+            onOpenContextMenu={(event, sessionId, orderedIds) => openAppContextMenu(event, sessionId, orderedIds)}
           />
         </Suspense>
       );
@@ -4675,6 +4775,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             activeId={activeId}
             icons={workspaceUtilityIcons}
             onPick={pickCommandHistoryEntry}
+            onClear={clearCommandHistory}
           />
         </Suspense>
       );
@@ -4710,9 +4811,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               {sendBusy ? <Square size={13} /> : <Play size={14} className="green" />}
             </button>
             <label className="send-mode-label">
-              <input type="radio" checked={sendMode === "text"} onChange={() => setSendMode("text")} />{t("text-t")}</label>
+              <input type="radio" name="send-panel-mode" checked={sendMode === "text"} onChange={() => setSendMode("text")} />{t("text")}
+            </label>
             <label className="send-mode-label">
-              <input type="radio" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} /> Hex(H)
+              <input type="radio" name="send-panel-mode" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} />{t("hex-mode")}
             </label>
             <button
               type="button"
@@ -4767,6 +4869,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <textarea
           className="send-textarea"
           aria-label={t("send-text")}
+          placeholder={t("send-textarea-placeholder")}
           value={sendText}
           onChange={(event) => setSendText(event.target.value)}
           onKeyDown={(event) => {
@@ -4815,19 +4918,34 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           </div>
           <LanguageSelector compact />
           <div className="menu-row">
-            {menuGroups.map((group) => (
-              <div key={group.label} className="menu-item" onMouseLeave={() => setOpenMenu(null)}>
+            {menuGroups.map((group, groupIndex) => (
+              <div key={group.label} className="menu-item">
                 <button
                   type="button"
                   className={openMenu === group.label ? "menu-trigger active" : "menu-trigger"}
                   aria-haspopup="true"
                   aria-expanded={openMenu === group.label}
                   aria-controls={`menu-${group.label}`}
+                  onMouseEnter={() => {
+                    if (openMenu && openMenu !== group.label) setOpenMenu(group.label);
+                  }}
                   onClick={() => setOpenMenu(openMenu === group.label ? null : group.label)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       event.preventDefault();
                       setOpenMenu(null);
+                      return;
+                    }
+                    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                      event.preventDefault();
+                      const rtl = document.documentElement.dir === "rtl";
+                      const delta = (event.key === "ArrowRight" ? 1 : -1) * (rtl ? -1 : 1);
+                      const nextIndex = (groupIndex + delta + menuGroups.length) % menuGroups.length;
+                      const nextGroup = menuGroups[nextIndex];
+                      const row = event.currentTarget.closest(".menu-row");
+                      const triggers = [...(row?.querySelectorAll<HTMLButtonElement>(".menu-trigger") ?? [])];
+                      if (openMenu) setOpenMenu(nextGroup.label);
+                      triggers[nextIndex]?.focus();
                       return;
                     }
                     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -4851,6 +4969,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                       requestAnimationFrame(() => trigger?.focus());
                       return;
                     }
+                    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                      event.preventDefault();
+                      const rtl = document.documentElement.dir === "rtl";
+                      const delta = (event.key === "ArrowRight" ? 1 : -1) * (rtl ? -1 : 1);
+                      const nextIndex = (groupIndex + delta + menuGroups.length) % menuGroups.length;
+                      const nextGroup = menuGroups[nextIndex];
+                      const row = event.currentTarget.closest(".menu-row");
+                      setOpenMenu(nextGroup.label);
+                      requestAnimationFrame(() => {
+                        const popover = row?.querySelector<HTMLElement>(`#menu-${nextGroup.label}`);
+                        const first = popover?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+                        const trigger = row?.querySelectorAll<HTMLButtonElement>(".menu-trigger")[nextIndex];
+                        (first ?? trigger)?.focus();
+                      });
+                      return;
+                    }
                     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
                     const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
                     const index = buttons.indexOf(event.target as HTMLButtonElement);
@@ -4859,11 +4993,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                     const offset = event.key === "ArrowDown" ? 1 : -1;
                     buttons[(index + offset + buttons.length) % buttons.length]?.focus();
                   }}>
-                    {menuSectionsForGroup(group.label, group.items).map((section) => (
-                      <div className="menu-popover-section" key={section.label || group.label}>
+                    {menuSectionsForGroup(group.label, group.items).map((section, sectionIndex) => (
+                      <div className="menu-popover-section" key={section.label || `${group.label}-${sectionIndex}`}>
                         {section.label ? <span className="menu-popover-heading">{t(section.label)}</span> : null}
                         {section.items.map((item) => {
                           const toggleState = menuToggleState(item);
+                          const shortcut = menuItemShortcut(item, workspaceKeymap);
                           const disabled = menuItemDisabled(item, menuCapabilityContext)
                             || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "reconnect-session" || item === "close-session-2"));
                           return (
@@ -4871,7 +5006,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                               type="button"
                               key={item}
                               className={toggleState === undefined ? "" : "menu-toggle"}
+                              aria-label={t(item)}
                               aria-pressed={toggleState}
+                              aria-keyshortcuts={shortcut?.aria}
+                              data-shortcut={shortcut?.display}
                               disabled={disabled}
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -4913,7 +5051,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <span>Stronghold</span>
             <small>{portableVaultStatusLabel(portableVaultStatus)}</small>
           </button>
-          <button type="button" title={t("search-sessions")} aria-label={t("search-sessions")} onClick={() => handleMenuAction("session-search")}><Search size={13} /></button>
+          <button type="button" title={t("search-sessions-shortcut", [typeof navigator !== "undefined" && /Mac/i.test(navigator.platform) ? "Cmd+Shift+P" : "Ctrl+Shift+P"])} aria-label={t("search-sessions")} onClick={() => handleMenuAction("session-search")}><Search size={13} /></button>
           <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? t("exit-focus-mode") : t("enter-focus-mode")} title={t("focus-mode-alt-enter")} onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
@@ -4936,8 +5074,16 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         activeDockPanels.left ? "dock-left-visible" : "",
         activeDockPanels.right ? "dock-right-visible" : "",
         activeDockPanels.bottom ? "dock-bottom-visible" : "",
+        mobileDockDrawer ? "mobile-dock-drawer" : "",
         draggedWorkspacePanel ? "workspace-panel-dragging" : "",
       ].filter(Boolean).join(" ")} style={workspaceLayoutStyle}>
+        {mobileDockDrawer && activeDockPanels[mobileDockDrawer] ? (
+          <div
+            className="mobile-dock-backdrop"
+            aria-hidden="true"
+            onClick={() => setMobileDockDrawer(null)}
+          />
+        ) : null}
         {workspaceDockIds.map((dock) => {
           const activePanel = activeDockPanels[dock];
           return activePanel ? (
@@ -4946,9 +5092,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               dock={dock}
               panels={visibleDockPanels[dock]}
               activePanel={activePanel}
+              mobileDrawerOpen={mobileDockDrawer === dock}
               effectiveSize={workspaceDockEffectiveSize(workspaceDockSizes, dock, visibleDockPanels[dock])}
               onActivate={(panel) => setWorkspaceDockLayout((current) => activateWorkspaceDockPanel(current, panel))}
-              onClose={(panel) => setWorkspacePanelVisible(panel, false)}
+              onClose={(panel) => {
+                if (mobileDockDrawer === dock) setMobileDockDrawer(null);
+                else setWorkspacePanelVisible(panel, false);
+              }}
               onResize={(size) => setWorkspaceDockSizes((current) => setWorkspaceDockSize(current, dock, size))}
               onDragStart={startWorkspacePanelDrag}
               onDragEnd={() => setDraggedWorkspacePanel(null)}
@@ -5009,6 +5159,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             onMoveViewDrop={terminalPaneOnMoveViewDrop}
             onSplitViewDrop={terminalPaneOnSplitViewDrop}
             onSplitRatioChange={terminalPaneOnSplitRatioChange}
+            onNewSession={openNewSessionDialog}
+            onOpenLocalTerminal={() => void openLocalTerminal(false)}
+            onImportSessions={() => setUtilityDialog("session-import")}
           />
         </section>
       </section>
@@ -5066,6 +5219,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             state={workspaceViewContextMenu}
             view={workspaceContextView}
             sessionStatus={workspaceContextSession.runtime.status}
+            syncInput={syncInput}
             connectionBusy={disconnectingSessionIds.has(workspaceContextSession.profile.id)}
             profileBusy={profileShortcutBusyIds.has(workspaceContextSession.profile.id)}
             exportBusy={terminalExportBusyViewIds.has(workspaceContextView.id)}
@@ -5544,6 +5698,7 @@ function WorkspaceDock({
   dock,
   panels,
   activePanel,
+  mobileDrawerOpen = false,
   effectiveSize,
   onActivate,
   onClose,
@@ -5557,6 +5712,7 @@ function WorkspaceDock({
   dock: WorkspaceDockId;
   panels: WorkspaceDockPanelId[];
   activePanel: WorkspaceDockPanelId;
+  mobileDrawerOpen?: boolean;
   effectiveSize: number;
   onActivate: (panel: WorkspaceDockPanelId) => void;
   onClose: (panel: WorkspaceDockPanelId) => void;
@@ -5630,7 +5786,7 @@ function WorkspaceDock({
   }
 
   return (
-    <aside className={`workspace-dock workspace-dock-${dock}`} data-dock={dock} data-active-panel={activePanel}>
+    <aside className={`workspace-dock workspace-dock-${dock}${mobileDrawerOpen ? " mobile-drawer-open" : ""}`} data-dock={dock} data-active-panel={activePanel}>
       <div
         className="workspace-dock-tabs"
         role="tablist"
@@ -5862,7 +6018,19 @@ function WorkspaceGroupMoveDialog({
     : t("move-view", [sourceView?.title || sourceSession?.profile.name || t("session-unavailable")]);
   return (
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="wind-dialog workspace-group-move-dialog">
+      <div
+        className="wind-dialog workspace-group-move-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span>{title}</span>
           <button type="button" title={t("close")} aria-label={t("close")} onClick={onClose}><X size={18} /></button>
@@ -5930,6 +6098,9 @@ function TerminalPaneGrid({
   onMoveViewDrop,
   onSplitViewDrop,
   onSplitRatioChange,
+  onNewSession,
+  onOpenLocalTerminal,
+  onImportSessions,
 }: {
   root: WorkspaceNode | null;
   sessions: SessionSummary[];
@@ -5977,11 +6148,14 @@ function TerminalPaneGrid({
     edge: WorkspacePaneDirection,
   ) => void;
   onSplitRatioChange: (splitId: string, ratio: number) => void;
+  onNewSession: () => void;
+  onOpenLocalTerminal: () => void;
+  onImportSessions: () => void;
 }) {
   useLocale();
   if (!root) {
     const active = sessions.find((session) => session.profile.id === activeId);
-    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={active ? completionHistoryBySession[active.profile.id] ?? [] : []} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onCommandSubmit={onCommandSubmit} onOneKeyCompletion={onOneKeyCompletion} />;
+    return <TerminalCanvas active={active} events={active ? eventsBySession[active.profile.id] ?? [] : []} focused oneKeys={oneKeys} oneKeyCompletionEnabled={oneKeyCompletionEnabled} completionSettings={completionSettings} completionHistory={active ? completionHistoryBySession[active.profile.id] ?? [] : []} completionQuickCommands={completionQuickCommands} mouseReporting={mouseReporting} copyOnSelect={copyOnSelect} blockSelection={blockSelection} onInput={onInput} onCommandSubmit={onCommandSubmit} onOneKeyCompletion={onOneKeyCompletion} onNewSession={onNewSession} onOpenLocalTerminal={onOpenLocalTerminal} onImportSessions={onImportSessions} />;
   }
 
   return (
@@ -6219,7 +6393,7 @@ function TerminalWorkspaceNode(props: TerminalWorkspaceNodeProps) {
                     if (event.button !== 1) return;
                     event.preventDefault();
                     event.stopPropagation();
-                    props.onRenameView(node.id, view.id);
+                    if (props.canCloseView) props.onCloseView(node.id, [view.id]);
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -6464,6 +6638,9 @@ type TerminalCanvasProps = {
     field: OneKeyPromptField,
     promptEventId: string,
   ) => Promise<void>;
+  onNewSession?: () => void;
+  onOpenLocalTerminal?: () => void;
+  onImportSessions?: () => void;
 };
 
 function TerminalCanvas(props: TerminalCanvasProps) {
@@ -6629,7 +6806,19 @@ function HostKeyConfirmDialog({
         onClose();
       }
     }}>
-      <section className="wind-dialog hostkey-dialog">
+      <section
+        className="wind-dialog hostkey-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={statusLabel}
+        onKeyDown={(event) => {
+          if (!state.busy && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <div>

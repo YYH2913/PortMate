@@ -4144,5 +4144,22 @@
   "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
   "npcap-conflict-error": "يمنع تعارض Packet.dll/WinPcap أو ملف غير متوقع التحميل الآمن. أصلح Npcap/WinPcap بالمثبّت الرسمي، ثم أعد تشغيل PortMate والفحص.",
   "confirm": "تأكيد",
-  "terminal-key-mode-alternate-hint": "تبديل وضع الإدراج/العادي (تطبيق بملء الشاشة: Shift+Esc للوضع العادي، وi لاستئناف الإدخال؛ يُرسل Esc إلى التطبيق)"
+  "remove-client-identity-confirm": "{0} \"{1}\" ({2})؟{3}",
+  "set-tab-color": "تعيين لون التبويب",
+  "enable-synchronized-input": "تفعيل الإدخال المتزامن",
+  "disable-synchronized-input": "تعطيل الإدخال المتزامن",
+  "move-session-to-folder": "نقل إلى مجلد...",
+  "disconnect-all-sessions": "قطع جميع الجلسات",
+  "disconnect-inactive-sessions": "قطع الجلسات غير النشطة",
+  "disconnect-sessions-below": "قطع الجلسات أدناه",
+  "clear-command-history": "مسح سجل جميع الجلسات",
+  "confirm-clear-command-history": "هل تريد مسح سجل الأوامر لجميع الجلسات؟",
+  "send-textarea-placeholder": "أدخل النص أو البايتات الست عشرية للإرسال...",
+  "hex-mode": "ست عشري",
+  "open-folder": "فتح المجلد",
+  "collapse-group": "طي المجموعة {0}",
+  "expand-group": "توسيع المجموعة {0}",
+  "terminal-key-mode-alternate-hint": "تبديل وضع الإدراج/العادي (تطبيق بملء الشاشة: Shift+Esc للوضع العادي، وi لاستئناف الإدخال؛ يُرسل Esc إلى التطبيق)",
+  "file-actions-menu": "إجراءات الملف",
+  "search-sessions-shortcut": "البحث في الجلسات ({0})"
 }

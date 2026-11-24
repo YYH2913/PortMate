@@ -1,5 +1,5 @@
 import { t } from "./i18n";
-import type { TerminalTextExportSource } from "./terminal-export-event";
+import type { TerminalTextExportPayload, TerminalTextExportSource } from "./terminal-export-event";
 
 export const MAX_TERMINAL_EXPORT_DIRECTORY_CHARACTERS = 32_768;
 
@@ -10,6 +10,17 @@ export function normalizeTerminalExportDirectory(value: unknown): string {
     return "";
   }
   return directory;
+}
+
+/** Native ExportTerminalTextRequest, shared by the workspace and detached views. */
+export function terminalTextExportRequest(
+  { sessionId, viewId, source, text }: TerminalTextExportPayload,
+  directory: string,
+  destinationPath: string | null,
+) {
+  return { sessionId, viewId, source, text, destinationPath,
+    destinationDirectory: destinationPath === null ? normalizeTerminalExportDirectory(directory) || null : null,
+    overwrite: destinationPath !== null };
 }
 
 export function terminalTextExportFileName(

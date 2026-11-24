@@ -1,4 +1,5 @@
-import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { formatUiList, t, useLocale, localizeDiagnostic } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -911,7 +912,12 @@ export default function KeyManagerDialog({
     const unsavedWarning = editingKeyId === keyId && hostKeyDraftDirty
       ? t("unsaved-changes-in-the-host-key-editor-will-also")
       : "";
-    if (!window.confirm(t("delete-host-key", [key.alias, key.port, key.fingerprintSha256, unsavedWarning]))) {
+    if (!(await requestAppConfirm({
+      title: t("key-manager"),
+      message: t("delete-host-key", [key.alias, key.port, key.fingerprintSha256, unsavedWarning]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !mountedRef.current) {
       finishHostKeyWrite(writeToken);
       return;
     }
@@ -943,7 +949,12 @@ export default function KeyManagerDialog({
     const unsavedWarning = editingKeyId && pendingKeyIds.includes(editingKeyId) && hostKeyDraftDirty
       ? t("unsaved-changes-in-the-host-key-editor-will-also")
       : "";
-    if (!window.confirm(t("delete-selected-host-keys", [pendingKeyIds.length, unsavedWarning]))) {
+    if (!(await requestAppConfirm({
+      title: t("key-manager"),
+      message: t("delete-selected-host-keys", [pendingKeyIds.length, unsavedWarning]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !mountedRef.current) {
       finishHostKeyWrite(writeToken);
       return;
     }
@@ -978,8 +989,10 @@ export default function KeyManagerDialog({
     setSelectedHostKeyIds((current) => Array.from(new Set([...current, ...visibleHostKeys.map((key) => key.id)])));
   }
 
-  function startEditKey(key: TrustedHostKey) {
-    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft(t("switch-host-key"))) return;
+  async function startEditKey(key: TrustedHostKey) {
+    if (hostKeyMutationBusy) return;
+    if (!(await confirmDiscardHostKeyDraft(t("switch-host-key")))) return;
+    if (!mountedRef.current || hostKeyMutationBusy) return;
     const baseline: HostKeyEditFields = {
       profileId: key.profileId ?? "",
       alias: key.alias,
@@ -1386,7 +1399,12 @@ export default function KeyManagerDialog({
       setStatus(t("all-selected-client-keys-are-used-by-jump-hosts"));
       return;
     }
-    if (!window.confirm(t("remove-client-identity-references-from-their-profiles", [removableCount, skipped ? t("skip-jump-identities-confirmation", [skipped]) : ""]))) return;
+    if (!(await requestAppConfirm({
+      title: t("key-manager"),
+      message: t("remove-client-identity-references-from-their-profiles", [removableCount, skipped ? t("skip-jump-identities-confirmation", [skipped]) : ""]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !mountedRef.current) return;
     const clientMutationToken = beginClientKeyMutation();
     if (clientMutationToken === null) return;
     const mutationTokens = new Map(targets.map(({ profile }) => [
@@ -1440,8 +1458,10 @@ export default function KeyManagerDialog({
       : current.filter((id) => id !== selectionId));
   }
 
-  function startEditClientIdentity(item: ClientIdentityItem) {
-    if (clientKeyControlsDisabled || !confirmDiscardClientIdentityDraft(t("switch-identity"))) return;
+  async function startEditClientIdentity(item: ClientIdentityItem) {
+    if (clientKeyControlsDisabled) return;
+    if (!(await confirmDiscardClientIdentityDraft(t("switch-identity")))) return;
+    if (!mountedRef.current || clientKeyControlsDisabled) return;
     setEditingClientKeyId(item.selectionId);
     clientKeyEditExpectedIdentityRef.current = { ...item.identity };
     setClientKeyEditDraft({
@@ -1567,7 +1587,17 @@ export default function KeyManagerDialog({
     const unsavedWarning = clientIdentityDraftDirty
       ? t("unsaved-changes-in-the-identity-editor-will-also-be")
       : "";
-    if (!window.confirm(`${action}“${editingClientIdentityItem.identity.label}”（${editingClientIdentityItem.profileName}）？${unsavedWarning}`)) return;
+    if (!(await requestAppConfirm({
+      title: t("key-manager"),
+      message: t("remove-client-identity-confirm", [
+        action,
+        editingClientIdentityItem.identity.label,
+        editingClientIdentityItem.profileName,
+        unsavedWarning,
+      ]),
+      confirmLabel: t("delete"),
+      danger: true,
+    })) || !mountedRef.current) return;
     const clientMutationToken = beginClientKeyMutation();
     if (clientMutationToken === null) return;
     const mutationProfileId = clientKeyEditDraft.profileId;
@@ -1606,22 +1636,36 @@ export default function KeyManagerDialog({
       : current.filter((item) => item !== id));
   }
 
-  function confirmDiscardHostKeyDraft(action: string): boolean {
-    return !hostKeyDraftDirty || window.confirm(t("the-host-key-editor-has-unsaved-changes-will-discard", [action]));
+  async function confirmDiscardHostKeyDraft(action: string): Promise<boolean> {
+    if (!hostKeyDraftDirty) return true;
+    return requestAppConfirm({
+      title: t("key-manager"),
+      message: t("the-host-key-editor-has-unsaved-changes-will-discard", [action]),
+      danger: true,
+    });
   }
 
-  function closeHostKeyEditor() {
-    if (hostKeyMutationBusy || !confirmDiscardHostKeyDraft(t("close-editor"))) return;
+  async function closeHostKeyEditor() {
+    if (hostKeyMutationBusy) return;
+    if (!(await confirmDiscardHostKeyDraft(t("close-editor")))) return;
+    if (!mountedRef.current || hostKeyMutationBusy) return;
     setEditingKeyId("");
     setEditDraft(null);
   }
 
-  function confirmDiscardClientIdentityDraft(action: string): boolean {
-    return !clientIdentityDraftDirty || window.confirm(t("the-identity-editor-has-unsaved-changes-will-discard-them", [action]));
+  async function confirmDiscardClientIdentityDraft(action: string): Promise<boolean> {
+    if (!clientIdentityDraftDirty) return true;
+    return requestAppConfirm({
+      title: t("key-manager"),
+      message: t("the-identity-editor-has-unsaved-changes-will-discard-them", [action]),
+      danger: true,
+    });
   }
 
-  function closeClientIdentityEditor() {
-    if (clientKeyMutationBusy || !confirmDiscardClientIdentityDraft(t("close-inspector"))) return;
+  async function closeClientIdentityEditor() {
+    if (clientKeyMutationBusy) return;
+    if (!(await confirmDiscardClientIdentityDraft(t("close-inspector")))) return;
+    if (!mountedRef.current || clientKeyMutationBusy) return;
     setEditingClientKeyId("");
     setClientKeyEditDraft(null);
     clientKeyEditExpectedIdentityRef.current = null;
@@ -1629,7 +1673,7 @@ export default function KeyManagerDialog({
     setClientKeyPassphrase("");
   }
 
-  function closeDialog() {
+  async function closeDialog() {
     const dirtySections = [
       hostKeyDraftDirty ? t("host-key-draft") : "",
       clientIdentityDraftDirty ? t("identity-draft") : "",
@@ -1637,13 +1681,29 @@ export default function KeyManagerDialog({
       privateKeyText ? t("private-key-import-content") : "",
     ].filter(Boolean);
     if (dirtySections.length
-      && !window.confirm(t("in-the-key-manager-has-unsaved-changes-closing-will", [dirtySections.join("、")]))) return;
+      && !(await requestAppConfirm({
+        title: t("key-manager"),
+        message: t("in-the-key-manager-has-unsaved-changes-closing-will", [formatUiList(dirtySections)]),
+        danger: true,
+      }))) return;
     onClose();
   }
 
   return (
-    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
-      <section className="wind-dialog key-dialog">
+    <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && void closeDialog()}>
+      <section
+        className="wind-dialog key-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("key-manager")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeDialog();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{t("key-manager")}</strong>

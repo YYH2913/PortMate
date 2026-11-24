@@ -1,6 +1,7 @@
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { requestAppConfirm } from "./app-dialog";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import OpenSshConfigImportDialog from "./OpenSshConfigImportDialog";
 import PuttyConfigImportDialog from "./PuttyConfigImportDialog";
@@ -46,13 +47,18 @@ export default function SessionImportDialog({
     else dirtyModes.current.delete(mode);
   }
 
-  function changeMode(nextMode: SessionImportMode) {
+  async function changeMode(nextMode: SessionImportMode) {
     if (nextMode === mode) return;
     const token = operationGate.current.begin("operation");
     if (token === null) return;
     try {
       if (dirtyModes.current.has(mode)
-        && !window.confirm(t("the-import-is-unfinished-switching-formats-will-discard-it", [importModeLabel(mode)]))) return;
+        && !(await requestAppConfirm({
+          title: t("import-sessions"),
+          message: t("the-import-is-unfinished-switching-formats-will-discard-it", [importModeLabel(mode)]),
+          danger: true,
+        }))) return;
+      if (!operationGate.current.isCurrent("operation", token)) return;
       dirtyModes.current.delete(mode);
       setMode(nextMode);
     } finally {
@@ -60,12 +66,17 @@ export default function SessionImportDialog({
     }
   }
 
-  function closeDialog() {
+  async function closeDialog() {
     const token = operationGate.current.begin("operation");
     if (token === null) return;
     try {
       if (dirtyModes.current.has(mode)
-        && !window.confirm(t("the-import-is-unfinished-closing-will-discard-it-continue", [importModeLabel(mode)]))) return;
+        && !(await requestAppConfirm({
+          title: t("import-sessions"),
+          message: t("the-import-is-unfinished-closing-will-discard-it-continue", [importModeLabel(mode)]),
+          danger: true,
+        }))) return;
+      if (!operationGate.current.isCurrent("operation", token)) return;
       dirtyModes.current.delete(mode);
       onClose();
     } finally {
@@ -81,7 +92,7 @@ export default function SessionImportDialog({
           type="button"
           aria-pressed={mode === option.id}
           disabled={busy}
-          onClick={() => changeMode(option.id)}
+          onClick={() => void changeMode(option.id)}
         >
           {option.label}
         </button>
@@ -89,16 +100,20 @@ export default function SessionImportDialog({
     </div>
   );
 
+  const handleClose = () => {
+    void closeDialog();
+  };
+
   if (mode === "putty") {
-    return <PuttyConfigImportDialog onImport={onImportPutty} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+    return <PuttyConfigImportDialog onImport={onImportPutty} onClose={handleClose} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
   if (mode === "shell") {
-    return <ShellConfigImportDialog onImport={onImportShell} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+    return <ShellConfigImportDialog onImport={onImportShell} onClose={handleClose} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
   if (mode === "portmate") {
-    return <PortMateProfileImportDialog onImport={onImportPortMate} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+    return <PortMateProfileImportDialog onImport={onImportPortMate} onClose={handleClose} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
   }
-  return <OpenSshConfigImportDialog onImport={onImportOpenSsh} onClose={closeDialog} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
+  return <OpenSshConfigImportDialog onImport={onImportOpenSsh} onClose={handleClose} headerAddon={headerAddon} operationGate={operationGate.current} onDraftDirtyChange={setDraftDirty} />;
 }
 
 function importModeLabel(mode: SessionImportMode) {

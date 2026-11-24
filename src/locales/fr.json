@@ -4144,5 +4144,22 @@
   "native-message-018c96712531": "Download Npcap 1.90 from https://npcap.com/dist/npcap-1.90.exe ?\n\nRead https://github.com/nmap/npcap/blob/v1.90/LICENSE first. Npcap states that downloading, installing or using it constitutes agreement to its EULA. Continue only if you agree and meet its license limits (normally five installations, with exceptions). Npcap is separate Nmap Project software, not bundled with PortMate.\n\n请先阅读上述 Npcap EULA。其条款规定下载、安装或使用即表示同意许可；仅在您同意并符合使用限制时继续（免费许可通常限五台安装，另有例外）。是否从 Npcap 官方下载？",
   "npcap-conflict-error": "Un conflit Packet.dll/WinPcap ou un fichier inattendu empêche le chargement sûr. Réparez Npcap/WinPcap avec l’installateur officiel, redémarrez PortMate puis vérifiez à nouveau.",
   "confirm": "Confirmer",
-  "terminal-key-mode-alternate-hint": "Basculer entre les modes Insertion/Normal (application plein écran : Shift+Esc pour Normal, i pour reprendre la saisie ; Esc est envoyé à l'application)"
+  "remove-client-identity-confirm": "{0} « {1} » ({2}) ?{3}",
+  "set-tab-color": "Définir la couleur de l'onglet",
+  "enable-synchronized-input": "Activer la saisie synchronisée",
+  "disable-synchronized-input": "Désactiver la saisie synchronisée",
+  "move-session-to-folder": "Déplacer vers un dossier...",
+  "disconnect-all-sessions": "Déconnecter toutes les sessions",
+  "disconnect-inactive-sessions": "Déconnecter les sessions inactives",
+  "disconnect-sessions-below": "Déconnecter les sessions ci-dessous",
+  "clear-command-history": "Effacer l’historique de toutes les sessions",
+  "confirm-clear-command-history": "Effacer l’historique des commandes de toutes les sessions ?",
+  "send-textarea-placeholder": "Saisissez du texte ou des octets hexadécimaux à envoyer...",
+  "hex-mode": "Hexadécimal",
+  "open-folder": "Ouvrir le dossier",
+  "collapse-group": "Réduire le groupe {0}",
+  "expand-group": "Développer le groupe {0}",
+  "terminal-key-mode-alternate-hint": "Basculer entre les modes Insertion/Normal (application plein écran : Shift+Esc pour Normal, i pour reprendre la saisie ; Esc est envoyé à l'application)",
+  "file-actions-menu": "Actions sur le fichier",
+  "search-sessions-shortcut": "Rechercher des sessions ({0})"
 }

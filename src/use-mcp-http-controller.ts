@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { requestAppConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
@@ -120,10 +121,17 @@ export function useMcpHttpController(grants: readonly McpGrant[]) {
     if (!available || loading || runtime === null || gate.isActive("copy")) return;
     if (action !== "stop" && (locked || !settingsValid)) return;
     if (action === "rotate" && (dirty || !savedGrant)) return;
-    if (action === "rotate" && token && !window.confirm(t("rotating-the-token-invalidates-the-old-http-access-configuration"))) return;
     const request = gate.begin("mutation");
     if (request === null) return;
     const current = () => gate.isCurrent("mutation", request);
+    if (action === "rotate" && token && !(await requestAppConfirm({
+      message: t("rotating-the-token-invalidates-the-old-http-access-configuration"),
+      danger: true,
+    }))) {
+      gate.finish("mutation", request);
+      return;
+    }
+    if (!current()) return;
     gate.invalidate("status");
     gate.invalidate("access");
     setBusy(true);

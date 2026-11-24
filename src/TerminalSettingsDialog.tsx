@@ -32,7 +32,7 @@ import { DiscardSettingsPrompt, SettingsResults, navigateSettingsResults, useSet
 import { findSettings } from "./settings-navigation";
 import type { SettingsHit, FieldLabel } from "./settings-navigation";
 import LanguageSelector from "./LanguageSelector";
-import { t, useLocale, localizeDiagnostic, setLanguagePreference, type LanguagePreference } from "./i18n";
+import { formatUiList, t, useLocale, localizeDiagnostic, setLanguagePreference, type LanguagePreference } from "./i18n";
 
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
@@ -472,14 +472,17 @@ function WorkspaceKeymapSettings({
         </header>
         {workspaceHotkeyCommands.map((command) => {
           const conflict = conflicts.find((item) => item.commandIds.includes(command.id));
-          const conflictLabels = conflict?.commandIds.filter((id) => id !== command.id).map((id) => labels[id]).join("、");
+          const conflictLabels = conflict
+            ? formatUiList(conflict.commandIds.filter((id) => id !== command.id).map((id) => t(labels[id])))
+            : "";
+          const commandLabel = t(command.label);
           const invalid = captureError === command.id;
           const pendingBinding = capturePrefix?.commandId === command.id ? capturePrefix.binding : "";
           const formattedBinding = formatWorkspaceKeyBinding(keymap[command.id]);
           return (
             <div key={command.id} data-settings-key={command.label} className={`workspace-keymap-row ${conflict ? "conflict" : ""}`}>
               <span className="workspace-keymap-command">
-                <strong>{t(command.label)}</strong>
+                <strong>{commandLabel}</strong>
                 {conflictLabels ? <small>{t("with")}{conflictLabels}{conflict?.kind === "prefix" ? t("prefix-conflict") : t("conflict")}</small> : invalid ? <small>{t("each-chord-requires-a-modifier-key")}</small> : null}
               </span>
               <button
@@ -496,8 +499,8 @@ function WorkspaceKeymapSettings({
               <button
                 type="button"
                 className="workspace-key-disable"
-                title={t("disable-shortcut-for", [command.label])}
-                aria-label={t("disable-shortcut-for", [command.label])}
+                title={t("disable-shortcut-for", [commandLabel])}
+                aria-label={t("disable-shortcut-for", [commandLabel])}
                 disabled={!keymap[command.id]}
                 onClick={() => {
                   updateBinding(command.id, "");
@@ -509,8 +512,8 @@ function WorkspaceKeymapSettings({
               <button
                 type="button"
                 className="workspace-key-reset"
-                title={t("restore-default-shortcut-for", [command.label])}
-                aria-label={t("restore-default-shortcut-for", [command.label])}
+                title={t("restore-default-shortcut-for", [commandLabel])}
+                aria-label={t("restore-default-shortcut-for", [commandLabel])}
                 disabled={keymap[command.id] === command.defaultBinding}
                 onClick={() => {
                   updateBinding(command.id, command.defaultBinding);
@@ -540,7 +543,7 @@ function DialogFrame({
 }) {
   useLocale();
   return (
-    <div className="dialog-backdrop">
+    <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section role="dialog" aria-modal="true" aria-label={title} className={`wind-dialog ${className}`}
         onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
         <header className="dialog-title">

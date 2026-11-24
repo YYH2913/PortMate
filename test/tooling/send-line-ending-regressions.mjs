@@ -57,7 +57,7 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   await dismiss();
 
   // A selected text suffix must not alter Hex frames.
-  await sender.getByRole('radio', { name: 'Hex(H)' }).check();
+  await sender.getByRole('radio', { name: '十六进制' }).check();
   assert.equal(await ending.isDisabled(), true);
   await text.fill('41 0D 0A 00 FF');
   await page.evaluate(() => { window.__pacedWrites = []; });
@@ -65,7 +65,7 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   await page.waitForFunction(() => window.__pacedWrites.length === 1);
   await start.waitFor();
   assert.deepEqual(await page.evaluate(() => window.__pacedWrites[0].bytes), [65, 13, 10, 0, 255]);
-  await sender.getByRole('radio', { name: '文本(T)' }).check();
+  await sender.getByRole('radio', { name: '文本' }).check();
   assert.equal(await ending.inputValue(), 'crlf', 'Hex mode must retain the text selection');
 
   const keyboardStart = await page.evaluate(() => window.__invokeCalls.length);
@@ -89,7 +89,7 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   await page.waitForFunction(total => window.__pendingTerminalSends.length === total, connectedIds.length);
   assert.equal(await ending.isDisabled(), true, 'ending selection must be locked during sending');
   await text.fill('next-draft');
-  await sender.getByRole('radio', { name: 'Hex(H)' }).check();
+  await sender.getByRole('radio', { name: '十六进制' }).check();
   await page.evaluate(() => {
     window.__deferTerminalSends = false;
     for (const pending of window.__pendingTerminalSends.splice(0)) pending.resolve(null);
@@ -101,7 +101,7 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
     assert.deepEqual(writes.filter(w => w.sessionId === id).map(w => w.text), ['snapshot\r\n', 'snapshot\r\n']);
   }
   assert.equal(await text.inputValue(), 'next-draft');
-  await sender.getByRole('radio', { name: '文本(T)' }).check();
+  await sender.getByRole('radio', { name: '文本' }).check();
   await target.selectOption('active');
   await count.fill('1');
 

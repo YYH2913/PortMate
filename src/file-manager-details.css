@@ -23,8 +23,8 @@
 
 .file-details-list .file-row,
 .file-list-header {
-  grid-template-columns: 16px 18px minmax(166px, 1fr) 86px 80px 152px;
-  min-width: 548px;
+  grid-template-columns: 16px 16px minmax(130px, 1fr) 72px 72px 118px;
+  min-width: 444px;
   padding: 0;
   text-align: start;
 }
