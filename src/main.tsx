@@ -4,6 +4,7 @@ import ReactDOM from "react-dom/client";
 import "./styles.css";
 import "./i18n.css";
 import App from "./App";
+import AppDialogHost from "./AppDialogHost";
 import { parseDetachedPaneRequest } from "./detached-pane-state";
 import { parseSerialAnalyzerRequest } from "./serial-analyzer-route";
 import { parseWorkspaceWindowRequest } from "./workspace-window-route";
@@ -39,21 +40,23 @@ void Promise.all([loadBundledTerminalFont(), initializeI18n()]).finally(() => {
 function PortMateRoute() {
   useLocale();
   useModalInteractionBoundary();
-  if (detachedPaneRequest) {
-    return (
-      <Suspense fallback={<div className="detached-pane-loading">{t("loading-terminal")}</div>}>
-        <DetachedPaneApp request={detachedPaneRequest} />
-      </Suspense>
-    );
-  }
-  if (serialAnalyzerRequest) {
-    return (
-      <Suspense fallback={<div className="detached-pane-loading">{t("loading-serial-analyzer")}</div>}>
-        <SerialAnalyzerApp request={serialAnalyzerRequest} />
-      </Suspense>
-    );
-  }
-  return <App workspaceWindowId={workspaceWindowRequest?.windowId} />;
+  const content = detachedPaneRequest ? (
+    <Suspense fallback={<div className="detached-pane-loading">{t("loading-terminal")}</div>}>
+      <DetachedPaneApp request={detachedPaneRequest} />
+    </Suspense>
+  ) : serialAnalyzerRequest ? (
+    <Suspense fallback={<div className="detached-pane-loading">{t("loading-serial-analyzer")}</div>}>
+      <SerialAnalyzerApp request={serialAnalyzerRequest} />
+    </Suspense>
+  ) : (
+    <App workspaceWindowId={workspaceWindowRequest?.windowId} />
+  );
+  return (
+    <>
+      {content}
+      <AppDialogHost />
+    </>
+  );
 }
 
 async function loadBundledTerminalFont() {

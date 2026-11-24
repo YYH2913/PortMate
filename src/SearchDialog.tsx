@@ -43,7 +43,19 @@ export default function SearchDialog({
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog search-dialog">
+      <section
+        className="wind-dialog search-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={state.mode === "sessions" ? t("session-search") : t("log-search")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{state.mode === "sessions" ? t("session-search") : t("log-search")}</strong>

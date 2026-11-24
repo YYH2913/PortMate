@@ -126,7 +126,20 @@ export default function CredentialDialog({
     <div className="dialog-backdrop credential-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onCancel();
     }}>
-      <form className="wind-dialog credential-dialog" onSubmit={submit}>
+      <form
+        className="wind-dialog credential-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("ssh-connection")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel();
+          }
+        }}
+        onSubmit={submit}
+      >
         <header className="dialog-title credential-title">
           <span className="app-icon" />
           <div>

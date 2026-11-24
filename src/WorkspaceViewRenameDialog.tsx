@@ -19,10 +19,23 @@ export default function WorkspaceViewRenameDialog({
   useLocale();
   return (
     <div className="dialog-backdrop" onMouseDown={(event) => !busy && event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog workspace-view-rename-dialog" onSubmit={(event) => {
-        event.preventDefault();
-        onSave();
-      }}>
+      <form
+        className="wind-dialog workspace-view-rename-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("rename-session")}
+        onKeyDown={(event) => {
+          if (!busy && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave();
+        }}
+      >
         <header className="dialog-title">
           <span>{t("rename-session")}</span>
           <button type="button" title={t("close")} aria-label={t("close")} disabled={busy} onClick={onClose}><X size={18} /></button>

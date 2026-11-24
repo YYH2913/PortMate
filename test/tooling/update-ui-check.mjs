@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
+import { respondAppConfirm } from "./app-dialog-helpers.mjs";
 import { chromium } from "playwright-core";
 
 const server = await createServer({ server: { host: "127.0.0.1", port: 0, strictPort: false, watch: { usePolling: false } } });
@@ -87,11 +88,11 @@ try {
   await dialog.locator(".update-content").evaluate(element => { element.scrollTop = 0; });
   await page.screenshot({ path: resolve("tmp/updater-review/update-markdown.png") });
   assert.equal(await page.evaluate(() => window.installs), 0);
-  page.once("dialog", async prompt => { assert.match(prompt.message(), /all PortMate windows will close/); await prompt.dismiss(); });
-  await dialog.getByRole("button", { name: "Update and restart", exact: true }).click();
+  await dialog.getByRole("button", { name: "Update and restart", exact: true }).evaluate(button => { button.click(); button.click(); });
+  assert.match(await respondAppConfirm(page, false), /all PortMate windows will close/);
   assert.equal(await page.evaluate(() => window.installs), 0, "declining must not start the update");
-  page.once("dialog", prompt => prompt.accept());
   await dialog.getByRole("button", { name: "Update and restart", exact: true }).click();
+  await respondAppConfirm(page, true);
   await page.waitForFunction(() => window.installs === 1);
   await page.evaluate(() => window.progress.onmessage({ phase: "downloading", downloaded: 256_000, total: 1_024_000 }));
   const progress = dialog.getByRole("progressbar");
@@ -110,8 +111,8 @@ try {
   await page.screenshot({ path: resolve("tmp/updater-review/update-dialog.png") });
   await dialog.getByRole("button", { name: "Check for updates", exact: true }).click();
   await dialog.getByText("PortMate 0.2.0 is available.", { exact: true }).waitFor();
-  page.once("dialog", prompt => prompt.accept());
   await dialog.getByRole("button", { name: "Update and restart", exact: true }).click();
+  await respondAppConfirm(page, true);
   await page.waitForFunction(() => window.installs === 2);
   for (const phase of ["verifying", "preparing", "installing"]) {
     await page.evaluate(phase => window.progress.onmessage({ phase, downloaded: 0, total: null }), phase);

@@ -10186,6 +10186,106 @@ fieldset label {
   z-index: 130;
 }
 
+.app-dialog-backdrop {
+  z-index: 950;
+}
+
+.app-dialog {
+  grid-template-rows: 46px minmax(0, auto);
+  width: min(460px, calc(100vw - 32px));
+  animation: app-dialog-enter 100ms ease-out;
+}
+
+@keyframes app-dialog-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-dialog {
+    animation: none;
+  }
+}
+
+.app-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 16px;
+}
+
+.app-dialog-message {
+  margin: 0;
+  color: #dce6f0;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.app-dialog-field {
+  display: grid;
+  gap: 6px;
+  color: #b7c8d8;
+  font-size: 12px;
+}
+
+.app-dialog-field input {
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #0e161f;
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.app-dialog-field input:focus {
+  border-color: var(--cyan);
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.app-dialog .utility-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.app-dialog .utility-actions button {
+  min-width: 82px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.app-dialog .utility-actions .primary-btn {
+  border-color: rgba(94, 234, 212, 0.55);
+  background: rgba(20, 158, 146, 0.28);
+  color: #e8fffb;
+  font-weight: 600;
+}
+
+.app-dialog .utility-actions .primary-btn:hover {
+  border-color: var(--cyan);
+  background: rgba(20, 158, 146, 0.44);
+}
+
+.app-dialog .utility-actions .danger-btn {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(185, 28, 28, 0.36);
+  color: #ffe4e6;
+  font-weight: 600;
+}
+
+.app-dialog .utility-actions .danger-btn:hover {
+  border-color: var(--red);
+  background: rgba(185, 28, 28, 0.52);
+}
+
 .notice-dialog {
   grid-template-rows: 46px minmax(0, auto) 58px;
   width: min(520px, calc(100vw - 40px));

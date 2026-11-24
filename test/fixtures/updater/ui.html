@@ -1,11 +1,19 @@
 <!doctype html>
 <html><head><meta charset="UTF-8"><title>Updater UI regression fixture</title></head><body><div id="root"></div><script type="module">
-import { createElement } from "react";
+import { createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
+import AppDialogHost from "/src/AppDialogHost.tsx";
+import { useModalInteractionBoundary } from "/src/modal-interaction-boundary.ts";
 import UpdateDialog from "/src/UpdateDialog.tsx";
 import { setLanguagePreference } from "/src/i18n.ts";
 import "/src/styles.css";
 setLanguagePreference("en");
 const root = createRoot(document.getElementById("root"));
-root.render(createElement(UpdateDialog, { onClose() { window.closedUpdater = true; root.render(null); } }));
+function Fixture() {
+  useModalInteractionBoundary();
+  return createElement(Fragment, null,
+    createElement(UpdateDialog, { onClose() { window.closedUpdater = true; root.render(null); } }),
+    createElement(AppDialogHost));
+}
+root.render(createElement(Fixture));
 </script></body></html>

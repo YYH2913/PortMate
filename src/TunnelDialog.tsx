@@ -179,7 +179,20 @@ export default function TunnelDialog({
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="wind-dialog utility-dialog tunnel-dialog" aria-label={t("port-forwarding")} onSubmit={submit}>
+      <form
+        className="wind-dialog utility-dialog tunnel-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("port-forwarding")}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+        onSubmit={submit}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{t("port-forwarding")}</strong>

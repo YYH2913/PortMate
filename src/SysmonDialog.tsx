@@ -38,7 +38,19 @@ export default function SysmonDialog({
 
   return (
     <div className="dialog-backdrop utility-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="wind-dialog sysmon-dialog">
+      <section
+        className="wind-dialog sysmon-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Sysmon"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <div className="sysmon-title">

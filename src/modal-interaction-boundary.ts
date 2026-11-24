@@ -7,6 +7,7 @@ const MODAL_PANEL_SELECTOR = '[role="dialog"], [role="alertdialog"], .wind-dialo
 const SELECTION_SCOPE_SELECTOR = `${MODAL_LAYER_SELECTOR}, ${POPUP_LAYER_SELECTOR}, .terminal-pane, .detached-pane-root, .serial-analyzer-root`;
 const FOCUSABLE_SELECTOR = [
   "a[href]",
+  "details > summary:first-of-type",
   "button:not(:disabled)",
   "input:not(:disabled)",
   "select:not(:disabled)",
@@ -99,6 +100,7 @@ export function useModalInteractionBoundary() {
     let lastOutsideFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     let syncFrame: number | null = null;
     let dismissedPopupLayer: HTMLElement | null = null;
+    const lastFocusByLayer = new WeakMap<HTMLElement, HTMLElement>();
     const inertState = new Map<HTMLElement, boolean>();
 
     const restoreInertState = () => {
@@ -130,7 +132,10 @@ export function useModalInteractionBoundary() {
       if (layer.modal) panel.setAttribute("aria-modal", "true");
       if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
       const firstControl = !layer.modal ? interactionFocusableElements(panel)[0] : null;
-      (firstControl ?? panel).focus({ preventScroll: true });
+      const previous = lastFocusByLayer.get(layer.element);
+      const restore = previous && panel.contains(previous) && !previous.matches(":disabled")
+        && !previous.closest("[inert], [hidden]") && previous.getClientRects().length > 0;
+      (restore ? previous : firstControl ?? panel).focus({ preventScroll: true });
     };
 
     const syncLayer = () => {
@@ -172,6 +177,15 @@ export function useModalInteractionBoundary() {
     };
 
     const scheduleSync = () => {
+      if (currentLayer && !currentLayer.isConnected) {
+        // The previously isolated modal unmounted; clear stale inert markers
+        // and stale modal-open flag immediately so underlying dialogs/menus do
+        // not drop fast input before the frame-batched focus sync runs.
+        restoreInertState();
+        if (!activeModalLayer(document)) {
+          document.body.removeAttribute("data-portmate-modal-open");
+        }
+      }
       if (syncFrame !== null) return;
       syncFrame = window.requestAnimationFrame(syncLayer);
     };
@@ -183,6 +197,18 @@ export function useModalInteractionBoundary() {
     const blockOutsideLayer = (event: Event): boolean => {
       const layer = resolveActiveInteractionLayer(document);
       if (!layer || eventTargetInside(layer.element, event.target)) return false;
+      const targetElement = event.target instanceof Element ? event.target : null;
+      if (!layer.modal && layer.element.matches(".menu-popover") && targetElement?.closest(".menu-trigger")) {
+        // Clicking or hovering another top-bar menu trigger should switch/toggle in one interaction.
+        if (["pointerdown", "pointerup", "pointermove", "mousedown", "mouseup", "click"].includes(event.type)) {
+          return false;
+        }
+      }
+      if (!layer.modal && event.type === "contextmenu" && targetElement?.closest(".tree-session, .workspace-pane-tab, .terminal-host, .file-row[data-file-path]")) {
+        // Right-clicking another context-menu host switches directly to the new context menu in one click.
+        dismissPopup(layer);
+        return false;
+      }
       if (!layer.modal && event.type === "wheel") {
         dismissPopup(layer);
         return false;
@@ -202,15 +228,25 @@ export function useModalInteractionBoundary() {
       const layer = resolveActiveInteractionLayer(document);
       if (!layer) return;
       if (!layer.modal && event.key === "Escape") {
+        if (event.target instanceof Element && event.target.closest(".context-submenu-panel")) {
+          // Allow an open submenu panel to handle Escape by collapsing only itself.
+          return;
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
+        const menuTrigger = layer.element.matches(".menu-popover")
+          ? layer.element.parentElement?.querySelector<HTMLButtonElement>(".menu-trigger") ?? null
+          : null;
         dismissPopup(layer);
+        if (menuTrigger) requestAnimationFrame(() => menuTrigger.focus({ preventScroll: true }));
         return;
       }
       const menuNavigation = !layer.modal && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key);
       if (!menuNavigation && event.key !== "Tab") return;
       const panel = interactionPanel(layer);
-      const controls = panel ? interactionFocusableElements(panel) : [];
+      const submenu = event.target instanceof Element ? event.target.closest(".context-submenu-panel") : null;
+      const controls = panel ? interactionFocusableElements(panel).filter(element =>
+        !menuNavigation || element.closest(".context-submenu-panel") === submenu) : [];
       if (menuNavigation) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -246,7 +282,12 @@ export function useModalInteractionBoundary() {
         if (event.target instanceof HTMLElement) lastOutsideFocus = event.target;
         return;
       }
+      if (!layer.modal && layer.element.matches(".menu-popover")
+        && event.target instanceof Element && event.target.closest(".menu-trigger")) {
+        return;
+      }
       if (!eventTargetInside(layer.element, event.target)) focusLayer(layer);
+      else if (event.target instanceof HTMLElement) lastFocusByLayer.set(layer.element, event.target);
     };
 
     const handleSelectionChange = () => {

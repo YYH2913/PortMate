@@ -21,20 +21,32 @@ export default function NoticeDialog({
     <div className="dialog-backdrop notice-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="wind-dialog notice-dialog">
+      <section
+        className="wind-dialog notice-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" />
           <strong>{title}</strong>
-          <button onClick={onClose}><X size={20} /></button>
+          <button type="button" title={t("close")} aria-label={t("close")} onClick={onClose}><X size={20} /></button>
         </header>
         <div className="notice-content">{diagnostic ? localizeDiagnostic(message) : message}</div>
         <footer className="notice-actions">
           {safeLink ? (
-            <button onClick={() => {
+            <button type="button" onClick={() => {
               if (openIsolatedWebLink(safeLink)) onClose();
             }}><ExternalLink size={15} />{t("open-link")}</button>
           ) : null}
-          <button onClick={onClose}>{safeLink ? t("close") : t("ok")}</button>
+          <button type="button" onClick={onClose}>{safeLink ? t("close") : t("ok")}</button>
         </footer>
       </section>
     </div>

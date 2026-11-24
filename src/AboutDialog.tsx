@@ -46,7 +46,19 @@ export default function AboutDialog({ onClose, onCheckUpdates }: { onClose: () =
     <div className="dialog-backdrop about-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="wind-dialog about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
+      <section
+        className="wind-dialog about-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="about-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <header className="dialog-title">
           <span className="app-icon" aria-hidden="true" />
           <strong id="about-title">{t("about-portmate")}</strong>

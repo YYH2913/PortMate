@@ -3,6 +3,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { Download, ExternalLink, RefreshCw, X } from "lucide-react";
 import packageJson from "../package.json";
 import { invokeBackend, isBackendAvailable } from "./api";
+import { requestAppConfirm } from "./app-dialog";
 import { t, useLocale } from "./i18n";
 import { formatBytes } from "./display-formatters";
 import { normalizeTerminalWebLink, openIsolatedWebLink } from "./terminal-web-link";
@@ -63,8 +64,15 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
 
   async function install() {
     if (pending.current || !result?.candidateId || !result.available) return;
-    if (!window.confirm(t("update-confirm", [result.currentVersion, result.version]))) return;
-    pending.current = true; setError(""); setPhase("downloading");
+    pending.current = true;
+    if (!(await requestAppConfirm({
+      title: t("check-for-updates"),
+      message: t("update-confirm", [result.currentVersion, result.version]),
+    })) || !mounted.current) {
+      pending.current = false;
+      return;
+    }
+    setError(""); setPhase("downloading");
     const onProgress = new Channel<UpdateProgress>();
     onProgress.onmessage = (next) => {
       if (mounted.current && pending.current) { setProgress(next); setPhase(next.phase); }
