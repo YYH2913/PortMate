@@ -2,7 +2,7 @@ import ShellElevationIndicator from "./ShellElevationIndicator";
 import { shellElevationRequested } from "./shell-elevation";
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import type { SetStateAction } from "react";
+import type { MouseEvent as ReactMouseEvent, SetStateAction } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PanelLeftOpen, Play, RefreshCw, Square } from "lucide-react";
@@ -10,6 +10,13 @@ import { invokeBackend, isBackendAvailable } from "./api";
 import { AsyncOperationQueue } from "./async-operation-queue";
 import type { CommandSubmissionSource } from "./command-submission";
 import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
+import { TerminalContextMenu, type TerminalContextAction } from "./ContextMenus";
+import { hasActiveModalLayer, INTERACTION_LAYER_DISMISS_EVENT } from "./modal-interaction-boundary";
+import { pasteClipboardIntoTerminalView } from "./terminal-clipboard";
+import { downloadTerminalText } from "./terminal-export-download";
+import { requestTerminalTextExport, type TerminalTextExportSource } from "./terminal-export-event";
+import { chooseTerminalTextExportPath, normalizeTerminalExportDirectory, terminalTextExportFileName, terminalTextExportRequest } from "./terminal-export-path";
+import { requestTerminalSearch } from "./terminal-search";
 import {
   COMMAND_HISTORY_STORAGE_KEY,
   commandHistoryCommands,
@@ -41,7 +48,7 @@ import { TerminalSessionInput } from "./terminal-session-input";
 import { normalizeQuickCommandLibrary, QUICK_COMMAND_STORAGE_KEY } from "./quick-command-state";
 import type { OneKeyPromptField } from "./one-key-completion-state";
 import type { CommandHistorySnapshot, DeleteSessionProfileResponse, OneKeySummary, SessionEvent, SessionSummary } from "./types";
-import { terminalKeyModeLabel, terminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, useTerminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 
 type DetachedOwnerControlAction = Exclude<DetachedPaneCommand["action"], "lock-screen">;
@@ -70,6 +77,15 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
   const errorRef = useRef(error);
   const [screenLock, setScreenLock] = useState<ScreenLockMarker | null>(readScreenLockMarker);
   const [ownerCommandBusy, setOwnerCommandBusy] = useState<DetachedOwnerControlAction | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    alternate: boolean;
+    hasSelection: boolean;
+  } | null>(null);
+  const refreshNowRef = useRef<(() => Promise<void>) | null>(null);
   const sessionRefreshGenerationRef = useRef(0);
   const ownerCommandBusyRef = useRef<DetachedOwnerControlAction | null>(null);
   const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
@@ -83,6 +99,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       onSuccess: () => { if (errorRef.current) setError(""); },
     });
   }
+  const keyModeShortcutHint = useTerminalKeyModeShortcutHint(session?.profile.connection.kind === "serial", request.viewId);
   const connectionAction = session ? sessionConnectionAction(session.runtime.status) : "connect";
   const runtimeHealth = session ? sessionRuntimeHealthDescription(session.runtime) : t("session-unavailable");
   const statusText = error || runtimeHealth;
@@ -132,59 +149,48 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
 
   useEffect(() => {
     let disposed = false;
-    let sessionsRefreshing = false;
-    let terminalStateRefreshing = false;
     let eventSignature = "";
-    void refreshSessions();
-    void refreshTerminalState();
-    const sessionTimer = window.setInterval(() => void refreshSessions(), 1_200);
-    const terminalStateTimer = window.setInterval(() => void refreshTerminalState(), 2_000);
+    const sessionsPoll = shareRefresh(async () => {
+      const generation = sessionRefreshGenerationRef.current;
+      const nextSessions = isBackendAvailable() ? await invokeBackend<SessionSummary[]>("list_sessions", {}) : loadLocalSessions();
+      if (!disposed && generation === sessionRefreshGenerationRef.current) setSessions(nextSessions);
+    });
+    const terminalPoll = shareRefresh(async () => {
+      if (!isBackendAvailable()) return;
+      const [eventsResult, oneKeysResult] = await Promise.allSettled([
+        invokeBackend<SessionEvent[]>("tail_log", { sessionId: request.sessionId, limit: 600 }),
+        invokeBackend<OneKeySummary[]>("list_one_keys", {}),
+      ]);
+      if (disposed) return;
+      if (eventsResult.status === "fulfilled") {
+        const nextSignature = detachedEventSignature(eventsResult.value);
+        if (eventSignature !== nextSignature) {
+          eventSignature = nextSignature;
+          setEvents(eventsResult.value);
+        }
+      }
+      if (oneKeysResult.status === "fulfilled") setOneKeys(oneKeysResult.value);
+      if (eventsResult.status === "rejected") throw eventsResult.reason;
+      if (oneKeysResult.status === "rejected") throw oneKeysResult.reason;
+    });
+    refreshNowRef.current = async () => {
+      const results = await Promise.allSettled([sessionsPoll(), terminalPoll()]);
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    };
+    // Background polls retain the last good snapshot. A manual refresh joins
+    // any in-flight polls and reports their actual outcome to the user.
+    const pollSessions = () => { void sessionsPoll().catch(() => {}); };
+    const pollTerminal = () => { void terminalPoll().catch(() => {}); };
+    pollSessions();
+    pollTerminal();
+    const sessionTimer = window.setInterval(pollSessions, 1_200);
+    const terminalStateTimer = window.setInterval(pollTerminal, 2_000);
     return () => {
       disposed = true;
+      refreshNowRef.current = null;
       window.clearInterval(sessionTimer);
       window.clearInterval(terminalStateTimer);
     };
-
-    async function refreshSessions() {
-      if (sessionsRefreshing) return;
-      sessionsRefreshing = true;
-      const generation = sessionRefreshGenerationRef.current;
-      try {
-        const nextSessions = isBackendAvailable()
-          ? await invokeBackend<SessionSummary[]>("list_sessions", {})
-          : loadLocalSessions();
-        if (!disposed && generation === sessionRefreshGenerationRef.current) {
-          setSessions(nextSessions);
-        }
-      } catch {
-        // Keep the last confirmed session state during transient backend failures.
-      } finally {
-        sessionsRefreshing = false;
-      }
-    }
-
-    async function refreshTerminalState() {
-      if (terminalStateRefreshing) return;
-      terminalStateRefreshing = true;
-      try {
-        if (!isBackendAvailable()) return;
-        const [eventsResult, oneKeysResult] = await Promise.allSettled([
-          invokeBackend<SessionEvent[]>("tail_log", { sessionId: request.sessionId, limit: 600 }),
-          invokeBackend<OneKeySummary[]>("list_one_keys", {}),
-        ]);
-        if (disposed) return;
-        if (eventsResult.status === "fulfilled") {
-          const nextSignature = detachedEventSignature(eventsResult.value);
-          if (eventSignature !== nextSignature) {
-            eventSignature = nextSignature;
-            setEvents(eventsResult.value);
-          }
-        }
-        if (oneKeysResult.status === "fulfilled") setOneKeys(oneKeysResult.value);
-      } finally {
-        terminalStateRefreshing = false;
-      }
-    }
   }, [request.sessionId]);
 
   useEffect(() => {
@@ -383,6 +389,120 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
     }
   }
 
+  useEffect(() => {
+    const dismiss = () => setContextMenu(null);
+    window.addEventListener(INTERACTION_LAYER_DISMISS_EVENT, dismiss);
+    return () => window.removeEventListener(INTERACTION_LAYER_DISMISS_EVENT, dismiss);
+  }, []);
+
+  async function refreshInPlace() {
+    if (refreshing || !refreshNowRef.current) return;
+    setRefreshing(true);
+    try {
+      await refreshNowRef.current();
+      setError("");
+    } catch (refreshError) {
+      setError(formatDetachedError(refreshError));
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function openDetachedTerminalContextMenu(event: ReactMouseEvent) {
+    const target = event.target instanceof Element ? event.target : null;
+    const terminalHost = target?.closest<HTMLElement>(".terminal-host");
+    if (!terminalHost || !session) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      alternate: terminalHost.dataset.terminalBuffer === "alternate",
+      hasSelection: terminalHost.dataset.terminalHasSelection === "true",
+    });
+  }
+
+  async function exportDetachedTerminalText(source: TerminalTextExportSource, destination: "default" | "choose" = "default") {
+    if (!session || exportBusy) return;
+    setExportBusy(true);
+    try {
+      const directory = normalizeTerminalExportDirectory(terminalInteractionPrefs.completionSettings.terminalTextExportDirectory);
+      const desktop = isBackendAvailable();
+      const destinationPath = desktop && destination === "choose"
+        ? await chooseTerminalTextExportPath(directory, terminalTextExportFileName(session.profile.name, source))
+        : null;
+      if (desktop && destination === "choose" && destinationPath === null) return;
+      if (!sessionsRef.current.some(item => item.profile.id === session.profile.id) || hasActiveModalLayer()) return;
+      const payload = await requestTerminalTextExport({ sessionId: session.profile.id, viewId: request.viewId, source });
+      if (!desktop) {
+        downloadTerminalText(payload.text, session.profile.name, source);
+        return;
+      }
+      await invokeBackend("export_terminal_text", { request: terminalTextExportRequest(payload, directory, destinationPath) });
+    } catch (exportError) {
+      setError(formatDetachedError(exportError));
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  function handleDetachedContextAction(action: TerminalContextAction) {
+    setContextMenu(null);
+    if (!session) return;
+    const target = { sessionId: session.profile.id, viewId: request.viewId };
+    switch (action) {
+      case "copy":
+        void import("./terminal-selection-event")
+          .then(({ executeTerminalSelectionAction }) => executeTerminalSelectionAction({ ...target, action: "copy" }))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      case "paste": {
+        const lane = terminalInputRef.current;
+        const snapshot = lane?.capture();
+        if (!lane || !snapshot) return;
+        void pasteClipboardIntoTerminalView(snapshot.sessionId, request.viewId, () => lane.isCurrent(snapshot))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      }
+      case "find":
+        window.requestAnimationFrame(() => requestTerminalSearch());
+        return;
+      case "search-online":
+        void import("./terminal-selection-event")
+          .then(({ executeTerminalOnlineSearch }) => executeTerminalOnlineSearch({ ...target, fallback: session.lastLine }))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      case "clear-scrollback":
+      case "clear-screen":
+      case "clear-all":
+        void import("./terminal-buffer-event")
+          .then(({ executeTerminalBufferAction }) => executeTerminalBufferAction({ ...target, action }))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      case "select-all":
+        void import("./terminal-selection-event")
+          .then(({ executeTerminalSelectionAction }) => executeTerminalSelectionAction({ ...target, action: "select-all" }))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      case "clear-selection":
+        void import("./terminal-selection-event")
+          .then(({ executeTerminalSelectionAction }) => executeTerminalSelectionAction({ ...target, action: "clear" }))
+          .catch((actionError) => setError(formatDetachedError(actionError)));
+        return;
+      case "export-buffer":
+        void exportDetachedTerminalText("buffer", "default");
+        return;
+      case "export-buffer-to":
+        void exportDetachedTerminalText("buffer", "choose");
+        return;
+      case "export-selection":
+        void exportDetachedTerminalText("selection", "default");
+        return;
+      default:
+        return;
+    }
+  }
+
   return (
     <main
       className="detached-pane-root"
@@ -391,6 +511,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       data-event-count={events.length}
       data-one-key-count={oneKeys.length}
       data-owner-command-busy={ownerCommandBusy ?? ""}
+      onClick={() => setContextMenu(null)}
     >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
         <span className="detached-brand">PortMate</span>
@@ -403,8 +524,8 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           title={runtimeHealth}
         />
         <span className="detached-endpoint">{session ? describeDetachedEndpoint(session) : request.sessionId}</span>
-        <button type="button" title={t("refresh-session")} aria-label={t("refresh-session")} onClick={() => window.location.reload()}>
-          <RefreshCw size={14} />
+        <button type="button" title={t("refresh-session")} aria-label={t("refresh-session")} disabled={refreshing} onClick={() => void refreshInPlace()}>
+          <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
         </button>
         {connectionAction === "disconnect" ? (
           <button type="button" title={t("disconnect-session")} aria-label={t("disconnect-session")} disabled={ownerCommandBusy !== null} onClick={() => void sendOwnerCommand("disconnect")}>
@@ -419,7 +540,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
           <PanelLeftOpen size={15} />
         </button>
       </header>
-      <section className="detached-pane-terminal">
+      <section className="detached-pane-terminal" onContextMenu={openDetachedTerminalContextMenu}>
         <TerminalCanvas viewId={request.viewId} active={session} events={events} focused oneKeys={oneKeys} oneKeyCompletionEnabled={terminalInteractionPrefs.oneKeyCompletionEnabled} completionSettings={terminalInteractionPrefs.completionSettings} completionHistory={terminalInteractionPrefs.completionHistory} completionQuickCommands={terminalInteractionPrefs.completionQuickCommands} mouseReporting={terminalInteractionPrefs.mouseReporting} copyOnSelect={terminalInteractionPrefs.copyOnSelect} keyMode={keyMode} onKeyModeChange={setKeyMode} onInput={enqueueTerminalInput} onCommandSubmit={rememberDetachedCommand} onOneKeyCompletion={completeOneKeyPrompt} />
       </section>
       <footer className={statusError ? "detached-pane-status error" : "detached-pane-status"}>
@@ -427,12 +548,20 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
         <button
           type="button"
           data-key-mode={keyMode}
-          title={terminalKeyModeShortcutHint(session?.profile.connection.kind === "serial")}
+          title={keyModeShortcutHint}
           onClick={() => setKeyMode(toggleTerminalInsertNormalMode(keyMode))}
         >
           {terminalKeyModeLabel(keyMode)}
         </button>
       </footer>
+      {contextMenu ? (
+        <TerminalContextMenu
+          state={contextMenu}
+          exportBusy={exportBusy}
+          showTriggers={false}
+          onAction={handleDetachedContextAction}
+        />
+      ) : null}
       {screenLock ? <ChildWindowScreenLockOverlay marker={screenLock} ownerWindowId={request.ownerWindowId} /> : null}
     </main>
   );
@@ -502,6 +631,11 @@ function createDetachedCommandRequestId(): string {
   return uuid
     ? `request-${uuid}`
     : `request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function shareRefresh(load: () => Promise<void>) {
+  let pending: Promise<void> | null = null;
+  return () => pending ??= load().finally(() => { pending = null; });
 }
 
 function loadLocalSessions(): SessionSummary[] {

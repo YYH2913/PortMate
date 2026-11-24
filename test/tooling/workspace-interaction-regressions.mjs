@@ -107,5 +107,69 @@ export async function checkWorkspaceInteractions(context, appUrl) {
   } finally {
     await page.close();
   }
-  assert.deepEqual(errors, []);
+
+  const detached = await context.newPage();
+  detached.on("pageerror", error => errors.push(error.message));
+  try {
+    const url = new URL(appUrl);
+    url.search = new URLSearchParams({ detachedPane: "1", windowId: "review-window", paneId: "review-pane", viewId: "review-view", sessionId: "edge-router", keyMode: "remote" }).toString();
+    await detached.goto(url.href);
+    const host = detached.locator('.terminal-host[data-terminal-ready="true"]');
+    await host.waitFor();
+    const selectAction = async key => {
+      const label = await detached.evaluate(async key => (await import("/src/i18n.ts")).t(key), key);
+      await host.click({ button: "right" });
+      await detached.locator(".terminal-context-menu .context-menu-row").filter({ has: detached.getByText(label, { exact: true }) }).click();
+    };
+    await selectAction("export-terminal-text-to");
+    await detached.waitForFunction(() => window.__invokeCalls.some(call => call.command === "export_terminal_text"));
+    const req = await detached.evaluate(() => window.__invokeCalls.findLast(call => call.command === "export_terminal_text").args.request);
+    assert.deepEqual({ session: req.sessionId, view: req.viewId, source: req.source, directory: req.destinationDirectory,
+      path: req.destinationPath, overwrite: req.overwrite }, { session: "edge-router", view: "review-view", source: "buffer", directory: null,
+      path: "/tmp/portmate-picked-terminal.txt", overwrite: true });
+
+    await detached.evaluate(() => {
+      const text = "\x1b[?2004hPASTE-READY\r\n";
+      const event = { id: "detached-bracketed", sessionId: "edge-router", paneId: "edge-router:main", ts: new Date().toISOString(),
+        direction: "inbound", stream: "stdout", text, bytesRef: null, annotations: {} };
+      const bytes = [...new TextEncoder().encode(text)];
+      window.__emitTauriEvent("portmate-terminal-live", { event, bytes, originalLength: bytes.length, truncated: false });
+      window.__clipboardText = "first\nsecond";
+    });
+    await detached.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent.includes("PASTE-READY"));
+    await selectAction("paste");
+    await detached.waitForFunction(() => window.__invokeCalls.some(call => call.command === "send_text" && call.args.text === "\x1b[200~first\rsecond\x1b[201~"));
+    await detached.evaluate(() => { Object.defineProperty(navigator.clipboard, "readText", { configurable: true,
+      value: () => new Promise(resolve => { window.__finishClipboard = resolve; }) }); });
+    await selectAction("paste");
+    await detached.waitForFunction(() => !!window.__finishClipboard);
+    await detached.evaluate(async () => {
+      const edge = window.__sessions.find(item => item.profile.id === "edge-router");
+      edge.runtime.connectedSince = "2031-01-01T00:00:00Z";
+      window.__emitTauriEvent("portmate-session-profile-updated", structuredClone(edge));
+      window.__finishClipboard("stale-clipboard");
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    assert.equal(await detached.evaluate(() => window.__invokeCalls.some(call => call.command === "send_text" && call.args.text === "stale-clipboard")), false);
+    // Manual refresh joins both background polls; it must not claim success
+    // or launch duplicates while either IPC is still outstanding.
+    await detached.evaluate(() => { window.__deferSessionLists = true; window.__deferTailLogs = true; });
+    await detached.waitForFunction(() => window.__pendingSessionLists.length && window.__pendingTailLogs.length);
+    const refresh = detached.locator(".detached-pane-toolbar button").first();
+    await refresh.click();
+    await detached.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await refresh.isDisabled(), true);
+    const counts = await detached.evaluate(() => {
+      const counts = [window.__pendingSessionLists.length, window.__pendingTailLogs.length];
+      window.__deferSessionLists = window.__deferTailLogs = false;
+      for (const item of window.__pendingSessionLists.splice(0)) item.resolve(item.result);
+      for (const item of window.__pendingTailLogs.splice(0)) item.resolve(window.__events.filter(event => event.sessionId === "edge-router"));
+      return counts;
+    });
+    assert.deepEqual(counts, [1, 1]);
+    await detached.waitForFunction(() => !document.querySelector(".detached-pane-toolbar button").disabled);
+    assert.deepEqual(errors, []);
+  } finally {
+    await detached.close();
+  }
 }

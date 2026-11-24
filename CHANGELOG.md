@@ -7,6 +7,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 ## [Unreleased]
 
 - Refresh workspace menus, narrow-window panels and keyboard navigation; keep destructive confirmations tied to their original target. / 优化工作区菜单、窄窗口面板和键盘导航，防止确认操作作用于错误目标。
+- Preserve Esc in full-screen terminals and support safe paste and text export in detached views. / 全屏终端保留 Esc 输入，独立窗口支持安全粘贴和文本导出。
 - Separate application and session settings, search individual fields and confirm unsaved changes. / 区分应用与会话设置，支持按字段搜索和未保存更改确认。
 - Negotiate bounded TFTP windows, honor SFTP close failures and coalesce unknown-size receive progress. / TFTP 支持窗口协商，修复 SFTP 关闭失败误报成功及未知大小接收时进度刷新过密。
 - Preview terminal themes and distinguish log times, file modes and HTTP status without overriding remote styles. / 终端主题支持实时预览，可区分日志时间、文件权限和 HTTP 状态，保留设备原有样式。
