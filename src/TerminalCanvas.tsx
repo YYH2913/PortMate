@@ -75,7 +75,13 @@ import { rememberTerminalEventId, settleTerminalEventId, terminalEventSnapshotId
 import { TerminalReplayBoundary, terminalHistorySuffix } from "./terminal-event-replay";
 import { TerminalRawCorrelator } from "./terminal-raw-correlator";
 import { TerminalTaskScheduler } from "./terminal-task-scheduler";
-import { isStandaloneLineErase, terminalWriteHasOutput } from "./terminal-write-state";
+import {
+  isStandaloneLineErase,
+  isTerminalCursorMotionOnly,
+  terminalPayloadMayMoveRows,
+  terminalPayloadMayOverwriteCursorLine,
+  terminalWriteHasOutput,
+} from "./terminal-write-state";
 import { alternateTerminalScreenSnapshot } from "./terminal-screen-snapshot";
 import { inspectTerminalWebglCanvases } from "./terminal-renderer";
 import { TerminalRendererController } from "./terminal-renderer-controller";
@@ -224,10 +230,6 @@ const emptyTerminalTimestampViewport: TerminalTimestampViewport = {
   cellHeight: 0,
   entries: [],
 };
-
-function terminalTextMayMoveRows(text: string): boolean {
-  return /[\r\n\f\v\x1b]/u.test(text);
-}
 
 function loadTerminalWebglAddon(): Promise<WebglAddonModule> {
   if (!webglAddonModulePromise) {
@@ -1199,7 +1201,14 @@ function TerminalCanvas({
     );
     const timestampIndex = new TerminalTimestampIndex(timestampMarkerLimit);
     let standaloneEraseWrite = false;
-    let normalRedrawSnapshot: { marker: IMarker; lines: string[]; cursorLineOnly: boolean } | null = null;
+    let activeWriteStartMarker: IMarker | null = null;
+    let normalRedrawSnapshot: {
+      marker: IMarker;
+      lines: string[];
+      cursorLineOnly: boolean;
+      preCsiEndMarker: IMarker | null;
+      preCsiOverflow: boolean;
+    } | null = null;
     let restorePending = Boolean(cachedState);
     const cachedAlternateTimestamp = normalizeTerminalTimestamps([
       { line: 0, ts: cachedState?.alternateTimestamp },
@@ -1288,44 +1297,102 @@ function TerminalCanvas({
       return marker ? { marker, ts: normalized } : null;
     };
     const normalTimestampAt = (line: number): string | null => timestampIndex.timestampAt(line);
-    const commitTrackedTimestamp = (tracked: TerminalTimestampMarker, cursorLine: number, hadContent: boolean): boolean => {
+    const findNonEmptyNormalLineBounds = (firstLine: number, lastLine: number): [number, number] | null => {
+      const normal = term.buffer.normal;
+      const start = Math.max(0, firstLine);
+      const end = Math.min(normal.length - 1, lastLine);
+      if (start > end) return null;
+      let firstNonEmpty = -1;
+      for (let line = start; line <= end; line += 1) {
+        if (normal.getLine(line)?.translateToString(true)) {
+          firstNonEmpty = line;
+          break;
+        }
+      }
+      if (firstNonEmpty < 0) return null;
+      let lastNonEmpty = firstNonEmpty;
+      for (let line = end; line > firstNonEmpty; line -= 1) {
+        if (normal.getLine(line)?.translateToString(true)) {
+          lastNonEmpty = line;
+          break;
+        }
+      }
+      return [firstNonEmpty, lastNonEmpty];
+    };
+    const replaceTimestampRange = (firstLine: number, lastLine: number, ts: string): boolean => {
+      if (term.buffer.active.type !== "normal") return false;
+      const normalized = normalizeTerminalTimestampValue(ts);
+      if (!normalized) return false;
+      const end = Math.max(0, Math.max(firstLine, lastLine));
+      const start = Math.max(0, Math.min(firstLine, lastLine), end - timestampMarkerLimit + 1);
+      const normal = term.buffer.normal;
+      const following = normalTimestampAt(end + 1);
+      const beforeFirst = normalTimestampAt(start);
+      const removed = timestampIndex.removeRange(start, end);
+      let changed = removed || beforeFirst !== normalized;
+      const preceding = start > 0 ? normalTimestampAt(start - 1) : timestampIndex.anchor;
+      if (preceding !== normalized) {
+        changed = registerTimestampLine(start, normalized) || changed;
+      }
+      if (following && following !== normalized && end + 1 < normal.length) {
+        const scanLimit = Math.min(normal.length, end + 1 + term.rows);
+        for (let line = end + 1; line < scanLimit; line += 1) {
+          if (timestampIndex.has(line)) break;
+          if (normal.getLine(line)?.translateToString(true)) {
+            registerTimestampLine(line, following);
+            break;
+          }
+        }
+      }
+      return changed;
+    };
+    const commitTrackedTimestamp = (
+      tracked: TerminalTimestampMarker,
+      cursorLine: number,
+      beforeCursorText: string,
+      mayOverwriteCursorLine: boolean,
+    ): boolean => {
       const trackedLine = tracked.marker.line;
       if (tracked.marker.isDisposed || trackedLine < 0) {
         const changed = timestampIndex.timestampAt(0) !== tracked.ts;
         timestampIndex.anchor = tracked.ts;
         return changed;
       }
-      const existing = timestampIndex.has(trackedLine);
+      const normal = term.buffer.normal;
+      const hadContent = beforeCursorText.length > 0;
+      const afterTrackedText = normal.getLine(trackedLine)?.translateToString(true) ?? "";
+      const overwrittenInPlace = hadContent
+        && mayOverwriteCursorLine
+        && afterTrackedText.length > 0
+        && afterTrackedText !== beforeCursorText
+        && !afterTrackedText.startsWith(beforeCursorText);
       let changed = false;
-      if (hadContent && (existing || normalTimestampAt(trackedLine))) {
+      if (!afterTrackedText) {
         tracked.marker.dispose();
-      } else if (cursorLine === trackedLine && !term.buffer.normal.getLine(trackedLine)?.translateToString(true)) {
+      } else if (overwrittenInPlace) {
+        tracked.marker.dispose();
+        changed = replaceTimestampRange(trackedLine, trackedLine, tracked.ts);
+      } else if (hadContent && (timestampIndex.has(trackedLine) || normalTimestampAt(trackedLine))) {
         tracked.marker.dispose();
       } else {
         // Erase/clear controls may leave an interval on a blank row. Its next
-        // real content must get the arrival time of that content, not the old
-        // screen-clear/prompt timestamp.
-        if (existing) timestampIndex.removeRange(trackedLine, trackedLine);
-        changed = timestampIndex.add(tracked.marker, tracked.ts);
+        // real content must get the arrival time of that content and redraw the
+        // gutter immediately, even if the timestamp matches the cleared interval.
+        tracked.marker.dispose();
+        replaceTimestampRange(trackedLine, trackedLine, tracked.ts);
+        changed = true;
       }
-      if (cursorLine !== trackedLine) {
-        const nextLine = cursorLine > trackedLine ? trackedLine + 1 : cursorLine;
-        if (term.buffer.normal.getLine(nextLine)?.translateToString(true)) {
-          changed = registerTimestampLine(nextLine, tracked.ts) || changed;
+      if (cursorLine > trackedLine) {
+        const bounds = findNonEmptyNormalLineBounds(trackedLine + 1, cursorLine);
+        if (bounds) {
+          replaceTimestampRange(bounds[0], bounds[1], tracked.ts);
+          changed = true;
         }
+      } else if (cursorLine < trackedLine && normal.getLine(cursorLine)?.translateToString(true)) {
+        replaceTimestampRange(cursorLine, cursorLine, tracked.ts);
+        changed = true;
       }
       return changed;
-    };
-    const registerTimestampRange = (startLine: number, endLine: number, ts: string): boolean => {
-      const lastLine = Math.max(0, Math.max(startLine, endLine));
-      const firstLine = Math.max(0, Math.min(startLine, endLine), lastLine - timestampMarkerLimit + 1);
-      return registerTimestampLine(firstLine, ts);
-    };
-    const replaceTimestampRange = (firstLine: number, lastLine: number, ts: string) => {
-      const following = normalTimestampAt(lastLine + 1);
-      timestampIndex.removeRange(firstLine, lastLine);
-      registerTimestampLine(firstLine, ts);
-      if (following && lastLine + 1 < term.buffer.normal.length) registerTimestampLine(lastLine + 1, following);
     };
     const captureNormalRedraw = (cursorLineOnly: boolean) => {
       if (restorePending || normalRedrawSnapshot || term.buffer.active.type !== "normal") return false;
@@ -1334,31 +1401,72 @@ function TerminalCanvas({
       // cursor could have reverse-wrapped on BS: take its position *here*,
       // when xterm parses EL, not where the write began.
       const marker = term.registerMarker(cursorLineOnly ? 0 : -normal.cursorY);
-      if (marker) normalRedrawSnapshot = {
-        marker, cursorLineOnly,
-        lines: Array.from({ length: cursorLineOnly ? 1 : term.rows }, (_, row) =>
-          normal.getLine(marker.line + row)?.translateToString(true) ?? ""),
-      };
+      if (marker) {
+        const currentLine = normal.baseY + normal.cursorY;
+        const preCsiOverflow = !cursorLineOnly && Boolean(activeWriteStartMarker?.isDisposed);
+        const preCsiEndMarker = !cursorLineOnly
+          && activeWriteStartMarker
+          && (preCsiOverflow || currentLine > activeWriteStartMarker.line)
+          ? term.registerMarker(0)
+          : null;
+        normalRedrawSnapshot = {
+          marker,
+          cursorLineOnly,
+          preCsiEndMarker,
+          preCsiOverflow,
+          lines: Array.from({ length: cursorLineOnly ? 1 : term.rows }, (_, row) =>
+            normal.getLine(marker.line + row)?.translateToString(true) ?? ""),
+        };
+      }
       return false;
     };
     // Observe parsed controls, including sequences split across transport frames.
     // Ordinary typing and line feeds never scan the screen.
-    const timestampRedrawDisposables = ["H", "f", "A", "B", "E", "F", "d", "e", "J", "K", "u"].map((final) => (
+    const timestampRedrawDisposables = ["H", "f", "A", "B", "E", "F", "d", "e", "J", "K", "L", "M", "S", "T", "u"].map((final) => (
       term.parser.registerCsiHandler({ final }, () => captureNormalRedraw(final === "K" && standaloneEraseWrite))
     ));
-    timestampRedrawDisposables.push(term.parser.registerEscHandler({ final: "8" }, () => captureNormalRedraw(false)));
-    const commitNormalRedraw = (ts: string) => {
+    timestampRedrawDisposables.push(
+      term.parser.registerEscHandler({ final: "8" }, () => captureNormalRedraw(false)),
+      term.parser.registerEscHandler({ final: "M" }, () => captureNormalRedraw(false)),
+    );
+    const commitNormalRedraw = (ts: string, trackedStartLine: number | null = null) => {
       const snapshot = normalRedrawSnapshot;
       normalRedrawSnapshot = null;
-      // A discarded cursor row cannot be compared with the top of a new viewport.
-      if (!snapshot || (snapshot.cursorLineOnly && snapshot.marker.isDisposed)) return false;
-      const firstLine = snapshot.marker.isDisposed ? term.buffer.normal.baseY : snapshot.marker.line;
+      if (!snapshot) return false;
+      const markerDisposed = snapshot.marker.isDisposed;
+      const firstLine = markerDisposed ? term.buffer.normal.baseY : snapshot.marker.line;
       snapshot.marker.dispose();
+      const preCsiEndDisposed = Boolean(snapshot.preCsiEndMarker?.isDisposed);
+      const preCsiEndLine = snapshot.preCsiEndMarker && !preCsiEndDisposed ? snapshot.preCsiEndMarker.line : -1;
+      snapshot.preCsiEndMarker?.dispose();
+      // A discarded cursor row cannot be compared with the top of a new viewport.
+      if (snapshot.cursorLineOnly && markerDisposed) return false;
       if (firstLine < 0 || term.buffer.active.type !== "normal") return false;
+      const normal = term.buffer.normal;
+      if (!snapshot.cursorLineOnly && markerDisposed) {
+        const normalized = normalizeTerminalTimestampValue(ts);
+        const bounds = findNonEmptyNormalLineBounds(0, normal.length - 1);
+        if (normalized) timestampIndex.anchor = normalized;
+        if (!bounds) return false;
+        replaceTimestampRange(bounds[0], bounds[1], ts);
+        return true;
+      }
+      let updated = false;
+      if (!snapshot.cursorLineOnly && (snapshot.preCsiOverflow || preCsiEndLine >= 0 || preCsiEndDisposed)) {
+        const preFirst = snapshot.preCsiOverflow || trackedStartLine === null || trackedStartLine < 0
+          ? 0
+          : trackedStartLine + 1;
+        const preLast = preCsiEndDisposed ? normal.length - 1 : preCsiEndLine;
+        const preBounds = findNonEmptyNormalLineBounds(preFirst, preLast);
+        if (preBounds) {
+          replaceTimestampRange(preBounds[0], preBounds[1], ts);
+          updated = true;
+        }
+      }
       const changed: number[] = [];
       for (let row = 0; row < snapshot.lines.length; row += 1) {
         const line = firstLine + row;
-        const after = term.buffer.normal.getLine(line)?.translateToString(true);
+        const after = normal.getLine(line)?.translateToString(true);
         if (after !== undefined && after !== snapshot.lines[row]) changed.push(line);
       }
       for (let index = 0; index < changed.length; index += 1) {
@@ -1366,8 +1474,19 @@ function TerminalCanvas({
         let last = first;
         while (changed[index + 1] === last + 1) last = changed[++index];
         replaceTimestampRange(first, last, ts);
+        updated = true;
       }
-      return changed.length > 0;
+      if (!snapshot.cursorLineOnly) {
+        const snapshotEnd = firstLine + snapshot.lines.length;
+        if (snapshotEnd < normal.length) {
+          const scrollBounds = findNonEmptyNormalLineBounds(snapshotEnd, normal.length - 1);
+          if (scrollBounds) {
+            replaceTimestampRange(scrollBounds[0], scrollBounds[1], ts);
+            updated = true;
+          }
+        }
+      }
+      return updated;
     };
     const restoreTimestampMarkers = () => {
       if (term.buffer.active.type !== "normal" || !pendingRestoredTimestamps.length) return;
@@ -1579,46 +1698,71 @@ function TerminalCanvas({
         : beforeBuffer.cursorY;
       const beforeColumn = beforeBuffer.cursorX;
       const inspectAlternateRows = beforeBufferType === "alternate"
-        && eventText.length >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
+        && (eventText.length || rawBytes?.byteLength || 0) >= TERMINAL_ALTERNATE_SNAPSHOT_MIN_CHARACTERS;
       const beforeAlternateSnapshot = inspectAlternateRows
         ? alternateTerminalScreenSnapshot(term)
         : [];
-      const trackedNormalStart = eventText
-        && event.direction !== "outbound"
-        && beforeBufferType === "normal"
-        && terminalTextMayMoveRows(eventText)
+      const isSystemWrite = !rawBytes
+        && (event.direction === "system" || event.stream === "control" || event.stream === "audit");
+      const hasTimestampPayload = isSystemWrite || !isTerminalCursorMotionOnly(eventText, rawBytes);
+      const mayMoveRows = hasTimestampPayload && (isSystemWrite || terminalPayloadMayMoveRows(eventText, rawBytes));
+      const mayOverwriteCursorLine = mayMoveRows && terminalPayloadMayOverwriteCursorLine(eventText, rawBytes);
+      const trackedNormalStart = beforeBufferType === "normal" && mayMoveRows
         ? trackTimestampLine(beforeLine, first.event.ts)
         : null;
-      const beforeNormalCursorText = trackedNormalStart
-        ? term.buffer.normal.getLine(beforeLine)?.translateToString(true)
-        : undefined;
+      const beforeNormalCursorText = hasTimestampPayload && beforeBufferType === "normal"
+        ? term.buffer.normal.getLine(beforeLine)?.translateToString(true) ?? ""
+        : "";
       let callbackCompleted = false;
       let writeReturned = false;
       standaloneEraseWrite = event.direction === "inbound" && (event.stream === "stdout" || event.stream === "stderr")
         && isStandaloneLineErase(eventText, rawBytes);
+      activeWriteStartMarker = trackedNormalStart?.marker ?? null;
       writeTerminalEvent(term, event, rawBytes, () => {
         standaloneEraseWrite = false;
+        activeWriteStartMarker = null;
         lastParsedTimestamp = first.event.ts;
         let timestampChanged = false;
-        if (eventText && event.direction !== "outbound") {
+        let trackedStartLine: number | null = null;
+        if (hasTimestampPayload) {
           const afterBuffer = term.buffer.active;
           if (afterBuffer.type === "normal") {
             const afterLine = term.buffer.normal.baseY + term.buffer.normal.cursorY;
+            const afterCursorText = term.buffer.normal.getLine(afterLine)?.translateToString(true) ?? "";
+            trackedStartLine = trackedNormalStart && !trackedNormalStart.marker.isDisposed
+              ? trackedNormalStart.marker.line
+              : null;
             const unchangedCursorRow = trackedNormalStart && !trackedNormalStart.marker.isDisposed
               && trackedNormalStart.marker.line === afterLine
-              && beforeNormalCursorText === term.buffer.normal.getLine(afterLine)?.translateToString(true);
+              && beforeNormalCursorText === afterCursorText;
             if (unchangedCursorRow) {
               trackedNormalStart.marker.dispose();
             } else if (trackedNormalStart) {
               timestampChanged = commitTrackedTimestamp(
-                trackedNormalStart, normalRedrawSnapshot ? trackedNormalStart.marker.line : afterLine, Boolean(beforeNormalCursorText),
+                trackedNormalStart,
+                normalRedrawSnapshot ? trackedNormalStart.marker.line : afterLine,
+                beforeNormalCursorText,
+                mayOverwriteCursorLine,
               );
             } else if (!normalRedrawSnapshot) {
+              const afterBeforeLineText = beforeBufferType === "normal"
+                ? (afterLine === beforeLine ? afterCursorText : term.buffer.normal.getLine(beforeLine)?.translateToString(true) ?? "")
+                : "";
+              const becameNonEmpty = beforeBufferType === "normal"
+                && beforeNormalCursorText.length === 0
+                && (afterBeforeLineText.length > 0 || afterCursorText.length > 0);
               const firstChangedLine = beforeBufferType !== "normal"
                 ? afterLine
-                : afterLine > beforeLine ? beforeLine + 1 : afterLine;
-              if (beforeBufferType !== "normal" || beforeColumn === 0 || afterLine !== beforeLine || !normalTimestampAt(afterLine)) {
-                timestampChanged = registerTimestampRange(firstChangedLine, afterLine, first.event.ts);
+                : afterLine > beforeLine
+                  ? (beforeNormalCursorText.length === 0 ? beforeLine : beforeLine + 1)
+                  : afterLine;
+              if (becameNonEmpty) {
+                replaceTimestampRange(firstChangedLine, afterLine, first.event.ts);
+                timestampChanged = true;
+              } else if (beforeBufferType !== "normal" || beforeColumn === 0 || afterLine !== beforeLine || !normalTimestampAt(afterLine)) {
+                if (afterCursorText.length > 0 || (afterLine > beforeLine && findNonEmptyNormalLineBounds(firstChangedLine, afterLine))) {
+                  timestampChanged = replaceTimestampRange(firstChangedLine, afterLine, first.event.ts);
+                }
               }
             }
           } else {
@@ -1633,7 +1777,7 @@ function TerminalCanvas({
                   beforeLine,
                   afterBuffer.cursorY,
                 )
-                : beforeLine === afterBuffer.cursorY && !terminalTextMayMoveRows(eventText)
+                : beforeLine === afterBuffer.cursorY && !mayMoveRows
                   ? []
                   : [...new Set([beforeLine, afterBuffer.cursorY])];
               alternateTimestamps = updateAlternateTerminalTimestamps(
@@ -1649,7 +1793,7 @@ function TerminalCanvas({
             }
           }
         }
-        timestampChanged = commitNormalRedraw(first.event.ts) || timestampChanged;
+        timestampChanged = commitNormalRedraw(first.event.ts, trackedStartLine) || timestampChanged;
         for (const pending of batch) {
           settleTerminalEventId(seenEventsRef.current, pendingEventIds, pending.event.id);
         }
@@ -2104,7 +2248,7 @@ function TerminalCanvas({
     };
     refreshSemanticHighlightingRef.current = scheduleSemanticHighlighting;
     const semanticWriteDisposable = term.onWriteParsed(() => {
-      if (normalRedrawSnapshot && lastParsedTimestamp) {
+      if (!eventWriteActive && normalRedrawSnapshot && lastParsedTimestamp) {
         if (commitNormalRedraw(lastParsedTimestamp)) scheduleTimestampGutter();
       }
       settleSemanticHighlighting();
@@ -2368,7 +2512,9 @@ function TerminalCanvas({
       mouseEncodingSetDisposable.dispose();
       mouseEncodingResetDisposable.dispose();
       for (const disposable of timestampRedrawDisposables) disposable.dispose();
+      activeWriteStartMarker = null;
       normalRedrawSnapshot?.marker.dispose();
+      normalRedrawSnapshot?.preCsiEndMarker?.dispose();
       if (restorePending || pendingEventIds.size) {
         for (const eventId of pendingEventIds) seenEventsRef.current.delete(eventId);
       } else {
@@ -2788,6 +2934,10 @@ function TerminalCanvas({
       clearDocumentSelectionWithin(host?.closest(".terminal-canvas") ?? null);
     }
   }, [active?.profile.id, active?.runtime.connectedSince, active?.runtime.status, displayMode, focused]);
+
+  useEffect(() => {
+    if (displayMode !== "hex") refreshTimestampGutterRef.current();
+  }, [displayMode]);
 
   useEffect(() => {
     if (!focused && gotoLineOpen) closeTerminalGotoLine(true, false);

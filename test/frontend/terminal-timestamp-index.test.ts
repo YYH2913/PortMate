@@ -51,7 +51,8 @@ describe("terminal timestamp index", () => {
     markers[1].dispose();
     markers[2].move(5);
     expect(index.snapshot()).toEqual([{ line: 0, ts: "0" }, { line: 5, ts: "2" }]);
-    index.removeRange(4, 7);
+    expect(index.removeRange(4, 7)).toBe(true);
+    expect(index.removeRange(4, 7)).toBe(false);
     expect(markers[2].isDisposed).toBe(true);
     index.add(marker(4), "redraw");
     expect(index.snapshot()).toEqual([{ line: 0, ts: "0" }, { line: 4, ts: "redraw" }]);

@@ -6,6 +6,7 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
+- Preserve timestamps on unchanged terminal rows and refresh them when output rewrites a line. / 保留未改动终端行的时间戳，输出覆写行时刷新。
 - Refresh workspace menus, narrow-window panels and keyboard navigation; keep destructive confirmations tied to their original target. / 优化工作区菜单、窄窗口面板和键盘导航，防止确认操作作用于错误目标。
 - Preserve Esc in full-screen terminals and support safe paste and text export in detached views. / 全屏终端保留 Esc 输入，独立窗口支持安全粘贴和文本导出。
 - Separate application and session settings, search individual fields and confirm unsaved changes. / 区分应用与会话设置，支持按字段搜索和未保存更改确认。

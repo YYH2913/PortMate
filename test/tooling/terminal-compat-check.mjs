@@ -504,6 +504,12 @@ checks: try {
     throw new Error(`terminal workspace did not become ready: ${error.message}\npage errors: ${JSON.stringify(pageErrors)}\nbody: ${body.slice(0, 2_000)}\nvite: ${viteOutput.slice(-4_000)}`);
   }
 
+  if (process.env.PORTMATE_UI_TERMINAL_STREAM_ONLY === "1") {
+    console.log(await checkTerminalStreamRegressions(page, screenshotPrefix));
+    assert(!pageErrors.length, `terminal stream browser errors: ${JSON.stringify(pageErrors)}`);
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_COLORS_ONLY === "1") {
     await checkTerminalColors(page);
     assert(!pageErrors.length, `terminal color browser errors: ${JSON.stringify(pageErrors)}`);

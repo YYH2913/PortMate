@@ -51,11 +51,11 @@ export class TerminalTimestampIndex {
     return true;
   }
 
-  removeRange(firstLine: number, lastLine: number): void {
+  removeRange(firstLine: number, lastLine: number): boolean {
     this.compact();
     const first = this.lowerBound(firstLine);
     const end = this.upperBound(lastLine);
-    if (end <= first) return;
+    if (end <= first) return false;
     // Redraws normally affect only the screen at the tail of the buffer. Splice
     // that range instead of copying every timestamp in the retained scrollback.
     const removed = this.entries.splice(first, end - first);
@@ -63,6 +63,7 @@ export class TerminalTimestampIndex {
       entry.subscription.dispose();
       entry.marker.dispose();
     }
+    return true;
   }
 
   visible(viewportY: number, rows: number): VisibleTerminalTimestamp[] {

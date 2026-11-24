@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isStandaloneLineErase, terminalWriteHasOutput } from "../../src/terminal-write-state";
+import {
+  isStandaloneLineErase,
+  isTerminalCursorMotionOnly,
+  terminalPayloadMayMoveRows,
+  terminalPayloadMayOverwriteCursorLine,
+  terminalWriteHasOutput,
+} from "../../src/terminal-write-state";
 
 describe("terminal visual write admission", () => {
   it("does not inspect or render outgoing captures and empty acknowledgements", () => {
@@ -26,5 +32,33 @@ describe("terminal visual write admission", () => {
       expect(isStandaloneLineErase(text)).toBe(false);
       expect(isStandaloneLineErase("\b\x1b[K", encode(text))).toBe(false);
     }
+  });
+  it("detects row movement and in-place overwrite controls from raw bytes or decoded text", () => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    for (const text of ["\n", "\r", "\f", "\v", "\x1b[K", "line\r\n"]) {
+      expect(terminalPayloadMayMoveRows(text)).toBe(true);
+      expect(terminalPayloadMayMoveRows("", encode(text))).toBe(true);
+    }
+    for (const text of ["", "plain text", "status", "\t\b "]) {
+      expect(terminalPayloadMayMoveRows(text)).toBe(false);
+      expect(terminalPayloadMayMoveRows("\r\n", encode(text))).toBe(false);
+    }
+    for (const text of ["\rProgress: 50%", "\x1b[1GProgress: 50%", "\x1b[K"]) {
+      expect(terminalPayloadMayOverwriteCursorLine(text)).toBe(true);
+      expect(terminalPayloadMayOverwriteCursorLine("", encode(text))).toBe(true);
+    }
+    for (const text of ["", "status", "line1\nline2", "\b \b"]) {
+      expect(terminalPayloadMayOverwriteCursorLine(text)).toBe(false);
+      expect(terminalPayloadMayOverwriteCursorLine("\r", encode(text))).toBe(false);
+    }
+  });
+
+  it("distinguishes cursor-only CR/LF packets from writes that can change a row", () => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    expect(isTerminalCursorMotionOnly("\r\n")).toBe(true);
+    expect(isTerminalCursorMotionOnly("ignored preview", encode("\n\r"))).toBe(true);
+    expect(isTerminalCursorMotionOnly("\r\ntext")).toBe(false);
+    expect(isTerminalCursorMotionOnly("\r\n", encode("\r\ntext"))).toBe(false);
+    expect(isTerminalCursorMotionOnly("\x1b[2K")).toBe(false);
   });
 });
