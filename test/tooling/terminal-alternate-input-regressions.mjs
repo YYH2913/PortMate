@@ -19,6 +19,13 @@ export async function checkTerminalAlternateInput(page) {
   const clearSends = () => page.evaluate(() => { window.__invokeCalls = []; });
   const input = () => page.evaluate(() => window.__invokeCalls.filter(call => call.command === "send_text").map(call => call.args.text).join(""));
   await screen(true, "typing-alternate-initial");
+  await page.waitForFunction(() => document.querySelector(".terminal-key-mode-status")?.title.includes("Shift+Esc"));
+  await clearSends();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => window.__invokeCalls.some(call => call.command === "send_text" && call.args.text === "\u001b"));
+  await page.keyboard.press("Shift+Escape");
+  assert.equal(await host.getAttribute("data-terminal-key-mode"), "command");
+  await page.keyboard.press("i");
   await page.keyboard.type("git st", { delay: 110 });
   await page.waitForTimeout(150);
   assert.equal(await canvas.locator(".terminal-completion").count(), 0, "TUI typing opened a shell completion overlay");

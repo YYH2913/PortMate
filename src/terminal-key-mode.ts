@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { t } from "./i18n";
 export const terminalKeyModes = ["remote", "local", "normal", "command"] as const;
 
@@ -80,10 +81,29 @@ export function terminalKeyModeCursorStyle(mode: TerminalKeyMode): "bar" | "bloc
   return "block";
 }
 
-export function terminalKeyModeShortcutHint(serial: boolean): string {
-  return serial
-    ? t("toggle-insert-normal-mode-serial-shift-esc-for-normal")
-    : t("toggle-insert-normal-mode-esc-i");
+export function terminalKeyModeShortcutHint(serial: boolean, alternate = false): string {
+  if (serial) return t("toggle-insert-normal-mode-serial-shift-esc-for-normal");
+  if (alternate) return t("terminal-key-mode-alternate-hint");
+  return t("toggle-insert-normal-mode-esc-i");
+}
+
+// Buffer changes are rare. Notify the status bar only on a real transition,
+// never on output/scroll or via a document-wide MutationObserver.
+const alternateViews = new Set<string>();
+const bufferListeners = new Set<() => void>();
+function subscribeBufferType(listener: () => void) {
+  bufferListeners.add(listener);
+  return () => { bufferListeners.delete(listener); };
+}
+export function setTerminalViewAlternate(viewId: string, alternate: boolean) {
+  if (!viewId || alternateViews.has(viewId) === alternate) return;
+  if (alternate) alternateViews.add(viewId);
+  else alternateViews.delete(viewId);
+  for (const listener of bufferListeners) listener();
+}
+export function useTerminalKeyModeShortcutHint(serial: boolean, viewId = "") {
+  const alternate = useSyncExternalStore(subscribeBufferType, () => alternateViews.has(viewId), () => false);
+  return terminalKeyModeShortcutHint(serial, alternate);
 }
 
 /** Rebase unanchored local navigation when incoming output/manual scrolling
@@ -100,15 +120,17 @@ export function resolveTerminalKeyModeEvent(
   mode: TerminalKeyMode,
   event: TerminalModeKeyEvent,
   state = emptyTerminalKeySequenceState(),
-  options: { serial?: boolean } = {},
+  options: { serial?: boolean; alternate?: boolean } = {},
 ): TerminalKeyModeResolution {
   const empty = emptyTerminalKeySequenceState();
   if (event.isComposing) return { handled: mode !== "remote", state: empty, count: 1 };
 
   if (mode === "remote" && event.key === "Escape" && !hasCommandModifiers(event)) {
-    // Esc is a real device key on serial consoles (bootloader menus, vi, etc.).
-    // Never silently turn subsequent Linux login input into local navigation.
-    const switchMode = options.serial ? event.shiftKey : !event.shiftKey;
+    // Esc is a real device/application key on serial consoles and alternate-screen
+    // full-screen TUIs (vim, less, htop, tmux). Require Shift+Esc there so plain Esc
+    // reaches the remote app instead of stranding the user in local navigation mode.
+    const requireShift = Boolean(options.serial || options.alternate);
+    const switchMode = requireShift ? event.shiftKey : !event.shiftKey;
     if (switchMode) return { handled: true, state: empty, nextMode: "command", count: 1 };
   }
 

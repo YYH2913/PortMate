@@ -105,6 +105,9 @@ describe("terminal selection events", () => {
     expect(shortcut("a", "local")).toBe("select-all");
     expect(shortcut("c", "normal")).toBeNull();
     expect(shortcut("a", "command")).toBeNull();
+    const macCopy = { altKey: false, ctrlKey: false, key: "c", metaKey: true, shiftKey: true };
+    expect(terminalSelectionShortcut(macCopy, "remote", true)).toBe("copy");
+    expect(terminalSelectionShortcut(macCopy, "remote", false)).toBeNull();
     expect(terminalSelectionShortcut({ altKey: true, ctrlKey: true, key: "a", metaKey: false, shiftKey: true }, "remote")).toBeNull();
   });
 

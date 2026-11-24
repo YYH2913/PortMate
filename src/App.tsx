@@ -106,6 +106,7 @@ import { canPipelineTerminalInput, TerminalInputPumpRegistry } from "./terminal-
 import { TerminalInputStreams } from "./terminal-input-stream";
 import type { TerminalInputOrder } from "./terminal-input-stream";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
+import { pasteClipboardIntoTerminalView } from "./terminal-clipboard";
 import { requestTerminalFreeInput } from "./terminal-free-input";
 import { requestTerminalTextExport } from "./terminal-export-event";
 import type { TerminalTextExportSource } from "./terminal-export-event";
@@ -119,7 +120,7 @@ import type { TerminalSelectionAction } from "./terminal-selection-event";
 import { terminalBinaryStringToBytes } from "./terminal-mouse";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalProfileSettings, normalizeTerminalStartupSessionIds } from "./terminal-settings-state";
 import { requestTerminalGotoLine } from "./terminal-goto-line-event";
-import { terminalKeyModeLabel, terminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
+import { terminalKeyModeLabel, useTerminalKeyModeShortcutHint, toggleTerminalInsertNormalMode } from "./terminal-key-mode";
 import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
@@ -522,6 +523,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const activeWorkspacePane = findWorkspacePane(workspaceRoot, activePaneId);
   const activeWorkspaceView = activeWorkspacePane ? workspacePaneActiveView(activeWorkspacePane) : undefined;
   const activeTerminalKeyMode = activeWorkspaceView?.keyMode ?? "remote";
+  const keyModeShortcutHint = useTerminalKeyModeShortcutHint(active?.profile.connection.kind === "serial", activeWorkspaceView?.id);
   const workspaceContextPane = workspaceViewContextMenu
     ? findWorkspacePane(workspaceRoot, workspaceViewContextMenu.paneId)
     : undefined;
@@ -2515,12 +2517,19 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     setTabColors((current) => ({ ...current, [session.profile.id]: color }));
   }
 
-  async function pasteFromClipboardIntoContext(sessionId?: string | null) {
-    const session = contextSession(sessionId);
-    if (!session) return;
-    const expectedConnectedSince = session.runtime.connectedSince ?? null;
-    const text = await navigator.clipboard?.readText().catch(() => "");
-    if (text) await routeTerminalInput(session.profile.id, text, "atomic", { expectedConnectedSince });
+  async function pasteFromClipboardIntoContext(sessionId?: string | null, viewId?: string) {
+    const target = currentWorkspaceTarget({ sessionId, viewId });
+    if (!target || target.session.runtime.status !== "connected") return;
+    const id = target.session.profile.id;
+    const epoch = captureTerminalInputEpoch(id);
+    if (epoch === null) return;
+    const current = () => terminalInputIsCurrent(id, epoch)
+      && sessionsRef.current.find(session => session.profile.id === id)?.runtime.connectedSince === target.session.runtime.connectedSince;
+    try {
+      await pasteClipboardIntoTerminalView(id, target.view.id, current);
+    } catch (error) {
+      if (current()) setNotice({ title: t("paste"), message: formatError(error) });
+    }
   }
 
   async function closeSessionsByIds(ids: string[]) {
@@ -2768,18 +2777,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         void runTerminalSelectionAction("copy", t("copy"), target);
         return;
       case "paste":
-        {
-        const expectedConnectedSince = current.session.runtime.connectedSince ?? null;
-        void navigator.clipboard?.readText().then((text) => {
-          if (text && currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
-            return routeTerminalInput(target.sessionId, text, "atomic", { expectedConnectedSince });
-          }
-        }).catch((error) => {
-          if (currentWorkspaceTarget({ ...target, paneId: current.pane.id })) {
-            setNotice({ title: t("paste"), message: formatError(error) });
-          }
-        });
-        }
+        void pasteFromClipboardIntoContext(target.sessionId, target.viewId);
         return;
       case "find":
         window.requestAnimationFrame(() => {
@@ -5022,7 +5020,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           type="button"
           className={`sync-status terminal-key-mode-status ${syncInput ? "active" : ""}`}
           data-key-mode={activeTerminalKeyMode}
-          title={terminalKeyModeShortcutHint(active?.profile.connection.kind === "serial")}
+          title={keyModeShortcutHint}
           aria-label={t("current-mode-switch-insert-normal-mode", [terminalKeyModeLabel(activeTerminalKeyMode)])}
           onClick={() => setActiveWorkspaceViewKeyMode(toggleTerminalInsertNormalMode(activeTerminalKeyMode))}
         >

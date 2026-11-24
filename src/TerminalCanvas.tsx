@@ -19,7 +19,7 @@ import { emptyOneKeyPromptDetectionState, oneKeyPromptCandidates, oneKeyPromptSt
 import type { OneKeyPromptDetectionState, OneKeyPromptField, OneKeyTerminalPrompt } from "./one-key-completion-state";
 import type { SyncInputOrigin } from "./sync-input-state";
 import type { TerminalInputSendOptions } from "./terminal-input-pump";
-import { createWriteOnlyClipboardProvider } from "./terminal-clipboard";
+import { createWriteOnlyClipboardProvider, registerTerminalPasteTarget } from "./terminal-clipboard";
 import {
   emptyTerminalCompletionInputState,
   indexTerminalCompletionHistory,
@@ -49,7 +49,7 @@ import type { TerminalSelectionRequestDetail } from "./terminal-selection-event"
 import { MAX_TERMINAL_GOTO_LINE_QUERY_LENGTH, resolveTerminalGotoLine, terminalGotoCurrentLine, terminalGotoLineStatus, terminalGotoViewportLine } from "./terminal-goto-line";
 import type { TerminalGotoLineResolution } from "./terminal-goto-line";
 import { TERMINAL_GOTO_LINE_REQUEST_EVENT } from "./terminal-goto-line-event";
-import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent, terminalKeyModeCursorStyle, terminalLocalNavigationStartRow } from "./terminal-key-mode";
+import { emptyTerminalKeySequenceState, resolveTerminalKeyModeEvent, setTerminalViewAlternate, terminalKeyModeCursorStyle, terminalLocalNavigationStartRow } from "./terminal-key-mode";
 import type { TerminalKeyMode, TerminalKeySequenceState, TerminalLocalCommand } from "./terminal-key-mode";
 import { isTerminalFindShortcut, MAX_TERMINAL_SEARCH_QUERY_LENGTH, terminalSearchResultLabel, terminalSearchSeed, TERMINAL_SEARCH_REQUEST_EVENT } from "./terminal-search";
 import type { TerminalSearchResult } from "./terminal-search";
@@ -1128,7 +1128,10 @@ function TerminalCanvas({
         openSearchRef.current();
         return false;
       }
-      const resolution = resolveTerminalKeyModeEvent(mode, event, keySequenceRef.current, { serial: serialKeyModeRef.current });
+      const resolution = resolveTerminalKeyModeEvent(mode, event, keySequenceRef.current, {
+        serial: serialKeyModeRef.current,
+        alternate: term.buffer.active.type === "alternate",
+      });
       keySequenceRef.current = resolution.state;
       if (!resolution.handled) return true;
       event.preventDefault();
@@ -1439,9 +1442,11 @@ function TerminalCanvas({
     };
     recordTerminalViewport();
     host.dataset.terminalBuffer = terminalBufferType(term);
+    setTerminalViewAlternate(viewId, host.dataset.terminalBuffer === "alternate");
     host.dataset.terminalHasSelection = "false";
     const bufferChangeDisposable = term.buffer.onBufferChange((buffer) => {
       host.dataset.terminalBuffer = buffer.type === "alternate" ? "alternate" : "normal";
+      setTerminalViewAlternate(viewId, buffer.type === "alternate");
       // Clear live candidates and pending previews synchronously. React's
       // buffer-type update may arrive after another key/click in this task.
       resetCompletionInput(buffer.type === "normal");
@@ -2237,24 +2242,24 @@ function TerminalCanvas({
       lastCopiedSelectionRef.current = selected;
       void navigator.clipboard?.writeText(selected).catch(() => {});
     });
-    const pasteFromClipboard = (event: MouseEvent) => {
-      event.preventDefault();
-      if (!focusedRef.current || keyModeRef.current !== "remote" || freeInputSubmission.isBusy()) return;
+    const pasteFromClipboard = (isCurrent: () => boolean) => {
       const clipboard = navigator.clipboard;
-      if (!clipboard) return;
-      void pasteTerminalClipboard(inputBoundaryRef.current!, () => clipboard.readText(), (text, snapshot) => {
+      if (!clipboard) return Promise.resolve(false);
+      return pasteTerminalClipboard(inputBoundaryRef.current!, () => clipboard.readText(), (text, snapshot) => {
         resetCompletionInput(false);
         // xterm normalizes line endings and honors bracketed paste. Its
         // synchronous onData event is the only input/history dispatch path.
         pasteInput = true;
         pasteSnapshot = snapshot;
         try { term.paste(text); } finally { pasteInput = false; pasteSnapshot = null; }
-      }, () => !terminalDisposed && focusedRef.current && keyModeRef.current === "remote" && !freeInputSubmission.isBusy()).catch(() => {});
+      }, () => !terminalDisposed && focusedRef.current && keyModeRef.current === "remote" && !freeInputSubmission.isBusy()
+        && !modalBlocksTerminalCommand(host) && isCurrent());
     };
+    const unregisterPaste = registerTerminalPasteTarget(active.profile.id, viewId, pasteFromClipboard);
     const pasteOnMiddleClick = (event: MouseEvent) => {
-      if (event.button === 1) {
-        pasteFromClipboard(event);
-      }
+      if (event.button !== 1) return;
+      event.preventDefault();
+      void pasteFromClipboard(() => true).catch(() => {});
     };
     const pauseCompletionOnPaste = (event: ClipboardEvent) => {
       if (freeInputSubmission.isBusy()) {
@@ -2310,7 +2315,9 @@ function TerminalCanvas({
       inputDisposable.dispose();
       binaryInputDisposable.dispose();
       selectionDisposable.dispose();
+      unregisterPaste();
       bufferChangeDisposable.dispose();
+      setTerminalViewAlternate(viewId, false);
       host.removeEventListener("paste", pauseCompletionOnPaste, true);
       for (const type of editorInputEvents) host.removeEventListener(type, blockPendingEditorInput, true);
       host.removeEventListener("mousedown", forceBlockSelection, true);

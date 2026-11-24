@@ -34,7 +34,19 @@ describe("terminal key modes", () => {
     expect(resolve("Escape", { isComposing: true })).toMatchObject({ handled: false });
     expect(resolveTerminalKeyModeEvent("command", key("i"), emptyTerminalKeySequenceState(), serial)).toMatchObject({ nextMode: "remote" });
     expect(terminalKeyModeShortcutHint(true)).toContain("Shift+Esc");
+    expect(terminalKeyModeShortcutHint(false, true)).toContain("Shift+Esc");
     expect(terminalKeyModeShortcutHint(false)).toContain("Esc / i");
+  });
+
+  it("passes alternate-screen Escape through so full-screen TUIs receive Esc", () => {
+    const alternate = { alternate: true };
+    const plainEsc = resolveTerminalKeyModeEvent("remote", key("Escape"), emptyTerminalKeySequenceState(), alternate);
+    expect(plainEsc.handled).toBe(false);
+    expect(plainEsc.nextMode).toBeUndefined();
+    expect(resolveTerminalKeyModeEvent("remote", key("Escape", { shiftKey: true }), emptyTerminalKeySequenceState(), alternate)).toMatchObject({
+      handled: true,
+      nextMode: "command",
+    });
   });
 
   it("rebases stale local navigation after boot output without overriding visible positions", () => {

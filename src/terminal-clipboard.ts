@@ -15,3 +15,19 @@ export function createWriteOnlyClipboardProvider(clipboard: ClipboardWriter | un
     },
   };
 }
+
+// Context menus live outside xterm. Delegate paste to the exact mounted view
+// so bracketed paste, private input and connection fencing match middle-click.
+type ViewPaste = (isCurrent: () => boolean) => Promise<boolean>;
+const pasteTargets = new Map<string, { sessionId: string; paste: ViewPaste }>();
+
+export function registerTerminalPasteTarget(sessionId: string, viewId: string, paste: ViewPaste) {
+  const entry = { sessionId, paste };
+  if (viewId) pasteTargets.set(viewId, entry);
+  return () => { if (pasteTargets.get(viewId) === entry) pasteTargets.delete(viewId); };
+}
+
+export function pasteClipboardIntoTerminalView(sessionId: string, viewId: string, isCurrent: () => boolean) {
+  const target = pasteTargets.get(viewId);
+  return target?.sessionId === sessionId ? target.paste(isCurrent) : Promise.resolve(false);
+}

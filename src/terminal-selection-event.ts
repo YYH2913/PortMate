@@ -52,9 +52,10 @@ export type TerminalOnlineSearchRequest = {
 export function terminalSelectionShortcut(
   event: KeyboardShortcutLike,
   mode: TerminalKeyMode,
+  isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform),
 ): "copy" | "select-all" | null {
   if ((mode !== "remote" && mode !== "local")
-    || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return null;
+    || event.ctrlKey === event.metaKey || (!event.ctrlKey && !isMac) || !event.shiftKey || event.altKey) return null;
   const key = event.key.toLowerCase();
   if (key === "c") return "copy";
   if (key === "a") return "select-all";
