@@ -3,6 +3,7 @@ import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles.css";
 import "./i18n.css";
+import "./ui-themes.css";
 import App from "./App";
 import AppDialogHost from "./AppDialogHost";
 import { parseDetachedPaneRequest } from "./detached-pane-state";
@@ -12,6 +13,9 @@ import { useModalInteractionBoundary } from "./modal-interaction-boundary";
 import { isBackendAvailable } from "./api";
 import { listenTerminalByteEvents, listenTerminalLiveEvents } from "./terminal-byte-events";
 import { initializeI18n } from "./i18n";
+import { initializeUiTheme } from "./ui-theme";
+
+initializeUiTheme();
 
 const DetachedPaneApp = lazy(() => import("./DetachedPaneApp"));
 const SerialAnalyzerApp = lazy(() => import("./SerialAnalyzerApp"));

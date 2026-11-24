@@ -1,5 +1,32 @@
 import { t, useLocale } from "./i18n";
-import { Ban } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  ArrowUp,
+  Ban,
+  Columns2,
+  Copy,
+  Download,
+  ExternalLink,
+  FileDown,
+  FileText,
+  FolderInput,
+  LayoutGrid,
+  Link2,
+  Maximize2,
+  Pencil,
+  Play,
+  Power,
+  Radio,
+  RefreshCw,
+  RotateCcw,
+  Rows2,
+  Save,
+  Settings,
+  X,
+} from "lucide-react";
 import { ContextDivider, ContextMenuButton, ContextSubmenu } from "./ContextMenus";
 import { useMeasuredMenuPosition } from "./context-menu-position";
 import { sessionConnectionAction } from "./session-runtime-state";
@@ -143,53 +170,60 @@ export default function WorkspaceViewContextMenu({
         </button>
       </div>
       <ContextDivider />
+      <span className="context-section-label">{t("context-section-edit")}</span>
       <ContextMenuButton
         label={syncInput ? t("disable-synchronized-input") : t("enable-synchronized-input")}
+        icon={Radio}
         checked={syncInput}
         disabled={sessionStatus !== "connected"}
         onClick={() => onAction("sync-toggle")}
       />
-      <ContextMenuButton label={t("duplicate-view")} disabled={!canDuplicate} onClick={onDuplicate} />
-      <ContextMenuButton label={t("rename-session")} disabled={profileBusy} onClick={onRename} />
+      <ContextMenuButton label={t("duplicate-view")} icon={Copy} disabled={!canDuplicate} onClick={onDuplicate} />
+      <ContextMenuButton label={t("rename-session")} icon={Pencil} disabled={profileBusy} onClick={onRename} />
+      <ContextMenuButton label={t("copy-session-name")} icon={FileText} onClick={() => onAction("copy-name")} />
+      <ContextMenuButton label={t("copy-session-url")} icon={Link2} onClick={() => onAction("copy-url")} />
       <ContextDivider />
-      <ContextMenuButton label={t("copy-session-name")} onClick={() => onAction("copy-name")} />
-      <ContextMenuButton label={t("copy-session-url")} onClick={() => onAction("copy-url")} />
+      <span className="context-section-label">{t("context-section-session")}</span>
+      <ContextMenuButton label={t("start-session")} icon={Play} disabled={startDisabled} onClick={() => onAction("start")} />
+      <ContextMenuButton label={t("reconnect-session")} icon={RefreshCw} disabled={reconnectDisabled} onClick={() => onAction("reconnect")} />
+      <ContextMenuButton label={t("disconnect-session")} icon={Power} disabled={disconnectDisabled} danger onClick={() => onAction("disconnect")} />
+      <ContextMenuButton label={t("save-session-settings")} icon={Save} disabled={profileBusy} onClick={() => onAction("save")} />
       <ContextDivider />
-      <ContextMenuButton label={t("start-session")} disabled={startDisabled} onClick={() => onAction("start")} />
-      <ContextMenuButton label={t("reconnect-session")} disabled={reconnectDisabled} onClick={() => onAction("reconnect")} />
-      <ContextMenuButton label={t("disconnect-session")} disabled={disconnectDisabled} onClick={() => onAction("disconnect")} />
-      <ContextMenuButton label={t("save-session-settings")} disabled={profileBusy} onClick={() => onAction("save")} />
-      <ContextMenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
-      <ContextMenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
-      <ContextMenuButton label={t("export-selected-text")} disabled={exportBusy || !hasSelection} onClick={() => onAction("export-selection")} />
+      <span className="context-section-label">{t("context-section-export")}</span>
+      <ContextMenuButton label={t("export-terminal-text")} icon={Download} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label={t("export-terminal-text-to")} icon={FileDown} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <ContextMenuButton label={t("export-selected-text")} icon={FileText} disabled={exportBusy || !hasSelection} onClick={() => onAction("export-selection")} />
       <ContextDivider />
-      <ContextMenuButton label={t("split-view-horizontally")} onClick={() => onAction("split-horizontal")} />
-      <ContextMenuButton label={t("split-view-vertically")} onClick={() => onAction("split-vertical")} />
-      <ContextMenuButton label={t("move-view-to-group")} disabled={!canMove} onClick={() => onAction("move-group")} />
-      <ContextSubmenu label={t("move-to-new-group")} disabled={!canMoveToNewGroup}>
-        <ContextMenuButton label={t("left")} onClick={() => onAction("move-new-left")} />
-        <ContextMenuButton label={t("right")} onClick={() => onAction("move-new-right")} />
-        <ContextMenuButton label={t("above")} onClick={() => onAction("move-new-up")} />
-        <ContextMenuButton label={t("below")} onClick={() => onAction("move-new-down")} />
+      <span className="context-section-label">{t("context-section-layout")}</span>
+      <ContextMenuButton label={t("split-view-horizontally")} icon={Columns2} onClick={() => onAction("split-horizontal")} />
+      <ContextMenuButton label={t("split-view-vertically")} icon={Rows2} onClick={() => onAction("split-vertical")} />
+      <ContextMenuButton label={t("move-view-to-group")} icon={FolderInput} disabled={!canMove} onClick={() => onAction("move-group")} />
+      <ContextSubmenu label={t("move-to-new-group")} icon={LayoutGrid} disabled={!canMoveToNewGroup}>
+        <ContextMenuButton label={t("left")} icon={ArrowLeft} onClick={() => onAction("move-new-left")} />
+        <ContextMenuButton label={t("right")} icon={ArrowRight} onClick={() => onAction("move-new-right")} />
+        <ContextMenuButton label={t("above")} icon={ArrowUp} onClick={() => onAction("move-new-up")} />
+        <ContextMenuButton label={t("below")} icon={ArrowDown} onClick={() => onAction("move-new-down")} />
       </ContextSubmenu>
-      <ContextMenuButton label={t("move-to-new-window")} disabled={!canDetach} onClick={() => onAction("detach-pane")} />
+      <ContextMenuButton label={t("move-to-new-window")} icon={ExternalLink} disabled={!canDetach} onClick={() => onAction("detach-pane")} />
       <ContextDivider />
-      <ContextMenuButton label={t("close-view")} disabled={!canClose} onClick={() => onAction("close")} />
-      <ContextMenuButton label={t("close-other-views")} disabled={!canCloseOther} onClick={() => onAction("close-other")} />
-      <ContextMenuButton label={t("close-views-to-the-right")} disabled={!canCloseRight} onClick={() => onAction("close-right")} />
-      <ContextMenuButton label={t("reopen-closed-view")} disabled={!canReopen} onClick={() => onAction("reopen")} />
-      <ContextMenuButton label={t("close-pane-3")} disabled={!canClosePane} onClick={() => onAction("close-pane")} />
+      <span className="context-section-label">{t("context-section-tabs")}</span>
+      <ContextMenuButton label={t("close-view")} icon={X} disabled={!canClose} onClick={() => onAction("close")} />
+      <ContextMenuButton label={t("close-other-views")} icon={X} disabled={!canCloseOther} onClick={() => onAction("close-other")} />
+      <ContextMenuButton label={t("close-views-to-the-right")} icon={X} disabled={!canCloseRight} onClick={() => onAction("close-right")} />
+      <ContextMenuButton label={t("reopen-closed-view")} icon={RotateCcw} disabled={!canReopen} onClick={() => onAction("reopen")} />
+      <ContextMenuButton label={t("close-pane-3")} icon={X} disabled={!canClosePane} danger onClick={() => onAction("close-pane")} />
       <ContextDivider />
-      <ContextMenuButton label={t("merge-current-group")} disabled={!canMerge} onClick={() => onAction("merge-group")} />
-      <ContextSubmenu label={t("swap-panes")} disabled={!Object.values(canSwap).some(Boolean)}>
-        <ContextMenuButton label={t("up")} disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
-        <ContextMenuButton label={t("down")} disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
-        <ContextMenuButton label={t("left-2")} disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
-        <ContextMenuButton label={t("right-2")} disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
+      <span className="context-section-label">{t("context-section-panes")}</span>
+      <ContextMenuButton label={t("merge-current-group")} icon={LayoutGrid} disabled={!canMerge} onClick={() => onAction("merge-group")} />
+      <ContextSubmenu label={t("swap-panes")} icon={ArrowLeftRight} disabled={!Object.values(canSwap).some(Boolean)}>
+        <ContextMenuButton label={t("up")} icon={ArrowUp} disabled={!canSwap.up} onClick={() => onAction("swap-up")} />
+        <ContextMenuButton label={t("down")} icon={ArrowDown} disabled={!canSwap.down} onClick={() => onAction("swap-down")} />
+        <ContextMenuButton label={t("left-2")} icon={ArrowLeft} disabled={!canSwap.left} onClick={() => onAction("swap-left")} />
+        <ContextMenuButton label={t("right-2")} icon={ArrowRight} disabled={!canSwap.right} onClick={() => onAction("swap-right")} />
       </ContextSubmenu>
-      <ContextMenuButton label={t("toggle-pane-zoom")} disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
+      <ContextMenuButton label={t("toggle-pane-zoom")} icon={Maximize2} disabled={!canZoom} onClick={() => onAction("toggle-zoom")} />
       <ContextDivider />
-      <ContextMenuButton label={t("session-settings-2")} disabled={profileBusy} onClick={() => onAction("settings")} />
+      <ContextMenuButton label={t("session-settings-2")} icon={Settings} disabled={profileBusy} onClick={() => onAction("settings")} />
     </div>
   );
 }

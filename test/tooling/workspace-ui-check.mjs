@@ -17,6 +17,7 @@ import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkMcpHttpAddressSelection } from "./mcp-http-address-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
 import { checkI18n } from "./i18n-regressions.mjs";
+import { checkUiAppearance } from "./ui-appearance-regressions.mjs";
 import { checkWorkspaceInteractions } from "./workspace-interaction-regressions.mjs";
 import { checkFileManagerDetails } from "./file-manager-details-regressions.mjs";
 import { checkWorkspaceDragging } from "./workspace-drag-regressions.mjs";
@@ -2014,6 +2015,12 @@ try {
     historyTimestamp: recordedAt,
   });
 
+  if (process.env.PORTMATE_UI_APPEARANCE_ONLY === "1") {
+    await checkUiAppearance(context, appUrl);
+    console.log("Appearance, keyboard navigation, responsive menus and multi-window settings passed");
+    await context.close();
+    break checks;
+  }
   if (process.env.PORTMATE_UI_WORKSPACE_INTERACTIONS_ONLY === "1") {
     await checkWorkspaceInteractions(context, appUrl);
     console.log("Workspace menus, dialogs, reconnect boundaries and detached exports passed");
@@ -2171,6 +2178,7 @@ try {
     // not publish into the storage of the next independently initialized check.
     await Promise.all(context.pages().map(openPage => openPage.close()));
   };
+  await runAndRetirePages(checkUiAppearance);
   await runAndRetirePages(checkWorkspaceInteractions);
   await runAndRetirePages(checkI18n);
   await runAndRetirePages(checkWorkspaceDragging, screenshotPrefix);

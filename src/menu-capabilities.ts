@@ -83,7 +83,7 @@ const menuSections = {
   session: [
     { label: "create", items: ["new-session", "local-terminal", "elevated-local-terminal", "import-sessions", "duplicate-session"] },
     { label: "connection", items: ["start-session", "reconnect-session", "close-session-2"] },
-    { label: "", items: ["session-settings"] },
+    { label: "menu-section-config", items: ["session-settings"] },
   ],
   terminal: [
     { label: "edit", items: ["find", "go-to-line", "block-selection"] },
@@ -91,9 +91,9 @@ const menuSections = {
     { label: "export", items: ["export-terminal-text", "export-terminal-text-to", "export-selected-text"] },
   ],
   workspace: [
-    { label: "", items: ["new-workspace-window"] },
-    { label: "", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar"] },
-    { label: "", items: ["focus-mode", "lock-screen", "restore-layout"] },
+    { label: "menu-section-window", items: ["new-workspace-window"] },
+    { label: "menu-section-panels", items: ["explorer", "file-manager", "command-history", "sysmon-sidebar", "send", "quick-bar", "status-bar"] },
+    { label: "menu-section-view", items: ["focus-mode", "lock-screen", "restore-layout"] },
   ],
   tools: [
     { label: "connection-tools", items: ["transfer-tasks", "port-forwarding", "easytier-network", "tmux", "serial-analyzer", "sysmon"] },
@@ -101,6 +101,18 @@ const menuSections = {
     { label: "management", items: ["terminal-settings", "key-manager", "log-manager", "check-for-updates", "about-portmate"] },
   ],
 } as const satisfies Record<(typeof menuGroups)[number]["label"], readonly MenuSection[]>;
+
+export type MenuGroupLayout = "single" | "two-column" | "workspace-grid";
+
+export function menuGroupLayout(label: string): MenuGroupLayout {
+  if (label === "tools" || label === "terminal") return "two-column";
+  if (label === "workspace") return "workspace-grid";
+  return "single";
+}
+
+export function menuItemIsDanger(item: MenuItem): boolean {
+  return item === "close-session-2";
+}
 
 export function menuSectionsForGroup(label: string, items: readonly MenuItem[]): readonly MenuSection[] {
   return label in menuSections ? menuSections[label as keyof typeof menuSections] : [{ label: "", items }];

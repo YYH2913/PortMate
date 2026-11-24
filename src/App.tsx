@@ -1,4 +1,6 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
+import { setUiAppearance, useUiAppearance } from "./ui-theme";
+import UiAppearancePicker from "./UiAppearancePicker";
 import { requestAppConfirm, requestAppPrompt } from "./app-dialog";
 import { useWorkspacePointerDrag, workspacePointerAfter, workspacePointerDropZone } from "./use-workspace-pointer-drag";
 import type { WorkspaceDockDropAnchor } from "./use-workspace-pointer-drag";
@@ -9,32 +11,59 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   Activity,
+  ArrowDownToLine,
   ArrowRightLeft,
+  Bell,
   Check,
+  ChevronDown,
   Clock3,
+  Code2,
+  Columns2,
+  Copy,
+  Cpu,
+  Download,
+  ExternalLink,
   Eye,
   EyeOff,
+  FileDown,
+  FileInput,
+  FileText,
   Files,
   Folder,
+  Globe,
+  Info,
+  KeyRound,
+  Keyboard,
+  LayoutGrid,
   Lock,
   LoaderCircle,
   Maximize2,
   Minimize2,
+  Network,
   PanelBottom,
   PanelLeft,
   PanelRight,
+  Palette,
   Pencil,
   Play,
   Plus,
+  Power,
+  Radio,
   RefreshCw,
+  RotateCcw,
+  ScrollText,
   Search,
   SendHorizontal,
   Settings,
+  Shield,
   SlidersHorizontal,
   Square,
   SquareTerminal,
+  Terminal,
+  TextCursorInput,
   Unlock,
   X,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { callBackend, emptyAudit, emptyGrants, emptyHostKeys, emptyLogs, emptySessions, emptyTransfers, invokeBackend, isBackendAvailable } from "./api";
@@ -67,7 +96,7 @@ import { MCP_APPROVAL_EVENT, mergeMcpApprovals } from "./mcp-approval-state";
 import McpBridgeQuickStart from "./McpBridgeQuickStart";
 import { localTerminalTag, matchesLocalTerminal, shellElevationConsentMatches, shellElevationRequested } from "./shell-elevation";
 import ShellElevationIndicator from "./ShellElevationIndicator";
-import { menuGroups, menuItemDisabled, menuItemShortcut, menuSectionsForGroup } from "./menu-capabilities";
+import { menuGroupLayout, menuGroups, menuItemDisabled, menuItemIsDanger, menuItemShortcut, menuSectionsForGroup } from "./menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "./menu-capabilities";
 import {
   hasActiveInteractionLayer,
@@ -208,6 +237,57 @@ const workspacePanelMenuItems: Partial<Record<string, WorkspacePanelId>> = {
   "status-bar": "statusBar",
 };
 
+const menuItemIcons: Record<MenuItem, LucideIcon> = {
+  "new-session": Plus,
+  "local-terminal": Terminal,
+  "elevated-local-terminal": Shield,
+  "import-sessions": FileInput,
+  "duplicate-session": Copy,
+  "start-session": Play,
+  "reconnect-session": RefreshCw,
+  "close-session-2": Power,
+  "session-settings": Settings,
+  find: Search,
+  "go-to-line": ArrowDownToLine,
+  "block-selection": LayoutGrid,
+  "insert-mode": TextCursorInput,
+  "normal-mode": Keyboard,
+  "local-mode": Terminal,
+  "local-editing": Pencil,
+  "synchronized-input": Radio,
+  "free-input": FileText,
+  "export-terminal-text": Download,
+  "export-terminal-text-to": FileDown,
+  "export-selected-text": Copy,
+  "new-workspace-window": ExternalLink,
+  explorer: Folder,
+  "file-manager": Files,
+  "command-history": Clock3,
+  "sysmon-sidebar": Activity,
+  send: SendHorizontal,
+  "quick-bar": Zap,
+  "status-bar": PanelBottom,
+  "focus-mode": Maximize2,
+  "lock-screen": Lock,
+  "restore-layout": RotateCcw,
+  "transfer-tasks": ArrowRightLeft,
+  "port-forwarding": Network,
+  "easytier-network": Globe,
+  tmux: Columns2,
+  "serial-analyzer": Cpu,
+  sysmon: Activity,
+  "one-keys": KeyRound,
+  "quick-commands": Zap,
+  "custom-scripts": Code2,
+  triggers: Bell,
+  "mcp-bridge": Radio,
+  "terminal-settings": Settings,
+  "key-manager": Lock,
+  "log-manager": ScrollText,
+  "check-for-updates": RefreshCw,
+  "about-portmate": Info,
+};
+
 function rememberResolvedMcpApproval(resolved: Set<string>, approvalId: string) {
   resolved.add(approvalId);
   while (resolved.size > MAX_RESOLVED_MCP_APPROVAL_IDS) {
@@ -335,8 +415,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const activeIdRef = useRef(activeId);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<SettingsDialog>(null);
+  const [terminalSettingsInitialPage, setTerminalSettingsInitialPage] = useState("application");
   const [utilityDialog, setUtilityDialog] = useState<UtilityDialog>(null);
   const [mcpInitialTab, setMcpInitialTab] = useState<"grants" | "http">("grants");
+  const uiAppearance = useUiAppearance();
   const [keyManagerCredentialOperationToken, setKeyManagerCredentialOperationToken] = useState<number | null>(null);
   const [keyManagerCredentialSyncRevision, setKeyManagerCredentialSyncRevision] = useState(0);
   const [searchDialog, setSearchDialog] = useState<SearchDialogState>({ mode: "sessions", query: "" });
@@ -2077,6 +2159,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       return;
     }
     if (item === "terminal-settings") {
+      setTerminalSettingsInitialPage("application");
       setDialog("terminal");
       return;
     }
@@ -4893,6 +4976,18 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     activeWorkspaceDockPanel(workspaceDockLayout, visibleWorkspacePanels, dock),
   ])) as Record<WorkspaceDockId, WorkspaceDockPanelId | null>;
   const visibleQuickBar = quickBarVisible && !focusMode;
+  const isMacPlatform = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+  const hasRunningTransfers = transfers.some((task) => task.status === "running");
+
+  function toggleWorkspaceRailPanel(panel: WorkspaceDockPanelId) {
+    setOpenMenu(null);
+    const isVisible = visibleWorkspacePanels[panel];
+    const dock = workspaceDockIds.find((candidate) => workspaceDockLayout[candidate].includes(panel));
+    const isActiveTab = Boolean(dock && activeDockPanels[dock] === panel);
+    if (isVisible && isActiveTab) setWorkspacePanelVisible(panel, false);
+    else setWorkspacePanelVisible(panel, true);
+  }
+
   const workspaceLayoutStyle = {
     ...(activeDockPanels.left && workspaceDockSizes.left !== null
       ? { "--workspace-left-size": `min(${workspaceDockSizes.left}px, 38vw)` }
@@ -4913,10 +5008,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       <header className="wind-menu">
         <div className="menu-primary">
           <div className="menu-brand" aria-label="PortMate">
-            <SquareTerminal size={14} />
+            <span className="menu-brand-mark" aria-hidden="true">
+              <SquareTerminal size={13} />
+            </span>
             <strong>PortMate</strong>
           </div>
-          <LanguageSelector compact />
           <div className="menu-row">
             {menuGroups.map((group, groupIndex) => (
               <div key={group.label} className="menu-item">
@@ -4927,7 +5023,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                   aria-expanded={openMenu === group.label}
                   aria-controls={`menu-${group.label}`}
                   onMouseEnter={() => {
-                    if (openMenu && openMenu !== group.label) setOpenMenu(group.label);
+                    if (openMenu && openMenu !== "__appearance__" && openMenu !== group.label) setOpenMenu(group.label);
                   }}
                   onClick={() => setOpenMenu(openMenu === group.label ? null : group.label)}
                   onKeyDown={(event) => {
@@ -4959,69 +5055,94 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
                   }}
                 >
                   {t(group.label)}
+                  <ChevronDown size={11} className="menu-trigger-caret" aria-hidden="true" />
                 </button>
                 {openMenu === group.label && (
-                  <div className="menu-popover" id={`menu-${group.label}`} aria-label={t("menu", [t(group.label)])} onKeyDown={(event) => {
-                    if (event.key === "Escape") {
+                  <div
+                    className={`menu-popover menu-layout-${menuGroupLayout(group.label)}`}
+                    id={`menu-${group.label}`}
+                    data-menu-group={group.label}
+                    aria-label={t("menu", [t(group.label)])}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        const trigger = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".menu-trigger");
+                        setOpenMenu(null);
+                        requestAnimationFrame(() => trigger?.focus());
+                        return;
+                      }
+                      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                        event.preventDefault();
+                        const rtl = document.documentElement.dir === "rtl";
+                        const delta = (event.key === "ArrowRight" ? 1 : -1) * (rtl ? -1 : 1);
+                        const nextIndex = (groupIndex + delta + menuGroups.length) % menuGroups.length;
+                        const nextGroup = menuGroups[nextIndex];
+                        const row = event.currentTarget.closest(".menu-row");
+                        setOpenMenu(nextGroup.label);
+                        requestAnimationFrame(() => {
+                          const popover = row?.querySelector<HTMLElement>(`#menu-${nextGroup.label}`);
+                          const first = popover?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+                          const trigger = row?.querySelectorAll<HTMLButtonElement>(".menu-trigger")[nextIndex];
+                          (first ?? trigger)?.focus();
+                        });
+                        return;
+                      }
+                      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                      const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+                      const index = buttons.indexOf(event.target as HTMLButtonElement);
+                      if (!buttons.length || index < 0) return;
                       event.preventDefault();
-                      const trigger = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".menu-trigger");
-                      setOpenMenu(null);
-                      requestAnimationFrame(() => trigger?.focus());
-                      return;
-                    }
-                    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                      event.preventDefault();
-                      const rtl = document.documentElement.dir === "rtl";
-                      const delta = (event.key === "ArrowRight" ? 1 : -1) * (rtl ? -1 : 1);
-                      const nextIndex = (groupIndex + delta + menuGroups.length) % menuGroups.length;
-                      const nextGroup = menuGroups[nextIndex];
-                      const row = event.currentTarget.closest(".menu-row");
-                      setOpenMenu(nextGroup.label);
-                      requestAnimationFrame(() => {
-                        const popover = row?.querySelector<HTMLElement>(`#menu-${nextGroup.label}`);
-                        const first = popover?.querySelector<HTMLButtonElement>("button:not(:disabled)");
-                        const trigger = row?.querySelectorAll<HTMLButtonElement>(".menu-trigger")[nextIndex];
-                        (first ?? trigger)?.focus();
-                      });
-                      return;
-                    }
-                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-                    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
-                    const index = buttons.indexOf(event.target as HTMLButtonElement);
-                    if (!buttons.length || index < 0) return;
-                    event.preventDefault();
-                    const offset = event.key === "ArrowDown" ? 1 : -1;
-                    buttons[(index + offset + buttons.length) % buttons.length]?.focus();
-                  }}>
+                      const offset = event.key === "ArrowDown" ? 1 : -1;
+                      buttons[(index + offset + buttons.length) % buttons.length]?.focus();
+                    }}
+                  >
                     {menuSectionsForGroup(group.label, group.items).map((section, sectionIndex) => (
-                      <div className="menu-popover-section" key={section.label || `${group.label}-${sectionIndex}`}>
+                      <div
+                        className={`menu-popover-section${section.label ? ` section-${section.label}` : ""}`}
+                        key={section.label || `${group.label}-${sectionIndex}`}
+                      >
                         {section.label ? <span className="menu-popover-heading">{t(section.label)}</span> : null}
-                        {section.items.map((item) => {
-                          const toggleState = menuToggleState(item);
-                          const shortcut = menuItemShortcut(item, workspaceKeymap);
-                          const disabled = menuItemDisabled(item, menuCapabilityContext)
-                            || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "reconnect-session" || item === "close-session-2"));
-                          return (
-                            <button
-                              type="button"
-                              key={item}
-                              className={toggleState === undefined ? "" : "menu-toggle"}
-                              aria-label={t(item)}
-                              aria-pressed={toggleState}
-                              aria-keyshortcuts={shortcut?.aria}
-                              data-shortcut={shortcut?.display}
-                              disabled={disabled}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleMenuAction(item);
-                                setOpenMenu(null);
-                              }}
-                            >
-                              <span>{t(item)}</span>
-                              {toggleState ? <Check size={13} /> : null}
-                            </button>
-                          );
-                        })}
+                        <div className="menu-popover-items">
+                          {section.items.map((item) => {
+                            const toggleState = menuToggleState(item);
+                            const shortcut = menuItemShortcut(item, workspaceKeymap);
+                            const ItemIcon = menuItemIcons[item];
+                            const danger = menuItemIsDanger(item);
+                            const disabled = menuItemDisabled(item, menuCapabilityContext)
+                              || (disconnectingSessionIds.has(activeId) && (item === "start-session" || item === "reconnect-session" || item === "close-session-2"));
+                            return (
+                              <button
+                                type="button"
+                                key={item}
+                                className={[
+                                  toggleState === undefined ? "" : "menu-toggle",
+                                  toggleState ? "checked" : "",
+                                  danger ? "menu-item-danger" : "",
+                                ].filter(Boolean).join(" ")}
+                                aria-label={t(item)}
+                                aria-pressed={toggleState}
+                                aria-keyshortcuts={shortcut?.aria}
+                                data-shortcut={shortcut?.display}
+                                disabled={disabled}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleMenuAction(item);
+                                  setOpenMenu(null);
+                                }}
+                              >
+                                <span className="menu-item-icon" aria-hidden="true">
+                                  <ItemIcon size={13} strokeWidth={1.9} />
+                                </span>
+                                <span className="menu-item-label">{t(item)}</span>
+                                {toggleState !== undefined ? (
+                                  <span className={toggleState ? "menu-toggle-check active" : "menu-toggle-check"} aria-hidden="true">
+                                    {toggleState ? <Check size={12} strokeWidth={2.5} /> : null}
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -5029,6 +5150,20 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
               </div>
             ))}
           </div>
+          <LanguageSelector compact />
+        </div>
+        <div className="menu-center">
+          <button
+            type="button"
+            className="menu-command-pill"
+            title={t("search-sessions-shortcut", [isMacPlatform ? "Cmd+Shift+P" : "Ctrl+Shift+P"])}
+            aria-label={t("search-sessions")}
+            onClick={() => handleMenuAction("session-search")}
+          >
+            <Search size={13} aria-hidden="true" />
+            <span className="menu-command-pill-text">{t("search-command-placeholder")}</span>
+            <kbd className="menu-command-pill-kbd">{isMacPlatform ? "⌘⇧P" : "Ctrl+Shift+P"}</kbd>
+          </button>
         </div>
         <div className="menu-tools">
           <McpBridgeQuickStart
@@ -5051,7 +5186,41 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             <span>Stronghold</span>
             <small>{portableVaultStatusLabel(portableVaultStatus)}</small>
           </button>
-          <button type="button" title={t("search-sessions-shortcut", [typeof navigator !== "undefined" && /Mac/i.test(navigator.platform) ? "Cmd+Shift+P" : "Ctrl+Shift+P"])} aria-label={t("search-sessions")} onClick={() => handleMenuAction("session-search")}><Search size={13} /></button>
+          <span className="menu-tools-divider" aria-hidden="true" />
+          <div className="menu-appearance-wrap">
+            <button
+              type="button"
+              className={openMenu === "__appearance__" ? "menu-appearance-trigger active" : "menu-appearance-trigger"}
+              title={t("ui-appearance-quick-switch")}
+              aria-label={t("ui-appearance-quick-switch")}
+              aria-haspopup="dialog"
+              aria-expanded={openMenu === "__appearance__"}
+              aria-controls="menu-appearance"
+              onClick={() => setOpenMenu((current) => current === "__appearance__" ? null : "__appearance__")}
+            >
+              <Palette size={13} />
+            </button>
+            {openMenu === "__appearance__" && (
+              <div
+                className="menu-popover ui-appearance-popover"
+                id="menu-appearance"
+                role="dialog"
+                aria-label={t("ui-appearance-quick-switch")}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <UiAppearancePicker
+                  compact
+                  value={uiAppearance}
+                  onChange={setUiAppearance}
+                  onOpenSettings={() => {
+                    setOpenMenu(null);
+                    setTerminalSettingsInitialPage("appearance");
+                    setDialog("terminal");
+                  }}
+                />
+              </div>
+            )}
+          </div>
           <button type="button" className={focusMode ? "active" : ""} aria-pressed={focusMode} aria-label={focusMode ? t("exit-focus-mode") : t("enter-focus-mode")} title={t("focus-mode-alt-enter")} onClick={() => setFocusMode((current) => !current)}>
             {focusMode ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
@@ -5077,6 +5246,86 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         mobileDockDrawer ? "mobile-dock-drawer" : "",
         draggedWorkspacePanel ? "workspace-panel-dragging" : "",
       ].filter(Boolean).join(" ")} style={workspaceLayoutStyle}>
+        <nav className="workspace-rail" aria-label={t("workspace-navigation-rail")}>
+          <div className="workspace-rail-group">
+            {workspaceDockPanelIds.map((panel) => {
+              const metadata = workspaceDockPanelMeta[panel];
+              const PanelIcon = metadata.icon;
+              const dock = workspaceDockIds.find((candidate) => workspaceDockLayout[candidate].includes(panel));
+              const isVisible = visibleWorkspacePanels[panel];
+              const isActive = isVisible && Boolean(dock && activeDockPanels[dock] === panel);
+              return (
+                <button
+                  key={panel}
+                  type="button"
+                  className={`workspace-rail-btn${isActive ? " active" : isVisible ? " open" : ""}`}
+                  data-rail-panel={panel}
+                  title={t(metadata.label)}
+                  aria-label={t("rail-toggle-panel", [t(metadata.label)])}
+                  aria-pressed={isActive}
+                  onClick={() => toggleWorkspaceRailPanel(panel)}
+                >
+                  <PanelIcon size={15} strokeWidth={1.85} aria-hidden="true" />
+                </button>
+              );
+            })}
+            <span className="workspace-rail-divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="workspace-rail-btn"
+              title={t("new-session")}
+              aria-label={t("rail-new-session")}
+              onClick={() => {
+                setOpenMenu(null);
+                openNewSessionDialog();
+              }}
+            >
+              <Plus size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`workspace-rail-btn${utilityDialog === "transfer" ? " active" : ""}`}
+              title={t("transfer-tasks")}
+              aria-label={t("rail-transfers")}
+              disabled={!active}
+              onClick={() => {
+                setOpenMenu(null);
+                setUtilityDialog("transfer");
+              }}
+            >
+              <ArrowRightLeft size={15} strokeWidth={1.85} aria-hidden="true" />
+              {hasRunningTransfers ? <span className="workspace-rail-dot" aria-hidden="true" /> : null}
+            </button>
+          </div>
+          <div className="workspace-rail-group workspace-rail-bottom">
+            <button
+              type="button"
+              className={visibleQuickBar ? "workspace-rail-btn active" : "workspace-rail-btn"}
+              title={t("quick-bar")}
+              aria-label={t("rail-quick-bar")}
+              aria-pressed={visibleQuickBar}
+              onClick={() => {
+                setOpenMenu(null);
+                setQuickBarVisible((current) => !current);
+              }}
+            >
+              <Zap size={15} strokeWidth={1.85} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={dialog === "terminal" ? "workspace-rail-btn active" : "workspace-rail-btn"}
+              title={t("terminal-settings")}
+              aria-label={t("rail-app-settings")}
+              onClick={() => {
+                setOpenMenu(null);
+                setTerminalSettingsInitialPage("application");
+                setDialog("terminal");
+              }}
+            >
+              <Settings size={15} strokeWidth={1.85} aria-hidden="true" />
+            </button>
+          </div>
+        </nav>
         {mobileDockDrawer && activeDockPanels[mobileDockDrawer] ? (
           <div
             className="mobile-dock-backdrop"
@@ -5272,6 +5521,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       {dialog === "terminal" && (
         <Suspense fallback={null}>
           <LazyTerminalSettingsDialog
+            initialPage={terminalSettingsInitialPage}
             initialPrefs={terminalPrefs}
             normalizePrefs={normalizeTerminalPrefs}
             sessions={sessions}

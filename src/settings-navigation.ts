@@ -17,7 +17,7 @@ const fields: Record<string, readonly string[]> = {
   verification: ["ui-hostkey", "rotation-r", "verify-ip-i", "trust-scope-s", "scan-2", "health"], "ssh-agent": ["ui-agent-a", "ui-forward-f", "ui-offer-o"],
   password: ["password-reference", "passphrase-reference"], "public-key": ["remember-successful-method-r", "public-key-k-client-identity"],
   application: ["interface-language", "no-sessions-n", "previous-sessions-l", "specific-session-or-session-group-s", "default-directory"],
-  appearance: ["multicolor-commands-and-output"], "keyboard-shortcuts": workspaceHotkeyCommands.map(command => command.label),
+  appearance: ["multicolor-commands-and-output", "interface-theme", "interface-layout", "accent-color"], "keyboard-shortcuts": workspaceHotkeyCommands.map(command => command.label),
   security: ["lock-screen-after-idle-time", "lock-timeout-minutes", "lock-screen-on-startup"],
   mouse: ["allow-terminal-applications-to-receive-mouse-events", "copy-on-selection"],
   autocomplete: ["enable-autocomplete-a", "onekey-terminal-prompt-completion-k", "command-names-n", "command-options-o", "subcommands-and-arguments-p", "command-history-h", "quick-commands-q", "start-autocomplete-after-s", "completion-list-height-h", "preview-best-match-p"],

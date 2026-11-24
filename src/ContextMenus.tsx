@@ -1,7 +1,34 @@
 import { t, useLocale } from "./i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Ban } from "lucide-react";
+import {
+  Ban,
+  Check,
+  ClipboardPaste,
+  Columns2,
+  Copy,
+  Download,
+  Eraser,
+  FileDown,
+  FileText,
+  FolderInput,
+  Globe,
+  Link2,
+  Palette,
+  Pencil,
+  Play,
+  Power,
+  Radio,
+  RefreshCw,
+  Rows2,
+  Save,
+  Search,
+  Settings,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { sessionConnectionAction } from "./session-runtime-state";
 import {
   computeSubmenuPosition,
@@ -87,7 +114,8 @@ export function SessionContextMenu({
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <ContextSubmenu label={t("set-tab-color")} disabled={disabled}>
+      <span className="context-section-label">{t("context-section-edit")}</span>
+      <ContextSubmenu label={t("set-tab-color")} icon={Palette} disabled={disabled}>
         <div className="context-color-grid">
           {colors.map((color) => (
             <button key={color.value} type="button" onClick={() => onColor(color.value)}>
@@ -103,37 +131,41 @@ export function SessionContextMenu({
       </ContextSubmenu>
       <ContextMenuButton
         label={syncInput ? t("disable-synchronized-input") : t("enable-synchronized-input")}
+        icon={Radio}
         checked={syncInput}
         disabled={!active || status !== "connected"}
         onClick={() => onAction("sync-toggle", sessionId)}
       />
       <ContextMenuButton
         label={t("paste")}
+        icon={ClipboardPaste}
         shortcut={isMac ? "Cmd+V" : "Ctrl+V"}
         disabled={!active || status !== "connected"}
         onClick={() => onAction("paste", sessionId)}
       />
-      <ContextMenuButton label={t("rename-session")} disabled={disabled || profileBusy} onClick={() => onAction("rename", sessionId)} />
-      <ContextMenuButton label={t("duplicate-session")} disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
+      <ContextMenuButton label={t("rename-session")} icon={Pencil} disabled={disabled || profileBusy} onClick={() => onAction("rename", sessionId)} />
+      <ContextMenuButton label={t("duplicate-session")} icon={Copy} disabled={disabled} onClick={() => onAction("duplicate", sessionId)} />
+      <ContextMenuButton label={t("copy-session-name")} icon={FileText} disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
+      <ContextMenuButton label={t("copy-session-url")} icon={Link2} disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label={t("copy-session-name")} disabled={disabled} onClick={() => onAction("copy-name", sessionId)} />
-      <ContextMenuButton label={t("copy-session-url")} disabled={disabled} onClick={() => onAction("copy-url", sessionId)} />
+      <span className="context-section-label">{t("context-section-session")}</span>
+      <ContextMenuButton label={t("start-session")} icon={Play} disabled={startDisabled} onClick={() => onAction("start", sessionId)} />
+      <ContextMenuButton label={t("reconnect-session")} icon={RefreshCw} disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
+      <ContextMenuButton label={t("save-session")} icon={Save} disabled={disabled || profileBusy} onClick={() => onAction("save", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label={t("start-session")} disabled={startDisabled} onClick={() => onAction("start", sessionId)} />
-      <ContextMenuButton label={t("reconnect-session")} disabled={reconnectDisabled} onClick={() => onAction("reconnect", sessionId)} />
-      <ContextMenuButton label={t("save-session")} disabled={disabled || profileBusy} onClick={() => onAction("save", sessionId)} />
-      <ContextMenuButton label={t("split-view-horizontally")} disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
-      <ContextMenuButton label={t("split-view-vertically")} disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
-      <ContextMenuButton label={t("move-session-to-folder")} disabled={disabled || profileBusy} onClick={() => onAction("move-group", sessionId)} />
+      <span className="context-section-label">{t("context-section-layout")}</span>
+      <ContextMenuButton label={t("split-view-horizontally")} icon={Columns2} disabled={disabled} onClick={() => onAction("split-h", sessionId)} />
+      <ContextMenuButton label={t("split-view-vertically")} icon={Rows2} disabled={disabled} onClick={() => onAction("split-v", sessionId)} />
+      <ContextMenuButton label={t("move-session-to-folder")} icon={FolderInput} disabled={disabled || profileBusy} onClick={() => onAction("move-group", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label={t("disconnect-session")} disabled={disconnectDisabled} onClick={() => onAction("close", sessionId)} />
-      <ContextMenuButton label={t("disconnect-all-sessions")} disabled={!active} onClick={() => onAction("close-all", sessionId)} />
-      <ContextMenuButton label={t("disconnect-inactive-sessions")} disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
-      <ContextMenuButton label={t("disconnect-sessions-below")} disabled={!active} onClick={() => onAction("close-side", sessionId)} />
+      <span className="context-section-label">{t("context-section-disconnect")}</span>
+      <ContextMenuButton label={t("disconnect-session")} icon={Power} disabled={disconnectDisabled} onClick={() => onAction("close", sessionId)} />
+      <ContextMenuButton label={t("disconnect-all-sessions")} icon={Power} disabled={!active} onClick={() => onAction("close-all", sessionId)} />
+      <ContextMenuButton label={t("disconnect-inactive-sessions")} icon={Power} disabled={!active} onClick={() => onAction("close-inactive", sessionId)} />
+      <ContextMenuButton label={t("disconnect-sessions-below")} icon={Power} disabled={!active} onClick={() => onAction("close-side", sessionId)} />
       <ContextDivider />
-      <ContextMenuButton label={t("session-settings-2")} disabled={disabled || profileBusy} onClick={() => onAction("settings", sessionId)} />
-      <ContextDivider />
-      <ContextMenuButton label={t("delete-session-profile")} disabled={disabled || profileBusy} danger onClick={() => onAction("delete-profile", sessionId)} />
+      <ContextMenuButton label={t("session-settings-2")} icon={Settings} disabled={disabled || profileBusy} onClick={() => onAction("settings", sessionId)} />
+      <ContextMenuButton label={t("delete-session-profile")} icon={Trash2} disabled={disabled || profileBusy} danger onClick={() => onAction("delete-profile", sessionId)} />
     </div>
   );
 }
@@ -150,7 +182,7 @@ export function TerminalContextMenu({
   onAction: (action: TerminalContextAction) => void;
 }) {
   useLocale();
-  const { ref, style } = useMeasuredMenuPosition(state.x, state.y, 244, 420);
+  const { ref, style } = useMeasuredMenuPosition(state.x, state.y, 248, 450);
   const mod = isMacPlatform() ? "Cmd" : "Ctrl";
   return (
     <div
@@ -162,25 +194,29 @@ export function TerminalContextMenu({
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <ContextMenuButton label={t("copy")} shortcut={`${mod}+Shift+C`} disabled={!state.hasSelection} onClick={() => onAction("copy")} />
-      <ContextMenuButton label={t("paste")} shortcut={`${mod}+V`} onClick={() => onAction("paste")} />
-      <ContextMenuButton label={t("find")} shortcut={`${mod}+F`} onClick={() => onAction("find")} />
-      <ContextMenuButton label={t("search-online")} onClick={() => onAction("search-online")} />
+      <span className="context-section-label">{t("context-section-edit")}</span>
+      <ContextMenuButton label={t("copy")} icon={Copy} shortcut={`${mod}+Shift+C`} disabled={!state.hasSelection} onClick={() => onAction("copy")} />
+      <ContextMenuButton label={t("paste")} icon={ClipboardPaste} shortcut={`${mod}+V`} onClick={() => onAction("paste")} />
+      <ContextMenuButton label={t("find")} icon={Search} shortcut={`${mod}+F`} onClick={() => onAction("find")} />
+      <ContextMenuButton label={t("search-online")} icon={Globe} onClick={() => onAction("search-online")} />
       <ContextDivider />
-      <ContextMenuButton label={t("clear-scrollback")} shortcut={`${mod}+Shift+L`} onClick={() => onAction("clear-scrollback")} />
-      <ContextMenuButton label={t("clear-screen")} shortcut={`${mod}+L`} disabled={state.alternate} onClick={() => onAction("clear-screen")} />
-      <ContextMenuButton label={t("clear-screen-and-scrollback")} disabled={state.alternate} onClick={() => onAction("clear-all")} />
+      <span className="context-section-label">{t("context-section-clear")}</span>
+      <ContextMenuButton label={t("clear-scrollback")} icon={Eraser} shortcut={`${mod}+Shift+L`} onClick={() => onAction("clear-scrollback")} />
+      <ContextMenuButton label={t("clear-screen")} icon={Eraser} shortcut={`${mod}+L`} disabled={state.alternate} onClick={() => onAction("clear-screen")} />
+      <ContextMenuButton label={t("clear-screen-and-scrollback")} icon={Trash2} disabled={state.alternate} onClick={() => onAction("clear-all")} />
       <ContextDivider />
-      <ContextMenuButton label={t("select-all")} shortcut={`${mod}+Shift+A`} onClick={() => onAction("select-all")} />
-      <ContextMenuButton label={t("clear-selection")} disabled={!state.hasSelection} onClick={() => onAction("clear-selection")} />
+      <span className="context-section-label">{t("context-section-selection")}</span>
+      <ContextMenuButton label={t("select-all")} icon={FileText} shortcut={`${mod}+Shift+A`} onClick={() => onAction("select-all")} />
+      <ContextMenuButton label={t("clear-selection")} icon={X} disabled={!state.hasSelection} onClick={() => onAction("clear-selection")} />
       <ContextDivider />
-      <ContextMenuButton label={t("export-terminal-text")} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
-      <ContextMenuButton label={t("export-terminal-text-to")} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
-      <ContextMenuButton label={t("export-selected-text")} disabled={exportBusy || !state.hasSelection} onClick={() => onAction("export-selection")} />
+      <span className="context-section-label">{t("context-section-export")}</span>
+      <ContextMenuButton label={t("export-terminal-text")} icon={Download} disabled={exportBusy} onClick={() => onAction("export-buffer")} />
+      <ContextMenuButton label={t("export-terminal-text-to")} icon={FileDown} disabled={exportBusy} onClick={() => onAction("export-buffer-to")} />
+      <ContextMenuButton label={t("export-selected-text")} icon={FileText} disabled={exportBusy || !state.hasSelection} onClick={() => onAction("export-selection")} />
       {showTriggers ? (
         <>
           <ContextDivider />
-          <ContextMenuButton label={t("manage-triggers")} onClick={() => onAction("triggers")} />
+          <ContextMenuButton label={t("manage-triggers")} icon={Zap} onClick={() => onAction("triggers")} />
         </>
       ) : null}
     </div>
@@ -189,6 +225,7 @@ export function TerminalContextMenu({
 
 export function ContextMenuButton({
   label,
+  icon: Icon,
   shortcut,
   disabled,
   checked,
@@ -196,6 +233,7 @@ export function ContextMenuButton({
   onClick,
 }: {
   label: string;
+  icon?: LucideIcon;
   shortcut?: string;
   disabled?: boolean;
   checked?: boolean;
@@ -205,7 +243,9 @@ export function ContextMenuButton({
   useLocale();
   return (
     <button type="button" className={danger ? "context-menu-row danger" : "context-menu-row"} disabled={disabled} onClick={onClick}>
-      <span className={checked ? "context-check active" : "context-check"}>{checked ? "✓" : ""}</span>
+      <span className={checked ? "context-check active" : "context-check"} aria-hidden="true">
+        {checked ? <Check size={13} strokeWidth={2.4} /> : Icon ? <Icon size={13} strokeWidth={1.9} /> : null}
+      </span>
       <span className="context-label">{label}</span>
       {shortcut ? <span className="context-shortcut">{shortcut}</span> : null}
     </button>
@@ -214,10 +254,12 @@ export function ContextMenuButton({
 
 export function ContextSubmenu({
   label,
+  icon: Icon,
   disabled,
   children,
 }: {
   label: string;
+  icon?: LucideIcon;
   disabled?: boolean;
   children: ReactNode;
 }) {
@@ -303,7 +345,9 @@ export function ContextSubmenu({
         }}
         onKeyDown={handleTriggerKeyDown}
       >
-        <span className="context-check" />
+        <span className="context-check" aria-hidden="true">
+          {Icon ? <Icon size={13} strokeWidth={1.9} /> : null}
+        </span>
         <span className="context-label">{label}</span>
         <span className="context-arrow" aria-hidden="true">›</span>
       </button>

@@ -32,7 +32,15 @@ import { DiscardSettingsPrompt, SettingsResults, navigateSettingsResults, useSet
 import { findSettings } from "./settings-navigation";
 import type { SettingsHit, FieldLabel } from "./settings-navigation";
 import LanguageSelector from "./LanguageSelector";
+import UiAppearancePicker from "./UiAppearancePicker";
 import { formatUiList, t, useLocale, localizeDiagnostic, setLanguagePreference, type LanguagePreference } from "./i18n";
+import {
+  setUiAppearance,
+  setUiAppearancePreview,
+  uiAppearanceEquals,
+  useUiAppearance,
+  type UiAppearanceState,
+} from "./ui-theme";
 
 const MAX_COMMAND_HISTORY_LIMIT = 10_000;
 const MAX_COMMAND_HISTORY_RETENTION_DAYS = 3_650;
@@ -60,6 +68,7 @@ const sessionKindLabels: Record<SessionKind, string> = {
 type TerminalPrefs = ReturnType<typeof createTerminalPrefs>;
 
 export default function TerminalSettingsDialog({
+  initialPage = "application",
   initialPrefs,
   normalizePrefs,
   sessions,
@@ -71,6 +80,7 @@ export default function TerminalSettingsDialog({
   onWorkspaceKeymapChange,
   onClose,
 }: {
+  initialPage?: string;
   initialPrefs: TerminalPrefs;
   normalizePrefs: (value: unknown) => TerminalPrefs;
   sessions: readonly SessionSummary[];
@@ -83,8 +93,13 @@ export default function TerminalSettingsDialog({
   onClose: () => void;
 }) {
   const { locale, preference } = useLocale();
+  const committedAppearance = useUiAppearance();
   const [languageDraft, setLanguageDraft] = useState<LanguagePreference | null>(null);
-  const [activeItem, setActiveItem] = useState("application");
+  const [appearanceChanges, setAppearanceChanges] = useState<Partial<UiAppearanceState>>({});
+  const appearanceDraft = useMemo(() => ({ ...committedAppearance, ...appearanceChanges }), [committedAppearance, appearanceChanges]);
+  const [activeItem, setActiveItem] = useState(
+    (terminalSettingPages as readonly string[]).includes(initialPage) ? initialPage : "application",
+  );
   const [pageQuery, setPageQuery] = useState("");
   const [prefs, setPrefs] = useState<TerminalPrefs>(initialPrefs);
   const [syncDraft, setSyncDraft] = useState(syncSettings);
@@ -98,12 +113,28 @@ export default function TerminalSettingsDialog({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const hits = useMemo(() => findSettings(terminalSettingPages, pageQuery), [locale, pageQuery]);
   function selectResult(hit: SettingsHit) { setActiveItem(hit.page); setPageQuery(""); focusHit(hit); }
-  const dirty = (languageDraft !== null && languageDraft !== preference) || terminalSettingsDraftHasUnsavedChanges(
+  const appearanceDirty = !uiAppearanceEquals(appearanceDraft, committedAppearance);
+  const dirty = (languageDraft !== null && languageDraft !== preference) || appearanceDirty || terminalSettingsDraftHasUnsavedChanges(
     { prefs, syncSettings: syncDraft, workspaceKeymap: workspaceKeymapDraft },
     { prefs: initialPrefs, syncSettings, workspaceKeymap },
   );
 
+  useEffect(() => {
+    setUiAppearancePreview(appearanceDirty ? appearanceDraft : null);
+  }, [appearanceDirty, appearanceDraft]);
+
+  function updateAppearanceDraft(patch: Partial<UiAppearanceState>) {
+    setAppearanceChanges(current => {
+      const next = { ...current, ...patch };
+      if (next.theme === committedAppearance.theme) delete next.theme;
+      if (next.layout === committedAppearance.layout) delete next.layout;
+      if (next.accent === committedAppearance.accent) delete next.accent;
+      return next;
+    });
+  }
+
   useEffect(() => () => {
+    setUiAppearancePreview(null);
     directoryRequestGate.current.invalidateAll();
   }, []);
 
@@ -131,6 +162,7 @@ export default function TerminalSettingsDialog({
     saveLocalValue("portmate.terminalPrefs", normalizedPrefs);
     saveLocalValue(WORKSPACE_KEYMAP_STORAGE_KEY, normalizedKeymap);
     if (languageDraft !== null && languageDraft !== preference) setLanguagePreference(languageDraft);
+    if (appearanceDirty) setUiAppearance(appearanceChanges);
     onPrefsChange(normalizedPrefs);
     onSyncSettingsChange(normalizeSyncInputSettings(syncDraft));
     onWorkspaceKeymapChange(normalizedKeymap);
@@ -177,6 +209,8 @@ export default function TerminalSettingsDialog({
         <TerminalSettingsContent
           language={languageDraft ?? preference}
           onLanguageChange={setLanguageDraft}
+          uiAppearance={appearanceDraft}
+          onUiAppearanceChange={updateAppearanceDraft}
           activeItem={activeItem}
           prefs={prefs}
           sessions={sessions}
@@ -211,6 +245,7 @@ export default function TerminalSettingsDialog({
 
 function TerminalSettingsContent({
   language, onLanguageChange,
+  uiAppearance, onUiAppearanceChange,
   activeItem,
   prefs,
   sessions,
@@ -228,6 +263,8 @@ function TerminalSettingsContent({
   activeItem: string;
   language: LanguagePreference;
   onLanguageChange: (value: LanguagePreference) => void;
+  uiAppearance: UiAppearanceState;
+  onUiAppearanceChange: (patch: Partial<UiAppearanceState>) => void;
   prefs: TerminalPrefs;
   sessions: readonly SessionSummary[];
   workspaceKeymap: WorkspaceKeymap;
@@ -335,10 +372,18 @@ function TerminalSettingsContent({
         </>
       );
     case "appearance":
-      return <SettingsSection title={t("terminal-appearance")}>
+      return (
+        <>
+          <SettingsSection title={t("interface-theme")}>
+            <UiAppearancePicker value={uiAppearance} onChange={onUiAppearanceChange} />
+            <p className="dialog-note">{t("interface-appearance-help")}</p>
+          </SettingsSection>
+          <SettingsSection title={t("terminal-appearance")}>
             <SettingCheck labelKey="multicolor-commands-and-output" checked={prefs.semanticHighlightingEnabled} onChange={(value) => updatePref("semanticHighlightingEnabled", value)} />
-        <p className="dialog-note">{t("global-colors-help")}</p>
-      </SettingsSection>;
+            <p className="dialog-note">{t("global-colors-help")}</p>
+          </SettingsSection>
+        </>
+      );
     case "autocomplete":
       return (
         <>

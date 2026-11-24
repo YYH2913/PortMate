@@ -1,6 +1,6 @@
 import { t, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle, Play, Radio } from "lucide-react";
+import { LoaderCircle, Play } from "lucide-react";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import type { McpHttpRuntimeStatus } from "./types";
@@ -89,7 +89,7 @@ export default function McpBridgeQuickStart({ paused, onOpen, onError }: {
       title={!available ? t("mcp-bridge-requires-the-desktop-backend") : running ? t("mcp-bridge-running-click-to-manage", [status.endpoint ?? ""]) : t("start-mcp-bridge-using-the-saved-http-settings")}
       onClick={() => void start()}
     >
-      {busy ? <LoaderCircle size={13} /> : running ? <Radio size={13} /> : <Play size={13} />}
+      {busy ? <LoaderCircle size={12} className="spin" /> : running ? <span className="menu-status-dot" aria-hidden="true" /> : <Play size={12} />}
       <span>MCP Bridge</span><small>{label}</small>
     </button>
   );

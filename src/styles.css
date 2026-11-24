@@ -10161,7 +10161,7 @@ fieldset label {
     display: none;
   }
 
-  .menu-mcp-start span,
+  .menu-mcp-start span:not(.menu-status-dot),
   .menu-mcp-start small {
     display: none;
   }

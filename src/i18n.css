@@ -65,26 +65,31 @@ code, pre, input[type="number"], input[type="password"], input[type="url"],
   text-align: left;
 }
 @media (max-width: 900px) {
-  .language-selector.compact { gap: 3px; padding-inline: 2px; }
+  .language-selector.compact { gap: 3px; padding-inline: 2px; border-inline-start: 0; margin-inline-start: 0; }
   .language-selector.compact select { width: 90px; }
   /* A second menu row keeps long translated labels clear of the vault/tools. */
-  .wind-root { --menu-height: 64px; }
+  .wind-root { --menu-height: 68px; }
   .wind-menu {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 32px 32px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: 36px 32px;
+    gap: 0;
+    padding: 0;
   }
   .menu-primary { display: contents; }
-  .menu-brand { grid-column: 1; grid-row: 1; justify-self: start; }
+  .menu-brand { grid-column: 1; grid-row: 1; justify-self: start; border-right: 0; margin: 0; }
   .menu-primary > .language-selector { grid-column: 1; grid-row: 1; justify-self: end; }
-  .menu-tools { grid-column: 2; grid-row: 1; margin: 0; }
+  .menu-center { grid-column: 2; grid-row: 1; padding-inline-end: 2px; }
+  .menu-tools { grid-column: 3; grid-row: 1; margin: 0; padding-inline: 4px; }
   .menu-row {
     grid-column: 1 / -1;
     grid-row: 2;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-top: 1px solid var(--line-soft);
   }
   .menu-trigger { width: 100%; padding-inline: 4px; overflow-wrap: anywhere; line-height: 1.1; }
-  .menu-popover { position: fixed; top: calc(var(--menu-height, 64px) - 1px); inset-inline-start: 4px; }
+  .menu-trigger-caret { display: none; }
+  .menu-popover { position: fixed; top: calc(var(--menu-height, 68px) - 1px); inset-inline-start: 4px; }
   .menu-item:nth-child(n + 3) .menu-popover { inset-inline-start: auto; inset-inline-end: 4px; }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { menuGroups, menuItemDisabled, menuItemShortcut, menuSectionsForGroup } from "../../src/menu-capabilities";
+import { menuGroupLayout, menuGroups, menuItemDisabled, menuItemIsDanger, menuItemShortcut, menuSectionsForGroup } from "../../src/menu-capabilities";
 import type { MenuCapabilityContext, MenuItem } from "../../src/menu-capabilities";
 
 const ready: MenuCapabilityContext = {
@@ -40,7 +40,14 @@ describe("top menu capabilities", () => {
     for (const group of menuGroups) {
       const sections = menuSectionsForGroup(group.label, group.items);
       expect(sections.flatMap((section) => section.items), group.label).toEqual([...group.items]);
+      expect(sections.every((section) => section.label.length > 0), group.label).toBe(true);
     }
+    expect(menuGroupLayout("session")).toBe("single");
+    expect(menuGroupLayout("terminal")).toBe("two-column");
+    expect(menuGroupLayout("workspace")).toBe("workspace-grid");
+    expect(menuGroupLayout("tools")).toBe("two-column");
+    expect(menuItemIsDanger("close-session-2")).toBe(true);
+    expect(menuItemIsDanger("new-session")).toBe(false);
     const tools = menuGroups.find((group) => group.label === "tools");
     expect(tools).toBeDefined();
     const sections = menuSectionsForGroup("tools", tools?.items ?? []);
@@ -104,6 +111,12 @@ describe("top menu capabilities", () => {
     expect(menuItemShortcut("focus-mode", undefined, false)).toEqual({ display: "Alt+Enter", aria: "Alt+Enter" });
     expect(menuItemShortcut("lock-screen", undefined, false)).toEqual({ display: "Ctrl+Alt+L", aria: "Control+Alt+L" });
     expect(menuItemShortcut("lock-screen", undefined, true)).toEqual({ display: "Cmd+Option+L", aria: "Meta+Alt+L" });
+    expect(menuGroupLayout("session")).toBe("single");
+    expect(menuGroupLayout("terminal")).toBe("two-column");
+    expect(menuGroupLayout("workspace")).toBe("workspace-grid");
+    expect(menuGroupLayout("tools")).toBe("two-column");
+    expect(menuItemIsDanger("close-session-2")).toBe(true);
+    expect(menuItemIsDanger("new-session")).toBe(false);
   });
 });
 
