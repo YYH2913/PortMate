@@ -75,6 +75,12 @@ fn russh_chmod_emits_only_permissions_for_files_and_directories() {
                 )
                 .await;
             }
+            // Keep the peer alive until the client shuts down its SFTP stream.
+            let eof = tokio::time::timeout(std::time::Duration::from_secs(5), server.read_u8())
+                .await
+                .expect("SFTP client must close the stream")
+                .unwrap_err();
+            assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
             captured
         });
 
