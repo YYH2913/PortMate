@@ -106,6 +106,11 @@ native source archive remain unchanged. Provenance and removal criteria are in
 
 ## Reviewed Upstream Warnings
 
+- `RUSTSEC-2026-0543` reports maintenance status for `chrono 0.4.45`, which supplies
+  serialized UTC timestamps across the app, Store, and MCP. The audit reviews that
+  exact warning. A replacement must preserve the timestamp and date formats that
+  existing sessions and logs use.
+
 - The remaining GLib warning is confined to Tauri's Linux GTK3/WebKit dependency graph. PortMate does not
   call the affected `glib::VariantStrIter` API directly; migration depends on upstream runtime
   dependency updates. Withdrawn GTK3 unmaintained advisories are removed from the reviewed set.

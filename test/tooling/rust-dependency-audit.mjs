@@ -10,6 +10,7 @@ export const ALLOWED_RUSTSEC_VULNERABILITIES = Object.freeze([
 
 export const REVIEWED_RUSTSEC_WARNINGS = Object.freeze([
   "unmaintained:RUSTSEC-2025-0141:bincode@1.3.3",
+  "unmaintained:RUSTSEC-2026-0543:chrono@0.4.45",
   "unmaintained:RUSTSEC-2024-0436:paste@1.0.15",
   "unmaintained:RUSTSEC-2024-0370:proc-macro-error@1.0.4",
   "unmaintained:RUSTSEC-2026-0371:zbus_names@4.3.4",
