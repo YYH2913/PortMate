@@ -3,14 +3,13 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
-The current source version is `0.1.15`; concise bilingual changes are recorded in
-[CHANGELOG.md](./CHANGELOG.md). The preceding `0.1.14` commit `98667e6e` passed all
-six [Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/39583041967).
-Version `0.1.15` (2026-11-15) includes the later input/IPC and Npcap-separation fixes,
-so its finalized commit requires fresh native build, package and signature verification;
-local release records remain in ignored `tmp/`. The updater-enabled `0.1.14`
-packages are the upgrade baseline. Keep the existing updater key; do not replace
-older releases or their assets.
+The current source version is `0.1.16`. See [CHANGELOG.md](./CHANGELOG.md) for
+bilingual changes. The updater-enabled `0.1.15` packages are the upgrade baseline.
+The `0.1.15` source at `8e4f48be` passed all six
+[Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/43817078157).
+Verify builds, packages and signatures again from the `0.1.16` source commit.
+Keep the existing updater key and retain older releases and assets. Release records
+stay local in the ignored `tmp/` directory.
 
 The earlier local `0.1.12` Windows GNU x86-64 portable build is recorded in
 `tmp/windows-release-0.1.12-2026-10-08.md`, including the source revision, payload

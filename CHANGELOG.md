@@ -6,14 +6,32 @@ or an unsigned artifact is not a production release. The complete release gates 
 
 ## [Unreleased]
 
-- Add interface themes, accent colors, dock styles and a workspace rail. Keep menus accessible in short windows. / 新增界面主题、强调色、停靠样式和工作区侧栏，矮窗口可完整操作菜单。
-- Preserve timestamps on unchanged terminal rows and refresh them when output rewrites a line. / 保留未改动终端行的时间戳，输出覆写行时刷新。
-- Refresh workspace menus, narrow-window panels and keyboard navigation; keep destructive confirmations tied to their original target. / 优化工作区菜单、窄窗口面板和键盘导航，防止确认操作作用于错误目标。
-- Preserve Esc in full-screen terminals and support safe paste and text export in detached views. / 全屏终端保留 Esc 输入，独立窗口支持安全粘贴和文本导出。
-- Separate application and session settings, search individual fields and confirm unsaved changes. / 区分应用与会话设置，支持按字段搜索和未保存更改确认。
-- Negotiate bounded TFTP windows, honor SFTP close failures and coalesce unknown-size receive progress. / TFTP 支持窗口协商，修复 SFTP 关闭失败误报成功及未知大小接收时进度刷新过密。
-- Preview terminal themes and distinguish log times, file modes and HTTP status without overriding remote styles. / 终端主题支持实时预览，可区分日志时间、文件权限和 HTTP 状态，保留设备原有样式。
-- Reduce typing and Backspace echo latency in libssh terminals and avoid repeated screen and log scans while editing. / 降低 libssh 终端打字与退格的回显延迟，减少编辑时重复扫描屏幕和日志造成的卡顿。
+## [0.1.16] - 2026-11-24
+
+### Added
+
+- Customize the interface theme, accent colors, dock style and workspace rail. / 新增界面主题、强调色、停靠样式和工作区侧栏设置。
+- Preview terminal themes and colorize unstyled logs, file permissions and HTTP status while preserving device colors. / 实时预览终端主题，为无样式的日志、文件权限与 HTTP 状态上色，保留设备原有颜色。
+- Search individual application and session settings. Detached terminals can paste, refresh and export text. / 应用和会话设置可按字段搜索，独立终端支持粘贴、刷新和文本导出。
+
+### Changed
+
+- Keep workspace menus usable in short or narrow windows and improve keyboard navigation. / 改善矮窄窗口中的工作区菜单和键盘导航。
+- Reduce libssh typing and Backspace echo latency. Negotiate TFTP transfer windows with compatible peers and reduce progress refresh overhead. / 降低 libssh 输入与退格回显延迟，支持与兼容设备协商 TFTP 传输窗口，并减少进度刷新开销。
+
+### Fixed
+
+- Preserve timestamps on unchanged terminal rows during cursor movement and redraws. Keep Esc input working in full-screen terminal apps. / 光标移动和重绘时保留未改动行的时间戳，全屏终端应用可正常接收 Esc。
+- Report SFTP close failures and protect unsaved settings when switching scopes. / 正确报告 SFTP 关闭失败，切换设置范围时保护未保存的修改。
+
+### Security
+
+- Keep destructive confirmations tied to their original target and route paste through safeguards in the selected terminal. / 危险操作确认绑定原目标，粘贴经过目标终端的保护检查。
+- Update Rust URL and cookie dependencies and verify MCP compatibility with Rust SDK 3.11 and Ruby SDK 1.11. / 更新 Rust URL 和 Cookie 依赖，验证 MCP 与 Rust SDK 3.11、Ruby SDK 1.11 的兼容性。
+
+### Migration
+
+- Existing session settings, data and updater trust carry forward. / 沿用现有会话设置、数据及应用内更新信任配置。
 
 ## [0.1.15] - 2026-11-15
 
