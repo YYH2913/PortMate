@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionSummary } from "../../src/types";
 import { SessionContextMenu, TerminalContextMenu } from "../../src/ContextMenus";
@@ -128,18 +128,27 @@ describe("session context menu", () => {
     expect(buttonMarkup(html, "复制会话名称")).not.toContain("disabled");
   });
 
-  it("exposes online search and both terminal text export destinations", () => {
-    const html = renderToStaticMarkup(
-      <TerminalContextMenu
-        state={{ x: 100, y: 100, alternate: false, hasSelection: true }}
-        onAction={() => {}}
-      />,
-    );
-    expect(html).toContain("在线搜索");
-    expect(html).toContain("导出终端文本");
-    expect(html).toContain("导出终端文本到...");
-    expect(html).toContain("Ctrl+F");
-    expect(html).not.toContain("Ctrl+Shift+F");
+  it.each([
+    ["Win32", "Ctrl"],
+    ["Linux x86_64", "Ctrl"],
+    ["MacIntel", "Cmd"],
+  ])("exposes search and both export destinations on %s", (platform, modifier) => {
+    vi.stubGlobal("navigator", { platform });
+    try {
+      const html = renderToStaticMarkup(
+        <TerminalContextMenu
+          state={{ x: 100, y: 100, alternate: false, hasSelection: true }}
+          onAction={() => {}}
+        />,
+      );
+      expect(html).toContain("在线搜索");
+      expect(html).toContain("导出终端文本");
+      expect(html).toContain("导出终端文本到...");
+      expect(buttonMarkup(html, "查找")).toContain(`${modifier}+F`);
+      expect(html).not.toContain(`${modifier}+Shift+F`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("locks every terminal text export while one export is pending", () => {
