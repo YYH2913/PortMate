@@ -307,6 +307,7 @@
   "the-browser-blocked-the-workspace-window-allow-portmate-to": "Le navigateur a bloqué la fenêtre d'espace de travail. Permettez à PortMate d'ouvrir les fenêtres contextuelles.",
   "workspace-window-creation-timed-out": "Création de fenêtres d'espace de travail dépassée",
   "the-browser-blocked-the-detached-window-allow-portmate-to": "Le navigateur a bloqué la fenêtre détachée. Permettez à PortMate d'ouvrir les fenêtres contextuelles.",
+  "child-window-closed-before-ready": "La fenêtre secondaire s’est fermée avant d’être prête",
   "detached-window-creation-timed-out": "Création d'une fenêtre détachée en temps réel",
   "unlock-in-the-source-workspace": "Débloquer dans l'espace de travail source",
   "switch-to-source-workspace": "Switch à l'espace de travail source",

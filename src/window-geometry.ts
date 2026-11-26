@@ -1,5 +1,7 @@
+import { TauriEvent } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { t } from "./i18n";
 import {
   loadWindowGeometry,
   saveWindowGeometry,
@@ -52,11 +54,20 @@ export async function placeAndTrackChildWindow(
       // The native window remains centered if the saved display is no longer available.
     }
   }
-  options.beforeShow?.();
-  await child.show();
-  if (!storage || !options.storageKey) return;
-  const dispose = await trackChildWindowGeometry(child, storage, options.storageKey, constraints);
-  void child.once("tauri://destroyed", dispose).catch(() => {});
+  const tracking = storage && options.storageKey
+    ? await armChildWindowGeometryTracking(child, storage, options.storageKey, constraints)
+    : { status: "unavailable" as const };
+  if (tracking.status === "destroyed") throw new Error(t("child-window-closed-before-ready"));
+  try {
+    options.beforeShow?.();
+    await child.show();
+  } catch (error) {
+    if (tracking.status === "ready") tracking.dispose();
+    throw error;
+  }
+  if (tracking.status === "ready" && !tracking.activate()) {
+    throw new Error(t("child-window-closed-before-ready"));
+  }
 }
 
 async function preferredWindowGeometry(
@@ -121,58 +132,385 @@ async function windowGeometryFitsAvailableDisplays(geometry: WindowGeometry): Pr
   }
 }
 
-async function trackChildWindowGeometry(
+function isWindowsMinimizedPosition(x: number, y: number): boolean {
+  return x <= -32_000 && y <= -32_000;
+}
+
+function isPositiveWindowSize(width: number, height: number): boolean {
+  return width > 0 && height > 0;
+}
+
+function invokeUnlisten(unlisten: () => void | Promise<void>): void {
+  try {
+    void Promise.resolve(unlisten()).catch(() => {});
+  } catch {
+    // Ignore best-effort listener cleanup errors after window teardown.
+  }
+}
+
+type MinimizedState = "normal" | "minimized" | "unknown";
+
+type ArmedChildGeometryTracking =
+  | { status: "ready"; activate: () => boolean; dispose: () => void }
+  | { status: "destroyed" }
+  | { status: "unavailable" };
+
+async function armChildWindowGeometryTracking(
   child: WebviewWindow,
   storage: WindowGeometryStorage,
   key: string,
   constraints: WindowGeometryConstraints,
-): Promise<() => void> {
+): Promise<ArmedChildGeometryTracking> {
   let disposed = false;
+  let persistenceEnabled = false;
   let timeout: number | null = null;
-  let captureGeneration = 0;
-  const capture = async () => {
-    if (disposed) return;
-    const generation = ++captureGeneration;
+  let positionGeneration = 0;
+  let sizeGeneration = 0;
+  let querySequence = 0;
+  let appliedPositionQuery = 0;
+  let appliedSizeQuery = 0;
+  let positionValid = false;
+  let sizeValid = false;
+  let latestPosition: { x: number; y: number } | null = null;
+  let latestSize: { width: number; height: number } | null = null;
+  let minimizeState: MinimizedState = "normal";
+  let dirty = false;
+  const unlisteners: Array<() => void | Promise<void>> = [];
+  let resolveDestroyed!: () => void;
+  const destroyedPromise = new Promise<void>((resolve) => {
+    resolveDestroyed = resolve;
+  });
+
+  const invalidateLiveBounds = (nextMinimizeState: "minimized" | "unknown") => {
+    minimizeState = nextMinimizeState;
+    positionGeneration += 1;
+    sizeGeneration += 1;
+    querySequence += 1;
+    appliedPositionQuery = querySequence;
+    appliedSizeQuery = querySequence;
+    latestPosition = null;
+    latestSize = null;
+    positionValid = false;
+    sizeValid = false;
+    dirty = false;
+  };
+
+  const checkMinimized = async (): Promise<MinimizedState> => {
+    if (typeof child.isMinimized !== "function") return "normal";
     try {
-      const [position, size] = await Promise.all([child.outerPosition(), child.innerSize()]);
-      if (disposed || generation !== captureGeneration) return;
-      saveWindowGeometry(storage, key, {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-      }, constraints);
+      return (await child.isMinimized()) ? "minimized" : "normal";
+    } catch {
+      return "unknown";
+    }
+  };
+
+  const persistKnownGeometry = (): boolean => {
+    if (
+      !persistenceEnabled
+      || minimizeState !== "normal"
+      || !positionValid
+      || !sizeValid
+      || !latestPosition
+      || !latestSize
+    ) {
+      return false;
+    }
+    if (
+      !isPositiveWindowSize(latestSize.width, latestSize.height)
+      || isWindowsMinimizedPosition(latestPosition.x, latestPosition.y)
+    ) {
+      return false;
+    }
+    const next: WindowGeometry = {
+      x: latestPosition.x,
+      y: latestPosition.y,
+      width: latestSize.width,
+      height: latestSize.height,
+    };
+    dirty = false;
+    saveWindowGeometry(storage, key, next, constraints);
+    return true;
+  };
+
+  const capture = async () => {
+    if (disposed || !persistenceEnabled) return;
+    const myQuerySequence = ++querySequence;
+    const capturedPositionGeneration = positionGeneration;
+    const capturedSizeGeneration = sizeGeneration;
+    try {
+      const beforeState = await checkMinimized();
+      if (disposed) return;
+      if (beforeState !== "normal") {
+        if (
+          myQuerySequence === querySequence
+          && capturedPositionGeneration === positionGeneration
+          && capturedSizeGeneration === sizeGeneration
+        ) {
+          invalidateLiveBounds(beforeState);
+        }
+        return;
+      }
+
+      const [positionResult, sizeResult] = await Promise.allSettled([
+        child.outerPosition(),
+        child.innerSize(),
+      ]);
+      if (disposed) return;
+
+      const afterState = await checkMinimized();
+      if (disposed) return;
+      if (afterState !== "normal") {
+        if (
+          myQuerySequence === querySequence
+          && capturedPositionGeneration === positionGeneration
+          && capturedSizeGeneration === sizeGeneration
+        ) {
+          invalidateLiveBounds(afterState);
+        }
+        return;
+      }
+
+      const generationsMatch =
+        capturedPositionGeneration === positionGeneration
+        && capturedSizeGeneration === sizeGeneration;
+      if (!generationsMatch && minimizeState !== "normal") {
+        // Do not accept a partial capture while exiting minimized/unknown state if newer
+        // untrusted events arrived mid-capture; wait for the rescheduled capture instead.
+        return;
+      }
+      if (generationsMatch && myQuerySequence > Math.max(appliedPositionQuery, appliedSizeQuery)) {
+        minimizeState = "normal";
+      }
+
+      const position = positionResult.status === "fulfilled" ? positionResult.value : null;
+      const size = sizeResult.status === "fulfilled" ? sizeResult.value : null;
+      if (
+        (size && !isPositiveWindowSize(size.width, size.height))
+        || (position && isWindowsMinimizedPosition(position.x, position.y))
+      ) {
+        return;
+      }
+
+      let updated = false;
+      if (
+        position
+        && Number.isFinite(position.x)
+        && Number.isFinite(position.y)
+        && capturedPositionGeneration === positionGeneration
+        && myQuerySequence > appliedPositionQuery
+      ) {
+        appliedPositionQuery = myQuerySequence;
+        latestPosition = { x: position.x, y: position.y };
+        positionValid = true;
+        dirty = true;
+        updated = true;
+      }
+      if (
+        size
+        && Number.isFinite(size.width)
+        && Number.isFinite(size.height)
+        && capturedSizeGeneration === sizeGeneration
+        && myQuerySequence > appliedSizeQuery
+      ) {
+        appliedSizeQuery = myQuerySequence;
+        latestSize = { width: size.width, height: size.height };
+        sizeValid = true;
+        dirty = true;
+        updated = true;
+      }
+      if (updated && dirty && generationsMatch) {
+        minimizeState = "normal";
+        persistKnownGeometry();
+      }
     } catch {
       // Geometry persistence is best-effort and must never affect a usable child window.
     }
   };
+
   const scheduleCapture = () => {
-    if (disposed) return;
+    if (disposed || !persistenceEnabled) return;
     if (timeout !== null) window.clearTimeout(timeout);
     timeout = window.setTimeout(() => {
       timeout = null;
       void capture();
     }, WINDOW_GEOMETRY_SAVE_DELAY_MS);
   };
-  const listeners = await Promise.allSettled([
-    child.onMoved(scheduleCapture),
-    child.onResized(scheduleCapture),
-    child.onCloseRequested(async () => {
-      if (timeout !== null) {
-        window.clearTimeout(timeout);
-        timeout = null;
-      }
-      await capture();
-    }),
-  ]);
-  void capture();
-  return () => {
-    disposed = true;
-    captureGeneration += 1;
-    if (timeout !== null) window.clearTimeout(timeout);
-    for (const listener of listeners) {
-      if (listener.status === "fulfilled") listener.value();
+
+  const handleMoved = (event?: { payload?: unknown }) => {
+    if (disposed) return;
+    if (minimizeState !== "normal") {
+      // Do not trust or cache live payloads emitted while minimized/unknown;
+      // defer to a verified full capture() once the window settles.
+      positionGeneration += 1;
+      sizeGeneration += 1;
+      latestPosition = null;
+      latestSize = null;
+      positionValid = false;
+      sizeValid = false;
+      dirty = false;
+      scheduleCapture();
+      return;
     }
+    const payload = event?.payload as { x?: unknown; y?: unknown } | null | undefined;
+    if (
+      typeof payload?.x === "number"
+      && typeof payload?.y === "number"
+      && Number.isFinite(payload.x)
+      && Number.isFinite(payload.y)
+    ) {
+      if (isWindowsMinimizedPosition(payload.x, payload.y)) return;
+      positionGeneration += 1;
+      latestPosition = { x: payload.x, y: payload.y };
+      positionValid = true;
+      dirty = true;
+      scheduleCapture();
+    } else {
+      positionGeneration += 1;
+      positionValid = false;
+      scheduleCapture();
+    }
+  };
+
+  const handleResized = (event?: { payload?: unknown }) => {
+    if (disposed) return;
+    if (minimizeState !== "normal") {
+      positionGeneration += 1;
+      sizeGeneration += 1;
+      latestPosition = null;
+      latestSize = null;
+      positionValid = false;
+      sizeValid = false;
+      dirty = false;
+      scheduleCapture();
+      return;
+    }
+    const payload = event?.payload as { width?: unknown; height?: unknown } | null | undefined;
+    if (
+      typeof payload?.width === "number"
+      && typeof payload?.height === "number"
+      && Number.isFinite(payload.width)
+      && Number.isFinite(payload.height)
+    ) {
+      if (!isPositiveWindowSize(payload.width, payload.height)) return;
+      sizeGeneration += 1;
+      latestSize = { width: payload.width, height: payload.height };
+      sizeValid = true;
+      dirty = true;
+      scheduleCapture();
+    } else {
+      sizeGeneration += 1;
+      sizeValid = false;
+      scheduleCapture();
+    }
+  };
+
+  const handleScaleChanged = () => {
+    if (disposed) return;
+    positionGeneration += 1;
+    sizeGeneration += 1;
+    positionValid = false;
+    sizeValid = false;
+    scheduleCapture();
+  };
+
+  const dispose = (flush: boolean) => {
+    if (disposed) return;
+    disposed = true;
+    positionGeneration += 1;
+    sizeGeneration += 1;
+    querySequence += 1;
+    if (timeout !== null) {
+      window.clearTimeout(timeout);
+      timeout = null;
+    }
+    if (flush && persistenceEnabled && dirty && minimizeState === "normal" && positionValid && sizeValid) {
+      persistKnownGeometry();
+    }
+    for (const unlisten of unlisteners.splice(0)) {
+      invokeUnlisten(unlisten);
+    }
+    resolveDestroyed();
+  };
+
+  // Arm destruction cleanup BEFORE showing the child window and never attach a
+  // close-requested listener from the owner window: in Tauri v2, any JS listener
+  // on close-requested causes Rust to call prevent_close() and delegate
+  // destruction back to the listener. Capturing live move/resize payloads via raw
+  // child.listen() and flushing on WINDOW_DESTROYED preserves final geometry
+  // while keeping native OS close and child close() immediate and unblockable.
+  if (typeof child.listen !== "function") {
+    return { status: "unavailable" };
+  }
+  let destroyedRegistered = false;
+  const destroyedRegPromise = Promise.resolve()
+    .then(() => child.listen(TauriEvent.WINDOW_DESTROYED, () => dispose(true)))
+    .then(
+      (unlistenDestroyed) => {
+        destroyedRegistered = true;
+        if (disposed) {
+          invokeUnlisten(unlistenDestroyed);
+          return;
+        }
+        unlisteners.push(unlistenDestroyed);
+      },
+      () => {},
+    );
+  await Promise.race([destroyedRegPromise, destroyedPromise]);
+  if (disposed) {
+    return { status: "destroyed" };
+  }
+  if (!destroyedRegistered) {
+    return { status: "unavailable" };
+  }
+
+  let movedRegistered = false;
+  let resizedRegistered = false;
+  const register = (
+    promise: Promise<() => void | Promise<void>>,
+    onRegistered?: () => void,
+  ) =>
+    promise.then(
+      (unlisten) => {
+        if (disposed) {
+          invokeUnlisten(unlisten);
+          return;
+        }
+        unlisteners.push(unlisten);
+        onRegistered?.();
+      },
+      () => {},
+    );
+
+  await Promise.race([
+    Promise.all([
+      register(child.listen(TauriEvent.WINDOW_MOVED, handleMoved), () => {
+        movedRegistered = true;
+      }),
+      register(child.listen(TauriEvent.WINDOW_RESIZED, handleResized), () => {
+        resizedRegistered = true;
+      }),
+      register(child.listen(TauriEvent.WINDOW_SCALE_FACTOR_CHANGED, handleScaleChanged)),
+    ]),
+    destroyedPromise,
+  ]);
+
+  if (disposed) {
+    return { status: "destroyed" };
+  }
+  if (!movedRegistered || !resizedRegistered) {
+    dispose(false);
+    return { status: "unavailable" };
+  }
+
+  return {
+    status: "ready",
+    activate: () => {
+      if (disposed) return false;
+      persistenceEnabled = true;
+      void capture();
+      return true;
+    },
+    dispose: () => dispose(false),
   };
 }
 

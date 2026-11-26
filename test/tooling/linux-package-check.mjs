@@ -331,6 +331,7 @@ function verifyTauriSecurityConfiguration(config, mainCapability, paneCapability
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-show",
+    "core:window:allow-destroy",
     "dialog:allow-open",
     "dialog:allow-save",
   ]);

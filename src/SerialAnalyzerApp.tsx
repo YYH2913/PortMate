@@ -321,11 +321,14 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
   }
 
   async function closeWindow() {
-    try {
-      if (isBackendAvailable()) await getCurrentWebviewWindow().close();
-      else window.close();
-    } catch {
+    if (!isBackendAvailable()) {
       window.close();
+      return;
+    }
+    try {
+      await getCurrentWebviewWindow().close();
+    } catch (error) {
+      setMessage(formatAnalyzerError(error));
     }
   }
 
@@ -351,6 +354,7 @@ export default function SerialAnalyzerApp({ request }: { request: SerialAnalyzer
         <section className="serial-analyzer-missing">
           <strong>{session ? t("the-session-is-not-serial") : t("serial-session-unavailable")}</strong>
           <span>{request.sessionId}</span>
+          {message ? <span role="alert">{message}</span> : null}
           <button type="button" onClick={() => void closeWindow()}>{t("close-window")}</button>
         </section>
       )}
