@@ -3,11 +3,11 @@
 Every release is blocked until each applicable gate below has an attached command output, artifact,
 or reviewer record. Do not use a successful source build as evidence that an installer is complete.
 
-The current source version is `0.1.16`. See [CHANGELOG.md](./CHANGELOG.md) for
-bilingual changes. The updater-enabled `0.1.15` packages are the upgrade baseline.
-The `0.1.15` source at `8e4f48be` passed all six
-[Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/43817078157).
-Verify builds, packages and signatures again from the `0.1.16` source commit.
+The current source version is `0.1.17`. See [CHANGELOG.md](./CHANGELOG.md) for
+bilingual changes. The updater-enabled `0.1.16` packages are the upgrade baseline.
+The `0.1.16` source at `54e6e8e1` passed all six
+[Native CI jobs](https://github.com/YYH2913/PortMate/actions/runs/45523140126).
+Verify builds, packages and signatures again from the `0.1.17` source commit.
 Keep the existing updater key and retain older releases and assets. Release records
 stay local in the ignored `tmp/` directory.
 

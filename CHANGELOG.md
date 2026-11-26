@@ -1,10 +1,33 @@
 # Changelog
 
-All notable PortMate changes are recorded here. PortMate is still alpha software; a source build
-or an unsigned artifact is not a production release. The complete release gates are maintained in
-[RELEASE.md](./RELEASE.md).
+All notable PortMate changes are recorded here. PortMate is currently in public beta; verify
+source builds and release artifacts against the complete release gates maintained in
+[RELEASE.md](./RELEASE.md) before production deployment.
 
 ## [Unreleased]
+
+## [0.1.17] - 2026-11-25
+
+### Added
+
+- Browse history by session, copy and expand entries, or load a command into the send panel. / 支持按会话浏览历史命令，复制、展开条目，或将命令载入发送面板。
+
+### Changed
+
+- Refresh the app icon, About dialog and send panel. Align their styling with the workspace theme. / 更新应用图标、关于窗口和发送面板，并统一工作区主题样式。
+
+### Fixed
+
+- Keep recalled commands in their intended terminal and prevent delayed results from restoring cleared history. / 历史命令载入指定终端，清空后不会被延迟结果恢复。
+- Restore detached terminal and serial analyzer window geometry and report windows that close during startup. / 恢复独立终端和串口分析器的窗口位置与尺寸，并准确报告启动期间关闭的窗口。
+
+### Security
+
+- Continue using the existing signed update channel for supported packages. / 支持应用内更新的安装包继续使用现有签名更新渠道。
+
+### Migration
+
+- Keep existing sessions, history and settings when upgrading. / 升级时保留现有会话、历史命令和设置。
 
 ## [0.1.16] - 2026-11-24
 

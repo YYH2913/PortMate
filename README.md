@@ -6,7 +6,7 @@
 
 <p align="center">A cross-platform terminal workspace for SSH, serial, and remote operations, with a permissioned MCP session bridge.</p>
 
-<p align="center"><code>v0.1.16</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.17</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <strong>English</strong> |
@@ -21,7 +21,7 @@
 </p>
 
 > [!IMPORTANT]
-> PortMate is currently **alpha** software. The implementation and compatibility tests reproducible on Linux, Docker, and browser environments are in place, but native Windows/macOS packages, real Microsoft AD, physical serial hardware, and release signing still require external validation. Do not use the current build unattended in a production-critical path.
+> PortMate is currently in **public beta**. Core workflows and automated compatibility tests reproducible on Linux, Docker, and browser environments are in place, while native Windows/macOS packaging, real Microsoft AD, physical serial hardware, and release signing continue to be validated across broader environments. Verify behavior against your target setup before relying on a build unattended in a production-critical path.
 
 ## What is PortMate?
 
@@ -806,7 +806,7 @@ npm run desktop:build:windows-gnu
 ```
 
 Native bundles are written below `target/release/bundle/`. The Windows GNU portable
-build writes `target/release-artifacts/PortMate-0.1.16-windows-x86_64-portable.zip`
+build writes `target/release-artifacts/PortMate-0.1.17-windows-x86_64-portable.zip`
 and an extracted directory beside it. With `CARGO_TARGET_DIR` set, both paths use
 that target root instead. Extract the complete ZIP and run `portmate.exe`, keeping
 `portmate-mcp.exe`, `WebView2Loader.dll`, and the license files in their original

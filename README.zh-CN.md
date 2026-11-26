@@ -6,7 +6,7 @@
 
 <p align="center">面向 SSH、串口与远程运维场景的跨平台终端工作台，并提供受控的 MCP 会话桥接能力。</p>
 
-<p align="center"><code>v0.1.16</code> · Tauri v2 · React · Rust · Apache-2.0</p>
+<p align="center"><code>v0.1.17</code> · Tauri v2 · React · Rust · Apache-2.0</p>
 
 <p align="center">
   <a href="./README.md">English</a> |
@@ -21,7 +21,7 @@
 </p>
 
 > [!IMPORTANT]
-> PortMate 当前处于 **alpha** 阶段。仓库内可在 Linux、Docker 和浏览器环境复现的实现与兼容矩阵已经建立，但 Windows/macOS 原生安装包、真实 Microsoft AD、物理串口设备和发布签名仍需要外部环境完成最终验证。请勿将当前构建直接用于无人值守的生产关键链路。
+> PortMate 当前处于 **Beta 公测阶段**。核心功能以及可在 Linux、Docker 和浏览器环境复现的自动化兼容矩阵已经建立；Windows/macOS 原生安装包、真实 Microsoft AD、物理串口硬件与发布签名仍在持续完善验证中。在无人值守的生产关键链路使用前，请结合实际环境进行充分核验。
 
 ## PortMate 是什么
 
@@ -713,7 +713,7 @@ npm run desktop:build:windows-gnu
 ```
 
 原生安装包位于 `target/release/bundle/`。Windows GNU 便携构建生成
-`target/release-artifacts/PortMate-0.1.16-windows-x86_64-portable.zip`，并在同一目录
+`target/release-artifacts/PortMate-0.1.17-windows-x86_64-portable.zip`，并在同一目录
 保留解压后的文件夹；设置 `CARGO_TARGET_DIR` 时改用指定的 target 根目录。
 完整解压 ZIP 后运行 `portmate.exe`，保留同目录的 `portmate-mcp.exe`、
 `WebView2Loader.dll` 和许可文件的原有位置。Windows 需要安装 Microsoft Edge WebView2 Runtime。
