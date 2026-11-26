@@ -18,6 +18,7 @@ import {
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { callBackend, invokeBackend, isBackendAvailable } from "./api";
 import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
+import PortMateIcon from "./PortMateIcon";
 import { KeyedRequestGate } from "./keyed-request-gate";
 import { decodeStoredScreenLockMarker, SCREEN_LOCK_STORAGE_KEY } from "./screen-lock-state";
 import type { ScreenLockMarker } from "./screen-lock-state";
@@ -480,7 +481,7 @@ function SerialAnalyzerWorkspace({
   return (
     <>
       <header className="serial-analyzer-titlebar">
-        <span className="serial-analyzer-brand">PortMate</span>
+        <span className="serial-analyzer-brand"><PortMateIcon size={16} variant="mark" />PortMate</span>
         <strong>{t("serial-analyzer")}</strong>
         <span className="serial-analyzer-session" title={session.profile.name}>{session.profile.name}</span>
         <span

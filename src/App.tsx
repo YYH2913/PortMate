@@ -1,6 +1,7 @@
 import { t, useLocale, localizeDiagnostic } from "./i18n";
 import { setUiAppearance, useUiAppearance } from "./ui-theme";
 import UiAppearancePicker from "./UiAppearancePicker";
+import PortMateIcon from "./PortMateIcon";
 import { requestAppConfirm, requestAppPrompt } from "./app-dialog";
 import { useWorkspacePointerDrag, workspacePointerAfter, workspacePointerDropZone } from "./use-workspace-pointer-drag";
 import type { WorkspaceDockDropAnchor } from "./use-workspace-pointer-drag";
@@ -58,7 +59,6 @@ import {
   Shield,
   SlidersHorizontal,
   Square,
-  SquareTerminal,
   Terminal,
   TextCursorInput,
   Unlock,
@@ -156,8 +156,8 @@ import type { TerminalKeyMode } from "./terminal-key-mode";
 import { requestTerminalSearch } from "./terminal-search";
 import { normalizeTerminalTheme } from "./terminal-theme";
 import { formatTcpConnectionTarget, normalizeTcpConnectionSettings } from "./tcp-connection-settings";
-import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, DEFAULT_SEND_LINE_ENDING, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, appendSendLineEnding, dispatchPacedSends, normalizeSendCount, normalizeSendInterval, parseHexBytes, resolveSendTargets } from "./send-panel-state";
-import type { SendLineEnding } from "./send-panel-state";
+import { DEFAULT_SEND_COUNT, DEFAULT_SEND_INTERVAL_MS, DEFAULT_SEND_LINE_ENDING, MAX_SEND_COUNT, MAX_SEND_INTERVAL_MS, appendSendLineEnding, dispatchPacedSends, normalizeSendCount, normalizeSendInterval, parseHexBytes, resolveSendTargets, sendDraftSnapshotsEqual, shouldConfirmHistorySenderReplace } from "./send-panel-state";
+import type { SendDraftSnapshot, SendLineEnding } from "./send-panel-state";
 import { defaultWorkspaceKeymap, LEGACY_WORKSPACE_KEYMAP_STORAGE_KEY, normalizeWorkspaceKeymap, resolveWorkspaceHotkeySequence, WORKSPACE_KEY_CHORD_TIMEOUT_MS, WORKSPACE_KEYMAP_STORAGE_KEY } from "./workspace-hotkeys";
 import type { WorkspaceKeymap } from "./workspace-hotkeys";
 import type { WorkspaceViewContextAction } from "./WorkspaceViewContextMenu";
@@ -213,6 +213,7 @@ const WORKSPACE_WINDOW_MIN_HEIGHT = 720;
 const MAX_CLOSED_WORKSPACE_VIEWS = 32;
 const MAX_RESOLVED_MCP_APPROVAL_IDS = 256;
 const COMMAND_HISTORY_UPDATED_EVENT = "portmate-command-history-updated";
+type PendingCommandHistoryClear = { latestSnapshot?: CommandHistorySnapshot };
 type StartupHydrationDomain = "transfers" | "audit" | "grants" | "host-keys" | "one-keys" | "serial-ports";
 const workspaceUtilityIcons = { Folder, Search, X };
 const workspaceDockPanelMeta: Record<WorkspaceDockPanelId, { label: string; icon: LucideIcon }> = {
@@ -425,6 +426,10 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [draft, setDraft] = useState<SessionProfile>(() => createSessionDraft());
   const draftExpectedProfileRef = useRef<SessionProfile | null>(null);
   const [sendText, setSendText] = useState("");
+  const [sendTextForceLtr, setSendTextForceLtr] = useState(false);
+  const [pendingSenderFocusToken, setPendingSenderFocusToken] = useState(0);
+  const sendTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const loadingHistoryIntoSenderRef = useRef(false);
   const [sendMode, setSendMode] = useState<SendMode>("text");
   const [sendLineEnding, setSendLineEnding] = useState<SendLineEnding>(DEFAULT_SEND_LINE_ENDING);
   const [sendCount, setSendCount] = useState(DEFAULT_SEND_COUNT);
@@ -432,6 +437,22 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [sendTarget, setSendTarget] = useState<SendTarget>("active");
   const [sendAdvancedOpen, setSendAdvancedOpen] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
+  const sendDraftSnapshotRef = useRef<SendDraftSnapshot>({
+    text: sendText,
+    mode: sendMode,
+    target: sendTarget,
+    count: sendCount,
+    intervalMs: sendIntervalMs,
+    lineEnding: sendLineEnding,
+  });
+  sendDraftSnapshotRef.current = {
+    text: sendText,
+    mode: sendMode,
+    target: sendTarget,
+    count: sendCount,
+    intervalMs: sendIntervalMs,
+    lineEnding: sendLineEnding,
+  };
   const [syncInput, setSyncInput] = useState(false);
   const [syncInputSettings, setSyncInputSettings] = useState<SyncInputSettings>(() => (
     normalizeSyncInputSettings(loadLocalValue<unknown>("portmate.syncInputSettings", defaultSyncInputSettings))
@@ -447,7 +468,11 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [commandHistoryReady, setCommandHistoryReady] = useState(false);
   const commandHistoryEntriesRef = useRef<CommandHistoryEntry[]>([]);
   const commandHistoryRevisionRef = useRef(0);
+  const commandHistoryInitializationFinishedRef = useRef(false);
   const commandHistoryBackendReadyRef = useRef(false);
+  const commandHistoryClearRef = useRef<PendingCommandHistoryClear | null>(null);
+  const [commandHistoryClearFailed, setCommandHistoryClearFailed] = useState(false);
+  const historyRecallRequestRef = useRef(0);
   const commandHistoryOperationRef = useRef<Promise<void>>(Promise.resolve());
   const pendingCommandHistoryRef = useRef<PendingCommandHistoryEntry[]>([]);
   const commandHistoryPolicyRef = useRef(commandHistoryPolicy);
@@ -479,6 +504,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   const [workspaceDockLayout, setWorkspaceDockLayout] = useState<WorkspaceDockLayout>(() => (
     normalizeWorkspaceDockLayout(workspacePanelStorageKey ? loadLocalValue<unknown>(workspacePanelStorageKey, null) : null)
   ));
+  const workspaceDockLayoutRef = useRef<WorkspaceDockLayout>(workspaceDockLayout);
+  workspaceDockLayoutRef.current = workspaceDockLayout;
   const [workspaceDockSizes, setWorkspaceDockSizes] = useState<WorkspaceDockSizes>(() => (
     normalizeWorkspaceDockSizes(workspacePanelStorageKey ? loadLocalValue<unknown>(workspacePanelStorageKey, null) : null)
   ));
@@ -856,6 +883,13 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     committed?: PendingCommandHistoryEntry,
   ) {
     if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < commandHistoryRevisionRef.current) return;
+    const clear = commandHistoryClearRef.current;
+    if (clear) {
+      // An event from an in-flight read or write can precede the actual clear.
+      // Keep it hidden until the clear reports which revision it replaced.
+      if (!clear.latestSnapshot || snapshot.revision >= clear.latestSnapshot.revision) clear.latestSnapshot = snapshot;
+      return;
+    }
     commandHistoryRevisionRef.current = snapshot.revision;
     if (committed) {
       const index = pendingCommandHistoryRef.current.findIndex((entry) => (
@@ -888,12 +922,26 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   function enqueueCommandHistoryOperation(
     operation: () => Promise<CommandHistorySnapshot>,
     committed?: PendingCommandHistoryEntry,
+    clear?: PendingCommandHistoryClear,
   ) {
     commandHistoryOperationRef.current = commandHistoryOperationRef.current.then(async () => {
       try {
-        applyCommandHistorySnapshot(await operation(), committed);
+        const snapshot = await operation();
+        if (!clear) {
+          applyCommandHistorySnapshot(snapshot, committed);
+          return;
+        }
+        if (commandHistoryClearRef.current !== clear) return;
+        commandHistoryClearRef.current = null;
+        setCommandHistoryClearFailed(false);
+        const newer = clear.latestSnapshot;
+        applyCommandHistorySnapshot(newer && newer.revision > snapshot.revision ? newer : snapshot);
       } catch (error) {
         console.warn("PortMate command history persistence failed", error);
+        if (clear && commandHistoryClearRef.current === clear) {
+          setCommandHistoryClearFailed(true);
+          setNotice({ diagnostic: true, title: t("clear-command-history"), message: formatError(error) });
+        }
       }
     });
   }
@@ -1510,14 +1558,14 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   useEffect(() => {
     let disposed = false;
     let stopListening: (() => void) | undefined;
+    const readLocalHistory = () => normalizeCommandHistory(
+      loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null),
+      commandHistoryPolicyRef.current,
+    );
     void (async () => {
       if (disposed) return;
-      const localEntries = normalizeCommandHistory(
-        loadLocalValue<unknown>(COMMAND_HISTORY_STORAGE_KEY, null),
-        commandHistoryPolicyRef.current,
-      );
       if (!isBackendAvailable()) {
-        const entries = commandHistoryEnabledRef.current ? localEntries : [];
+        const entries = commandHistoryEnabledRef.current ? readLocalHistory() : [];
         commandHistoryEntriesRef.current = entries;
         setCommandHistoryEntries(entries);
         setCommandHistoryReady(true);
@@ -1534,6 +1582,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
       } catch (error) {
         console.warn("PortMate command history live synchronization failed", error);
       }
+      let snapshot: CommandHistorySnapshot | undefined;
       try {
         const initialSettings = {
           enabled: commandHistoryEnabledRef.current,
@@ -1544,24 +1593,25 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         commandHistoryPersistedSettingsRef.current = initialSettings;
         const initial = await invokeBackend<CommandHistorySnapshot>("list_command_history", {});
         if (disposed) return;
-        const snapshot = initial.migrated
-          ? await invokeBackend<CommandHistorySnapshot>("merge_command_history", {
-            entries: commandHistoryEnabledRef.current ? localEntries : [],
-            limit: commandHistoryPolicyRef.current.limit,
-            retentionDays: commandHistoryPolicyRef.current.retentionDays,
-          })
-          : await invokeBackend<CommandHistorySnapshot>("migrate_command_history", {
-            entries: commandHistoryEnabledRef.current ? localEntries : [],
-            limit: commandHistoryPolicyRef.current.limit,
-            retentionDays: commandHistoryPolicyRef.current.retentionDays,
-          });
-        if (disposed) return;
-        const enabledSnapshot = !commandHistoryEnabledRef.current && snapshot.entries.length
-          ? await invokeBackend<CommandHistorySnapshot>("clear_command_history", {})
-          : snapshot;
-        if (disposed) return;
+        snapshot = commandHistoryClearRef.current ? initial : await invokeBackend<CommandHistorySnapshot>(
+          initial.migrated ? "merge_command_history" : "migrate_command_history", {
+            entries: commandHistoryEnabledRef.current ? readLocalHistory() : [],
+            ...(initial.migrated ? { expectedRevision: initial.revision } : {}),
+          },
+        );
+      } catch (error) {
+        console.warn("PortMate command history initialization failed", error);
+      }
+      if (disposed) return;
+      commandHistoryInitializationFinishedRef.current = true;
+      const clear = commandHistoryClearRef.current;
+      if (snapshot || clear) {
         commandHistoryBackendReadyRef.current = true;
-        applyCommandHistorySnapshot(enabledSnapshot);
+        if (clear) {
+          enqueueCommandHistoryOperation(() => invokeBackend("clear_command_history", {}), undefined, clear);
+        } else if (snapshot) {
+          applyCommandHistorySnapshot(snapshot);
+        }
         for (const pending of [...pendingCommandHistoryRef.current]) {
           enqueueCommandHistoryOperation(
             () => invokeBackend<CommandHistorySnapshot>("record_command_history", {
@@ -1572,15 +1622,15 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             pending,
           );
         }
-      } catch (error) {
-        if (disposed) return;
-        console.warn("PortMate command history initialization failed", error);
-        const entries = commandHistoryEnabledRef.current ? localEntries : [];
+      } else {
+        const entries = commandHistoryEnabledRef.current ? normalizeCommandHistory(
+          commandHistorySnapshot([...commandHistoryEntriesRef.current, ...readLocalHistory()]),
+          commandHistoryPolicyRef.current,
+        ) : [];
         commandHistoryEntriesRef.current = entries;
         setCommandHistoryEntries(entries);
-      } finally {
-        if (!disposed) setCommandHistoryReady(true);
       }
+      setCommandHistoryReady(true);
     })();
     return () => {
       disposed = true;
@@ -1646,11 +1696,12 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
           commandHistoryPolicy,
         )
         : [];
+      const currentEntries = commandHistoryEntriesRef.current;
       const normalized = historyDisabled ? [] : normalizeCommandHistory(
-        commandHistorySnapshot(commandHistoryEntries),
+        commandHistorySnapshot(currentEntries),
         commandHistoryPolicy,
       );
-      if (!historyDisabled && !commandHistoryEntriesEqual(commandHistoryEntries, normalized)) {
+      if (!historyDisabled && !commandHistoryEntriesEqual(currentEntries, normalized)) {
         commandHistoryEntriesRef.current = normalized;
         setCommandHistoryEntries(normalized);
         return;
@@ -4604,7 +4655,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     // History is a presentation aid; committing it at transition priority
     // keeps Enter and the terminal's next prompt ahead of list reconciliation.
     startTransition(() => setCommandHistoryEntries(normalized));
-    setCommandHistoryReady(true);
     if (!isBackendAvailable()) return;
     pendingCommandHistoryRef.current = queuePendingCommandHistory(
       pendingCommandHistoryRef.current,
@@ -4627,18 +4677,148 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
   }
 
   function pickCommandHistoryEntry(entry: CommandHistoryEntry) {
-    const targetSessionId = entry.sessionId;
-    if (targetSessionId
-      && targetSessionId !== activeIdRef.current
-      && sessionsRef.current.some((session) => session.profile.id === targetSessionId)) {
-      activateSession(targetSessionId);
-      window.requestAnimationFrame(() => requestTerminalFreeInput(window, entry.command));
+    const request = ++historyRecallRequestRef.current;
+    const sessionId = entry.sessionId && sessionsRef.current.some(({ profile }) => profile.id === entry.sessionId)
+      ? entry.sessionId : activeIdRef.current;
+    if (!sessionId) {
+      setNotice({ title: t("command-history"), message: t("open-a-terminal-session-first") });
       return;
     }
-    requestTerminalFreeInput(window, entry.command);
+    const switched = sessionId !== activeIdRef.current;
+    if (switched) activateSession(sessionId);
+    const target = currentWorkspaceTarget({ sessionId });
+    if (!target) return;
+    const viewId = target.view.id;
+    const recall = () => {
+      if (historyRecallRequestRef.current !== request || currentWorkspaceTarget({ sessionId })?.view.id !== viewId) return;
+      requestTerminalFreeInput(window, entry.command, { sessionId, viewId });
+    };
+    if (switched) {
+      // Wait for the focused terminal's event listener to be installed.
+      window.requestAnimationFrame(() => window.requestAnimationFrame(recall));
+    } else {
+      recall();
+    }
+  }
+
+  useEffect(() => {
+    if (!pendingSenderFocusToken) return;
+    let cancelled = false;
+    let frameId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let observer: MutationObserver | null = null;
+
+    const cleanup = () => {
+      cancelled = true;
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+      observer?.disconnect();
+      window.removeEventListener("pointerdown", cancelOnUserAction, true);
+      window.removeEventListener("keydown", cancelOnUserAction, true);
+    };
+
+    const cancelOnUserAction = () => {
+      cleanup();
+      setPendingSenderFocusToken(0);
+    };
+
+    const isInteractionLayerSettled = () => (
+      !hasActiveInteractionLayer()
+      && !document.body.hasAttribute("data-portmate-interaction-layer-open")
+      && !document.body.hasAttribute("data-portmate-modal-open")
+    );
+
+    const tryFocus = () => {
+      if (cancelled) return false;
+      const textarea = sendTextareaRef.current;
+      if (
+        textarea
+        && textarea.getClientRects().length > 0
+        && !textarea.closest("[inert], [hidden]")
+        && isInteractionLayerSettled()
+      ) {
+        textarea.focus({ preventScroll: true });
+        cleanup();
+        setPendingSenderFocusToken(0);
+        return true;
+      }
+      return false;
+    };
+
+    window.addEventListener("pointerdown", cancelOnUserAction, true);
+    window.addEventListener("keydown", cancelOnUserAction, true);
+
+    if (tryFocus()) return;
+
+    const scheduleAttempt = () => {
+      if (cancelled || frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        tryFocus();
+      });
+    };
+
+    if (typeof MutationObserver !== "undefined" && document.body) {
+      observer = new MutationObserver(scheduleAttempt);
+      observer.observe(document.body, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: ["inert", "hidden", "data-portmate-interaction-layer-open", "data-portmate-modal-open"],
+      });
+    }
+    scheduleAttempt();
+    timeoutId = globalThis.setTimeout(() => {
+      cleanup();
+      setPendingSenderFocusToken(0);
+    }, 600);
+
+    return cleanup;
+  }, [pendingSenderFocusToken, workspacePanels.sender, mobileDockDrawer, focusMode]);
+
+  async function insertCommandHistoryEntryToSender(entry: CommandHistoryEntry) {
+    if (loadingHistoryIntoSenderRef.current || sendBusy || sendOperationGateRef.current.isActive("send")) return;
+
+    loadingHistoryIntoSenderRef.current = true;
+    try {
+      const draftBefore = sendDraftSnapshotRef.current;
+      if (shouldConfirmHistorySenderReplace(draftBefore, entry.command)) {
+        const confirmed = await requestAppConfirm({
+          title: t("history-load-in-send-panel"),
+          message: t("history-replace-send-draft"),
+          confirmLabel: t("history-load-in-send-panel"),
+        });
+        if (!confirmed) return;
+        if (!sendDraftSnapshotsEqual(sendDraftSnapshotRef.current, draftBefore)) return;
+      }
+      if (sendOperationGateRef.current.isActive("send")) return;
+
+      setSendText(entry.command);
+      setSendTextForceLtr(true);
+      setSendMode("text");
+      setSendTarget("active");
+      setSendCount(DEFAULT_SEND_COUNT);
+      setSendIntervalMs(DEFAULT_SEND_INTERVAL_MS);
+      setSendLineEnding(DEFAULT_SEND_LINE_ENDING);
+
+      setFocusMode(false);
+      setWorkspacePanelVisible("sender", true);
+      if (window.innerWidth <= 760) {
+        const currentLayout = workspaceDockLayoutRef.current;
+        const dock = workspaceDockIds.find((id) => currentLayout[id].includes("sender")) ?? "bottom";
+        setMobileDockDrawer(dock);
+      }
+
+      setPendingSenderFocusToken((token) => token + 1);
+    } finally {
+      loadingHistoryIntoSenderRef.current = false;
+    }
   }
 
   function clearCommandHistory() {
+    historyRecallRequestRef.current += 1;
+    const clear = isBackendAvailable() ? {} : null;
+    commandHistoryClearRef.current = clear;
+    setCommandHistoryClearFailed(false);
     pendingCommandHistoryRef.current = [];
     commandHistoryEntriesRef.current = [];
     setCommandHistoryEntries([]);
@@ -4647,8 +4827,8 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     } catch {
       // Clearing the in-memory list still succeeds when storage is unavailable.
     }
-    if (commandHistoryBackendReadyRef.current) {
-      enqueueCommandHistoryOperation(() => invokeBackend<CommandHistorySnapshot>("clear_command_history", {}));
+    if (clear && commandHistoryInitializationFinishedRef.current) {
+      enqueueCommandHistoryOperation(() => invokeBackend("clear_command_history", {}), undefined, clear);
     }
   }
 
@@ -4859,6 +5039,9 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             icons={workspaceUtilityIcons}
             onPick={pickCommandHistoryEntry}
             onClear={clearCommandHistory}
+            canRetryClear={commandHistoryClearFailed}
+            onInsertToSender={insertCommandHistoryEntryToSender}
+            senderBusy={sendBusy}
           />
         </Suspense>
       );
@@ -4883,51 +5066,78 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
     };
     return (
       <>
+        <textarea
+          ref={sendTextareaRef}
+          className="send-textarea"
+          dir={sendMode === "hex" || sendTextForceLtr ? "ltr" : undefined}
+          aria-label={t("send-text")}
+          placeholder={t("send-textarea-placeholder")}
+          value={sendText}
+          onChange={(event) => {
+            const next = event.target.value;
+            setSendText(next);
+            if (!next) setSendTextForceLtr(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.ctrlKey && event.key === "Enter" && active) {
+              event.preventDefault();
+              void runSendPanel();
+            }
+          }}
+        />
         <div className="send-toolbar" data-advanced-open={sendAdvancedOpen ? "true" : "false"}>
           <div className="send-toolbar-primary">
-            <button
-              className="send-icon-button"
-              title={sendBusy ? t("stop-repeated-sending") : t("send")}
-              aria-label={sendBusy ? t("stop-repeated-sending") : t("send")}
-              onClick={() => sendBusy ? cancelSendPanel() : void runSendPanel()}
-            >
-              {sendBusy ? <Square size={13} /> : <Play size={14} className="green" />}
-            </button>
             <label className="send-mode-label">
               <input type="radio" name="send-panel-mode" checked={sendMode === "text"} onChange={() => setSendMode("text")} />{t("text")}
             </label>
             <label className="send-mode-label">
               <input type="radio" name="send-panel-mode" checked={sendMode === "hex"} onChange={() => setSendMode("hex")} />{t("hex-mode")}
             </label>
+            <label className="send-line-ending-control" title={t("send-line-ending-hint")}>
+              <span>{t("append-line-ending")}</span>
+              <select
+                className="send-line-ending-input"
+                aria-label={t("append-line-ending")}
+                title={sendLineEndingLabels[sendLineEnding]}
+                value={sendLineEnding}
+                disabled={sendMode === "hex" || sendBusy}
+                onChange={(event) => setSendLineEnding(event.target.value as SendLineEnding)}
+              >
+                <option value="none">{sendLineEndingLabels.none}</option>
+                <option value="lf">{sendLineEndingLabels.lf}</option>
+                <option value="cr">{sendLineEndingLabels.cr}</option>
+                <option value="crlf">{sendLineEndingLabels.crlf}</option>
+              </select>
+            </label>
             <button
               type="button"
-              className="send-icon-button send-advanced-toggle"
+              className="send-advanced-toggle"
               title={sendAdvancedActive ? t("advanced-send-options-configured") : t("advanced-send-options")}
               aria-label={t("advanced-send-options")}
               aria-expanded={sendAdvancedOpen}
               data-active={sendAdvancedActive ? "true" : "false"}
               onClick={() => setSendAdvancedOpen((current) => !current)}
             >
-              <SlidersHorizontal size={14} />
+              <SlidersHorizontal size={14} aria-hidden="true" />
             </button>
             {syncInput ? <span className="sync-badge">{t("synchronized-input-targets", [syncInputTargetCount])}</span> : null}
-          </div>
-          <label className="send-line-ending-control" title={t("send-line-ending-hint")}>
-            <span>{t("append-line-ending")}</span>
-            <select
-              className="send-line-ending-input"
-              aria-label={t("append-line-ending")}
-              title={sendLineEndingLabels[sendLineEnding]}
-              value={sendLineEnding}
-              disabled={sendMode === "hex" || sendBusy}
-              onChange={(event) => setSendLineEnding(event.target.value as SendLineEnding)}
+            <button
+              type="button"
+              className={`send-icon-button send-submit-button${sendBusy ? " busy" : ""}`}
+              title={sendBusy ? t("stop-repeated-sending") : `${t("send")} (Ctrl+Enter)`}
+              aria-label={sendBusy ? t("stop-repeated-sending") : t("send")}
+              onClick={() => sendBusy ? cancelSendPanel() : void runSendPanel()}
             >
-              <option value="none">{sendLineEndingLabels.none}</option>
-              <option value="lf">{sendLineEndingLabels.lf}</option>
-              <option value="cr">{sendLineEndingLabels.cr}</option>
-              <option value="crlf">{sendLineEndingLabels.crlf}</option>
-            </select>
-          </label>
+              <span className="send-submit-icon" aria-hidden="true">
+                {sendBusy ? <Square size={12} /> : <Play size={13} />}
+              </span>
+              <span className="send-submit-label">
+                <span className="send-submit-label-sizer" aria-hidden="true">{t("send")}</span>
+                <span className="send-submit-label-sizer" aria-hidden="true">{t("stop")}</span>
+                <span className="send-submit-label-text">{sendBusy ? t("stop") : t("send")}</span>
+              </span>
+            </button>
+          </div>
           {sendAdvancedOpen ? (
             <div className="send-advanced-controls" role="group" aria-label={t("advanced-send-options")}>
               <label>
@@ -4949,19 +5159,6 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
             </div>
           ) : null}
         </div>
-        <textarea
-          className="send-textarea"
-          aria-label={t("send-text")}
-          placeholder={t("send-textarea-placeholder")}
-          value={sendText}
-          onChange={(event) => setSendText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.ctrlKey && event.key === "Enter" && active) {
-              event.preventDefault();
-              void runSendPanel();
-            }
-          }}
-        />
       </>
     );
   }
@@ -5009,7 +5206,7 @@ export default function App({ workspaceWindowId }: { workspaceWindowId?: string 
         <div className="menu-primary">
           <div className="menu-brand" aria-label="PortMate">
             <span className="menu-brand-mark" aria-hidden="true">
-              <SquareTerminal size={13} />
+              <PortMateIcon size={20} variant="mark" />
             </span>
             <strong>PortMate</strong>
           </div>

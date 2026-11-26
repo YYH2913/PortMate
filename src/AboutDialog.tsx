@@ -1,150 +1,375 @@
+import { useEffect, useId, useRef } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
+import {
+  ArrowRightLeft,
+  Check,
+  CircleAlert,
+  Code2,
+  Copy,
+  ExternalLink,
+  FileText,
+  GitBranch,
+  Network,
+  RefreshCw,
+  Scale,
+  Shield,
+  SquareTerminal,
+  User,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { version as packageVersion } from "../package.json";
+import type enCatalog from "./locales/en.json";
 import { t, useLocale } from "./i18n";
-import { Code2, ExternalLink, FileText, GitBranch, Scale, User, X } from "lucide-react";
-import packageJson from "../package.json";
+import PortMateIcon from "./PortMateIcon";
 import { normalizeTerminalWebLink, openIsolatedWebLink } from "./terminal-web-link";
+import { useClipboardFeedback } from "./use-clipboard-feedback";
+
+type AboutMessageKey = keyof typeof enCatalog;
+
+export interface AboutDialogProps {
+  onClose: () => void;
+  onCheckUpdates?: () => void;
+}
+
+interface AboutProjectLink {
+  readonly labelKey: AboutMessageKey;
+  readonly detailKey: AboutMessageKey;
+  readonly url: string;
+  readonly icon: LucideIcon;
+}
+
+interface AboutCapability {
+  readonly titleKey: AboutMessageKey;
+  readonly detailKey: AboutMessageKey;
+  readonly icon: LucideIcon;
+}
+
+interface AboutOpenSourceComponent {
+  readonly name: string;
+  readonly roleKey: AboutMessageKey;
+  readonly license: string;
+  readonly url: string;
+}
+
+interface AboutMetaEntry {
+  readonly key: string;
+  readonly labelKey: AboutMessageKey;
+  readonly content: ReactNode;
+}
+
+interface AboutExternalLinkProps {
+  url: string;
+  className?: string;
+  title?: string;
+  children: ReactNode;
+}
+
+interface AboutSectionProps {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}
 
 const PROJECT_URL = "https://github.com/YYH2913/PortMate";
 const AUTHOR_URL = "https://github.com/YYH2913";
 const AUTHOR_LOGIN = "YYH2913";
+const PROJECT_LICENSE = "Apache License 2.0";
+const FONT_LICENSE_URL = `${PROJECT_URL}/blob/main/THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt`;
 
-const projectLinks = [
-  { label: "project-homepage", detail: "source-code-release-notes-and-contribution-guide", url: PROJECT_URL, icon: GitBranch },
-  { label: "github-profile", detail: "github-com-yyh2913", url: AUTHOR_URL, icon: User },
-  { label: "documentation", detail: "readme-and-mcp-api-reference", url: `${PROJECT_URL}#readme`, icon: FileText },
-  { label: "report-an-issue", detail: "report-a-bug-or-request-a-feature", url: `${PROJECT_URL}/issues`, icon: Code2 },
-  { label: "releases", detail: "downloads-and-changelog", url: `${PROJECT_URL}/releases`, icon: ExternalLink },
-  { label: "open-source-licenses", detail: "full-apache-license-2-0-text", url: `${PROJECT_URL}/blob/main/LICENSE`, icon: Scale },
-] as const;
+const ABOUT_PROJECT_LINKS: readonly AboutProjectLink[] = [
+  { labelKey: "project-homepage", detailKey: "source-code-release-notes-and-contribution-guide", url: PROJECT_URL, icon: GitBranch },
+  { labelKey: "github-profile", detailKey: "github-com-yyh2913", url: AUTHOR_URL, icon: User },
+  { labelKey: "documentation", detailKey: "readme-and-mcp-api-reference", url: `${PROJECT_URL}#readme`, icon: FileText },
+  { labelKey: "report-an-issue", detailKey: "report-a-bug-or-request-a-feature", url: `${PROJECT_URL}/issues`, icon: Code2 },
+  { labelKey: "releases", detailKey: "downloads-and-changelog", url: `${PROJECT_URL}/releases`, icon: RefreshCw },
+  { labelKey: "open-source-licenses", detailKey: "full-apache-license-2-0-text", url: `${PROJECT_URL}/blob/main/LICENSE`, icon: Scale },
+];
 
-const capabilities = [
-  { title: "supported-protocols", detail: "ssh-shell-serial-telnet-tcp-and-tmux" },
-  { title: "profile-isolated-trust", detail: "host-keys-identities-and-jump-hosts-stay-per-profile" },
-  { title: "workspace-and-transfers", detail: "split-panes-file-transfers-tunnels-logs-and-sysmon" },
-  { title: "optional-mcp-bridge", detail: "no-built-in-ai-external-hosts-need-an-explicit-grant" },
-] as const;
+const ABOUT_CAPABILITIES: readonly AboutCapability[] = [
+  { titleKey: "supported-protocols", detailKey: "ssh-shell-serial-telnet-tcp-and-tmux", icon: SquareTerminal },
+  { titleKey: "profile-isolated-trust", detailKey: "host-keys-identities-and-jump-hosts-stay-per-profile", icon: Shield },
+  { titleKey: "workspace-and-transfers", detailKey: "split-panes-file-transfers-tunnels-logs-and-sysmon", icon: ArrowRightLeft },
+  { titleKey: "optional-mcp-bridge", detailKey: "no-built-in-ai-external-hosts-need-an-explicit-grant", icon: Network },
+];
 
-const openSourceComponents = [
-  { name: "Tauri", role: "cross-platform-desktop-runtime", license: "Apache-2.0 / MIT", url: "https://github.com/tauri-apps/tauri" },
-  { name: "React", role: "workspace-ui-framework", license: "MIT", url: "https://github.com/facebook/react" },
-  { name: "xterm.js", role: "terminal-emulation-and-rendering", license: "MIT", url: "https://github.com/xtermjs/xterm.js" },
-  { name: "libssh", role: "linux-gssapi-ssh-transport", license: "LGPL-2.1", url: "https://www.libssh.org/" },
-  { name: "russh", role: "rust-ssh-protocol-implementation", license: "Apache-2.0", url: "https://github.com/warp-tech/russh" },
-  { name: "russh-sftp", role: "rust-sftp-subsystem", license: "Apache-2.0", url: "https://github.com/AspectUnk/russh-sftp" },
-  { name: "JetBrains Mono", role: "bundled-monospace-font", license: "SIL OFL-1.1", url: "https://github.com/JetBrains/JetBrainsMono" },
-] as const;
+const ABOUT_OPEN_SOURCE_COMPONENTS: readonly AboutOpenSourceComponent[] = [
+  { name: "Tauri", roleKey: "cross-platform-desktop-runtime", license: "Apache-2.0 / MIT", url: "https://github.com/tauri-apps/tauri" },
+  { name: "React", roleKey: "workspace-ui-framework", license: "MIT", url: "https://github.com/facebook/react" },
+  { name: "xterm.js", roleKey: "terminal-emulation-and-rendering", license: "MIT", url: "https://github.com/xtermjs/xterm.js" },
+  { name: "libssh", roleKey: "linux-gssapi-ssh-transport", license: "LGPL-2.1", url: "https://www.libssh.org/" },
+  { name: "russh", roleKey: "rust-ssh-protocol-implementation", license: "Apache-2.0", url: "https://github.com/warp-tech/russh" },
+  { name: "russh-sftp", roleKey: "rust-sftp-subsystem", license: "Apache-2.0", url: "https://github.com/AspectUnk/russh-sftp" },
+  { name: "JetBrains Mono", roleKey: "bundled-monospace-font", license: "SIL OFL-1.1", url: "https://github.com/JetBrains/JetBrainsMono" },
+];
 
-export default function AboutDialog({ onClose, onCheckUpdates }: { onClose: () => void; onCheckUpdates?: () => void }) {
-  useLocale();
-  const version = typeof packageJson.version === "string" ? packageJson.version : "unknown";
+export function resolveAboutVersion(value: unknown): string {
+  if (typeof value !== "string") return "unknown";
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "unknown";
+}
 
-  function openLink(value: string) {
-    const safeLink = normalizeTerminalWebLink(value);
-    if (safeLink) openIsolatedWebLink(safeLink);
+export function shouldInterceptExternalLinkClick(
+  event: Pick<ReactMouseEvent, "defaultPrevented" | "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
+): boolean {
+  return !event.defaultPrevented
+    && event.button === 0
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.shiftKey
+    && !event.altKey;
+}
+
+export function AboutExternalLink({ url, className, title, children }: AboutExternalLinkProps) {
+  const safeUrl = normalizeTerminalWebLink(url);
+  if (!safeUrl) {
+    return (
+      <span className={className} title={title}>
+        {children}
+      </span>
+    );
   }
 
   return (
-    <div className="dialog-backdrop about-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
+    <a
+      href={safeUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      data-url={safeUrl}
+      title={title}
+      onClick={(event) => {
+        if (shouldInterceptExternalLinkClick(event) && openIsolatedWebLink(safeUrl)) {
+          event.preventDefault();
+        }
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function AboutSection({ title, subtitle, children }: AboutSectionProps) {
+  const headingId = useId();
+  return (
+    <section className="about-section" aria-labelledby={headingId}>
+      <header>
+        <h2 id={headingId}>{title}</h2>
+        <p>{subtitle}</p>
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function AboutHero({ versionLabel }: { versionLabel: string }) {
+  const { feedback, busy: copyBusy, copy } = useClipboardFeedback();
+  const copyState = feedback?.status;
+  const copyLabel = t("copy-version", [versionLabel]);
+  const copyMessage = copyState === "copied"
+    ? t("copied")
+    : copyState === "error"
+      ? t("clipboard-copy-failed")
+      : "";
+  const CopyIcon = copyState === "copied" ? Check : copyState === "error" ? CircleAlert : Copy;
+
+  return (
+    <section className="about-hero" aria-label={t("portmate-product-information")}>
+      <PortMateIcon size={56} variant="badge" className="about-hero-icon" />
+      <div className="about-hero-copy">
+        <div className="about-name-row">
+          <h1><bdi>PortMate</bdi></h1>
+          <button
+            type="button"
+            className="about-version"
+            aria-label={copyLabel}
+            aria-busy={copyBusy || undefined}
+            title={copyMessage || copyLabel}
+            data-copy-state={copyState}
+            onClick={() => void copy("version", versionLabel)}
+          >
+            <code dir="ltr">{versionLabel}</code>
+            <CopyIcon size={13} aria-hidden="true" />
+          </button>
+        </div>
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {copyState === "copied" ? copyMessage : ""}
+        </span>
+        {copyState === "error" ? (
+          <span className="about-copy-message" role="alert" data-copy-state="error">
+            {copyMessage}
+          </span>
+        ) : null}
+        <p>{t("a-cross-platform-terminal-workspace-for-ssh-serial-connections")}</p>
+        <small>{t("sessions-terminals-file-transfers-diagnostics-and-a-permissioned-mcp")}</small>
+      </div>
+    </section>
+  );
+}
+
+function AboutMetadataGrid({ version }: { version: string }) {
+  const entries: readonly AboutMetaEntry[] = [
+    { key: "version", labelKey: "version", content: <bdi>{version}</bdi> },
+    { key: "status", labelKey: "release-status", content: t("beta-release") },
+    { key: "license", labelKey: "license", content: <bdi>{PROJECT_LICENSE}</bdi> },
+    { key: "product-type", labelKey: "product-type", content: t("tauri-v2-desktop-application") },
+    { key: "platforms", labelKey: "platforms", content: t("linux-windows-and-macos") },
+    {
+      key: "maintainer",
+      labelKey: "maintainer",
+      content: (
+        <AboutExternalLink
+          url={AUTHOR_URL}
+          className="about-author-link"
+          title={t("open-the-github-homepage")}
+        >
+          <bdi>{AUTHOR_LOGIN}</bdi>
+          <ExternalLink size={12} aria-hidden="true" />
+        </AboutExternalLink>
+      ),
+    },
+  ];
+
+  return (
+    <dl className="about-meta" aria-label={t("portmate-metadata")}>
+      {entries.map(({ key, labelKey, content }) => (
+        <div key={key}>
+          <dt>{t(labelKey)}</dt>
+          <dd>{content}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+export default function AboutDialog({ onClose, onCheckUpdates }: AboutDialogProps) {
+  useLocale();
+  const titleId = useId();
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const version = resolveAboutVersion(packageVersion);
+  const versionLabel = `v${version}`;
+
+  // Global modal isolation (inert background, Tab wrapping, and focus return) is managed by
+  // useModalInteractionBoundary() in main.tsx; AboutDialog only sets initial focus and Escape.
+  useEffect(() => {
+    closeRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-backdrop about-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <section
         className="wind-dialog about-dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="about-title"
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          }
-        }}
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={handleDialogKeyDown}
       >
-        <header className="dialog-title">
-          <span className="app-icon" aria-hidden="true" />
-          <strong id="about-title">{t("about-portmate")}</strong>
-          <button type="button" title={t("close")} aria-label={t("close-about-portmate")} onClick={onClose}><X size={20} /></button>
+        <header className="about-titlebar">
+          <PortMateIcon size={18} variant="mark" />
+          <strong id={titleId}>{t("about-portmate")}</strong>
+          <button
+            ref={closeRef}
+            type="button"
+            className="about-close"
+            title={t("close")}
+            aria-label={t("close-about-portmate")}
+            onClick={onClose}
+          >
+            <X size={17} aria-hidden="true" />
+          </button>
         </header>
 
         <div className="about-content">
-          <section className="about-hero" aria-label={t("portmate-product-information")}>
-            <div className="about-mark" aria-hidden="true"><span>PM</span></div>
-            <div className="about-hero-copy">
-              <div className="about-name-row"><h1>PortMate</h1><code>v{version}</code></div>
-              <p>{t("a-cross-platform-terminal-workspace-for-ssh-serial-connections")}</p>
-              <small>{t("sessions-terminals-file-transfers-diagnostics-and-a-permissioned-mcp")}</small>
-            </div>
-          </section>
+          <AboutHero versionLabel={versionLabel} />
+          <AboutMetadataGrid version={version} />
 
-          <dl className="about-meta" aria-label={t("portmate-metadata")}>
-            <div><dt>{t("version")}</dt><dd>{version}</dd></div>
-            <div><dt>{t("release-status")}</dt><dd>{t("alpha-preview")}</dd></div>
-            <div><dt>{t("license")}</dt><dd>Apache License 2.0</dd></div>
-            <div><dt>{t("product-type")}</dt><dd>{t("tauri-v2-desktop-application")}</dd></div>
-            <div><dt>{t("platforms")}</dt><dd>{t("linux-windows-and-macos")}</dd></div>
-            <div>
-              <dt>{t("maintainer")}</dt>
-              <dd>
-                <button
-                  type="button"
-                  className="about-author-link"
-                  data-url={AUTHOR_URL}
-                  title={t("open-the-github-homepage")}
-                  onClick={() => openLink(AUTHOR_URL)}
-                >
-                  {AUTHOR_LOGIN}
-                </button>
-              </dd>
-            </div>
-          </dl>
-
-          <section className="about-section" aria-labelledby="about-capabilities-title">
-            <header>
-              <div>
-                <h2 id="about-capabilities-title">{t("what-portmate-covers")}</h2>
-                <p>{t("desktop-operator-and-optional-authorized-mcp-access")}</p>
-              </div>
-            </header>
+          <AboutSection
+            title={t("what-portmate-covers")}
+            subtitle={t("desktop-operator-and-optional-authorized-mcp-access")}
+          >
             <dl className="about-capabilities">
-              {capabilities.map(({ title, detail }) => (
-                <div key={title}>
-                  <dt>{t(title)}</dt>
-                  <dd>{t(detail)}</dd>
+              {ABOUT_CAPABILITIES.map(({ titleKey, detailKey, icon: Icon }) => (
+                <div key={titleKey}>
+                  <dt>
+                    <span className="about-item-icon"><Icon size={15} aria-hidden="true" /></span>
+                    {t(titleKey)}
+                  </dt>
+                  <dd>{t(detailKey)}</dd>
                 </div>
               ))}
             </dl>
-          </section>
+          </AboutSection>
 
-          <section className="about-section" aria-labelledby="about-links-title">
-            <header><div><h2 id="about-links-title">{t("project-links")}</h2><p>{t("source-code-documentation-issue-tracking-and-releases")}</p></div><ExternalLink size={15} aria-hidden="true" /></header>
+          <AboutSection
+            title={t("project-links")}
+            subtitle={t("source-code-documentation-issue-tracking-and-releases")}
+          >
             <div className="about-link-grid">
-              {projectLinks.map(({ label, detail, url, icon: Icon }) => (
-                <button type="button" key={label} className="about-link" data-url={url} onClick={() => openLink(url)}>
-                  <Icon size={16} aria-hidden="true" />
-                  <span><strong>{t(label)}</strong><small>{t(detail)}</small></span>
+              {ABOUT_PROJECT_LINKS.map(({ labelKey, detailKey, url, icon: Icon }) => (
+                <AboutExternalLink key={labelKey} url={url} className="about-link">
+                  <span className="about-item-icon"><Icon size={15} aria-hidden="true" /></span>
+                  <span className="about-link-copy">
+                    <strong>{t(labelKey)}</strong>
+                    <small><bdi>{t(detailKey)}</bdi></small>
+                  </span>
                   <ExternalLink size={13} aria-hidden="true" />
-                </button>
+                </AboutExternalLink>
               ))}
             </div>
-          </section>
+          </AboutSection>
 
-          <section className="about-section" aria-labelledby="about-open-source-title">
-            <header><div><h2 id="about-open-source-title">{t("open-source-software")}</h2><p>{t("portmate-is-built-on-the-following-open-source-projects")}</p></div><Code2 size={15} aria-hidden="true" /></header>
-            <div className="about-components" role="list" aria-label={t("open-source-components")}>
-              {openSourceComponents.map(({ name, role, license, url }) => (
-                <div className="about-component" role="listitem" key={name}>
-                  <button type="button" data-url={url} onClick={() => openLink(url)} title={t("open-the-project-homepage", [name])}><strong>{name}</strong><ExternalLink size={12} aria-hidden="true" /></button>
-                  <span>{t(role)}</span>
-                  <code>{license}</code>
-                </div>
+          <AboutSection
+            title={t("open-source-software")}
+            subtitle={t("portmate-is-built-on-the-following-open-source-projects")}
+          >
+            <ul className="about-components" role="list" aria-label={t("open-source-components")}>
+              {ABOUT_OPEN_SOURCE_COMPONENTS.map(({ name, roleKey, license, url }) => (
+                <li className="about-component" key={name}>
+                  <AboutExternalLink url={url} title={t("open-the-project-homepage", [name])}>
+                    <bdi>{name}</bdi>
+                    <ExternalLink size={12} aria-hidden="true" />
+                  </AboutExternalLink>
+                  <span>{t(roleKey)}</span>
+                  <code dir="ltr">{license}</code>
+                </li>
               ))}
-            </div>
-            <button type="button" className="about-license-link" data-url={`${PROJECT_URL}/blob/main/THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt`} onClick={() => openLink(`${PROJECT_URL}/blob/main/THIRD_PARTY_LICENSES/JetBrainsMono-OFL.txt`)}><Scale size={14} aria-hidden="true" />{t("view-the-bundled-font-license")}</button>
-          </section>
+            </ul>
+            <AboutExternalLink url={FONT_LICENSE_URL} className="about-license-link">
+              <Scale size={14} aria-hidden="true" />
+              {t("view-the-bundled-font-license")}
+            </AboutExternalLink>
+          </AboutSection>
 
           <p className="about-notice">{t("portmate-is-under-active-development-verify-security-compatibility-and")}</p>
         </div>
 
-        <footer className="about-actions"><button type="button" onClick={onCheckUpdates} disabled={!onCheckUpdates}>{t("check-for-updates")}</button><button type="button" onClick={onClose}>{t("close")}</button></footer>
+        <footer className="about-actions">
+          <button type="button" className="about-secondary" onClick={onClose}>
+            {t("close")}
+          </button>
+          <button type="button" className="about-primary" onClick={onCheckUpdates} disabled={!onCheckUpdates}>
+            <RefreshCw size={14} aria-hidden="true" />
+            {t("check-for-updates")}
+          </button>
+        </footer>
       </section>
     </div>
   );

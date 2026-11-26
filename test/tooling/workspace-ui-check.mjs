@@ -13,6 +13,7 @@ import { checkSerialWrap } from "./serial-wrap-regressions.mjs";
 import { checkSerialNanoBehavior } from "./serial-nano-review.mjs";
 import { checkSerialColumnDetection } from "./serial-column-detection-regressions.mjs";
 import { checkCommandSubmissions } from "./command-submission-regressions.mjs";
+import { checkHistoryClearRace } from "./command-history-clear-regression.mjs";
 import { checkMcpManagement } from "./mcp-management-regressions.mjs";
 import { checkMcpHttpAddressSelection } from "./mcp-http-address-regressions.mjs";
 import { checkModuleAuditRegressions } from "./module-audit-regressions.mjs";
@@ -388,7 +389,9 @@ try {
     const recoverElevatedStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverElevatedStartup") === "true";
     const recoverInactiveStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverInactiveStartup") === "true";
     const recoverSilentSshStartup = sessionStorage.getItem("portmate.workspaceUiCheck.recoverSilentSshStartup") === "true";
-    const startWithUnlockedVault = new URL(location.href).searchParams.get("portmateTestVault") === "unlocked";
+    const fixtureOptions = new URL(location.href).searchParams;
+    const startWithUnlockedVault = fixtureOptions.get("portmateTestVault") === "unlocked";
+    const testHistoryClearRace = fixtureOptions.get("portmateTestHistory") === "clear-race";
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupSessions");
     sessionStorage.removeItem("portmate.workspaceUiCheck.deferStartupDomains");
     sessionStorage.removeItem("portmate.workspaceUiCheck.recoverInactiveStartup");
@@ -559,6 +562,10 @@ try {
     window.__deferTransferMutations = false;
     window.__pendingTransferMutations = [];
     window.__commandHistory = { entries: [], migrated: false, revision: 0 };
+    if (testHistoryClearRace) {
+      window.__commandHistory.entries = JSON.parse(localStorage.getItem("portmate.commandHistory")).entries;
+      window.__commandHistory.revision = 1;
+    }
     window.__injectCommandHistoryStartupRace = true;
     window.__clipboardText = "";
     window.__clipboardWriteFailures = 0;
@@ -715,6 +722,11 @@ try {
           });
         }
         if (command === "list_command_history") {
+          if (testHistoryClearRace) {
+            return new Promise((_resolve, reject) => {
+              window.__rejectHistoryStartupRead = reject;
+            });
+          }
           return structuredClone(window.__commandHistory);
         }
         if (command === "configure_command_history") {
@@ -770,6 +782,9 @@ try {
           return snapshot;
         }
         if (command === "merge_command_history") {
+          if (args.expectedRevision !== undefined && args.expectedRevision !== window.__commandHistory.revision) {
+            return structuredClone(window.__commandHistory);
+          }
           const byCommand = new Map();
           for (const entry of [...(args.entries ?? []), ...window.__commandHistory.entries]) {
             const key = `${entry.sessionId ?? ""}\0${entry.command}`;
@@ -778,7 +793,7 @@ try {
           }
           window.__commandHistory.entries = [...byCommand.values()]
             .sort((left, right) => right.recordedAt - left.recordedAt)
-            .slice(0, args.limit);
+            .slice(0, window.__commandHistoryPolicy?.limit ?? 10_000);
           window.__commandHistory.migrated = true;
           window.__commandHistory.revision += 1;
           const snapshot = structuredClone(window.__commandHistory);
@@ -796,6 +811,10 @@ try {
           return snapshot;
         }
         if (command === "clear_command_history") {
+          if (window.__failHistoryClearOnce) {
+            window.__failHistoryClearOnce = false;
+            throw new Error("fixture history clear failure");
+          }
           window.__commandHistory.entries = [];
           window.__commandHistory.migrated = true;
           window.__commandHistory.revision += 1;
@@ -2178,6 +2197,12 @@ try {
     // not publish into the storage of the next independently initialized check.
     await Promise.all(context.pages().map(openPage => openPage.close()));
   };
+  await runAndRetirePages(checkHistoryClearRace);
+  if (process.env.PORTMATE_UI_HISTORY_ONLY === "1") {
+    console.log("Command history browser regressions passed");
+    await context.close();
+    break checks;
+  }
   await runAndRetirePages(checkUiAppearance);
   await runAndRetirePages(checkWorkspaceInteractions);
   await runAndRetirePages(checkI18n);

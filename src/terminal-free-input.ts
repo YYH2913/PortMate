@@ -7,6 +7,9 @@ export type TerminalFreeInputCut = {
   caret: number;
 };
 
+export type TerminalFreeInputRequestTarget = { sessionId: string; viewId: string };
+export type TerminalFreeInputRequestDetail = { value?: unknown; terminal?: TerminalFreeInputRequestTarget };
+
 export function normalizeTerminalFreeInput(value: string): string {
   let normalized = "";
   let count = 0;
@@ -41,8 +44,9 @@ export function cutTerminalFreeInputRange(value: string, start: number, end: num
 export function requestTerminalFreeInput(
   target: Pick<EventTarget, "dispatchEvent"> = window,
   value = "",
+  terminal?: TerminalFreeInputRequestTarget,
 ): boolean {
   return target.dispatchEvent(new CustomEvent(TERMINAL_FREE_INPUT_REQUEST_EVENT, {
-    detail: { value: normalizeTerminalFreeInput(value) },
+    detail: { value: normalizeTerminalFreeInput(value), terminal },
   }));
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { Download, ExternalLink, RefreshCw, X } from "lucide-react";
-import packageJson from "../package.json";
+import { version as packageVersion } from "../package.json";
 import { invokeBackend, isBackendAvailable } from "./api";
 import { requestAppConfirm } from "./app-dialog";
 import { t, useLocale } from "./i18n";
@@ -117,7 +117,7 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
           <button type="button" ref={closeRef} title={t("close")} aria-label={t("close")} disabled={busy} onClick={onClose}><X size={20} /></button>
         </header>
         <div className="update-content">
-          <p className="update-current">PortMate <code>v{result?.currentVersion ?? packageJson.version}</code></p>
+          <p className="update-current">PortMate <code>v{result?.currentVersion ?? packageVersion}</code></p>
           <div role="status" aria-live="polite">
             {phase === "checking" && <p>{t("update-checking")}</p>}
             {result && phase === "ready" && <p className="update-status">{result.available ? t("update-available", [result.version]) : t("update-up-to-date")}</p>}

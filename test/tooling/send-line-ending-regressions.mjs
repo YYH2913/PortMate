@@ -108,8 +108,20 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   // A failed write retains the unmodified draft and unlocks the selector.
   await text.fill('retained-on-failure');
   await page.evaluate(() => { window.__deferTerminalSends = true; });
+  const beforeBusyBox = await start.boundingBox();
   await start.click();
   await page.waitForFunction(() => window.__pendingTerminalSends.length === 1);
+  const busyStopButton = sender.getByRole('button', { name: '停止重复发送', exact: true });
+  await busyStopButton.waitFor();
+  const duringBusyBox = await busyStopButton.boundingBox();
+  assert(
+    beforeBusyBox && duringBusyBox
+    && Math.abs(beforeBusyBox.x - duringBusyBox.x) <= 1
+    && Math.abs(beforeBusyBox.y - duringBusyBox.y) <= 1
+    && Math.abs(beforeBusyBox.width - duringBusyBox.width) <= 1
+    && Math.abs(beforeBusyBox.height - duringBusyBox.height) <= 1,
+    `send/stop button shifted when entering busy state: ${JSON.stringify({ beforeBusyBox, duringBusyBox })}`,
+  );
   await page.evaluate(() => {
     window.__deferTerminalSends = false;
     window.__pendingTerminalSends.shift().reject(new Error('line-ending-write-failed'));
@@ -124,7 +136,8 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
   const toolbar = sender.locator('.send-toolbar');
   try {
     // A 200px dock has only 180px of inner toolbar space. Long labels and
-    // RTL text must wrap instead of hiding the new control outside the dock.
+    // RTL text must wrap instead of hiding controls outside the dock, including
+    // expanded advanced fields via container-query breakpoints.
     for (const width of [200, 320]) {
       await toolbar.evaluate((element, width) => { element.style.width = `${width}px`; }, width);
       for (const locale of ['en', 'fr', 'ru', 'es', 'ar', 'zh']) {
@@ -132,14 +145,72 @@ export async function checkSendLineEndings(page, sender, start, text, count, int
         await page.waitForFunction(locale => document.documentElement.lang === (locale === 'zh' ? 'zh-CN' : locale), locale);
         const geometry = await toolbar.evaluate(element => {
           const bounds = element.getBoundingClientRect();
-          return [...element.querySelectorAll('.send-line-ending-control > *, .send-toolbar-primary > *')].map(control => {
-            const rect = control.getBoundingClientRect();
-            return { inside: rect.left >= bounds.left && rect.right <= bounds.right,
-              width: rect.width, height: rect.height };
-          });
+          const advanced = element.querySelector('.send-advanced-controls');
+          const advancedStyle = advanced ? getComputedStyle(advanced) : null;
+          const advancedRect = advanced?.getBoundingClientRect();
+          const advancedInside = Boolean(
+            advancedRect
+            && advancedRect.left >= bounds.left - 1
+            && advancedRect.right <= bounds.right + 1
+            && advancedRect.top >= bounds.top - 1
+            && advancedRect.bottom <= bounds.bottom + 1
+            && advancedRect.width > 0
+            && advancedRect.height > 0,
+          );
+          const advancedDisplay = advancedStyle?.display ?? '';
+          const advancedColumns = advancedStyle?.display === 'grid'
+            ? (advancedStyle.gridTemplateColumns.match(/\d+(?:\.\d+)?px/g)?.length ?? 0)
+            : 0;
+          return {
+            toolbarWidth: bounds.width,
+            advancedDisplay,
+            advancedColumns,
+            advancedInside,
+            primaryControls: [...element.querySelectorAll('.send-line-ending-control > *, .send-toolbar-primary > *')].map(control => {
+              const rect = control.getBoundingClientRect();
+              return {
+                inside: rect.left >= bounds.left - 1
+                  && rect.right <= bounds.right + 1
+                  && rect.top >= bounds.top - 1
+                  && rect.bottom <= bounds.bottom + 1,
+                width: rect.width,
+                height: rect.height,
+              };
+            }),
+            advancedLabelsClipped: [...element.querySelectorAll('.send-advanced-controls label > span')].some(
+              label => label.scrollWidth > label.clientWidth + 1,
+            ),
+            advancedControls: [...element.querySelectorAll('.send-advanced-controls input, .send-advanced-controls select')].map(control => {
+              const rect = control.getBoundingClientRect();
+              const scrollBottom = advanced && advancedRect
+                ? advancedRect.top + Math.max(advancedRect.height, advanced.scrollHeight)
+                : bounds.bottom;
+              return {
+                inside: Boolean(
+                  advancedRect
+                  && rect.left >= advancedRect.left - 1
+                  && rect.right <= advancedRect.right + 1
+                  && rect.top >= advancedRect.top - 1
+                  && rect.bottom <= scrollBottom + 1,
+                ),
+                width: rect.width,
+                height: rect.height,
+              };
+            }),
+          };
         });
-        assert(geometry.every(control => control.inside && control.width > 0 && control.height > 0),
-          `${locale} send controls overflow at ${width}px: ${JSON.stringify(geometry)}`);
+        assert(
+          Math.abs(geometry.toolbarWidth - width) <= 1
+          && geometry.advancedDisplay === 'grid'
+          && geometry.advancedInside
+          && !geometry.advancedLabelsClipped
+          && geometry.primaryControls.every(control => control.inside && control.width > 0 && control.height > 0)
+          && geometry.advancedControls.every(control => control.inside && control.width > 0 && control.height > 0),
+          `${locale} send controls overflow at ${width}px: ${JSON.stringify(geometry)}`,
+        );
+        const expectedColumns = width <= 280 ? 1 : 2;
+        assert.equal(geometry.advancedColumns, expectedColumns,
+          `${locale} advanced grid columns mismatch at ${width}px: ${JSON.stringify(geometry)}`);
         assert.equal(await sender.locator('.send-line-ending-input').inputValue(), 'crlf', 'locale changes must not alter the ending');
         const localizedEnding = sender.locator('.send-line-ending-input');
         assert.equal(await localizedEnding.getAttribute('title'), await localizedEnding.locator('option:checked').textContent(),

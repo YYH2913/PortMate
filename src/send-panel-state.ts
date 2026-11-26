@@ -9,6 +9,37 @@ export const MAX_SEND_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 export type SendLineEnding = "none" | "lf" | "cr" | "crlf";
 export const DEFAULT_SEND_LINE_ENDING: SendLineEnding = "none";
 
+export type SendDraftSnapshot = {
+  text: string;
+  mode: string;
+  target: string;
+  count: number;
+  intervalMs: number;
+  lineEnding: SendLineEnding;
+};
+
+export function sendDraftSnapshotsEqual(a: SendDraftSnapshot, b: SendDraftSnapshot): boolean {
+  return a.text === b.text
+    && a.mode === b.mode
+    && a.target === b.target
+    && a.count === b.count
+    && a.intervalMs === b.intervalMs
+    && a.lineEnding === b.lineEnding;
+}
+
+export function shouldConfirmHistorySenderReplace(
+  draft: SendDraftSnapshot,
+  entryCommand: string,
+): boolean {
+  const optionsModified = draft.mode !== "text"
+    || draft.target !== "active"
+    || draft.count !== DEFAULT_SEND_COUNT
+    || draft.intervalMs !== DEFAULT_SEND_INTERVAL_MS
+    || draft.lineEnding !== DEFAULT_SEND_LINE_ENDING;
+  if (optionsModified) return true;
+  return Boolean(draft.text && draft.text !== entryCommand);
+}
+
 /** Append one selected suffix without rewriting draft contents or existing endings. */
 export function appendSendLineEnding(value: string, ending: SendLineEnding): string {
   switch (ending) {

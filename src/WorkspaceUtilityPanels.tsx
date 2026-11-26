@@ -1,9 +1,11 @@
-import { t, useLocale } from "./i18n";
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
-import type { ComponentType, MouseEvent as ReactMouseEvent, SVGProps } from "react";
-import { Copy, Plus, Trash2 } from "lucide-react";
+import { formatUiNumber, t, useLocale } from "./i18n";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { ComponentType, FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefObject, SVGProps } from "react";
+import { Check, ChevronDown, ChevronUp, CircleAlert, Copy, CornerDownLeft, FileInput, Plus, SquareTerminal, Trash2 } from "lucide-react";
 import { requestAppConfirm } from "./app-dialog";
 import type { CommandHistoryEntry } from "./command-history-state";
+import { hasActiveInteractionLayer } from "./modal-interaction-boundary";
+import { useClipboardFeedback } from "./use-clipboard-feedback";
 import { filterWorkspaceSessions } from "./session-search-state";
 import { sessionRuntimeHealthDescription } from "./session-runtime-state";
 import type { SessionSummary } from "./types";
@@ -149,6 +151,52 @@ export function SessionExplorerPanel({
   );
 }
 
+type CommandHistoryScope = "session" | "all";
+
+export function getCommandHistoryScope(
+  entries: readonly CommandHistoryEntry[],
+  activeId: string,
+  preferredScope: CommandHistoryScope,
+) {
+  const sessionEntries = activeId ? entries.filter((entry) => entry.sessionId === activeId) : [];
+  const scope = activeId ? preferredScope : "all";
+
+  return {
+    scope,
+    entries: scope === "session" ? sessionEntries : entries,
+    sessionCount: sessionEntries.length,
+    allCount: entries.length,
+  };
+}
+
+type HistoryTimeFormats = {
+  compact: Intl.DateTimeFormat;
+  full: Intl.DateTimeFormat;
+};
+
+export function formatCommandHistoryTimestamp(value: number, formats: HistoryTimeFormats) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+
+  return {
+    dateTime: date.toISOString(),
+    compact: formats.compact.format(date),
+    full: formats.full.format(date),
+  };
+}
+
+type CommandHistoryListProps = {
+  entries: readonly CommandHistoryEntry[];
+  sessions: readonly SessionSummary[];
+  activeId: string;
+  icons: UtilityPanelIcons;
+  onPick: (entry: CommandHistoryEntry) => void;
+  onClear?: () => void;
+  canRetryClear?: boolean;
+  onInsertToSender?: (entry: CommandHistoryEntry) => void | Promise<void>;
+  senderBusy?: boolean;
+};
+
 export function CommandHistoryList({
   entries,
   sessions,
@@ -156,105 +204,392 @@ export function CommandHistoryList({
   icons,
   onPick,
   onClear,
-}: {
-  entries: readonly CommandHistoryEntry[];
-  sessions: readonly SessionSummary[];
-  activeId: string;
-  icons: UtilityPanelIcons;
-  onPick: (entry: CommandHistoryEntry) => void;
-  onClear?: () => void;
-}) {
-  useLocale();
+  canRetryClear = false,
+  onInsertToSender,
+  senderBusy = false,
+}: CommandHistoryListProps) {
+  const { locale } = useLocale();
+  const controlsId = useId();
+  const hintId = `${controlsId}-hint`;
   const [query, setQuery] = useUtilityPanelFilter("history");
-  const [scope, setScope] = useState<"session" | "all">("session");
+  const [preferredScope, setPreferredScope] = useState<CommandHistoryScope>("session");
+  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  const [expandedRowKeys, setExpandedRowKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const clearPending = useRef(false);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const listOwnedFocusRef = useRef(false);
+  const { feedback, busy: copyBusy, copy } = useClipboardFeedback();
+
   const sessionLabels = useMemo(() => new Map(
     sessions.map((session) => [session.profile.id, session.profile.name]),
   ), [sessions]);
-  const scoped = useMemo(() => (
-    scope === "session" && activeId
-      ? entries.filter((entry) => entry.sessionId === activeId)
-      : entries
-  ), [activeId, entries, scope]);
-  const visible = useMemo(
-    () => filterCommandHistory(scoped, query, sessionLabels),
-    [query, scoped, sessionLabels],
+  const scoped = useMemo(
+    () => getCommandHistoryScope(entries, activeId, preferredScope),
+    [entries, activeId, preferredScope],
   );
-  const activeSessionName = sessionLabels.get(activeId) ?? t("current-session");
+  const timeFormats = useMemo<HistoryTimeFormats>(() => {
+    const language = locale === "zh" ? "zh-CN" : locale;
+    return {
+      compact: new Intl.DateTimeFormat(language, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+      full: new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "long" }),
+    };
+  }, [locale]);
 
-  async function handleClearHistory() {
-    if (!onClear || !entries.length) return;
-    const confirmed = await requestAppConfirm({
-      title: t("command-history"),
-      message: t("confirm-clear-command-history"),
-      confirmLabel: t("delete"),
-      danger: true,
+  const rows = useMemo(() => {
+    const seenKeys = new Map<string, number>();
+    return filterCommandHistory(scoped.entries, query, sessionLabels).map((entry) => {
+      // Normalized history is unique by session and command; keep focus stable on timestamp updates.
+      const baseKey = JSON.stringify([entry.sessionId, entry.command]);
+      const occurrence = seenKeys.get(baseKey) ?? 0;
+      seenKeys.set(baseKey, occurrence + 1);
+      return {
+        key: occurrence === 0 ? baseKey : `${baseKey}#${occurrence}`,
+        entry,
+        sessionLabel: commandHistorySessionLabel(entry, sessionLabels),
+        timestamp: formatCommandHistoryTimestamp(entry.recordedAt, timeFormats),
+      };
     });
-    if (confirmed) onClear();
+  }, [scoped.entries, query, sessionLabels, timeFormats]);
+  const focusedRowStillPresent = focusedRowKey !== null && rows.some(({ key }) => key === focusedRowKey);
+  const tabRowKey = focusedRowStillPresent ? focusedRowKey : rows[0]?.key;
+  const activeSessionName = sessionLabels.get(activeId) ?? t("current-session");
+  const copyMessage = feedback?.status === "copied" ? t("copied")
+    : feedback?.status === "error" ? t("clipboard-copy-failed") : "";
+
+  const toggleExpandedRow = useCallback((rowKey: string) => {
+    setExpandedRowKeys((current) => {
+      const next = new Set(current);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (entries.length === 0) {
+      setExpandedRowKeys((current) => current.size ? new Set() : current);
+    }
+  }, [entries.length]);
+
+  useEffect(() => {
+    if (!listOwnedFocusRef.current || focusedRowStillPresent) return;
+    if (typeof document === "undefined") return;
+    if (hasActiveInteractionLayer()) {
+      listOwnedFocusRef.current = false;
+      return;
+    }
+    const activeEl = document.activeElement;
+    // Restore focus only if the previously focused row was detached (activeElement fell back to body/null).
+    if (activeEl && activeEl !== document.body && !listRef.current?.contains(activeEl)) {
+      listOwnedFocusRef.current = false;
+      return;
+    }
+    const replacement = listRef.current?.querySelector<HTMLButtonElement>('.history-entry-pick[tabindex="0"]');
+    if (replacement) {
+      replacement.focus({ preventScroll: true });
+      return;
+    }
+    listOwnedFocusRef.current = false;
+    filterInputRef.current?.focus({ preventScroll: true });
+  }, [focusedRowStillPresent, rows.length, tabRowKey]);
+
+  const handleListFocus = useCallback(() => {
+    listOwnedFocusRef.current = true;
+  }, []);
+
+  const handleListBlur = useCallback((event: ReactFocusEvent<HTMLUListElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+    if (event.relatedTarget !== null) {
+      listOwnedFocusRef.current = false;
+      return;
+    }
+    // Clicking non-focusable chrome emits relatedTarget === null while the target stays connected;
+    // row eviction detaches the target from the DOM.
+    const blurredTarget = event.target;
+    queueMicrotask(() => {
+      if (blurredTarget instanceof Node && blurredTarget.isConnected) {
+        listOwnedFocusRef.current = false;
+      }
+    });
+  }, []);
+
+  let emptyMessage = t("no-command-history-available");
+  if (scoped.entries.length) {
+    emptyMessage = t("no-matching-commands-in-history");
+  } else if (scoped.scope === "session") {
+    emptyMessage = t("no-command-history-for", [activeSessionName]);
+  }
+
+  const canClear = scoped.allCount > 0 || canRetryClear;
+  async function handleClearHistory() {
+    if (!onClear || !canClear || clearPending.current) return;
+    clearPending.current = true;
+    try {
+      const confirmed = await requestAppConfirm({
+        title: t("clear-command-history"),
+        message: t("confirm-clear-command-history"),
+        confirmLabel: t("clear-command-history"),
+        danger: true,
+      });
+      if (confirmed) {
+        setExpandedRowKeys(new Set());
+        setFocusedRowKey(null);
+        onClear();
+      }
+    } finally {
+      clearPending.current = false;
+    }
   }
 
   return (
-    <>
-      <PanelFilter label={t("filter-command-history")} value={query} icons={icons} onChange={setQuery} />
-      <div className="history-toolbar-row">
-        <div className="history-scope-switch" role="group" aria-label={t("command-history-scope")}>
-          <button type="button" className={scope === "session" ? "active" : ""} aria-pressed={scope === "session"} onClick={() => setScope("session")}>{t("current-session")}</button>
-          <button type="button" className={scope === "all" ? "active" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>{t("all")}</button>
+    <div className="history-panel-layout">
+      <div className="history-controls">
+        <PanelFilter label={t("filter-command-history")} value={query} icons={icons} inputRef={filterInputRef} onChange={setQuery} />
+        <div className="history-toolbar-row">
+          <div className="history-scope-switch" role="group" aria-label={t("command-history-scope")}>
+            <button
+              type="button"
+              aria-label={t("current-session")}
+              aria-describedby={`${controlsId}-session-count`}
+              aria-pressed={scoped.scope === "session"}
+              disabled={!activeId}
+              onClick={() => setPreferredScope("session")}
+            >
+              <span className="history-scope-label">{t("current-session")}</span>
+              <span className="history-scope-count" id={`${controlsId}-session-count`}>
+                {formatUiNumber(scoped.sessionCount)}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={t("all")}
+              aria-describedby={`${controlsId}-all-count`}
+              aria-pressed={scoped.scope === "all"}
+              onClick={() => setPreferredScope("all")}
+            >
+              <span className="history-scope-label">{t("all")}</span>
+              <span className="history-scope-count" id={`${controlsId}-all-count`}>
+                {formatUiNumber(scoped.allCount)}
+              </span>
+            </button>
+          </div>
+          {onClear ? (
+            <button
+              type="button"
+              className="history-action history-clear-button"
+              title={t("clear-command-history")}
+              aria-label={t("clear-command-history")}
+              aria-disabled={!canClear}
+              onClick={() => void handleClearHistory()}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
-        {onClear ? (
+        <div className="history-help">
+          <p id={hintId}>{t("history-pick-hint")}</p>
+          <p className="history-status" role="status" data-copy-state={feedback?.status}>
+            {copyMessage || (query.trim()
+              ? t("history-filter-results", [formatUiNumber(rows.length), formatUiNumber(scoped.entries.length)])
+              : "")}
+          </p>
+        </div>
+      </div>
+      <div className="history-scroll">
+        {rows.length ? (
+          <ul
+            ref={listRef}
+            className="history-list"
+            role="list"
+            onFocus={handleListFocus}
+            onBlur={handleListBlur}
+            onKeyDown={handleHistoryNavigation}
+          >
+            {rows.map((row) => (
+              <CommandHistoryRow
+                key={row.key}
+                rowKey={row.key}
+                entry={row.entry}
+                sessionLabel={row.sessionLabel}
+                timestamp={row.timestamp}
+                hintId={hintId}
+                tabIndex={row.key === tabRowKey ? 0 : -1}
+                locale={locale}
+                copyState={feedback?.id === row.key ? feedback.status : undefined}
+                copyBusy={copyBusy}
+                expanded={expandedRowKeys.has(row.key)}
+                senderBusy={senderBusy}
+                onFocusRow={setFocusedRowKey}
+                onToggleExpand={toggleExpandedRow}
+                onPick={onPick}
+                onCopy={copy}
+                onInsertToSender={onInsertToSender}
+              />
+            ))}
+          </ul>
+        ) : <p className="history-empty">{emptyMessage}</p>}
+      </div>
+    </div>
+  );
+}
+
+type CommandHistoryRowProps = Pick<CommandHistoryListProps, "onPick" | "onInsertToSender"> & {
+  rowKey: string;
+  entry: CommandHistoryEntry;
+  sessionLabel: string;
+  timestamp: ReturnType<typeof formatCommandHistoryTimestamp>;
+  hintId: string;
+  tabIndex: 0 | -1;
+  locale: ReturnType<typeof useLocale>["locale"];
+  copyState?: "copied" | "error";
+  copyBusy: boolean;
+  expanded: boolean;
+  senderBusy: boolean;
+  onFocusRow: (key: string) => void;
+  onToggleExpand: (key: string) => void;
+  onCopy: (key: string, text: string) => Promise<void>;
+};
+
+const CommandHistoryRow = memo(function CommandHistoryRow({
+  rowKey,
+  entry,
+  sessionLabel,
+  timestamp,
+  hintId,
+  tabIndex,
+  locale,
+  copyState,
+  copyBusy,
+  expanded,
+  senderBusy,
+  onFocusRow,
+  onToggleExpand,
+  onPick,
+  onCopy,
+  onInsertToSender,
+}: CommandHistoryRowProps) {
+  const metaId = useId();
+  const codeId = useId();
+  const copyLabel = t("copy-command", [], locale);
+  const copyTitle = copyState === "copied" ? t("copied", [], locale)
+    : copyState === "error" ? t("clipboard-copy-failed", [], locale) : copyLabel;
+  const insertLabel = t("history-load-in-send-panel", [], locale);
+  const isMultiline = /[\r\n]/.test(entry.command);
+  const multilineLabel = isMultiline ? t("history-multiline-command", [], locale) : "";
+  const canExpand = isMultiline || entry.command.length > 36;
+  const expandLabel = t(expanded ? "history-collapse-command" : "history-expand-command", [], locale);
+  const CopyIcon = copyState === "copied" ? Check : copyState === "error" ? CircleAlert : Copy;
+
+  return (
+    <li
+      className="history-entry-row"
+      data-expanded={expanded ? "true" : undefined}
+      onFocus={() => onFocusRow(rowKey)}
+    >
+      <button
+        type="button"
+        className="history-entry-pick"
+        tabIndex={tabIndex}
+        title={entry.command}
+        aria-describedby={`${hintId} ${metaId}`}
+        aria-keyshortcuts="ArrowUp ArrowDown Home End"
+        onClick={() => onPick(entry)}
+      >
+        <SquareTerminal size={14} aria-hidden="true" />
+        <code id={codeId} dir="ltr">{entry.command}</code>
+      </button>
+      <div className="history-entry-actions">
+        {onInsertToSender ? (
           <button
             type="button"
-            className="history-clear-button"
-            title={t("clear-command-history")}
-            aria-label={t("clear-command-history")}
-            disabled={!entries.length}
-            onClick={() => void handleClearHistory()}
+            className="history-action history-insert-button"
+            tabIndex={tabIndex}
+            title={insertLabel}
+            aria-label={insertLabel}
+            disabled={senderBusy}
+            onClick={() => void onInsertToSender(entry)}
           >
-            <Trash2 size={13} />
+            <FileInput size={14} aria-hidden="true" />
           </button>
         ) : null}
+        <button
+          type="button"
+          className="history-action history-copy-button"
+          tabIndex={tabIndex}
+          title={copyTitle}
+          aria-label={copyLabel}
+          aria-busy={copyBusy || undefined}
+          data-copy-state={copyState}
+          onClick={() => void onCopy(rowKey, entry.command)}
+        >
+          <CopyIcon size={14} aria-hidden="true" />
+        </button>
       </div>
-      <div className="right-tools-list">
-        {visible.length ? (
-          <div className="history-list">
-            {visible.map((entry, index) => (
-              <div key={`${entry.sessionId ?? "legacy"}-${entry.recordedAt}-${index}-${entry.command}`} className="history-entry-row">
-                <button
-                  type="button"
-                  className="history-entry-pick"
-                  title={entry.command}
-                  onClick={() => onPick(entry)}
-                >
-                  <span>{displayCommand(entry.command)}</span>
-                  <small>
-                    <span>{commandHistorySessionLabel(entry, sessionLabels)}</span>
-                    <time dateTime={new Date(entry.recordedAt).toISOString()}>{formatCommandHistoryTime(entry.recordedAt)}</time>
-                  </small>
-                </button>
-                <button
-                  type="button"
-                  className="history-copy-button"
-                  title={t("copy-command")}
-                  aria-label={t("copy-command")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void navigator.clipboard?.writeText(entry.command).catch(() => {});
-                  }}
-                >
-                  <Copy size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : <div className="empty-pane top">{
-          scoped.length
-            ? t("no-matching-commands-in-history")
-            : scope === "session" && activeId
-              ? t("no-command-history-for", [activeSessionName])
-              : t("no-command-history-available")
-        }</div>}
+      <div id={metaId} className="history-entry-meta">
+        <span className="history-entry-origin">
+          {multilineLabel ? (
+            <span className="history-multiline" role="img" title={multilineLabel} aria-label={multilineLabel}>
+              <CornerDownLeft size={12} aria-hidden="true" />
+            </span>
+          ) : null}
+          <bdi title={sessionLabel}>{sessionLabel}</bdi>
+        </span>
+        <span className="history-entry-meta-end">
+          {canExpand ? (
+            <button
+              type="button"
+              className="history-expand-button"
+              tabIndex={tabIndex}
+              aria-expanded={expanded}
+              aria-controls={codeId}
+              aria-label={expandLabel}
+              title={expandLabel}
+              onClick={() => onToggleExpand(rowKey)}
+            >
+              {expanded ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
+            </button>
+          ) : null}
+          {timestamp ? (
+            <time dir="auto" dateTime={timestamp.dateTime} title={timestamp.full}>
+              <span aria-hidden="true">{timestamp.compact}</span>
+              <span className="sr-only">{timestamp.full}</span>
+            </time>
+          ) : <span>{t("unknown-time", [], locale)}</span>}
+        </span>
       </div>
-    </>
+    </li>
   );
+});
+
+function handleHistoryNavigation(event: ReactKeyboardEvent<HTMLUListElement>) {
+  if (event.defaultPrevented || event.nativeEvent.isComposing
+    || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (!(event.target instanceof Element)) return;
+
+  const list = event.currentTarget;
+  const row = event.target.closest(".history-entry-row");
+  if (!row || row.parentElement !== list) return;
+
+  let nextRow: Element | null;
+  switch (event.key) {
+    case "ArrowUp": nextRow = row.previousElementSibling; break;
+    case "ArrowDown": nextRow = row.nextElementSibling; break;
+    case "Home": nextRow = list.firstElementChild; break;
+    case "End": nextRow = list.lastElementChild; break;
+    default: return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  nextRow?.querySelector<HTMLButtonElement>(".history-entry-pick")?.focus();
 }
 
 export function filterCommandHistory(
@@ -274,21 +609,46 @@ function PanelFilter({
   label,
   value,
   icons,
+  inputRef,
   onChange,
 }: {
   label: string;
   value: string;
   icons: UtilityPanelIcons;
+  inputRef?: RefObject<HTMLInputElement | null>;
   onChange: (value: string) => void;
 }) {
   useLocale();
   const { Search, X } = icons;
+  const fallbackRef = useRef<HTMLInputElement>(null);
+  const resolvedRef = inputRef ?? fallbackRef;
   return (
     <div className="panel-filter">
       <Search size={13} aria-hidden="true" />
-      <input aria-label={label} value={value} placeholder={t("filter")} onChange={(event) => onChange(event.target.value)} />
+      <input
+        ref={resolvedRef}
+        aria-label={label}
+        value={value}
+        placeholder={t("filter")}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && value && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            onChange("");
+          }
+        }}
+      />
       {value ? (
-        <button type="button" title={t("clear-filter")} aria-label={t("clear-2", [label])} onClick={() => onChange("")}>
+        <button
+          type="button"
+          title={t("clear-filter")}
+          aria-label={t("clear-2", [label])}
+          onClick={() => {
+            resolvedRef.current?.focus({ preventScroll: true });
+            onChange("");
+          }}
+        >
           <X size={13} />
         </button>
       ) : null}
@@ -408,11 +768,6 @@ function commandHistorySessionLabel(
   return sessionLabels.get(entry.sessionId) ?? t("deleted-session", [entry.sessionId]);
 }
 
-function formatCommandHistoryTime(value: number): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? t("unknown-time") : date.toLocaleString();
-}
-
 function normalizeFilter(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }

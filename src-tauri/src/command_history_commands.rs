@@ -268,6 +268,7 @@ pub(super) fn record_command_submission(
 pub(crate) fn merge_command_history(
     state: State<'_, AppState>,
     entries: Vec<portmate_core::CommandHistoryEntry>,
+    expected_revision: Option<u64>,
 ) -> Result<CommandHistorySnapshot, String> {
     if entries.len() > MAX_COMMAND_HISTORY_ENTRIES {
         return Err(format!(
@@ -277,6 +278,10 @@ pub(crate) fn merge_command_history(
     let mut store = state.store.lock().map_err(|error| error.to_string())?;
     if !store.command_history_policy.enabled {
         return Ok(snapshot(&store, Vec::new()));
+    }
+    // Another window may have cleared history after the caller read its local cache.
+    if expected_revision.is_some_and(|revision| revision != store.command_history_revision) {
+        return Ok(snapshot(&store, store.command_history.clone()));
     }
     let limit = store.command_history_policy.limit;
     let retention_days = store.command_history_policy.retention_days;

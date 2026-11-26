@@ -10,6 +10,7 @@ import { invokeBackend, isBackendAvailable } from "./api";
 import { AsyncOperationQueue } from "./async-operation-queue";
 import type { CommandSubmissionSource } from "./command-submission";
 import ChildWindowScreenLockOverlay from "./ChildWindowScreenLockOverlay";
+import PortMateIcon from "./PortMateIcon";
 import { TerminalContextMenu, type TerminalContextAction } from "./ContextMenus";
 import { hasActiveModalLayer, INTERACTION_LAYER_DISMISS_EVENT } from "./modal-interaction-boundary";
 import { pasteClipboardIntoTerminalView } from "./terminal-clipboard";
@@ -514,7 +515,7 @@ export default function DetachedPaneApp({ request }: { request: DetachedPaneRequ
       onClick={() => setContextMenu(null)}
     >
       <header className={request.color ? "detached-pane-toolbar colored" : "detached-pane-toolbar"} style={request.color ? { borderTopColor: request.color } : undefined}>
-        <span className="detached-brand">PortMate</span>
+        <span className="detached-brand"><PortMateIcon size={16} variant="mark" />PortMate</span>
         <strong>{viewTitle || session?.profile.name || t("session-unavailable")}</strong>
         {session && shellElevationRequested(session.profile) ? <ShellElevationIndicator profile={session.profile} /> : null}
         <span

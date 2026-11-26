@@ -39,6 +39,7 @@ import type {
 import { defaultTerminalCompletionPreferences, terminalCompletionPreferencesFromSettings } from "./terminal-completion-prefs";
 import type { TerminalCompletionPreferences, TerminalCompletionQuickCommand } from "./terminal-completion-prefs";
 import { createTerminalFreeInputPayload, cutTerminalFreeInputRange, MAX_TERMINAL_FREE_INPUT_CHARACTERS, normalizeTerminalFreeInput, terminalFreeInputCharacterCount, TERMINAL_FREE_INPUT_REQUEST_EVENT } from "./terminal-free-input";
+import type { TerminalFreeInputRequestDetail } from "./terminal-free-input";
 import { TERMINAL_TEXT_EXPORT_REQUEST_EVENT } from "./terminal-export-event";
 import type { TerminalTextExportRequestDetail } from "./terminal-export-event";
 import { extractTerminalBufferText, extractTerminalSelectionText, MAX_TERMINAL_EXPORT_BYTES } from "./terminal-export-state";
@@ -2688,14 +2689,14 @@ function TerminalCanvas({
 
   useEffect(() => {
     const requestFreeInput = (event: Event) => {
-      if (active && focused && !modalBlocksTerminalCommand(hostRef.current)) {
-        const value = (event as CustomEvent<{ value?: unknown }>).detail?.value;
-        openFreeInputRef.current(typeof value === "string" ? value : "");
-      }
+      if (!active || !focused || modalBlocksTerminalCommand(hostRef.current)) return;
+      const detail = (event as CustomEvent<TerminalFreeInputRequestDetail>).detail;
+      if (detail?.terminal && (detail.terminal.viewId !== viewId || detail.terminal.sessionId !== active.profile.id)) return;
+      openFreeInputRef.current(typeof detail?.value === "string" ? detail.value : "");
     };
     window.addEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
     return () => window.removeEventListener(TERMINAL_FREE_INPUT_REQUEST_EVENT, requestFreeInput);
-  }, [active?.profile.id, focused]);
+  }, [active?.profile.id, focused, viewId]);
 
   useEffect(() => {
     const requestExport = (event: Event) => {
