@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="pm-bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f1d36" />
+      <stop offset="52%" stop-color="#0b162a" />
+      <stop offset="100%" stop-color="#071020" />
+    </linearGradient>
+    <radialGradient id="pm-glow" cx="46%" cy="44%" r="54%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.34" />
+      <stop offset="52%" stop-color="#2563eb" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#0b1526" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="pm-rim" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.82" />
+      <stop offset="50%" stop-color="#60a5fa" stop-opacity="0.34" />
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0.78" />
+    </linearGradient>
+    <linearGradient id="pm-chamber" x1="15" y1="15" x2="49" y2="49" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.72" />
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0.48" />
+    </linearGradient>
+    <linearGradient id="pm-glyph" x1="20" y1="24" x2="46" y2="41" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#a5f3fc" />
+      <stop offset="48%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#2dd4bf" />
+    </linearGradient>
+  </defs>
+  <!-- Anodized slate shell -->
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="url(#pm-bg)" />
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="url(#pm-glow)" />
+  <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="14.25" stroke="url(#pm-rim)" stroke-width="1.5" />
+  <!-- Staggered top hardware contact pins -->
+  <path d="M21 9.5V14.5M28 8V14.5M35 9.5V14.5" stroke="#38bdf8" stroke-opacity="0.86" stroke-width="2.1" stroke-linecap="round" />
+  <!-- Bottom side pins flanking central connector key -->
+  <path d="M21 49.5V54.5M43 49.5V54.5" stroke="#2dd4bf" stroke-opacity="0.78" stroke-width="2.1" stroke-linecap="round" />
+  <rect x="27" y="50" width="10" height="3.2" rx="1.2" fill="#2dd4bf" fill-opacity="0.78" />
+  <!-- Side bus alignment ticks -->
+  <path d="M9.5 26H13.5M9.5 38H13.5M50.5 30H54.5M50.5 39H54.5" stroke="#60a5fa" stroke-opacity="0.52" stroke-width="1.75" stroke-linecap="round" />
+  <!-- Keyed connector chamber (clipped upper-right chamfer + bottom key notch) -->
+  <path d="M19 15H39.5L49 24.5V44C49 46.2 47.2 48 45 48H37.5V45.4H26.5V48H19C16.8 48 15 46.2 15 44V19C15 16.8 16.8 15 19 15Z" fill="#081222" fill-opacity="0.88" stroke="url(#pm-chamber)" stroke-width="1.6" stroke-linejoin="round" />
+  <!-- Inner bevel accent along top-left -->
+  <path d="M17.5 21V19C17.5 18.2 18.2 17.5 19 17.5H38" stroke="#7dd3fc" stroke-opacity="0.28" stroke-width="1.1" stroke-linecap="round" />
+  <!-- Terminal chevron & circuit trace terminating in a square contact pad -->
+  <path d="M21.5 25L29.5 32L21.5 39" stroke="url(#pm-glyph)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M31.5 38H39.5" stroke="url(#pm-glyph)" stroke-width="2.9" stroke-linecap="round" />
+  <rect x="39" y="34.75" width="6.5" height="6.5" rx="1.4" fill="#2dd4bf" />
+  <!-- Live telemetry signal node near upper-right chamfer -->
+  <circle cx="40.5" cy="24.5" r="2.1" fill="#67e8f9" />
+  <circle cx="40.5" cy="24.5" r="4.2" fill="#38bdf8" fill-opacity="0.22" />
+</svg>

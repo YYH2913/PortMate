@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="pm-fav-bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f1d36" />
+      <stop offset="100%" stop-color="#081222" />
+    </linearGradient>
+    <linearGradient id="pm-fav-rim" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0.88" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#pm-fav-bg)" />
+  <rect x="5.2" y="5.2" width="53.6" height="53.6" rx="12.8" stroke="url(#pm-fav-rim)" stroke-width="2.4" />
+  <path d="M23 10.5V15.5M34 10.5V15.5" stroke="#38bdf8" stroke-width="3.2" stroke-linecap="round" />
+  <rect x="26" y="49.5" width="12" height="3.8" rx="1.4" fill="#2dd4bf" />
+  <path
+    d="M17.5 16H39.5L48.5 25V44.5C48.5 46.2 47.2 47.5 45.5 47.5H17.5C15.8 47.5 14.5 46.2 14.5 44.5V19C14.5 17.3 15.8 16 17.5 16Z"
+    stroke="#38bdf8"
+    stroke-opacity="0.58"
+    stroke-width="2.2"
+    stroke-linejoin="round"
+  />
+  <path d="M21 24.5L30 32L21 39.5" stroke="#67e8f9" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M31.5 38.5H38.5" stroke="#38bdf8" stroke-width="3.6" stroke-linecap="round" />
+  <rect x="38" y="34.5" width="8" height="8" rx="1.6" fill="#2dd4bf" />
+</svg>
